@@ -518,7 +518,8 @@ public enum CalDeltaApply {
                 meetingId: ev.id, subject: ev.subject ?? "(no subject)",
                 start: ev.start, end: ev.end, joinURL: old?.joinURL,
                 organizer: old?.organizer, organizerEmail: old?.organizerEmail,
-                isOrganizer: old?.isOrganizer ?? false, isOnline: old?.isOnline ?? false)
+                isOrganizer: old?.isOrganizer ?? false, isOnline: old?.isOnline ?? false,
+                categories: old?.categories ?? [])
             applied += 1
         }
         let merged = byID.values.sorted {

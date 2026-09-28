@@ -1,5 +1,6 @@
 // ShiftsModel.swift — Shifts week table rows and pane states (UI-SPEC
-// §6.7, R18). Rows = people, columns = days; time off as its own rows.
+// §6.7, R18). Rows = people, columns = days; a person's time off sits in
+// their own row beside their shifts (as Teams Shifts shows it).
 import Foundation
 import OstMacCore
 
@@ -28,16 +29,16 @@ struct ShiftsCell: Identifiable, Equatable {
     let notes: String?
 }
 
-/// One table row: a person's shifts, or a person's time off.
+/// One table row: a person's week (shifts and time off).
 struct ShiftsRow: Identifiable, Equatable {
-    /// User id for shift rows, `off:<user id>` for time-off rows.
+    /// User id (`open` for open shifts).
     let id: String
     let name: String
-    let isTimeOff: Bool
     /// 7 day cells, Monday first.
     let days: [[ShiftsCell]]
 
-    static let timeOffPrefix = "off:"
+    /// Swatch theme for time-off entries.
+    static let timeOffTheme = "gray"
     static let openShiftsName = "Open Shifts"
     static let unknownName = "Team Member"
 
@@ -62,15 +63,11 @@ struct ShiftsRow: Identifiable, Equatable {
                 byUser[key] = days
             }
         }
-        var out = byUser.map { key, days in
-            ShiftsRow(id: key.isEmpty ? "open" : key, name: name(key, names), isTimeOff: false, days: days)
-        }
         let reasonNames = Dictionary(reasons.map { ($0.id, $0.name) }, uniquingKeysWith: { a, _ in a })
-        var offByUser: [String: [[ShiftsCell]]] = [:]
         let day0 = calendar.startOfDay(for: week.weekStart)
         for t in week.timeOff where ShiftsStore.overlaps(t, weekStart: day0, calendar: calendar) {
             let key = t.userId ?? ""
-            var days = offByUser[key] ?? Array(repeating: [], count: 7)
+            var days = byUser[key] ?? Array(repeating: [], count: 7)
             let s = ShiftItem.parse(dateTime: t.start) ?? .distantPast
             let e = ShiftItem.parse(dateTime: t.end) ?? .distantFuture
             for d in 0 ..< 7 {
@@ -82,17 +79,15 @@ struct ShiftsRow: Identifiable, Equatable {
                     : "\(max(s, ds).formatted(time)) \u{2013} \(min(e, de).formatted(time))"
                 days[d].append(ShiftsCell(id: "\(t.id)-\(d)", time: range,
                                           label: t.reasonId.flatMap { reasonNames[$0] } ?? "Time Off",
-                                          theme: nil, isDraft: t.isDraft, notes: nil))
+                                          theme: timeOffTheme, isDraft: t.isDraft, notes: nil))
             }
-            offByUser[key] = days
+            byUser[key] = days
         }
-        out += offByUser.map { key, days in
-            ShiftsRow(id: timeOffPrefix + key, name: name(key, names), isTimeOff: true, days: days)
+        let out = byUser.map { key, days in
+            ShiftsRow(id: key.isEmpty ? "open" : key, name: name(key, names), days: days)
         }
         return out.sorted {
-            $0.isTimeOff != $1.isTimeOff ? !$0.isTimeOff
-                : $0.name != $1.name ? $0.name.localizedStandardCompare($1.name) == .orderedAscending
-                : $0.id < $1.id
+            $0.name != $1.name ? $0.name.localizedStandardCompare($1.name) == .orderedAscending : $0.id < $1.id
         }
     }
 }

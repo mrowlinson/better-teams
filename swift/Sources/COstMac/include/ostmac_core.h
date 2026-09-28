@@ -162,6 +162,11 @@ char *ostmac_files(const char *chat_id, int limit);
 // Same {ok, chat_id, files} envelope. Caller frees.
 char *ostmac_files_opts(const char *chat_id, int limit, int include_folders);
 
+// The files one message shares (its reference attachments; each file's
+// attachment_id = the body's <attachment id>). Same {ok, chat_id, files}
+// envelope. Caller frees.
+char *ostmac_message_files(const char *chat_id, const char *message_id);
+
 // One folder's children by drive+item id (requires sign-in): files AND
 // subfolders, unfiltered. Returns {ok, drive_id, item_id, files}.
 // Caller frees.
@@ -265,6 +270,9 @@ char *ostmac_reminder_add(const char *list_id, const char *title);
 
 // Mark one task completed: {ok,task}. Caller frees.
 char *ostmac_reminder_done(const char *list_id, const char *task_id);
+
+// Reopen one completed task (not started again): {ok,task}. Caller frees.
+char *ostmac_reminder_reopen(const char *list_id, const char *task_id);
 
 // Planner: one team's plans (group id == team id, requires sign-in):
 // {ok,group_id,plans:[{id,title}]}. Caller frees.
@@ -475,6 +483,28 @@ char *ostmac_video_send_push_bytes(const uint8_t *data, size_t len);
 // 0 = none (*out NULL), -1 = null out-param. *dropped counts the stale
 // units discarded ahead of the newest.
 int ostmac_video_poll_incoming_bytes(uint8_t **out, size_t *out_len, int *dropped);
+
+// Meeting video (meetvideo): per-source incoming queues keyed by the
+// source's MSI (mixer CSRC, or the MSI subscribed into that SSRC slot),
+// else its SSRC. Same contract as ostmac_video_poll_incoming_bytes for
+// one source.
+int ostmac_video_poll_source_bytes(uint32_t source, uint8_t **out, size_t *out_len, int *dropped);
+
+// Video sources seen this call: {ok, sources:[{id, frames, age_ms}]}.
+// Caller frees. No network.
+char *ostmac_video_sources(void);
+
+// Subscribe video sources (MS-RTP Video Source Requests): JSON array of
+// MSIs in priority order (slot 0 = the large tile), max 9. Empty = the
+// sender picks (1:1 peer / mixer active speaker). {ok, subscribed}.
+// Caller frees.
+char *ostmac_video_subscribe(const char *msis_json);
+
+// Roster of the active placed call: {ok, call_id, updates,
+// participants:[{id, name, audio_msi?, video_msi?, video_on, screen_msi?,
+// screen_on, muted?, is_self}], dominant_msi?, dominant_id?, log:[...]}.
+// log lines are drained per read. Caller frees. No network.
+char *ostmac_call_roster(void);
 
 // Offline loopback: run queued send units through packetize -> SRTP ->
 // depacketize -> incoming queue (no network/auth/hardware).

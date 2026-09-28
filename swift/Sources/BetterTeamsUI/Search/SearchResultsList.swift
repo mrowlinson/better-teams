@@ -58,7 +58,7 @@ private struct SearchResultsContent: View {
         let rows = search.rows()
         let empty = rows.topHits.isEmpty && rows.messages.isEmpty && rows.people.isEmpty && rows.files.isEmpty
         if empty && loading {
-            LoadingPane()
+            LoadingPane("Searching\u{2026}")
         } else if empty, let err = messages.error, !offline, search.scope != .people, search.scope != .files {
             ErrorPane(title: "Couldn't Search Messages", message: err) { messages.retry() }
         } else if empty {

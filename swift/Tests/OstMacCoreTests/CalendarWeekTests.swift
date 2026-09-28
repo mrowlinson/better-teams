@@ -182,10 +182,68 @@ final class CalendarWeekTests: XCTestCase {
         store.prevWeek()
         try await waitFor("prev fetches") { box.seen.count == 3 }
         guard box.seen.count == 3 else { return } // waitFor already failed
+        try await waitFor("prev week lands") {
+            store.weekStart == Self.monday().addingTimeInterval(-7 * 86_400)
+        }
         XCTAssertEqual(
             store.weekStart, Self.monday().addingTimeInterval(-7 * 86_400))
         XCTAssertEqual(box.seen[0], 1_790_553_600 + 7 * 86_400)
         XCTAssertEqual(box.seen[2], 1_790_553_600 - 7 * 86_400)
+    }
+
+    /// CALWEEK: an uncached week fetches behind the week on screen —
+    /// header (`weekStart`) and rows stay together until it lands.
+    func testUncachedWeekKeepsHeaderAndRowsTogetherUntilLanded() async throws {
+        let monday = Self.monday()
+        let next = Int64(monday.timeIntervalSince1970) + 7 * 86_400
+        let release = DispatchSemaphore(value: 0)
+        let store = CalendarWeekStore(
+            weekStart: monday, calendar: Self.utcMonday(),
+            weekFetcher: { start in
+                if start == next {
+                    release.wait()
+                    return CalWeekResponse(ok: true, weekStart: start, days: 7, meetings: [
+                        MeetingItem(meetingId: "new-week", subject: "N")])
+                }
+                return CalWeekResponse(ok: true, weekStart: start, days: 7, meetings: [
+                    MeetingItem(meetingId: "old-week", subject: "O")])
+            })
+        await store.load()
+        store.nextWeek()
+        try await waitFor("behind fetch starts") { store.isLoadingWeek }
+        XCTAssertEqual(store.weekStart, monday)
+        XCTAssertEqual(store.meetings.map(\.id), ["old-week"])
+        release.signal()
+        try await waitFor("new week lands") { store.meetings.map(\.id) == ["new-week"] }
+        XCTAssertEqual(store.weekStart, monday.addingTimeInterval(7 * 86_400))
+        XCTAssertFalse(store.isLoadingWeek)
+    }
+
+    /// CALWEEK: neighbors prefetch; paging to one shows it with no fetch.
+    func testPrefetchedWeekShowsWithoutFetch() async throws {
+        final class SeenBox: @unchecked Sendable {
+            let lock = NSLock(); var seen: [Int64] = []
+            func add(_ v: Int64) { lock.lock(); seen.append(v); lock.unlock() }
+            var count: Int { lock.lock(); defer { lock.unlock() }; return seen.count }
+        }
+        let box = SeenBox()
+        let monday = Self.monday()
+        let store = CalendarWeekStore(
+            weekStart: monday, calendar: Self.utcMonday(),
+            weekFetcher: { start in
+                box.add(start)
+                return CalWeekResponse(ok: true, weekStart: start, days: 7, meetings: [
+                    MeetingItem(meetingId: "w\(start)", subject: "S")])
+            },
+            prefetchAdjacentWeeks: true)
+        await store.load()
+        try await waitFor("neighbors prefetched") { box.count == 3 }
+        try await Task.sleep(nanoseconds: 50_000_000) // let cache writes land
+        let prev = Int64(monday.timeIntervalSince1970) - 7 * 86_400
+        store.prevWeek()
+        XCTAssertEqual(store.weekStart, monday.addingTimeInterval(-7 * 86_400))
+        XCTAssertEqual(store.meetings.map(\.id), ["w\(prev)"])
+        XCTAssertFalse(store.isLoadingWeek)
     }
 
     // MARK: - Schedule

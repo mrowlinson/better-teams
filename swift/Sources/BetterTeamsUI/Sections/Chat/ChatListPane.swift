@@ -26,7 +26,7 @@ struct ChatListPane: View {
         let forced = m.forced(.chat)
         let rows = forced == .empty ? [] : filtered(chats.displayChats)
         if forced == .loading || (chats.state == .loading && chats.chats.isEmpty) {
-            LoadingPane()
+            LoadingPane("Loading Chats\u{2026}")
         } else if forced == .error {
             // Evidence stands in for a failed load while offline; the
             // toolbar's Offline item reads the same `m.connection`.
@@ -47,8 +47,16 @@ struct ChatListPane: View {
                 }
             }
         } else {
+            // R12: a refresh runs behind the rows on screen.
             list(rows, m)
+                .refreshStatus(chats.state == .loading, failure: Self.failure(chats.state),
+                               label: "Updating Chats", retry: { chats.refresh() })
         }
+    }
+
+    /// A failed refresh behind the rows on screen (quiet notice).
+    static func failure(_ state: ChatListState) -> String? {
+        if case .error(let message) = state { message } else { nil }
     }
 
     private func list(_ rows: [ChatItem], _ m: WindowModel) -> some View {

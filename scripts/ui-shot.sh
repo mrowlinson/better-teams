@@ -10,6 +10,12 @@
 #                                        permission needed; misses glass)
 #        DELAY=0.4                       seconds to wait after READY
 #                                        (popover/sheet animations)
+#        ACTIVE=1                        activate the app and make the window
+#                                        key (active appearance). Only when
+#                                        nobody is using the Mac: it takes
+#                                        focus. Default stays non-activating.
+#        SHADOW=1                        keep the window shadow (single-window
+#                                        captures; README screenshots)
 #
 # Launches the bundle in the BACKGROUND (`open -g`) with --demo --evidence
 # (capture refuses to run without --demo); in evidence mode the app orders
@@ -86,6 +92,7 @@
 #   call?state=ended&presentation=main         remote end: back to previous section
 #   call?state=ended&presentation=window       remote end: call window closed
 #   call?state=active&presentation=main&popover=devices    Devices popover (pickers + level)
+#   call?state=video&presentation=main         1:1 video: demo remote video + self view PiP
 #   call?state=active&presentation=window&popover=devices
 #   chat/demo-rich?call=active&presentation=main    call behind a route: rail + toolbar call items
 #   chat/demo-rich?call=active&presentation=window  toolbar call item only
@@ -164,8 +171,10 @@ pids_now() {
 }
 BEFORE=" $(pids_now | tr '\n' ' ') "
 front_pid() { lsappinfo info -only pid "$(lsappinfo front)" 2>/dev/null | sed -n 's/.*pid = \([0-9][0-9]*\).*/\1/p'; }
+BG="-g"
+if [ "${ACTIVE:-0}" = 1 ]; then BG=""; EXTRA="$EXTRA --evidence-active"; fi
 # shellcheck disable=SC2086
-open -g -n -a "$APP" --stdout "$LOG" --stderr "$LOG" --args --demo --evidence --route "$ROUTE" \
+open $BG -n -a "$APP" --stdout "$LOG" --stderr "$LOG" --args --demo --evidence --route "$ROUTE" \
     --appearance "$LOOK" --window-size "${SIZE:-1280x820}" $EXTRA "$@" -ApplePersistenceIgnoreState YES
 PID=""
 DEADLINE=$((SECONDS + 10))
@@ -199,7 +208,7 @@ else
         # Writes $OUT and prints "window <id> <w> <h>" (screencapture -l)
         # or "composite <n> <w> <h>" (ScreenCaptureKit).
         RECT=$(printf '%s\n' "$READY" | sed -n 's/.*rect=\([0-9,-]*\).*/\1/p')
-        MODE=$(UI_SHOT_PID="$PID" UI_SHOT_OUT="$OUT" UI_SHOT_RECT="$RECT" swift - 2>>"$LOG" <<'SWIFT'
+        MODE=$(UI_SHOT_PID="$PID" UI_SHOT_OUT="$OUT" UI_SHOT_RECT="$RECT" UI_SHOT_SHADOW="${SHADOW:-0}" swift - 2>>"$LOG" <<'SWIFT'
 import CoreGraphics
 import Foundation
 import ImageIO
@@ -241,6 +250,35 @@ func writePNG(_ image: CGImage, to path: String) {
     CGImageDestinationAddImage(dest, image, nil)
     guard CGImageDestinationFinalize(dest) else { exit(1) }
 }
+if floats.isEmpty, env["UI_SHOT_CHILDREN"] != "1",
+   let content = try? await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true),
+   let win = content.windows.first(where: { $0.windowID == main.id }) {
+    // The window alone, without its child windows: AppKit parents the
+    // system input-source indicator (NSCampoLightweightUIHostWindow) to
+    // the window once a text view exists, and `screencapture -l` would
+    // shoot that bubble over the composer. UI_SHOT_CHILDREN=1 keeps them.
+    let filter = SCContentFilter(desktopIndependentWindow: win)
+    let cfg = SCStreamConfiguration()
+    // SHADOW=1 keeps the window shadow (README shots); else window pixels only.
+    cfg.ignoreShadowsSingleWindow = env["UI_SHOT_SHADOW"] != "1"
+    let scale = CGFloat(filter.pointPixelScale)
+    // The shadow is fitted into the output size: pad by the 23 pt margin
+    // `screencapture -l` gives the shadow on each side so pixels stay 1:1.
+    let pad: CGFloat = cfg.ignoreShadowsSingleWindow ? 0 : 46
+    cfg.width = Int(((filter.contentRect.width + pad) * scale).rounded())
+    cfg.height = Int(((filter.contentRect.height + pad) * scale).rounded())
+    cfg.includeChildWindows = false
+    cfg.showsCursor = false
+    cfg.backgroundColor = .clear
+    do {
+        let image: CGImage = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: cfg)
+        writePNG(image, to: out)
+        print("window \(main.id) \(Int(main.rect.width)) \(Int(main.rect.height))")
+        exit(0)
+    } catch {
+        fputs("ui-shot: ScreenCaptureKit window: \(error); falling back to screencapture -l\n", stderr)
+    }
+}
 if floats.isEmpty {
     // `screencapture -l` also shoots the child windows of the window (a
     // transparent helper hangs below it when inactive): crop back to the
@@ -248,7 +286,8 @@ if floats.isEmpty {
     let raw = out + ".l.png"
     let sc = Process()
     sc.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
-    sc.arguments = ["-l\(main.id)", "-o", "-x", raw]
+    // SHADOW=1 keeps the window shadow (README shots); else window pixels only.
+    sc.arguments = ["-l\(main.id)"] + (env["UI_SHOT_SHADOW"] == "1" ? [] : ["-o"]) + ["-x", raw]
     try? sc.run()
     sc.waitUntilExit()
     guard sc.terminationStatus == 0,
@@ -298,7 +337,7 @@ SWIFT
         [ "${1:-}" = composite ] && grep '^ui-shot: ' "$LOG" >&2
         MODE="${1:-none} ${3:-0}x${4:-0}pt"
     fi
-    if [ "$(front_pid)" = "$PID" ]; then
+    if [ "${ACTIVE:-0}" != 1 ] && [ "$(front_pid)" = "$PID" ]; then
         echo "ui-shot: evidence app became frontmost ($ROUTE) — focus theft" >&2
         status=1
     fi

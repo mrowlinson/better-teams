@@ -5,6 +5,31 @@ Native macOS client for Microsoft Teams, over a Rust core
 [`ost`](https://github.com/eisbaw/ost). Runs fully offline in `--demo`
 with canned data; sign in via device code or browser to go live.
 
+## Screenshots
+
+Demo mode (`--demo`, canned offline data). More detail in
+[docs/screenshots/SHOTS.md](docs/screenshots/SHOTS.md).
+
+<p align="center">
+  <img src="docs/screenshots/chat-light.png" width="49%" alt="Chat, light appearance">
+  <img src="docs/screenshots/chat-dark.png" width="49%" alt="Chat, dark appearance">
+</p>
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/teams-thread.png" alt="Teams channel thread"><br>Teams channel with a thread open</td>
+    <td width="50%"><img src="docs/screenshots/calendar-week.png" alt="Calendar week"><br>Calendar week view</td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/planner.png" alt="Planner"><br>Planner task with assignees</td>
+    <td><img src="docs/screenshots/shifts.png" alt="Shifts"><br>Shifts week</td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/activity.png" alt="Activity"><br>Activity feed</td>
+    <td></td>
+  </tr>
+</table>
+
 ## Features
 
 Core capabilities (logic + stores kept; surfaces pending the new UI):

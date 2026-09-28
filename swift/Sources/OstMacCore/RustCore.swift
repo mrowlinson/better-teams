@@ -435,6 +435,17 @@ public enum RustCore {
         }
     }
 
+    /// The files one message shares (its reference attachments; each
+    /// file's `attachment_id` is the body's `<attachment id>`). Blocking
+    /// FFI (network): call off main.
+    public static func messageFiles(chatID: String, messageID: String) throws -> SharedFilesResponse {
+        try chatID.withCString { c in
+            try messageID.withCString { m in
+                try call(ostmac_message_files(c, m), as: SharedFilesResponse.self)
+            }
+        }
+    }
+
     /// One folder's children by drive+item id (om-i5-folders): files AND
     /// subfolders, unfiltered. Blocking FFI (network): call off main.
     public static func sharedChildren(driveID: String, itemID: String, limit: Int32 = 50) throws -> SharedFileChildrenResponse {
@@ -635,6 +646,15 @@ public enum RustCore {
         try listID.withCString { idPtr in
             try taskID.withCString { taskPtr in
                 try call(ostmac_reminder_done(idPtr, taskPtr), as: ReminderTaskResult.self)
+            }
+        }
+    }
+
+    /// Reopen one completed task (not started again).
+    public static func reminderReopen(listID: String, taskID: String) throws -> ReminderTaskResult {
+        try listID.withCString { idPtr in
+            try taskID.withCString { taskPtr in
+                try call(ostmac_reminder_reopen(idPtr, taskPtr), as: ReminderTaskResult.self)
             }
         }
     }

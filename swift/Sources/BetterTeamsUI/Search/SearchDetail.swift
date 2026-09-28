@@ -95,9 +95,8 @@ private struct ObservedDetail: View {
                         Button("Call") { SearchPersonActions.call(p, model) }
                             .buttonStyle(.borderedProminent)
                             .disabled(!(model.call.map(\.ended) ?? true))
-                        Button("Video") {}
-                            .disabled(true)
-                            .help("Video calls aren\u{2019}t available yet")
+                        Button("Video") { SearchPersonActions.call(p, model, video: true) }
+                            .disabled(!(model.call.map(\.ended) ?? true))
                         Button("Chat") { SearchPersonActions.chat(p, model) }
                     }
                     if let email = p.email, !email.isEmpty, let url = URL(string: "mailto:\(email)") {
@@ -323,11 +322,11 @@ enum SearchPersonActions {
         }
     }
 
-    static func call(_ p: TeamMember, _ m: WindowModel) {
+    static func call(_ p: TeamMember, _ m: WindowModel, video: Bool = false) {
         withThread(p, m) { id in
             let key = (p.userId ?? p.id).lowercased()
             CallsSection.call(CallsSection.Person(name: p.displayName, personID: p.userId ?? p.id,
-                                                  personKey: key, thread: id), m)
+                                                  personKey: key, thread: id), m, video: video)
         }
     }
 

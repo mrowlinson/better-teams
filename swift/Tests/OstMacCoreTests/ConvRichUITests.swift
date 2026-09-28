@@ -9,7 +9,7 @@ final class ConvRichUITests: XCTestCase {
     func testRichRowInSidebarList() {
         let row = DemoData.chats.first { $0.id == DemoData.richID }
         XCTAssertNotNil(row)
-        XCTAssertEqual(row?.name, "Demo — Rich Conversation")
+        XCTAssertEqual(row?.name, "Q3 Review Deck")
     }
 
     func testRichRowTracksThreadTail() {
@@ -19,7 +19,7 @@ final class ConvRichUITests: XCTestCase {
         XCTAssertEqual(row.last_message_time, tail.timestamp)
         XCTAssertEqual(row.last_message_sender, tail.sender)
         XCTAssertEqual(row.last_message_preview, tail.content)
-        XCTAssertEqual(DemoData.name(for: DemoData.richID), "Demo — Rich Conversation")
+        XCTAssertEqual(DemoData.name(for: DemoData.richID), "Q3 Review Deck")
     }
 
     func testRichThreadHasEveryRichState() {
@@ -34,7 +34,7 @@ final class ConvRichUITests: XCTestCase {
     func testShowDemoFailedPassthroughAndRetry() {
         let store = ConversationStore()
         store.showDemo(
-            chatID: DemoData.richID, chatName: "Demo — Rich Conversation",
+            chatID: DemoData.richID, chatName: "Q3 Review Deck",
             messages: DemoData.messages(for: DemoData.richID),
             failed: DemoData.failedIDs(for: DemoData.richID))
         XCTAssertTrue(store.failedIDs.contains("rich-fail"))

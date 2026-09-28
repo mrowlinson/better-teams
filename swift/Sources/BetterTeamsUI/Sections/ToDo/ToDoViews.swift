@@ -37,6 +37,11 @@ enum ToDoListState: Equatable {
         case .empty, .loaded: return .empty
         }
     }
+
+    /// A failed refresh behind the lists on screen (quiet notice).
+    static func failure(_ state: RemindersState) -> String? {
+        if case .error(let m) = state { m } else { nil }
+    }
 }
 
 /// What the tasks pane shows.
@@ -50,9 +55,9 @@ enum ToDoTasksState: Equatable {
     static let errorTitle = "Couldn\u{2019}t Load Tasks"
 
     /// The add field stays usable on an empty list, so an empty list is
-    /// `.tasks` with a "No Tasks" line, never a blank pane. While a
-    /// list's tasks load, the rows on hand may be another list's, so
-    /// loading always wins.
+    /// `.tasks` with a "No Tasks" line, never a blank pane. `loading`
+    /// means no rows of this list are on hand (first load); a reload of
+    /// a list on screen keeps its rows (callers pass false).
     static func resolve(listSelected: Bool, showing: Bool, loading: Bool, error: String?,
                         taskCount: Int, offline: Bool) -> ToDoTasksState {
         guard listSelected else { return .noSelection }
@@ -99,13 +104,17 @@ struct ToDoListPane: View {
                 reminders.state, listCount: reminders.lists.count,
                 forced: model.forced(.native(.todo)), offline: model.connection == .offline)
             switch state {
-            case .loading: LoadingPane()
+            case .loading: LoadingPane("Loading Lists\u{2026}")
             case .error(let title, let message):
                 ErrorPane(title: title, message: message) { reminders.refresh() }
             case .empty:
                 EmptyPane(ToDoListState.emptyTitle, systemImage: NativeAppID.todo.symbol,
                           message: ToDoListState.emptyMessage)
-            case .lists: list(model)
+            case .lists:
+                // R12: a refresh runs behind the lists on screen.
+                list(model)
+                    .refreshStatus(reminders.state == .loading, failure: ToDoListState.failure(reminders.state),
+                                   label: "Updating Lists", retry: { reminders.refresh() })
             }
         }
     }
@@ -138,14 +147,17 @@ struct ToDoTasksPane: View {
             let listID = model.forced(.native(.todo)) == nil ? ToDoSection.listID(model) : nil
             let state = ToDoTasksState.resolve(
                 listSelected: listID != nil, showing: listID != nil && reminders.selectedListID == listID,
-                loading: reminders.tasksLoading, error: reminders.tasksError,
+                // A list whose rows are on hand reloads behind them.
+                loading: reminders.tasksLoading && reminders.tasksListID != listID, error: reminders.tasksError,
                 taskCount: reminders.tasks.count, offline: model.connection == .offline)
             switch state {
             case .noSelection: NoSelectionPane(ToDoTasksState.noSelectionTitle)
-            case .loading: LoadingPane()
+            case .loading: LoadingPane("Loading Tasks\u{2026}")
             case .error(let title, let message):
                 ErrorPane(title: title, message: message) { reminders.refreshTasks() }
-            case .tasks: tasks
+            case .tasks:
+                // Failures already show inline above the tasks.
+                tasks.refreshStatus(reminders.tasksLoading, label: "Updating Tasks")
             }
         }
     }
@@ -182,11 +194,16 @@ struct ToDoTasksPane: View {
                           message: hiddenCount > 0 ? "Completed tasks are hidden." : "Add a task above.")
             } else {
                 List(rows) { task in
-                    ToDoTaskRow(task: task, now: now) { reminders.complete(taskID: task.taskId) }
-                        .contextMenu {
+                    ToDoTaskRow(task: task, now: now) { done in
+                        if done { reminders.complete(taskID: task.taskId) } else { reminders.reopen(taskID: task.taskId) }
+                    }
+                    .contextMenu {
+                        if task.completed {
+                            Button("Mark as Incomplete") { reminders.reopen(taskID: task.taskId) }
+                        } else {
                             Button("Mark as Complete") { reminders.complete(taskID: task.taskId) }
-                                .disabled(task.completed)
                         }
+                    }
                 }
                 .listStyle(.inset)
             }
@@ -194,22 +211,21 @@ struct ToDoTasksPane: View {
     }
 }
 
-/// Task row: checkbox (complete), importance mark, title, due date. The
-/// service call reopens nothing, so a completed row's box is read-only.
+/// Task row: checkbox (checking completes, unchecking reopens),
+/// importance mark, title, due date.
 struct ToDoTaskRow: View {
     let task: ReminderTask
     let now: Date
-    let complete: () -> Void
+    let setCompleted: (Bool) -> Void
     @Environment(\.contentTextScale) private var scale
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Toggle(isOn: Binding(get: { task.completed }, set: { if $0 { complete() } })) {
+            Toggle(isOn: Binding(get: { task.completed }, set: { setCompleted($0) })) {
                 EmptyView()
             }
             .toggleStyle(.checkbox)
             .labelsHidden()
-            .disabled(task.completed)
             .accessibilityLabel(task.completed ? "Completed" : "Not completed")
             if ToDoFormat.isImportant(task) {
                 Image(systemName: "exclamationmark")

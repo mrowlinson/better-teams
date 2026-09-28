@@ -112,12 +112,18 @@ public final class MessageSearchStore: ObservableObject {
             guard gen == generation else { return } // superseded
             localHits = local.hits
             offlineMs = local.lastQueryMs
-            hits = localHits
-            total = local.total
-            more = false
-            nextFrom = nil
-            source = localHits.isEmpty ? .none : .offline
-            onlineIDs = []
+            // An empty local pass never clears the rows on screen: the
+            // previous results stay (under "Searching online…") until
+            // the server window replaces them — no spinner flash per
+            // keystroke.
+            if !(localHits.isEmpty && !hits.isEmpty) {
+                hits = localHits
+                total = local.total
+                more = false
+                nextFrom = nil
+                source = localHits.isEmpty ? .none : .offline
+                onlineIDs = []
+            }
         } else {
             offlineMs = nil
         }

@@ -134,6 +134,12 @@ public enum DemoTeams {
             ("demo-u-ava", "Ava Lindqvist", false),
             ("demo-u-paula", "Paula Norris", false),
             ("demo-u-luis", "Luis Ortega", false),
+            ("demo-u-olivia", "Olivia Grant", false),
+            ("demo-u-ethan", "Ethan Cole", false),
+            ("demo-u-hannah", "Hannah Moore", false),
+            ("demo-u-ryan", "Ryan Mitchell", false),
+            ("demo-u-chloe", "Chloe Bennett", false),
+            ("demo-u-nathan", "Nathan Price", false),
         ]
         let members = people.map { id, name, owner in
             TeamMember(id: "\(teamID)-\(id)", displayName: name, userId: id,
@@ -152,27 +158,40 @@ public enum DemoTeams {
             ChatMessage(id: id, sender: sender, timestamp: time, content: text, isOwn: own, reply_to: parent)
         }
         return [
-            m("ship-p0", "Tom Becker", "2026-09-21T15:02:00Z",
+            m("ship-q1", "Luis Ortega", "2026-09-17T14:05:00Z",
+              "Crash rate for 3.1.4 is down to 0.08% after the hotfix. Thanks everyone who jumped on it."),
+            m("ship-q1-r1", "Megan Harper", "2026-09-17T14:21:00Z", "Great result. Let's keep the watch through Monday.",
+              parent: "ship-q1"),
+            m("ship-q2", "Paula Norris", "2026-09-18T18:40:00Z",
+              "Heads-up: the certificate for the update server renews on October 3. "
+                  + "@Jordan Fox can you confirm the change window works for the release?"),
+            m("ship-q3", "Ava Lindqvist", "2026-09-19T15:12:00Z",
+              "Updated the release checklist template: accessibility audit and localization sign-off are now required steps."),
+            m("ship-q3-r1", "Tom Becker", "2026-09-19T15:30:00Z", "Good call. @Jordan Fox can you add the VoiceOver pass to RC testing?",
+              parent: "ship-q3"),
+            m("ship-q3-r2", "Luis Ortega", "2026-09-19T15:48:00Z", "Localization vendor confirmed a two-day turnaround.",
+              parent: "ship-q3"),
+            m("ship-p0", "Tom Becker", "2026-09-21T19:02:00Z",
               "Packaging checklist for 3.2 is in the Release Board tab. Please claim your rows by Friday."),
-            m("ship-p0-r1", "Paula Norris", "2026-09-21T15:20:00Z", "Took notarization and the DMG layout.",
+            m("ship-p0-r1", "Paula Norris", "2026-09-21T19:20:00Z", "Took notarization and the DMG layout.",
               parent: "ship-p0"),
-            m("ship-p1", "Megan Harper", "2026-09-22T09:04:00Z",
+            m("ship-p1", "Megan Harper", "2026-09-22T13:04:00Z",
               "Release candidate 3.2 RC1 is cut. Smoke tests are green on macOS 26 and 27. "
                   + "Remaining risks: the sign-in sheet on first launch and the notarization queue. "
                   + "Reply here with anything that blocks shipping on Thursday."),
-            m("ship-p1-r1", "Tom Becker", "2026-09-22T09:11:00Z",
+            m("ship-p1-r1", "Tom Becker", "2026-09-22T13:11:00Z",
               "Sign-in sheet is fixed on main, it will be in RC2.", parent: "ship-p1"),
-            m("ship-p1-r2", "Ava Lindqvist", "2026-09-22T09:26:00Z",
+            m("ship-p1-r2", "Ava Lindqvist", "2026-09-22T13:26:00Z",
               "Empty states look right in both appearances now.", parent: "ship-p1"),
-            m("ship-p1-r3", "Me", "2026-09-22T09:40:00Z",
+            m("ship-p1-r3", "Me", "2026-09-22T13:40:00Z",
               "I'll take the notarization queue and report back by noon.", own: true, parent: "ship-p1"),
-            m("ship-p1-r4", "Luis Ortega", "2026-09-22T10:02:00Z",
+            m("ship-p1-r4", "Luis Ortega", "2026-09-22T14:02:00Z",
               "Release notes draft is in the Wiki tab.", parent: "ship-p1"),
-            m("ship-p2", "Ava Lindqvist", "2026-09-22T11:15:00Z",
+            m("ship-p2", "Ava Lindqvist", "2026-09-22T15:15:00Z",
               "New screenshots for the App Store listing are ready for review."),
-            m("ship-p3", "Me", "2026-09-22T13:30:00Z",
+            m("ship-p3", "Me", "2026-09-22T17:30:00Z",
               "Notarization passed for RC1. Uploading RC2 after the sign-in fix lands.", own: true),
-            m("ship-p3-r1", "Megan Harper", "2026-09-22T13:34:00Z", "Great, thanks!", parent: "ship-p3"),
+            m("ship-p3-r1", "Megan Harper", "2026-09-22T17:34:00Z", "Great, thanks!", parent: "ship-p3"),
         ]
     }()
 }

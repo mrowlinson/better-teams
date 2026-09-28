@@ -17,7 +17,7 @@ public enum RemindersState: Equatable, Sendable {
 /// Loads the To Do lists off the main thread, owns list selection and the
 /// selected list's tasks. Default fetchers call `RustCore.reminder*`
 /// (blocking FFI + network) on detached tasks. Tests inject mock fetchers.
-/// `localEdits` (demo mode) applies add/complete to the in-memory rows
+/// `localEdits` (demo mode) applies add/complete/reopen to the in-memory rows
 /// instead of calling core, so `--demo` stays fully offline.
 @MainActor
 public final class RemindersViewModel: ObservableObject {
@@ -34,7 +34,15 @@ public final class RemindersViewModel: ObservableObject {
     /// Selected list id (first list after load; nil when empty).
     @Published public private(set) var selectedListID: String?
     /// Tasks of the selected list.
-    @Published public private(set) var tasks: [ReminderTask] = []
+    @Published public private(set) var tasks: [ReminderTask] = [] {
+        didSet { if let id = tasksListID { taskCache[id] = tasks } }
+    }
+    /// The list `tasks` belongs to (nil before any list's tasks land). A
+    /// reload of that list keeps its rows on screen.
+    @Published public private(set) var tasksListID: String?
+    /// Rows per list seen this session: switching back shows them at
+    /// once while the list refreshes behind.
+    private var taskCache: [String: [ReminderTask]] = [:]
     /// Tasks fetch in flight.
     @Published public private(set) var tasksLoading = false
     /// Last tasks/add/complete failure (user-facing); nil when clear.
@@ -47,6 +55,7 @@ public final class RemindersViewModel: ObservableObject {
     private let tasksFetcher: TasksFetcher
     private let addFetcher: AddFetcher
     private let doneFetcher: DoneFetcher
+    private let reopenFetcher: DoneFetcher
     private let localEdits: Bool
 
     public init(
@@ -54,12 +63,14 @@ public final class RemindersViewModel: ObservableObject {
         tasksFetcher: @escaping TasksFetcher = { try RustCore.reminderTasks(listID: $0) },
         addFetcher: @escaping AddFetcher = { try RustCore.reminderAdd(listID: $0, title: $1) },
         doneFetcher: @escaping DoneFetcher = { try RustCore.reminderDone(listID: $0, taskID: $1) },
+        reopenFetcher: @escaping DoneFetcher = { try RustCore.reminderReopen(listID: $0, taskID: $1) },
         localEdits: Bool = false
     ) {
         self.listsFetcher = listsFetcher
         self.tasksFetcher = tasksFetcher
         self.addFetcher = addFetcher
         self.doneFetcher = doneFetcher
+        self.reopenFetcher = reopenFetcher
         self.localEdits = localEdits
     }
 
@@ -79,6 +90,7 @@ public final class RemindersViewModel: ObservableObject {
             if let id = selectedListID {
                 await loadTasks(listID: id)
             } else {
+                tasksListID = nil
                 tasks = []
             }
         } catch {
@@ -95,6 +107,10 @@ public final class RemindersViewModel: ObservableObject {
     public func select(listID: String) {
         guard listID != selectedListID else { return }
         selectedListID = listID
+        if let cached = taskCache[listID] {
+            tasksListID = listID
+            tasks = cached
+        }
         Task { await loadTasks(listID: listID) }
     }
 
@@ -145,21 +161,31 @@ public final class RemindersViewModel: ObservableObject {
     }
 
     /// Mark a task completed (idempotent on the server; locally it flips
-    /// the row once). No-op when the row is already done or demo-local.
+    /// the row once). No-op when the row is already done.
     public func complete(taskID: String) {
+        setCompleted(true, taskID: taskID)
+    }
+
+    /// Reopen a completed task (status back to not started). No-op when
+    /// the row is already open.
+    public func reopen(taskID: String) {
+        setCompleted(false, taskID: taskID)
+    }
+
+    private func setCompleted(_ done: Bool, taskID: String) {
         guard let id = selectedListID,
               let idx = tasks.firstIndex(where: { $0.taskId == taskID }),
-              !tasks[idx].completed
+              tasks[idx].completed != done
         else { return }
         if localEdits {
             let row = tasks[idx]
             tasks[idx] = ReminderTask(
-                taskId: row.taskId, title: row.title, status: "completed",
+                taskId: row.taskId, title: row.title, status: done ? "completed" : "notStarted",
                 importance: row.importance, due: row.due,
-                reminder: row.reminder, completed: true)
+                reminder: row.reminder, completed: done)
             return
         }
-        let fetcher = doneFetcher
+        let fetcher = done ? doneFetcher : reopenFetcher
         tasksError = nil
         Task.detached { [weak self] in
             do {
@@ -188,7 +214,10 @@ public final class RemindersViewModel: ObservableObject {
             }.value
             // Selection may have moved while fetching; only adopt when fresh.
             if listID == selectedListID {
+                tasksListID = listID
                 tasks = response.tasks
+            } else {
+                taskCache[listID] = response.tasks
             }
         } catch {
             if listID == selectedListID {

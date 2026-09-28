@@ -14,7 +14,7 @@ struct ShiftsWeekPane: View {
                                                 forced: model.forced(.native(.shifts)),
                                                 offline: model.connection == .offline)
             switch state {
-            case .loading: LoadingPane()
+            case .loading: LoadingPane("Loading Shifts\u{2026}")
             case .notSetUp:
                 EmptyPane(ShiftsPaneState.notSetUpTitle, systemImage: NativeAppID.shifts.symbol,
                           message: ShiftsPaneState.notSetUpMessage)
@@ -24,7 +24,32 @@ struct ShiftsWeekPane: View {
             case .week:
                 if let week = store.week {
                     let rows = ShiftsRow.rows(week: week, reasons: store.reasons, names: store.memberNames)
-                    if rows.isEmpty { emptyWeek } else { table(week, rows, model) }
+                    VStack(spacing: 0) {
+                        if let error = store.weekError {
+                            // A week that failed behind the grid (the grid stays).
+                            Label(error, systemImage: "exclamationmark.triangle")
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(2)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 6)
+                        }
+                        if rows.isEmpty { emptyWeek } else { table(week, rows, model) }
+                    }
+                    // A week loading behind the grid on screen: a small
+                    // spinner at the header's trailing end, never a
+                    // loading pane.
+                    .overlay(alignment: .topTrailing) {
+                        ProgressView()
+                            .controlSize(.small)
+                            .padding(.top, 5)
+                            .padding(.trailing, 8)
+                            .opacity(store.isLoadingWeek ? 1 : 0)
+                            .help(store.isLoadingWeek ? "Updating Week" : "")
+                            .accessibilityLabel("Updating Week")
+                            .accessibilityHidden(!store.isLoadingWeek)
+                    }
                 }
             }
         }
@@ -77,16 +102,9 @@ struct ShiftsPersonCell: View {
     var body: some View {
         HStack(spacing: 8) {
             Avatar(name: row.name, isGroup: row.name == ShiftsRow.openShiftsName)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(row.name)
-                    .font(AppFont.body(scale))
-                    .lineLimit(1)
-                if row.isTimeOff {
-                    Text("Time Off")
-                        .font(AppFont.caption(scale))
-                        .foregroundStyle(.secondary)
-                }
-            }
+            Text(row.name)
+                .font(AppFont.body(scale))
+                .lineLimit(1)
         }
         .padding(.vertical, 2)
     }
@@ -146,7 +164,7 @@ struct ShiftsInspectorPane: View {
                     Avatar(name: row.name, isGroup: row.name == ShiftsRow.openShiftsName)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(row.name).font(AppFont.title3(scale))
-                        Text(row.isTimeOff ? "Time Off" : ShiftsSection.weekRange(store.weekStart))
+                        Text(ShiftsSection.weekRange(store.weekStart))
                             .font(AppFont.subheadline(scale))
                             .foregroundStyle(.secondary)
                     }
@@ -183,3 +201,4 @@ struct ShiftsInspectorPane: View {
         .formStyle(.grouped)
     }
 }
+

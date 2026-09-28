@@ -321,12 +321,109 @@ pub async fn join_conversation_with_sdp(
     params: &ConversationCallParams<'_>,
     sdp_offer: &str,
 ) -> Result<ConversationJoined> {
+    join_conversation_with_sdp_video(http, conversation_controller, params, sdp_offer, false).await
+}
+
+/// Phase 2 with a modality choice: `video` joins with
+/// `["Audio","Video"]` call modalities (group call / meeting video),
+/// otherwise `["Audio"]` as [`join_conversation_with_sdp`]. The SDP
+/// offer must already carry the video m-line.
+pub async fn join_conversation_with_sdp_video(
+    http: &reqwest::Client,
+    conversation_controller: &str,
+    params: &ConversationCallParams<'_>,
+    sdp_offer: &str,
+    video: bool,
+) -> Result<ConversationJoined> {
+    join_conversation_with_modalities(
+        http,
+        conversation_controller,
+        params,
+        sdp_offer,
+        &accepted_call_modalities(video),
+    )
+    .await
+}
+
+/// Phase 2 with explicit `callModalities` (see [`join_call_modalities`]):
+/// a receive-capable join declares what it can take (video, screen
+/// share); the SDP direction says what it sends.
+pub async fn join_conversation_with_modalities(
+    http: &reqwest::Client,
+    conversation_controller: &str,
+    params: &ConversationCallParams<'_>,
+    sdp_offer: &str,
+    modalities: &[&str],
+) -> Result<ConversationJoined> {
+    let payload = join_conversation_payload_with_modalities(params, sdp_offer, modalities);
+
+    tracing::info!("Phase 2: POST {} (join with SDP)", conversation_controller);
+    tracing::debug!(
+        "Phase 2 payload: {}",
+        serde_json::to_string_pretty(&payload).unwrap_or_default()
+    );
+
+    let resp = http
+        .post(conversation_controller)
+        .header("Authorization", format!("Bearer {}", params.ic3_token))
+        .header("Content-Type", "application/json")
+        .header("x-microsoft-skype-chain-id", params.chain_id)
+        .header("x-microsoft-skype-message-id", params.message_id)
+        .header("x-microsoft-skype-client", SKYPE_CLIENT_HEADER)
+        .header("Referer", "https://teams.microsoft.com/")
+        .teams_headers(params.region)
+        .header("x-ms-migration", "True")
+        .json(&payload)
+        .send()
+        .await
+        .context("Phase 2 POST to conversationController failed")?;
+
+    let status = resp.status();
+    let headers = resp.headers().clone();
+    let body = resp.text().await.unwrap_or_default();
+
+    tracing::info!("Phase 2 response: {} ({} bytes)", status, body.len());
+    tracing::debug!("Phase 2 response body: {}", &body[..body.len().min(2000)]);
+
+    if !status.is_success() {
+        anyhow::bail!("Phase 2 join failed ({}): {}", status, body);
+    }
+
+    let cc_active_url = headers
+        .get("x-microsoft-skype-proxy-cluster-context")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+
+    tracing::info!("Phase 2 success. CC active URL: {:?}", cc_active_url);
+
+    Ok(ConversationJoined {
+        cc_active_url,
+        response_body: body,
+    })
+}
+
+/// The phase 2 join body (pure, no network): `callInvitation` carries
+/// [`accepted_call_modalities`]`(video)` and the SDP offer blob.
+pub fn join_conversation_payload(
+    params: &ConversationCallParams<'_>,
+    sdp_offer: &str,
+    video: bool,
+) -> serde_json::Value {
+    join_conversation_payload_with_modalities(params, sdp_offer, &accepted_call_modalities(video))
+}
+
+/// The phase 2 join body with explicit `callInvitation.callModalities`.
+pub fn join_conversation_payload_with_modalities(
+    params: &ConversationCallParams<'_>,
+    sdp_offer: &str,
+    modalities: &[&str],
+) -> serde_json::Value {
     let tc = |path: &str| trouter_callback(params.trouter_surl, params.endpoint_id, path);
     let cause_id = &params.message_id[..8.min(params.message_id.len())];
 
     // Same structure as phase 1: conversationRequest contains only
     // subject/roster/properties/links. Other fields are siblings.
-    let payload = serde_json::json!({
+    serde_json::json!({
         "conversationRequest": {
             "conversationType": null,
             "subject": "",
@@ -387,7 +484,7 @@ pub async fn join_conversation_with_sdp(
             }
         },
         "callInvitation": {
-            "callModalities": ["Audio"],
+            "callModalities": modalities,
             "replaces": null,
             "transferor": null,
             "links": {
@@ -416,50 +513,6 @@ pub async fn join_conversation_with_sdp(
             "ecsEtag": "\"0\"",
             "causeId": cause_id
         }
-    });
-
-    tracing::info!("Phase 2: POST {} (join with SDP)", conversation_controller);
-    tracing::debug!(
-        "Phase 2 payload: {}",
-        serde_json::to_string_pretty(&payload).unwrap_or_default()
-    );
-
-    let resp = http
-        .post(conversation_controller)
-        .header("Authorization", format!("Bearer {}", params.ic3_token))
-        .header("Content-Type", "application/json")
-        .header("x-microsoft-skype-chain-id", params.chain_id)
-        .header("x-microsoft-skype-message-id", params.message_id)
-        .header("x-microsoft-skype-client", SKYPE_CLIENT_HEADER)
-        .header("Referer", "https://teams.microsoft.com/")
-        .teams_headers(params.region)
-        .header("x-ms-migration", "True")
-        .json(&payload)
-        .send()
-        .await
-        .context("Phase 2 POST to conversationController failed")?;
-
-    let status = resp.status();
-    let headers = resp.headers().clone();
-    let body = resp.text().await.unwrap_or_default();
-
-    tracing::info!("Phase 2 response: {} ({} bytes)", status, body.len());
-    tracing::debug!("Phase 2 response body: {}", &body[..body.len().min(2000)]);
-
-    if !status.is_success() {
-        anyhow::bail!("Phase 2 join failed ({}): {}", status, body);
-    }
-
-    let cc_active_url = headers
-        .get("x-microsoft-skype-proxy-cluster-context")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string());
-
-    tracing::info!("Phase 2 success. CC active URL: {:?}", cc_active_url);
-
-    Ok(ConversationJoined {
-        cc_active_url,
-        response_body: body,
     })
 }
 
@@ -471,6 +524,21 @@ pub fn accepted_call_modalities(video: bool) -> Vec<&'static str> {
     } else {
         vec!["Audio"]
     }
+}
+
+/// Modalities a live group call / meeting join declares: `Audio`, plus
+/// `Video` when it receives video (camera on or off: the SDP direction
+/// carries the camera), plus `ScreenViewer` when its offer carries a
+/// screen share receive line (as the 1:1 and echo call bodies declare).
+pub fn join_call_modalities(video: bool, screen_viewer: bool) -> Vec<&'static str> {
+    let mut m = vec!["Audio"];
+    if video {
+        m.push("Video");
+    }
+    if screen_viewer {
+        m.push("ScreenViewer");
+    }
+    m
 }
 
 /// Accept an incoming call by POSTing to the acceptance URL (audio only).

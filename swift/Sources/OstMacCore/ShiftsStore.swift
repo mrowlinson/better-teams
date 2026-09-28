@@ -5,6 +5,9 @@
 // The default fetcher hits `ostmac_schedule_range`: the server returns
 // only the shifts and time off overlapping the week on screen, so week
 // navigation refetches (P4B-LEFT; was the whole schedule, filtered here).
+// Weeks are cached per team and the weeks either side prefetched; a
+// week change or Retry never blanks the grid: an uncached week keeps
+// the grid on screen (`isLoadingWeek`) until it lands (LEFT2).
 import COstMac
 import Combine
 import Foundation
@@ -62,8 +65,30 @@ public final class ShiftsStore: ObservableObject {
     /// the people rows; empty until the roster lands (rows fall back).
     @Published public private(set) var memberNames: [String: String] = [:]
 
+    /// A week fetch runs behind the grid on screen (week navigation,
+    /// Retry): the toolbar shows a small progress indicator; the grid
+    /// never blanks.
+    @Published public private(set) var isLoadingWeek = false
+    /// Last background week fetch failure; the grid on screen stays.
+    /// Nil when clear.
+    @Published public private(set) var weekError: String?
+
     private let weekFetcher: RangeFetcher
+    /// Fetch the weeks either side of the one on screen after it lands
+    /// (server-range fetchers only: a whole-schedule fetcher already
+    /// holds every week).
+    private let prefetchesAdjacentWeeks: Bool
     private let membersFetcher: MembersFetcher?
+    /// Weeks fetched this session by team + week start, with fetch time.
+    private var weekCache: [String: (response: ShiftWeekResponse, at: Date)] = [:]
+    private var prefetching: Set<String> = []
+    /// Target week while its fetch runs (the grid on screen stays until
+    /// it lands; further ‹ › presses count from it).
+    private var pendingWeekStart: Date?
+    /// Team whose grid is on screen (nil = nothing shown yet).
+    private var gridTeamID: String?
+    /// A cached week younger than this shows without a refetch.
+    public static let weekFreshness: TimeInterval = 300
     /// The selected team's last response (the week on screen; a whole
     /// schedule for `week:` fetchers). The grid is built from it.
     private var lastResponse: ShiftWeekResponse?
@@ -76,18 +101,23 @@ public final class ShiftsStore: ObservableObject {
     public var reloadTeams: (() -> Void)?
 
     /// Live default: the server returns the week on screen only.
-    public nonisolated init(
+    public nonisolated convenience init(
         range: @escaping RangeFetcher = { try RustCore.shiftsWeek(teamID: $0, weekStart: $1) },
         members: MembersFetcher? = nil
     ) {
+        self.init(range: range, members: members, prefetch: true)
+    }
+
+    private nonisolated init(range: @escaping RangeFetcher, members: MembersFetcher?, prefetch: Bool) {
         self.weekFetcher = range
         self.membersFetcher = members
+        self.prefetchesAdjacentWeeks = prefetch
     }
 
     /// Whole-schedule fetcher (demo, tests): every week comes from the
     /// same response, filtered to the week on screen.
     public nonisolated convenience init(week: @escaping WeekFetcher, members: MembersFetcher? = nil) {
-        self.init(range: { id, _ in try week(id) }, members: members)
+        self.init(range: { id, _ in try week(id) }, members: members, prefetch: false)
     }
 
     /// `[weekStart, weekStart + 7 days]` as UTC ISO-8601 strings (the
@@ -103,49 +133,110 @@ public final class ShiftsStore: ObservableObject {
         return (f.string(from: day0), f.string(from: end))
     }
 
-    /// Move the grid by whole weeks (‹ ›) and fetch that week.
+    /// Move the grid by whole weeks (‹ ›). A cached week shows at once;
+    /// otherwise the grid on screen stays until the week lands.
     public func showWeek(offset: Int, calendar: Calendar = .current) {
         guard offset != 0,
-              let start = calendar.date(byAdding: .weekOfYear, value: offset, to: weekStart)
+              let start = calendar.date(byAdding: .weekOfYear, value: offset, to: pendingWeekStart ?? weekStart)
         else { return }
-        weekStart = start
-        loadWeek()
+        go(to: start, calendar: calendar)
     }
 
     /// Back to the current week (Today).
     public func showCurrentWeek(calendar: Calendar = .current) {
         let start = Self.currentWeekStart(calendar: calendar)
-        guard start != weekStart else { return }
-        weekStart = start
-        loadWeek()
+        guard start != (pendingWeekStart ?? weekStart) else { return }
+        go(to: start, calendar: calendar)
     }
 
-    /// Fetch the week on screen for the team on screen (no fallthrough
-    /// to other teams: the team already answered). Stale completions
-    /// (another week or team since) are dropped.
-    private func loadWeek() {
-        guard let id = selectedTeamID else { return }
+    private static func cacheKey(_ team: String, _ start: Date) -> String {
+        "\(team)|\(Int(start.timeIntervalSince1970))"
+    }
+
+    /// Show `start` for the team on screen: from the cache (refetched
+    /// behind when stale), else fetched behind the grid on screen. Only
+    /// a team with no grid yet shows the loading pane.
+    private func go(to start: Date, calendar: Calendar) {
+        guard let id = selectedTeamID else { weekStart = start; return }
         switch state {
-        case .idle, .unavailable: return // nothing opened / no team has Shifts
+        case .idle, .unavailable:
+            weekStart = start // nothing opened / no team has Shifts
+            return
         default: break
         }
+        if let hit = weekCache[Self.cacheKey(id, start)] {
+            openGeneration += 1 // a fetch for another target no longer applies
+            pendingWeekStart = nil
+            isLoadingWeek = false
+            weekError = nil
+            weekStart = start
+            lastResponse = hit.response
+            rebuild(calendar: calendar)
+            prefetch(around: start, team: id, calendar: calendar)
+            if Date().timeIntervalSince(hit.at) > Self.weekFreshness { fetchWeek(id, start, calendar: calendar) }
+            return
+        }
+        if gridTeamID == nil {
+            weekStart = start
+            week = nil
+            state = .loading
+        } else {
+            pendingWeekStart = start
+        }
+        fetchWeek(id, start, calendar: calendar)
+    }
+
+    /// Fetch one week for the team on screen (no fallthrough to other
+    /// teams: the team already answered). Stale completions (another
+    /// week or team since) are dropped. A failure with a grid on screen
+    /// keeps the grid (`weekError`); without one the pane shows it.
+    private func fetchWeek(_ id: String, _ start: Date, calendar: Calendar) {
         openGeneration += 1
         let gen = openGeneration
-        let start = weekStart
-        week = nil
-        state = .loading
+        isLoadingWeek = true
         let fetcher = weekFetcher
         Task {
             do {
                 let resp = try await Task.detached { try fetcher(id, start) }.value
+                weekCache[Self.cacheKey(id, start)] = (resp, Date())
                 guard gen == openGeneration else { return }
+                pendingWeekStart = nil
+                isLoadingWeek = false
+                weekError = nil
+                weekStart = start
                 lastResponse = resp
-                rebuild()
+                gridTeamID = id
+                rebuild(calendar: calendar)
+                prefetch(around: start, team: id, calendar: calendar)
             } catch {
                 guard gen == openGeneration else { return }
-                week = nil
-                lastResponse = nil
-                state = .error(Self.message(for: error))
+                pendingWeekStart = nil
+                isLoadingWeek = false
+                if gridTeamID == nil {
+                    week = nil
+                    lastResponse = nil
+                    state = .error(Self.message(for: error))
+                } else {
+                    weekError = Self.message(for: error)
+                }
+            }
+        }
+    }
+
+    /// Fetch the weeks before and after `start` into the cache (quietly;
+    /// a failure just leaves the week uncached).
+    private func prefetch(around start: Date, team: String, calendar: Calendar) {
+        guard prefetchesAdjacentWeeks else { return }
+        for offset in [-1, 1] {
+            guard let s = calendar.date(byAdding: .weekOfYear, value: offset, to: start) else { continue }
+            let key = Self.cacheKey(team, s)
+            guard weekCache[key] == nil, prefetching.insert(key).inserted else { continue }
+            let fetcher = weekFetcher
+            Task {
+                if let resp = try? await Task.detached(operation: { try fetcher(team, s) }).value {
+                    weekCache[key] = (resp, Date())
+                }
+                prefetching.remove(key)
             }
         }
     }
@@ -233,11 +324,28 @@ public final class ShiftsStore: ObservableObject {
         guard !id.isEmpty else {
             selectedTeamID = nil
             week = nil
+            gridTeamID = nil
+            isLoadingWeek = false
             state = .idle
             return
         }
         selectedTeamID = id
-        state = .loading
+        pendingWeekStart = nil
+        weekError = nil
+        let start = weekStart
+        if let hit = weekCache[Self.cacheKey(id, start)] {
+            // Seen this session: show it now, refresh behind.
+            if id != gridTeamID { memberNames = [:] }
+            lastResponse = hit.response
+            gridTeamID = id
+            rebuild()
+        } else if id != gridTeamID {
+            gridTeamID = nil
+            state = .loading
+        }
+        // The grid on screen (this team's) stays while the fetch runs.
+        let hasGrid = gridTeamID == id
+        isLoadingWeek = hasGrid
         // Requested first, then the rest of the picker in order
         // (unknown ids still try once).
         var candidates = [id]
@@ -245,29 +353,40 @@ public final class ShiftsStore: ObservableObject {
             candidates.append(team.id)
         }
         let names = Dictionary(uniqueKeysWithValues: teams.map { ($0.id, $0.name) })
-        let start = weekStart
         Task {
             let fetcher = weekFetcher
             var lastRaw = ""
             for candidate in candidates {
                 do {
                     let resp = try await Task.detached { try fetcher(candidate, start) }.value
+                    weekCache[Self.cacheKey(candidate, start)] = (resp, Date())
                     guard gen == openGeneration else { return }
                     if candidate != lastResponse?.team_id { memberNames = [:] }
                     lastResponse = resp
                     selectedTeamID = candidate
+                    gridTeamID = candidate
+                    isLoadingWeek = false
                     rebuild()
                     loadMembers(teamID: candidate, generation: gen)
+                    prefetch(around: start, team: candidate, calendar: .current)
                     return
                 } catch {
                     guard gen == openGeneration else { return }
                     lastRaw = Self.rawMessage(for: error)
+                    if hasGrid {
+                        // A refresh failed: the grid on screen stays.
+                        isLoadingWeek = false
+                        weekError = Self.message(for: error, teamName: names[candidate])
+                        return
+                    }
                     if Self.isNotFound(lastRaw) {
                         print("ShiftsStore: no Shifts access for \(candidate); trying next team")
                         continue
                     }
                     week = nil
                     lastResponse = nil
+                    gridTeamID = nil
+                    isLoadingWeek = false
                     selectedTeamID = candidate
                     state = .error(Self.message(for: error, teamName: names[candidate]))
                     return
@@ -276,6 +395,8 @@ public final class ShiftsStore: ObservableObject {
             guard gen == openGeneration else { return }
             week = nil
             lastResponse = nil
+            gridTeamID = nil
+            isLoadingWeek = false
             selectedTeamID = id
             if teams.isEmpty {
                 state = .error(Self.message(
@@ -305,6 +426,7 @@ public final class ShiftsStore: ObservableObject {
         teams = []
         selectedTeamID = nil
         week = nil
+        gridTeamID = nil
         state = .empty
     }
 
@@ -315,6 +437,7 @@ public final class ShiftsStore: ObservableObject {
         teams = []
         selectedTeamID = nil
         week = nil
+        gridTeamID = nil
         state = .error(Self.sanitize(message))
     }
 

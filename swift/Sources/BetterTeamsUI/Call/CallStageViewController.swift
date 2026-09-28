@@ -6,7 +6,9 @@
 //
 // Body: the pre-join step for meetings (`PreJoinView`), then the stage:
 // remote tiles, self view and share tile in `TileGridLayout`; audio
-// tiles show avatars with speaking rings. Controls live in the host's
+// tiles show avatars with speaking rings. Video: 1:1 is the remote video
+// with a self-view picture-in-picture; group chats and meetings use the
+// video tile grid (`MeetingVideoStage`). Controls live in the host's
 // toolbar and the Call menu, never in the stage (no bottom bar).
 import AppKit
 import AVFoundation
@@ -115,6 +117,8 @@ struct CallStageView: View {
         Group {
             if session.isMeeting, !session.joined {
                 PreJoinView(session: session, status: status, canJoin: meetings.pendingJoin != nil)
+            } else if let video = session.meetingVideo {
+                MeetingVideoStage(session: session, video: video, status: status)
             } else if session.video {
                 videoStage
             } else {
@@ -346,52 +350,79 @@ private struct RemoteVideoWaiting: View {
     }
 }
 
-/// Demo remote video: the DemoMedia sunset scene, looping (demo never
-/// touches the network or the core video queues). Evidence shows one
-/// fixed frame.
+/// Demo remote video: a softly lit room with a person in it, gently
+/// moving (demo never touches the network or the core video queues).
+/// `seed` gives each participant their own room. Evidence shows one
+/// fixed frame. Drawn in a `Canvas`, so it always takes exactly the
+/// proposed size (never widens the stage).
 struct DemoRemoteVideo: View {
     let animated: Bool
-    /// Every 4th clip frame, rendered once per process (12 small images).
-    @MainActor static let frames: [CGImage] = stride(from: 0, to: DemoClip.frameCount, by: 4)
-        .compactMap { DemoClip.frameImage($0) }
+    var seed = 0
 
     var body: some View {
         if animated {
-            TimelineView(.periodic(from: .now, by: 1.0 / 8)) { ctx in
-                frame(Int(ctx.date.timeIntervalSinceReferenceDate * 8))
+            TimelineView(.periodic(from: .now, by: 1.0 / 12)) { ctx in
+                DemoCameraScene(seed: seed, time: ctx.date.timeIntervalSinceReferenceDate)
             }
         } else {
-            frame(Self.frames.count / 2)
-        }
-    }
-
-    @ViewBuilder
-    private func frame(_ i: Int) -> some View {
-        let all = Self.frames
-        if !all.isEmpty {
-            let n = all.count
-            // Ping-pong so the sun arcs back instead of jumping.
-            let k = i % (2 * n - 2 == 0 ? 1 : 2 * n - 2)
-            Image(decorative: all[k < n ? k : 2 * n - 2 - k], scale: 1)
-                .resizable()
-                .aspectRatio(contentMode: .fill)
+            DemoCameraScene(seed: seed, time: 0)
         }
     }
 }
 
-/// Demo self view: a placeholder feed (demo never opens the camera).
+private struct DemoCameraScene: View {
+    let seed: Int
+    let time: Double
+
+    private static let rooms: [(wall: Color, floor: Color, top: Color)] = [
+        (.teal, .indigo, .blue), (.orange, .brown, .red), (.gray, .blue, .indigo),
+        (.mint, .green, .teal), (.pink, .purple, .indigo), (.yellow, .orange, .brown),
+    ]
+
+    var body: some View {
+        Canvas { ctx, size in
+            let w = size.width, h = size.height
+            guard w > 0, h > 0 else { return }
+            let room = Self.rooms[abs(seed) % Self.rooms.count]
+            let left = seed % 2 == 0
+            ctx.fill(Path(CGRect(origin: .zero, size: size)), with: .color(.black))
+            ctx.fill(Path(CGRect(origin: .zero, size: size)),
+                     with: .linearGradient(Gradient(colors: [room.wall.opacity(0.62), room.floor.opacity(0.42)]),
+                                           startPoint: .zero, endPoint: CGPoint(x: w, y: h)))
+            // Out-of-focus background: window light and a shelf.
+            var back = ctx
+            back.addFilter(.blur(radius: max(3, w / 55)))
+            let window = CGRect(x: left ? w * 0.05 : w * 0.67, y: h * 0.08, width: w * 0.28, height: h * 0.5)
+            back.fill(Path(roundedRect: window, cornerRadius: w * 0.012), with: .color(.white.opacity(0.3)))
+            let shelf = CGRect(x: left ? w * 0.7 : w * 0.06, y: h * 0.34, width: w * 0.22, height: h * 0.045)
+            back.fill(Path(roundedRect: shelf, cornerRadius: 2), with: .color(.black.opacity(0.3)))
+            back.fill(Path(ellipseIn: CGRect(x: left ? w * 0.72 : w * 0.08, y: h * 0.22, width: w * 0.06,
+                                             height: h * 0.12)), with: .color(room.top.opacity(0.55)))
+            // The person, backlit, with a slight sway.
+            let sway = sin(time * 0.8 + Double(seed)) * w * 0.006
+            let bob = sin(time * 1.3 + Double(seed) * 0.7) * h * 0.004
+            let cx = w * 0.5 + sway
+            let torso = CGRect(x: cx - h * 0.4, y: h * 0.66 + bob, width: h * 0.8, height: h * 0.6)
+            ctx.fill(Path(ellipseIn: torso),
+                     with: .linearGradient(Gradient(colors: [room.top.opacity(0.85), .black.opacity(0.85)]),
+                                           startPoint: CGPoint(x: cx, y: torso.minY),
+                                           endPoint: CGPoint(x: cx, y: h)))
+            let neck = CGRect(x: cx - h * 0.055, y: h * 0.52 + bob, width: h * 0.11, height: h * 0.18)
+            ctx.fill(Path(roundedRect: neck, cornerRadius: h * 0.03), with: .color(.black.opacity(0.6)))
+            let head = CGRect(x: cx - h * 0.125, y: h * 0.25 + bob, width: h * 0.25, height: h * 0.31)
+            ctx.fill(Path(ellipseIn: head),
+                     with: .radialGradient(Gradient(colors: [.brown.opacity(0.75), .black.opacity(0.8)]),
+                                           center: CGPoint(x: head.midX + (left ? -1 : 1) * h * 0.04,
+                                                           y: head.midY - h * 0.03),
+                                           startRadius: 0, endRadius: h * 0.2))
+        }
+    }
+}
+
+/// Demo self view: a synthetic camera scene (demo never opens the camera).
 struct PlaceholderFeed: View {
     var body: some View {
-        ZStack {
-            Rectangle().fill(.tint.opacity(0.18))
-            VStack(spacing: 6) {
-                Image(systemName: "person.crop.rectangle")
-                    .font(.largeTitle)
-                Text("Camera Preview")
-                    .font(.caption)
-            }
-            .foregroundStyle(.secondary)
-        }
+        DemoRemoteVideo(animated: false, seed: 3)
     }
 }
 

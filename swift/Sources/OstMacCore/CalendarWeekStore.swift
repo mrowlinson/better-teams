@@ -2,6 +2,10 @@
 // + cancel. Mirror of MeetingsViewModel seams: default runners call
 // RustCore (blocking FFI) on detached tasks; tests inject mocks.
 // `localEdits` (demo hosting) applies schedule/cancel in memory.
+// Weeks are cached and (live) the weeks either side prefetched; paging
+// to a cached week shows it at once, an uncached one keeps the week on
+// screen — header and rows together — behind a spinner
+// (`isLoadingWeek`) until the new week lands (CALWEEK, like Shifts LEFT2).
 import Combine
 import Foundation
 
@@ -33,6 +37,9 @@ public final class CalendarWeekStore: ObservableObject {
     @Published public private(set) var cancelingID: String?
     /// Last cancel failure (user-facing). Nil when clear.
     @Published public private(set) var cancelError: String?
+    /// A paged-to week is fetching behind the week on screen (header
+    /// and rows stay the old week's until it lands).
+    @Published public private(set) var isLoadingWeek = false
 
     /// Seven `"yyyy-MM-dd"` keys for the grid header row.
     public var dayKeys: [String] {
@@ -66,6 +73,16 @@ public final class CalendarWeekStore: ObservableObject {
     private let calendar: Calendar
     private let localEdits: Bool
     private let dayKeyFormatter: DateFormatter
+    /// Fetch the weeks either side of the one shown after it lands.
+    private let prefetchesAdjacentWeeks: Bool
+    /// Weeks fetched this session by week start, with fetch time.
+    private var weekCache: [Int64: (response: CalWeekResponse, at: Date)] = [:]
+    private var prefetching: Set<Int64> = []
+    /// Target week while its fetch runs behind the week on screen;
+    /// further ‹ › presses count from it.
+    private var pendingWeekStart: Date?
+    /// A cached week younger than this shows without a refetch.
+    public static let weekFreshness: TimeInterval = 300
 
     public init(
         weekStart: Date = CalWeek.startOfWeek(containing: Date()),
@@ -76,8 +93,10 @@ public final class CalendarWeekStore: ObservableObject {
                 subject: $0, start: $1, end: $2, timeZone: $3, online: $4)
         },
         cancelRunner: @escaping CancelRunner = { try RustCore.calCancel(eventID: $0) },
-        localEdits: Bool = false
+        localEdits: Bool = false,
+        prefetchAdjacentWeeks: Bool = false
     ) {
+        self.prefetchesAdjacentWeeks = prefetchAdjacentWeeks
         self.weekStart = calendar.startOfDay(for: weekStart)
         self.calendar = calendar
         self.weekFetcher = weekFetcher
@@ -100,28 +119,91 @@ public final class CalendarWeekStore: ObservableObject {
     /// after a newer one started (or after the week moved) is dropped, so
     /// it can never overwrite the newer week's meetings or state.
     public func load() async {
+        pendingWeekStart = nil
+        await fetch(weekStart, behind: false)
+    }
+
+    private func key(_ date: Date) -> Int64 { Int64(date.timeIntervalSince1970) }
+
+    /// Fetch `target`. `behind`: the week on screen (header + rows) stays
+    /// until the target lands; otherwise the pane shows `.loading`.
+    private func fetch(_ target: Date, behind: Bool) async {
         loadGeneration &+= 1
         let generation = loadGeneration
-        state = .loading
+        if behind { isLoadingWeek = true } else { state = .loading }
         let fetcher = weekFetcher
-        let start = Int64(weekStart.timeIntervalSince1970)
+        let start = key(target)
         let result: Result<CalWeekResponse, Error>
         do {
             result = .success(try await Task.detached { try fetcher(start) }.value)
         } catch {
             result = .failure(error)
         }
+        if case .success(let response) = result { weekCache[start] = (response, Date()) }
         guard Self.isCurrent(
             generation: generation, latest: loadGeneration,
-            start: start, weekStart: Int64(weekStart.timeIntervalSince1970))
+            start: start, weekStart: key(pendingWeekStart ?? weekStart))
         else { return }
+        pendingWeekStart = nil
+        isLoadingWeek = false
         switch result {
         case .success(let response):
+            weekStart = target
             meetings = response.meetings
             state = response.meetings.isEmpty ? .empty : .loaded
+            prefetch(around: target)
         case .failure(let error):
             state = .error(Self.message(for: error))
         }
+    }
+
+    /// Show `target`: cached → at once (refetched behind when stale);
+    /// nothing on screen yet → plain load; else fetched behind the week
+    /// on screen.
+    private func go(to target: Date) {
+        if let hit = weekCache[key(target)] {
+            loadGeneration &+= 1 // an in-flight fetch for another week no longer applies
+            pendingWeekStart = nil
+            isLoadingWeek = false
+            weekStart = target
+            meetings = hit.response.meetings
+            state = hit.response.meetings.isEmpty ? .empty : .loaded
+            prefetch(around: target)
+            if Date().timeIntervalSince(hit.at) > Self.weekFreshness {
+                pendingWeekStart = target
+                Task { await fetch(target, behind: true) }
+            }
+            return
+        }
+        if state == .loading && meetings.isEmpty {
+            weekStart = target
+            Task { await load() }
+        } else {
+            pendingWeekStart = target
+            Task { await fetch(target, behind: true) }
+        }
+    }
+
+    /// Fetch the weeks before and after `start` into the cache (quietly;
+    /// a failure just leaves the week uncached).
+    private func prefetch(around start: Date) {
+        guard prefetchesAdjacentWeeks else { return }
+        for days in [-7, 7] {
+            guard let s = calendar.date(byAdding: .day, value: days, to: start) else { continue }
+            let k = key(s)
+            guard weekCache[k] == nil, prefetching.insert(k).inserted else { continue }
+            let fetcher = weekFetcher
+            Task {
+                let resp = try? await Task.detached { try fetcher(k) }.value
+                prefetching.remove(k)
+                if let resp, weekCache[k] == nil { weekCache[k] = (resp, Date()) }
+            }
+        }
+    }
+
+    /// Drop the shown week's cache entry after a local schedule/cancel.
+    private func invalidateShownWeek() {
+        weekCache[key(weekStart)] = nil
     }
 
     /// Pure stale-drop rule: a load result applies only when it is the
@@ -151,14 +233,14 @@ public final class CalendarWeekStore: ObservableObject {
     /// that week is already shown.
     public func showWeek(containing date: Date) {
         let start = calendar.startOfDay(for: CalWeek.startOfWeek(containing: date, calendar: calendar))
-        guard start != weekStart else { return }
-        weekStart = start
-        refresh()
+        guard start != (pendingWeekStart ?? weekStart) else { return }
+        go(to: start)
     }
 
     private func shiftWeek(by days: Int) {
-        weekStart = calendar.date(byAdding: .day, value: days, to: weekStart) ?? weekStart
-        refresh()
+        let from = pendingWeekStart ?? weekStart
+        guard let target = calendar.date(byAdding: .day, value: days, to: from) else { return }
+        go(to: target)
     }
 
     /// Schedule one meeting (`start`/`end` are Graph datetimes). Empty
@@ -182,6 +264,7 @@ public final class CalendarWeekStore: ObservableObject {
             scheduleError = nil
             showSchedule = false
             if state == .empty { state = .loaded }
+            invalidateShownWeek()
             return
         }
         let runner = scheduleRunner
@@ -194,6 +277,7 @@ public final class CalendarWeekStore: ObservableObject {
                 await MainActor.run { [weak self] in
                     guard let self else { return }
                     self.meetings.append(created.event)
+                    self.invalidateShownWeek()
                     self.scheduling = false
                     self.showSchedule = false
                     if self.state == .empty { self.state = .loaded }
@@ -219,6 +303,7 @@ public final class CalendarWeekStore: ObservableObject {
         guard cancelingID == nil else { return }
         if localEdits {
             meetings.removeAll { $0.id == eventID }
+            invalidateShownWeek()
             cancelError = nil
             if meetings.isEmpty { state = .empty }
             return
@@ -232,6 +317,7 @@ public final class CalendarWeekStore: ObservableObject {
                 await MainActor.run { [weak self] in
                     guard let self else { return }
                     self.meetings.removeAll { $0.id == eventID }
+                    self.invalidateShownWeek()
                     self.cancelingID = nil
                     if self.meetings.isEmpty { self.state = .empty }
                 }

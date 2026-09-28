@@ -82,6 +82,11 @@ public final class NotesStore: ObservableObject {
     /// Open the Notes scope for a conversation: reset everything, then
     /// load notebooks. Demo stores adopt canned data instead (no core).
     public func open(groupID: String?) {
+        // Another conversation of the same scope (every plain chat reads
+        // the user's own OneNote): the notebooks on screen stay — no
+        // blank, no refetch. A failed load still reopens (Try Again).
+        let failed: Bool = { if case .error = state { return true } else { return false } }()
+        if !isDemo, !failed, groupID == self.groupID, !notebooks.isEmpty { return }
         self.groupID = groupID
         notebooks = []
         sections = []

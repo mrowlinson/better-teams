@@ -381,10 +381,15 @@ final class PlannerTests: XCTestCase {
         XCTAssertTrue(PlannerDemo.plans(for: "nope").isEmpty)
         XCTAssertTrue(PlannerDemo.buckets(for: "nope").isEmpty)
         XCTAssertTrue(PlannerDemo.tasks(for: "nope").isEmpty)
-        // Sprint board: one row per state (open / in-progress / done).
+        // Sprint board: every bucket holds tasks (open / in progress /
+        // in review / done), each assigned.
         let tasks = PlannerDemo.tasks(for: "demo-plan-sprint")
-        XCTAssertEqual(tasks.count, 3)
-        XCTAssertEqual(tasks.filter(\.completed).count, 1)
+        XCTAssertEqual(tasks.count, 12)
+        XCTAssertEqual(tasks.filter(\.completed).count, 3)
+        XCTAssertTrue(PlannerDemo.buckets(for: "demo-plan-sprint").allSatisfy { b in
+            tasks.contains { $0.bucketId == b.bucketId }
+        })
+        XCTAssertTrue(tasks.allSatisfy { !$0.assignees.isEmpty })
         XCTAssertTrue(tasks.contains { $0.percent == 50 && !$0.completed })
         // Demo rows carry etags so done/reopen round-trip offline.
         XCTAssertTrue(tasks.allSatisfy { !$0.etag.isEmpty })

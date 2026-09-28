@@ -125,12 +125,27 @@ public struct LiveMediaStats: Decodable, Sendable {
     public let speaker: String?
     /// Last speaker-reroute failure (nil when the route is healthy).
     public let speakerError: String?
+    /// MS-RTP video source requests sent / received, picture-loss and
+    /// dominant-speaker notifications received, distinct video sources
+    /// (MEETVIDEO diagnostics; nil on older core builds).
+    public let vsr_sent: Int?
+    public let vsr_recv: Int?
+    public let pli_recv: Int?
+    public let dsh_recv: Int?
+    public let video_sources: Int?
+    /// Keyframe requests sent (RTCP PLI), screen share leg packets
+    /// received and its ICE pair (CALLFIX; nil on older core builds).
+    public let pli_sent: Int?
+    public let share_recv: Int?
+    public let ice_share: String?
 
     enum CodingKeys: String, CodingKey {
         case running, audio_sent, audio_recv, video_sent, video_recv
         case send_queued, send_dropped, recv_pending, recv_dropped
         case ice_audio, ice_video, error, started_at, muted, speaker
         case speakerError = "speaker_error"
+        case vsr_sent, vsr_recv, pli_recv, dsh_recv, video_sources
+        case pli_sent, share_recv, ice_share
     }
 }
 

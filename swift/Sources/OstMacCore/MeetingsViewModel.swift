@@ -24,8 +24,9 @@ public enum MeetingsState: Equatable, Sendable {
 
 /// Loads upcoming meetings off the main thread and owns the join flow.
 // Default fetchers call `RustCore.meetings` / `meetingJoinParse`
-/// (blocking network) on detached tasks; the join runner defaults to
-/// `RustCore.callPlace` (signaling only). Tests inject mock fetchers.
+/// (blocking network) on detached tasks; the join runners default to
+/// the live-media core legs (`JoinLeg`: Join Now = live audio, Join with
+/// Video = live Audio + Video). Tests inject mock fetchers.
 @MainActor
 public final class MeetingsViewModel: ObservableObject {
     /// Sync fetch (runs off-main). Throws `CoreCallError` on core failure.
@@ -88,6 +89,7 @@ public final class MeetingsViewModel: ObservableObject {
     private let meetingsFetcher: MeetingsFetcher
     private let parseFetcher: ParseFetcher
     private let joinRunner: JoinRunner
+    private let videoJoinRunner: JoinRunner
     private let opener: Opener
     private let meetingIDResolver: MeetingIDResolver
     private var meetingIDGeneration = 0
@@ -97,7 +99,8 @@ public final class MeetingsViewModel: ObservableObject {
     public init(
         meetingsFetcher: @escaping MeetingsFetcher = { try RustCore.meetings() },
         parseFetcher: @escaping ParseFetcher = { try RustCore.meetingJoinParse(raw: $0) },
-        joinRunner: @escaping JoinRunner = { try RustCore.callPlace(threadID: $0) },
+        joinRunner: @escaping JoinRunner = { try MeetingsViewModel.runCoreJoin(.liveAudio, threadID: $0) },
+        videoJoinRunner: @escaping JoinRunner = { try MeetingsViewModel.runCoreJoin(.liveVideo, threadID: $0) },
         opener: @escaping Opener = { NSWorkspace.shared.open($0) },
         lobbyGraceSecs: Double = 8,
         meetingIDResolver: @escaping MeetingIDResolver = {
@@ -108,6 +111,7 @@ public final class MeetingsViewModel: ObservableObject {
         self.meetingsFetcher = meetingsFetcher
         self.parseFetcher = parseFetcher
         self.joinRunner = joinRunner
+        self.videoJoinRunner = videoJoinRunner
         self.opener = opener
         self.lobbyGraceSecs = lobbyGraceSecs
     }
@@ -213,11 +217,31 @@ public final class MeetingsViewModel: ObservableObject {
         pendingJoin = nil
     }
 
-    /// Confirm the pre-join sheet: dial the thread leg (signaling) and
+    /// The core leg a join dials. Both attach live media: there is no
+    /// signaling-only join (it connected without audio).
+    public enum JoinLeg: String, Sendable {
+        /// Join Now (camera off): live audio, the main video receive only.
+        case liveAudio = "place-live"
+        /// Join with Video: live audio + video.
+        case liveVideo = "place-video"
+    }
+
+    /// The leg for a join: `video` = Join with Video.
+    public nonisolated static func joinLeg(video: Bool) -> JoinLeg { video ? .liveVideo : .liveAudio }
+
+    /// Dials `leg` on the core (blocking; runs off-main).
+    public nonisolated static func runCoreJoin(_ leg: JoinLeg, threadID: String) throws -> CallResult {
+        switch leg {
+        case .liveAudio: try RustCore.callPlaceLive(threadID: threadID)
+        case .liveVideo: try RustCore.callPlaceLiveVideo(threadID: threadID)
+        }
+    }
+
+    /// Confirm the pre-join sheet: dial the thread leg with live media and
     /// drive the lobby machine. `micOn`/`cameraOn` record the pre-join
-    /// toggles (signaling legs carry no media; the toggles apply when
-    /// live media attaches).
-    public func confirmJoin(micOn: Bool, cameraOn: Bool) {
+    /// toggles (applied by the call slot). `video`: Join with Video
+    /// (MEETVIDEO) dials the Audio + Video leg (`joinLeg(video:)`).
+    public func confirmJoin(micOn: Bool, cameraOn: Bool, video: Bool = false) {
         guard let threadID = pendingJoin?.threadID else { return }
         showPreJoin = false
         pendingJoin = nil
@@ -235,7 +259,7 @@ public final class MeetingsViewModel: ObservableObject {
             guard let self, self.lobbyGeneration == gen, self.lobby == .joining else { return }
             self.lobby = LobbyMachine.next(self.lobby, .lobbySignal)
         }
-        let runner = joinRunner
+        let runner = Self.joinLeg(video: video) == .liveVideo ? videoJoinRunner : joinRunner
         Task {
             do {
                 let result = try await Task.detached { try runner(threadID) }.value

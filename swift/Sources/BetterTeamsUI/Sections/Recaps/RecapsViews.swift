@@ -6,23 +6,32 @@ import SwiftUI
 
 // MARK: list
 
-/// Recaps newest first, one row per meeting, with a filter field at the
+/// Recaps newest first, one row per meeting, with a search field at the
 /// top of the list (HIG search fields; R23: NSSearchField, not
-/// `.searchable`).
+/// `.searchable`). Typing filters the rows on screen at once, then
+/// (250 ms debounce) searches the drives on the server (recordings and
+/// transcripts, the transcripts' full-drive fallback included); server
+/// hits show unfiltered, as they may match inside the file. Clearing
+/// the field restores the lists.
 struct RecapsListPane: View {
     @ObservedObject var recordings: RecordingsViewModel
     @ObservedObject var transcripts: TranscriptsViewModel
     @State private var filter = ""
+    @State private var debounce = Debounce(milliseconds: 250)
     @Environment(\.windowModel) private var model
 
     var body: some View {
         if let model {
             let all = RecapsSection.recaps(recordings, transcripts)
-            let state = RecapsListState.resolve(
+            let resolved = RecapsListState.resolve(
                 recordings: recordings.state, transcripts: transcripts.state, count: all.count,
                 forced: model.forced(.native(.recaps)), offline: model.connection == .offline)
+            // A search (field text or server hits) keeps the search UI:
+            // zero hits read "No Results", never the no-recaps pane.
+            let searching = !filter.isEmpty || recordings.isSearchResults || transcripts.isSearchResults
+            let state = searching && model.forced(.native(.recaps)) == nil ? .recaps : resolved
             switch state {
-            case .loading: LoadingPane()
+            case .loading: LoadingPane("Loading Recaps\u{2026}")
             case .error(let title, let message):
                 ErrorPane(title: title, message: message) {
                     recordings.refresh()
@@ -33,22 +42,61 @@ struct RecapsListPane: View {
                           message: RecapsListState.emptyMessage)
             case .recaps:
                 VStack(spacing: 0) {
-                    SearchField(text: $filter, placeholder: "Filter Recaps")
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 8)
-                        .accessibilityLabel("Filter Recaps")
+                    HStack(spacing: 6) {
+                        SearchField(text: $filter, placeholder: "Search Recaps")
+                            .accessibilityLabel("Search Recaps")
+                        // Server search runs behind the rows on screen.
+                        ProgressView()
+                            .controlSize(.small)
+                            .opacity(recordings.isSearching || transcripts.isSearching ? 1 : 0)
+                            .accessibilityHidden(!(recordings.isSearching || transcripts.isSearching))
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    if let error = recordings.searchError ?? transcripts.searchError {
+                        Label(error, systemImage: "exclamationmark.triangle")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                            .padding(.horizontal, 10)
+                            .padding(.bottom, 6)
+                    }
                     list(all, model)
                 }
+                // R12: a list refresh runs behind the rows on screen.
+                .refreshStatus(recordings.state == .loading || transcripts.state == .loading,
+                               failure: RecapsListState.failure(recordings.state, transcripts.state),
+                               label: "Updating Recaps", retry: {
+                                   recordings.refresh()
+                                   transcripts.refresh()
+                               })
+                .onChange(of: filter) { _, q in search(q) }
             }
+        }
+    }
+
+    /// Server search in both stores (a blank query restores the lists).
+    private func search(_ query: String) {
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        debounce.schedule {
+            Task { await recordings.search(query: q) }
+            Task { await transcripts.search(query: q) }
         }
     }
 
     @ViewBuilder
     private func list(_ all: [Recap], _ m: WindowModel) -> some View {
         let f = filter.trimmingCharacters(in: .whitespaces)
-        let rows = all.filter { $0.matches(f) }
+        let matched = f.isEmpty ? all : all.filter { r in
+            r.matches(f) || (r.recording != nil && recordings.isSearchResults)
+                || (r.transcript != nil && transcripts.isSearchResults)
+        }
+        // Nothing matches locally while the server search runs: the rows
+        // on screen stay until its hits land (never a blank list).
+        let rows = matched.isEmpty && (recordings.isSearching || transcripts.isSearching) ? all : matched
         if rows.isEmpty {
-            EmptyPane("No Results", systemImage: "magnifyingglass", message: "No recaps match \u{201C}\(f)\u{201D}.")
+            EmptyPane("No Results", systemImage: "magnifyingglass",
+                      message: f.isEmpty ? "No recaps found." : "No recaps match \u{201C}\(f)\u{201D}.")
         } else {
             let selection = Binding<String?>(
                 get: { RecapsSection.recapID(m) },
@@ -133,7 +181,7 @@ struct RecapDetailPane: View {
                     Button("Try Again") { recordings.play(r, autoplay: false) }
                 }
             } else {
-                LoadingPane()
+                LoadingPane("Loading Recording\u{2026}")
             }
         }
         .aspectRatio(16 / 9, contentMode: .fit)
@@ -145,19 +193,34 @@ struct RecapDetailPane: View {
     private func turns(_ recap: Recap) -> some View {
         if let t = recap.transcript {
             if transcripts.selectedID != t.id {
-                LoadingPane()
+                LoadingPane("Loading Transcript\u{2026}")
             } else {
                 switch transcripts.content {
-                case .idle, .loading: LoadingPane()
+                case .idle, .loading: LoadingPane("Loading Transcript\u{2026}")
                 case .failed(let message):
                     ErrorPane(title: RecapDetailState.transcriptErrorTitle, message: message) {
                         transcripts.select(t)
                     }
                 case .loaded:
-                    List(transcripts.cues) { cue in
-                        TranscriptTurnRow(cue: cue, seekable: recordings.player != nil) { seek(to: cue) }
+                    let current = recap.recording != nil && recordings.selectedID == recap.recording?.id
+                        ? TranscriptPlayhead.currentCueID(transcripts.cues, at: recordings.playheadMs) : nil
+                    ScrollViewReader { proxy in
+                        List(transcripts.cues) { cue in
+                            TranscriptTurnRow(cue: cue, seekable: recordings.player != nil,
+                                              isCurrent: cue.id == current) { seek(to: cue) }
+                                .listRowBackground(cue.id == current
+                                    ? RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                        .fill(Palette.messageHighlight).padding(.horizontal, 4)
+                                    : nil)
+                        }
+                        .listStyle(.inset)
+                        // Follow the turn under the playhead (it moves only
+                        // while playing or on a seek).
+                        .onChange(of: current) { _, id in
+                            guard let id else { return }
+                            proxy.scrollTo(id)
+                        }
                     }
-                    .listStyle(.inset)
                 }
             }
         } else {
@@ -178,6 +241,8 @@ struct RecapDetailPane: View {
 struct TranscriptTurnRow: View {
     let cue: TranscriptCue
     let seekable: Bool
+    /// The turn under the playhead (highlighted band).
+    var isCurrent = false
     let seek: () -> Void
     @Environment(\.contentTextScale) private var scale
 
@@ -206,6 +271,7 @@ struct TranscriptTurnRow: View {
         .padding(.vertical, 2)
         .help(seekable ? "Play from \(cue.startLabel)" : "")
         .accessibilityHint(seekable ? "Plays the recording from here" : "")
+        .accessibilityAddTraits(isCurrent ? .isSelected : [])
     }
 }
 

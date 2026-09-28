@@ -111,7 +111,7 @@ final class HistoryTests: XCTestCase {
         // Sidebar row + routing agree with the thread tail.
         XCTAssertEqual(DemoData.messages(for: DemoData.historyID).count, 38)
         let row = DemoData.historyChat()
-        XCTAssertEqual(row.name, "Demo — Long History")
+        XCTAssertEqual(row.name, "Release Train")
         XCTAssertEqual(row.last_message_preview, msgs.last?.content)
     }
 }

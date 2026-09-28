@@ -152,6 +152,9 @@ public enum NcDelivery {
             if actionID == OmCallInfo.acceptActionID {
                 return .acceptCall(callID: call)
             }
+            if actionID == OmCallInfo.acceptVideoActionID {
+                return .acceptCallVideo(callID: call)
+            }
             if actionID == OmCallInfo.declineActionID {
                 return .declineCall(callID: call)
             }

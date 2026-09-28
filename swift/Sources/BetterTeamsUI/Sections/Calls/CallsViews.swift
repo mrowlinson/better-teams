@@ -21,12 +21,13 @@ struct CallsListPane: View {
 
     @ViewBuilder
     private func content(_ m: WindowModel) -> some View {
-        let rows = CallsRowModel.rows(history: history.records, activity: activity.items)
+        let rows = CallsRowModel.rows(history: history.records, activity: activity.items,
+                                      hidden: history.hiddenFeedIDs)
         let dial = contacts.pinnedContacts()
         let current = m.call.flatMap { $0.ended ? nil : $0 }
         switch m.forced(.calls) {
         case .loading:
-            LoadingPane()
+            LoadingPane("Loading Calls\u{2026}")
         case .error:
             ErrorPane(title: "Couldn\u{2019}t Load Calls",
                       message: m.connection == .offline ? "You\u{2019}re offline." : "Something went wrong.") {}
@@ -85,6 +86,8 @@ struct CallsListPane: View {
                         .padding(.vertical, 2)
                         .tag(CallsSection.speedDialPrefix + c.id)
                     }
+                    // Drag to reorder (Finder sidebar favorites).
+                    .onMove { contacts.movePins(fromOffsets: $0, toOffset: $1) }
                 }
             }
             Section("Recent") {
@@ -100,6 +103,15 @@ struct CallsListPane: View {
                     .disabled(p.thread.isEmpty || !(m.call.map(\.ended) ?? true))
                 if CallsSection.chatID(p, m) != nil {
                     Button("Message") { CallsSection.message(p, m) }
+                }
+                Divider()
+                if CallsSection.isPinned(p, m) {
+                    Button("Remove from Speed Dial") { CallsSection.removeFromSpeedDial(p, m) }
+                } else if CallsSection.member(p) != nil {
+                    Button("Add to Speed Dial") { CallsSection.addToSpeedDial(p, m) }
+                }
+                if CallsSection.isRecent(id) {
+                    Button("Remove from Recents") { CallsSection.removeFromRecents([id], m) }
                 }
             }
         } primaryAction: { ids in
@@ -185,7 +197,8 @@ struct CallsDetailPane: View {
 
     private func detail(_ p: CallsSection.Person, _ m: WindowModel) -> some View {
         let now = RelativeClock.shared.now
-        let recent = CallsRowModel.rows(history: history.records, activity: activity.items)
+        let recent = CallsRowModel.rows(history: history.records, activity: activity.items,
+                                        hidden: history.hiddenFeedIDs)
             .filter { $0.personKey == p.personKey }
             .prefix(10)
         let status = PeerPresence.status(presence, chatID: CallsSection.chatID(p, m), userID: p.personID)
@@ -209,11 +222,17 @@ struct CallsDetailPane: View {
                         Button("Call") { CallsSection.call(p, m) }
                             .buttonStyle(.borderedProminent)
                             .disabled(p.thread.isEmpty || !idle)
-                        Button("Video") {}
-                            .disabled(true)
-                            .help("Video calls aren\u{2019}t available yet")
+                        Button("Video") { CallsSection.call(p, m, video: true) }
+                            .disabled(!CallsSection.canVideo(p, m) || !idle)
                         Button("Chat") { CallsSection.message(p, m) }
                             .disabled(CallsSection.chatID(p, m) == nil)
+                    }
+                    if CallsSection.isPinned(p, m) {
+                        Button("Remove from Speed Dial") { CallsSection.removeFromSpeedDial(p, m) }
+                            .buttonStyle(.link)
+                    } else if CallsSection.member(p) != nil {
+                        Button("Add to Speed Dial") { CallsSection.addToSpeedDial(p, m) }
+                            .buttonStyle(.link)
                     }
                 }
                 .frame(maxWidth: .infinity)

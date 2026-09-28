@@ -26,7 +26,7 @@ private struct CalendarStatePane: View {
 
     var body: some View {
         switch state {
-        case .loading: LoadingPane()
+        case .loading: LoadingPane("Loading Calendar\u{2026}")
         case .error(let title, let message): ErrorPane(title: title, message: message, retry: retry)
         case .empty, .meetings: CalendarEmptyPane()
         }
@@ -49,7 +49,10 @@ struct CalendarAgendaPane: View {
         if let model {
             let state = paneState(week, model)
             if state == .meetings {
+                // R12: a refresh or week change runs behind the rows.
                 list(model)
+                    .refreshStatus(week.state == .loading || week.isLoadingWeek, failure: CalendarPaneState.failure(week.state),
+                                   label: "Updating Calendar", retry: { week.refresh() })
             } else {
                 CalendarStatePane(state: state) { week.refresh() }
             }
@@ -158,6 +161,8 @@ struct CalendarDetailPane: View {
                 let state = paneState(week, model)
                 if state == .meetings {
                     WeekGrid(week: week, selectedID: sel.meetingID) { CalendarSection.select($0, model) }
+                        .refreshStatus(week.state == .loading || week.isLoadingWeek, failure: CalendarPaneState.failure(week.state),
+                                       label: "Updating Calendar", retry: { week.refresh() })
                 } else {
                     CalendarStatePane(state: state) { week.refresh() }
                 }

@@ -177,6 +177,11 @@ enum FilesPaneState: Equatable {
         case .empty, .loaded: return .empty
         }
     }
+
+    /// A failed refresh behind the rows on screen (quiet notice).
+    static func failure(_ state: SharedFilesState) -> String? {
+        if case .error(let m) = state { m } else { nil }
+    }
 }
 
 /// One date and size format everywhere in Files (table, inspector,

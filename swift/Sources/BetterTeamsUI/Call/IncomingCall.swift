@@ -8,7 +8,9 @@
 // delegate); this host reacts to the call state: an incoming call that
 // becomes active with no session running starts a `CallSession` in the
 // presentation the person chose (Settings ▸ Calls ▸ Show calls, DL1)
-// and brings it forward, whichever path accepted it.
+// and brings it forward, whichever path accepted it. Accept with Video
+// (`CallStore.acceptLiveVideo()`) starts a video session: the 1:1 stage,
+// or the meeting tile grid for a group thread.
 import AppKit
 import Combine
 import OstMacCore
@@ -55,7 +57,9 @@ final class IncomingCallHost {
         guard let model, let c = store.call, c.dir == "in", c.id != hostedCallID else { return }
         if let running = model.call, !running.ended { return }
         hostedCallID = c.id
-        guard let s = model.beginCall(.person(name: c.displayPeer, thread: c.thread), show: show, store: store)
+        let video = store.videoAcceptedCallID == c.id
+        guard let s = model.beginCall(.person(name: c.displayPeer, thread: c.thread), show: show, store: store,
+                                      video: video, group: video && CallGroup.isGroupThread(c.thread))
         else { return }
         guard show, !model.options.evidence, s.presentation == .mainWindow else { return }
         // Accept is a foreground action: the main window comes forward
@@ -69,6 +73,6 @@ final class IncomingCallHost {
         guard store.phase == .inviting, let c = store.call, c.dir == "in" else { return " incoming[none]" }
         let content = OmCallInfo.makeContent(title: c.displayPeer, body: "Incoming call", callID: c.id)
         return " incoming[title=\(content.title) body=\(content.body) category=\(content.categoryIdentifier)"
-            + " actions=\(OmCallInfo.acceptTitle),\(OmCallInfo.declineTitle)]"
+            + " actions=\(OmCallInfo.acceptTitle),\(OmCallInfo.acceptVideoTitle),\(OmCallInfo.declineTitle)]"
     }
 }

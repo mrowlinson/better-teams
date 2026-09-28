@@ -6,12 +6,117 @@
 // other pane title.
 import SwiftUI
 
+/// First load with nothing on hand: a centered spinner with its label
+/// ("Loading Shifts…") underneath, shown only after `delayMilliseconds`
+/// so a fast load shows nothing at all. Determinate (a bar) when the
+/// step count is known. The spinner stays on the pane's center (the
+/// label hangs below it), the point `PaneAnchorLayout` centers on.
 struct LoadingPane: View {
+    /// A load that lands sooner than this never shows the pane.
+    static let delayMilliseconds: UInt64 = 300
+
+    let label: String?
+    /// 0…1 when the step count is known; nil = indeterminate spinner.
+    let progress: Double?
+    @Environment(\.windowModel) private var model
+    @State private var visible = false
+    @State private var delay = Debounce(milliseconds: LoadingPane.delayMilliseconds)
+
+    init(_ label: String? = nil, progress: Double? = nil) {
+        self.label = label
+        self.progress = progress
+    }
+
     var body: some View {
-        ProgressView()
-            .controlSize(.regular)
+        indicator
+            .overlay(alignment: .top) {
+                if let label {
+                    Text(label)
+                        .foregroundStyle(.secondary)
+                        .fixedSize()
+                        .alignmentGuide(.top) { $0[.top] - 28 }
+                }
+            }
+            .opacity(visible || model?.options.evidence == true ? 1 : 0)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .accessibilityLabel("Loading")
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(Self.accessibilityLabel(label))
+            .onAppear { delay.schedule { visible = true } }
+            .onDisappear { delay.cancel() }
+    }
+
+    @ViewBuilder private var indicator: some View {
+        if let progress {
+            ProgressView(value: min(max(progress, 0), 1))
+                .progressViewStyle(.linear)
+                .frame(width: 180)
+        } else {
+            ProgressView()
+                .controlSize(.regular)
+        }
+    }
+
+    /// "Loading Shifts…" reads "Loading Shifts" (no ellipsis spoken).
+    static func accessibilityLabel(_ label: String?) -> String {
+        guard let label, !label.isEmpty else { return "Loading" }
+        return label.hasSuffix("\u{2026}") ? String(label.dropLast()) : label
+    }
+}
+
+/// A refresh running behind content already on screen (R12: the rows
+/// never change for it). A small spinner in the pane's bottom-trailing
+/// corner while `refreshing` (after the same delay as `LoadingPane`, so a
+/// fast refresh shows nothing), or — when the last refresh failed — a
+/// quiet warning glyph: tooltip = the error, click = Try Again.
+struct RefreshStatus: ViewModifier {
+    let refreshing: Bool
+    let failure: String?
+    let label: String
+    let retry: (() -> Void)?
+    @State private var visible = false
+    @State private var delay = Debounce(milliseconds: LoadingPane.delayMilliseconds)
+
+    func body(content: Content) -> some View {
+        content
+            .overlay(alignment: .bottomTrailing) {
+                Group {
+                    if refreshing {
+                        ProgressView()
+                            .controlSize(.small)
+                            .opacity(visible ? 1 : 0)
+                            .help(label)
+                            .accessibilityLabel(label)
+                            .accessibilityHidden(!visible)
+                    } else if let failure {
+                        Button {
+                            retry?()
+                        } label: {
+                            Image(systemName: "exclamationmark.triangle")
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.borderless)
+                        .help("Couldn\u{2019}t refresh: \(failure)")
+                        .accessibilityLabel("Couldn\u{2019}t Refresh")
+                    }
+                }
+                .padding(10)
+            }
+            .onChange(of: refreshing, initial: true) { _, now in
+                if now {
+                    delay.schedule { visible = true }
+                } else {
+                    delay.cancel()
+                    visible = false
+                }
+            }
+    }
+}
+
+extension View {
+    /// Background-refresh status over this content (see `RefreshStatus`).
+    func refreshStatus(_ refreshing: Bool, failure: String? = nil, label: String,
+                       retry: (() -> Void)? = nil) -> some View {
+        modifier(RefreshStatus(refreshing: refreshing, failure: failure, label: label, retry: retry))
     }
 }
 

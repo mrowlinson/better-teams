@@ -31,6 +31,7 @@ use serde_json::json;
 
 pub mod av;
 pub mod browser_auth;
+pub mod call_roster;
 pub mod calls;
 pub mod calweek;
 pub mod live;
@@ -1405,6 +1406,33 @@ pub fn files_json_opts(chat_id: &str, limit: usize, include_folders: bool) -> St
     }
 }
 
+/// The files one message shares (timeline file chips past the first
+/// page of the Shared list): its reference attachments resolved to
+/// driveItems, `attachment_id` = the body's `<attachment id>`. Bad ids
+/// are rejected before any network. Returns `{ok:true, chat_id, files}`.
+pub fn message_files_json(chat_id: &str, message_id: &str) -> String {
+    if let Err(e) = ost::api::message_path(chat_id, message_id, None) {
+        return err_json("arg", format!("{:#}", e));
+    }
+    let run = || -> Result<String, String> {
+        let rt = rt()?;
+        rt.block_on(async {
+            let client = ost::api::client::TeamsClient::new()
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            let files = ost::api::list_message_files_data(&client, chat_id, message_id)
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            let items: Vec<_> = files.iter().map(shared_file_to_json).collect();
+            Ok(json!({"ok": true, "chat_id": chat_id, "files": items}).to_string())
+        })
+    };
+    match run() {
+        Ok(s) => s,
+        Err(e) => err_json("message_files", e),
+    }
+}
+
 /// One folder's children by drive+item id (om-i5-folders). Files AND
 /// subfolders, unfiltered; folders carry `is_folder:true` and drill in
 /// via this same call. Empty ids are rejected before any network.
@@ -2267,6 +2295,34 @@ pub fn reminder_done_json(list_id: &str, task_id: &str) -> String {
     }
 }
 
+/// Reopen one completed task (status back to not started). Returns
+/// `{ok:true, task}` or `{ok:false}`. Bad ids are rejected before any
+/// network.
+pub fn reminder_reopen_json(list_id: &str, task_id: &str) -> String {
+    if let Err(e) = todo_id_ok("list_id", list_id) {
+        return e;
+    }
+    if let Err(e) = todo_id_ok("task_id", task_id) {
+        return e;
+    }
+    let run = || -> Result<String, String> {
+        let rt = rt()?;
+        rt.block_on(async {
+            let client = ost::api::client::TeamsClient::new()
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            let task = ost::api::reopen_todo_task_data(&client, list_id, task_id)
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            Ok(json!({"ok": true, "task": todo_task_to_json(&task)}).to_string())
+        })
+    };
+    match run() {
+        Ok(s) => s,
+        Err(e) => err_json("reminder_reopen", e),
+    }
+}
+
 // NOTE (R14 om-later-b4 B4): meetings + meeting_to_json moved to Swift
 // (CoreReads); backing fn + export deleted. meeting_to_json_shape
 // ported to FfiLaterB4Tests.
@@ -3072,6 +3128,22 @@ pub extern "C" fn ostmac_files_opts(
     }
 }
 
+/// One message's shared files. See [`message_files_json`].
+#[no_mangle]
+pub extern "C" fn ostmac_message_files(
+    chat_id: *const c_char,
+    message_id: *const c_char,
+) -> *mut c_char {
+    let chat = match cstr_to_string(chat_id) {
+        Ok(s) => s,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    match cstr_to_string(message_id) {
+        Ok(m) => string_to_c(message_files_json(&chat, &m)),
+        Err(e) => string_to_c(err_json("arg", e)),
+    }
+}
+
 /// One folder's children by drive+item id. See [`files_children_json`].
 #[no_mangle]
 pub extern "C" fn ostmac_files_children(
@@ -3393,6 +3465,22 @@ pub extern "C" fn ostmac_reminder_done(
     }
 }
 
+/// Reopen one completed task. See [`reminder_reopen_json`].
+#[no_mangle]
+pub extern "C" fn ostmac_reminder_reopen(
+    list_id: *const c_char,
+    task_id: *const c_char,
+) -> *mut c_char {
+    let id = match cstr_to_string(list_id) {
+        Ok(s) => s,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    match cstr_to_string(task_id) {
+        Ok(t) => string_to_c(reminder_reopen_json(&id, &t)),
+        Err(e) => string_to_c(err_json("arg", e)),
+    }
+}
+
 /// Start background Trouter push. See [`trouter_start`].
 #[no_mangle]
 pub extern "C" fn ostmac_trouter_start() -> c_int {
@@ -3638,6 +3726,14 @@ pub extern "C" fn ostmac_call_accept_live() -> *mut c_char {
 #[no_mangle]
 pub extern "C" fn ostmac_call_accept_live_video() -> *mut c_char {
     string_to_c(calls::call_accept_live_video_json())
+}
+
+/// Roster of the active placed call (meetvideo): participants with their
+/// audio/video MSIs and camera state, the dominant speaker, and queued
+/// diagnostics lines (drained per read). See [`calls::call_roster_json`].
+#[no_mangle]
+pub extern "C" fn ostmac_call_roster() -> *mut c_char {
+    string_to_c(calls::call_roster_json())
 }
 
 /// End/decline the active call. See [`calls::call_end_json`].

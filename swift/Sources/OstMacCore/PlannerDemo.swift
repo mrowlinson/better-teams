@@ -26,7 +26,8 @@ public enum PlannerDemo {
         switch planID {
         case "demo-plan-sprint": return [
             PlannerBucket(bucketId: "demo-bucket-todo", planId: planID, name: "To do"),
-            PlannerBucket(bucketId: "demo-bucket-doing", planId: planID, name: "Doing"),
+            PlannerBucket(bucketId: "demo-bucket-doing", planId: planID, name: "In progress"),
+            PlannerBucket(bucketId: "demo-bucket-review", planId: planID, name: "In review"),
             PlannerBucket(bucketId: "demo-bucket-done", planId: planID, name: "Done"),
         ]
         case "demo-plan-debt": return [
@@ -46,22 +47,32 @@ public enum PlannerDemo {
 
     public static func tasks(for planID: String) -> [PlannerTask] {
         switch planID {
-        case "demo-plan-sprint": return [
-            PlannerTask(
-                taskId: "demo-ptask-1", planId: planID,
-                bucketId: "demo-bucket-todo", title: "Review empty-states mock",
-                percent: 0, priority: 1, due: "2026-10-02T12:00:00Z",
-                etag: "W/\"demo-etag-1\"", assignees: ["demo-u-megan"]),
-            PlannerTask(
-                taskId: "demo-ptask-2", planId: planID,
-                bucketId: "demo-bucket-doing", title: "Wire planner FFI",
-                percent: 50, etag: "W/\"demo-etag-2\"",
-                assignees: ["demo-u-me", "demo-u-tom"]),
-            PlannerTask(
-                taskId: "demo-ptask-3", planId: planID,
-                bucketId: "demo-bucket-done", title: "Ship review deck",
-                percent: 100, completed: true, etag: "W/\"demo-etag-3\""),
-        ]
+        case "demo-plan-sprint":
+            func task(_ n: Int, _ bucket: String, _ title: String, percent: Int = 0, priority: Int? = nil,
+                      due: String? = nil, _ people: [String]) -> PlannerTask {
+                PlannerTask(
+                    taskId: "demo-ptask-\(n)", planId: planID, bucketId: "demo-bucket-\(bucket)",
+                    title: title, percent: percent, completed: percent == 100, priority: priority,
+                    due: due.map { "2026-\($0)T12:00:00Z" }, etag: "W/\"demo-etag-\(n)\"",
+                    assignees: people.map { "demo-u-\($0)" })
+            }
+            return [
+                task(1, "todo", "Review empty-states mock", priority: 1, due: "10-02", ["megan"]),
+                task(6, "todo", "Draft App Store release notes", priority: 5, due: "10-06", ["luis"]),
+                task(7, "todo", "Localize onboarding strings", priority: 5, due: "10-08", ["hannah"]),
+                task(8, "todo", "Plan beta feedback survey", priority: 9, due: "10-12", ["paula"]),
+                task(2, "doing", "Build sign-in error states", percent: 50, ["me", "tom"]),
+                task(9, "doing", "Improve search result ranking", percent: 50, priority: 3, due: "10-03",
+                     ["ryan"]),
+                task(10, "doing", "Refresh onboarding illustrations", percent: 50, due: "10-05", ["ava"]),
+                task(11, "review", "Offline drafts for messages", percent: 50, priority: 3, due: "10-01",
+                     ["ethan", "tom"]),
+                task(12, "review", "Accessibility audit fixes", percent: 50, priority: 1, due: "09-30",
+                     ["chloe"]),
+                task(3, "done", "Ship review deck", percent: 100, ["megan"]),
+                task(13, "done", "Set up crash reporting alerts", percent: 100, ["nathan"]),
+                task(14, "done", "Update privacy policy link", percent: 100, ["olivia"]),
+            ]
         case "demo-plan-debt": return [
             PlannerTask(
                 taskId: "demo-ptask-4", planId: planID,

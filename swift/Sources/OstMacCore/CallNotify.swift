@@ -29,8 +29,10 @@ import UserNotifications
 public enum OmCallInfo {
     public static let categoryID = "OM_CALL"
     public static let acceptActionID = "OM_CALL_ACCEPT"
+    public static let acceptVideoActionID = "OM_CALL_ACCEPT_VIDEO"
     public static let declineActionID = "OM_CALL_DECLINE"
     public static let acceptTitle = "Accept"
+    public static let acceptVideoTitle = "Accept with Video"
     public static let declineTitle = "Decline"
     public static let callIDKey = "OMCallID"
 
@@ -64,16 +66,20 @@ public enum OmCallInfo {
     }
 
     /// Shared category (both backends register this same shape).
-    /// Accept foregrounds the app onto the call; Decline stays put.
+    /// Accept and Accept with Video foreground the app onto the call;
+    /// Decline stays put.
     public static var category: UNNotificationCategory {
         let accept = UNNotificationAction(
             identifier: acceptActionID, title: acceptTitle,
+            options: [.foreground])
+        let acceptVideo = UNNotificationAction(
+            identifier: acceptVideoActionID, title: acceptVideoTitle,
             options: [.foreground])
         let decline = UNNotificationAction(
             identifier: declineActionID, title: declineTitle,
             options: [.destructive])
         return UNNotificationCategory(
-            identifier: categoryID, actions: [accept, decline],
+            identifier: categoryID, actions: [accept, acceptVideo, decline],
             intentIdentifiers: [], options: [])
     }
 }

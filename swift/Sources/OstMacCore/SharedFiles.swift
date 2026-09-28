@@ -129,6 +129,8 @@ public final class SharedFilesStore: ObservableObject {
     public typealias CopyFetcher = @Sendable (String, String, String, String?) throws -> SharedFileCopyResponse
     public typealias DeleteFetcher = @Sendable (String, String) throws -> SharedFileDeleteResponse
     public typealias ProgressFetcher = @Sendable () throws -> UploadProgressResponse
+    /// (conversation id, message id) → the files that message shares.
+    public typealias MessageFilesFetcher = @Sendable (String, String) throws -> SharedFilesResponse
     public typealias OpenURLFn = @Sendable (URL) -> Bool
     public typealias CopyLinkFn = @Sendable (String) -> Void
     /// File-size probe (bytes), nil when unreadable (stages as 0 B).
@@ -173,6 +175,7 @@ public final class SharedFilesStore: ObservableObject {
     private let copyFetcher: CopyFetcher
     private let deleteFetcher: DeleteFetcher
     private let progressFetcher: ProgressFetcher
+    private let messageFilesFetcher: MessageFilesFetcher
     private let openURLFn: OpenURLFn
     /// Per-folder list cache: rootKey + crumb keys. Back/crumb jumps read
     /// here (no refetch); refresh() bypasses for the current level only.
@@ -230,6 +233,9 @@ public final class SharedFilesStore: ObservableObject {
             try RustCore.sharedDelete(driveID: $0, itemID: $1)
         },
         progress: @escaping ProgressFetcher = { try RustCore.sharedUploadProgress() },
+        messageFiles: @escaping MessageFilesFetcher = {
+            try RustCore.messageFiles(chatID: $0, messageID: $1)
+        },
         openURL: @escaping OpenURLFn = SharedFilesStore.defaultOpenURL,
         copyLink: @escaping CopyLinkFn = SharedFilesStore.defaultCopyLink,
         sizeProbe: @escaping SizeProbe = ComposeAttachmentsStore.defaultSizeProbe
@@ -244,6 +250,7 @@ public final class SharedFilesStore: ObservableObject {
         self.copyFetcher = copy
         self.deleteFetcher = delete
         self.progressFetcher = progress
+        self.messageFilesFetcher = messageFiles
         self.openURLFn = openURL
         self.copyLinkFn = copyLink
         self.sizeProbe = sizeProbe
@@ -393,6 +400,48 @@ public final class SharedFilesStore: ObservableObject {
                 }
             }
         }
+    }
+
+    // MARK: - Attachment lookup (timeline file chips)
+
+    /// Files found by message (`resolveAttachments`) for
+    /// `attachmentsChatID`: attachments the Shared list's first page
+    /// does not reach. Timeline chips resolve against these too.
+    @Published public private(set) var attachmentFiles: [SharedFile] = []
+    public private(set) var attachmentsChatID: String?
+    /// Messages already looked up for `attachmentsChatID` (one request
+    /// each, success or failure).
+    private var lookedUp: Set<String> = []
+    /// Lookups per conversation (a long history never fans out).
+    public static let maxAttachmentLookups = 50
+
+    /// Look up the files one message shares when its attachment refs
+    /// miss the loaded Shared list. One request per message per
+    /// conversation, capped; demo never looks up (its lists are whole).
+    /// Found files land in `attachmentFiles` (a failure is silent: the
+    /// chip stays text, as before).
+    public func resolveAttachments(chatID: String, messageID: String) {
+        guard !isDemo, !chatID.isEmpty, !messageID.isEmpty else { return }
+        if attachmentsChatID != chatID {
+            attachmentsChatID = chatID
+            attachmentFiles = []
+            lookedUp = []
+        }
+        guard lookedUp.count < Self.maxAttachmentLookups, lookedUp.insert(messageID).inserted else { return }
+        let fetcher = messageFilesFetcher
+        Task {
+            guard let resp = try? await Task.detached(operation: { try fetcher(chatID, messageID) }).value,
+                  attachmentsChatID == chatID
+            else { return }
+            let known = Set(attachmentFiles.map(\.id))
+            let fresh = resp.files.filter { !known.contains($0.id) }
+            if !fresh.isEmpty { attachmentFiles += fresh }
+        }
+    }
+
+    /// True when `messageID` was already looked up for `chatID`.
+    public func hasLookedUp(chatID: String, messageID: String) -> Bool {
+        attachmentsChatID == chatID && lookedUp.contains(messageID)
     }
 
     /// Demo mode: canned files offline (no core). Resets nav, seeds cache.

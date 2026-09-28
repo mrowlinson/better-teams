@@ -117,7 +117,7 @@ final class MCPTests: XCTestCase {
         let payload = json(text)
         let chats = payload["chats"] as! [[String: Any]]
         XCTAssertEqual(chats.count, 2)
-        XCTAssertEqual(chats[0]["name"] as? String, "Demo — Design Sync")
+        XCTAssertEqual(chats[0]["name"] as? String, "Design Sync")
         XCTAssertEqual(client.seenLimits, [2])
     }
 
@@ -313,7 +313,7 @@ final class MCPTests: XCTestCase {
             client: MockTeamsClient())!)
         let chans = json(text)["channels"] as! [[String: Any]]
         XCTAssertEqual(chans.count, 1)
-        XCTAssertEqual(chans[0]["name"] as? String, "Crit")
+        XCTAssertEqual(chans[0]["name"] as? String, "Design Critique")
     }
 
     func testListChannelsUnknownTeamIsErrorResult() {

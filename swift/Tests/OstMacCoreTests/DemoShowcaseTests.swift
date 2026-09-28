@@ -67,7 +67,7 @@ final class DemoShowcaseTests: XCTestCase {
         XCTAssertEqual(row.id, DemoData.showcaseID)
         XCTAssertTrue(DemoData.chats.contains { $0.id == DemoData.showcaseID })
         XCTAssertEqual(DemoData.messages(for: DemoData.showcaseID).count, 11)
-        XCTAssertEqual(DemoData.name(for: DemoData.showcaseID), "Demo — Showcase")
+        XCTAssertEqual(DemoData.name(for: DemoData.showcaseID), "Product Team")
         XCTAssertTrue(DemoData.mentionedChatIDs.contains(DemoData.showcaseID))
         XCTAssertFalse(DemoData.sharedFiles(for: DemoData.showcaseID).isEmpty)
         // Tail tracks the thread: preview/sender/time match last bubble.

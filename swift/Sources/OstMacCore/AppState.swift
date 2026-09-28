@@ -431,6 +431,7 @@ public final class AppState: ObservableObject {
             meetings = MeetingsViewModel(
                 meetingsFetcher: { DemoData.meetingsResponse() },
                 joinRunner: { DemoData.demoJoinResult(threadID: $0) },
+                videoJoinRunner: { DemoData.demoJoinResult(threadID: $0) },
                 // Demo join-by-ID resolves in memory (never Graph).
                 meetingIDResolver: { _, _ in DemoData.meetingIDResolution() })
             calWeek = CalendarWeekStore(
@@ -466,7 +467,7 @@ public final class AppState: ObservableObject {
             })
             unifiedFiles = UnifiedFilesStore()
             meetings = MeetingsViewModel()
-            calWeek = CalendarWeekStore()
+            calWeek = CalendarWeekStore(prefetchAdjacentWeeks: true)
             shifts = ShiftsStore(members: { try RustCore.teamMembers(teamID: $0) })
         }
         if seedHistoryDemo {
@@ -582,6 +583,11 @@ public final class AppState: ObservableObject {
             forName: .omNotifAcceptCall, object: nil, queue: nil
         ) { [weak self] _ in
             Task { @MainActor [weak self] in self?.call.accept() }
+        }
+        _ = NotificationCenter.default.addObserver(
+            forName: .omNotifAcceptCallVideo, object: nil, queue: nil
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.call.acceptLiveVideo() }
         }
         _ = NotificationCenter.default.addObserver(
             forName: .omNotifDeclineCall, object: nil, queue: nil
@@ -2050,6 +2056,9 @@ public final class AppState: ObservableObject {
         Notifier.shared.onAcceptCall = { [weak self] _ in
             await MainActor.run { [weak self] in self?.call.accept() }
         }
+        Notifier.shared.onAcceptCallVideo = { [weak self] _ in
+            await MainActor.run { [weak self] in self?.call.acceptLiveVideo() }
+        }
         Notifier.shared.onDeclineCall = { [weak self] _ in
             await MainActor.run { [weak self] in self?.call.end() }
         }
@@ -2121,8 +2130,9 @@ public final class AppState: ObservableObject {
     private func handleResync() {
         feedResyncs += 1
         refreshFeedStatus()
-        if let id = openChatID, !isDemo {
-            conv.open(chatID: id)
+        if openChatID != nil, !isDemo {
+            // Behind the bubbles on screen: merged, never cleared.
+            conv.refresh()
         }
         chats.refresh()
     }
@@ -2354,59 +2364,77 @@ public final class AppState: ObservableObject {
         }
     }
 
-    /// Demo week-grid meetings dated inside the current week (B1 merge).
+    /// Demo week-grid meetings dated inside the current week (B1 merge):
+    /// a working week, Monday to Friday, colored by Outlook category.
     /// Nonisolated: runs inside the store's off-main fetch closure.
     private nonisolated static func calWeekDemoResponse() -> CalWeekResponse {
-        let monday = CalWeek.startOfWeek(containing: Date())
         let cal = Calendar.current
+        let weekStart = CalWeek.startOfWeek(containing: DemoClock.now)
+        // Offsets below count from Monday, whatever day the locale's
+        // week starts on.
+        let mondayOffset = (2 - cal.firstWeekday + 7) % 7
         let fmt = DateFormatter()
         fmt.locale = Locale(identifier: "en_US_POSIX")
         fmt.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
         func at(dayOffset: Int, hour: Int, minute: Int) -> String {
-            let base = cal.date(byAdding: .day, value: dayOffset, to: monday) ?? monday
+            let base = cal.date(byAdding: .day, value: mondayOffset + dayOffset, to: weekStart) ?? weekStart
             let parts = cal.dateComponents([.year, .month, .day], from: base)
             let date = cal.date(from: DateComponents(
                 year: parts.year, month: parts.month, day: parts.day,
                 hour: hour, minute: minute)) ?? base
             return fmt.string(from: date)
         }
+        func meeting(_ id: String, _ subject: String, day: Int, _ h: Int, _ m: Int, minutes: Int,
+                     organizer: String, category: String, online: Bool = true) -> MeetingItem {
+            let endMinute = h * 60 + m + minutes
+            return MeetingItem(
+                meetingId: id, subject: subject,
+                start: at(dayOffset: day, hour: h, minute: m),
+                end: at(dayOffset: day, hour: endMinute / 60, minute: endMinute % 60),
+                joinURL: online ? "https://teams.microsoft.com/l/meetup-join/19:\(id)@thread.v2/0" : nil,
+                organizer: organizer, isOnline: online, categories: [category])
+        }
         return CalWeekResponse(
             ok: true,
-            weekStart: Int64(monday.timeIntervalSince1970), days: 7,
+            weekStart: Int64(weekStart.timeIntervalSince1970), days: 7,
             meetings: [
-                MeetingItem(
-                    meetingId: "demo-cal-standup", subject: "Engineering standup",
-                    start: at(dayOffset: 0, hour: 9, minute: 0),
-                    end: at(dayOffset: 0, hour: 9, minute: 15),
-                    joinURL: "https://teams.microsoft.com/l/meetup-join/19:demo_standup@thread.v2/0",
-                    organizer: "Doe, Jane", isOnline: true),
-                MeetingItem(
-                    meetingId: "demo-cal-crit", subject: "Design crit (Room 3B)",
-                    start: at(dayOffset: 1, hour: 14, minute: 0),
-                    end: at(dayOffset: 1, hour: 15, minute: 0),
-                    organizer: "Ray, Sam"),
-                // Two overlapping online meetings (week-grid lanes).
-                MeetingItem(
-                    meetingId: "demo-cal-oneonone", subject: "1:1 with Megan",
-                    start: at(dayOffset: 2, hour: 10, minute: 0),
-                    end: at(dayOffset: 2, hour: 10, minute: 30),
-                    joinURL: "https://teams.microsoft.com/l/meetup-join/19:demo_oneonone@thread.v2/0",
-                    organizer: "Harper, Megan", isOnline: true),
+                meeting("demo-cal-standup", "Engineering standup", day: 0, 9, 30, minutes: 15,
+                        organizer: "Harper, Megan", category: "Blue category"),
+                meeting("demo-cal-planning", "Sprint planning", day: 0, 11, 0, minutes: 60,
+                        organizer: "Harper, Megan", category: "Purple category"),
+                meeting("demo-cal-northwind", "Customer call: Northwind", day: 0, 14, 0, minutes: 60,
+                        organizer: "Ortega, Luis", category: "Orange category"),
+                meeting("demo-cal-crit", "Design critique", day: 1, 10, 0, minutes: 60,
+                        organizer: "Lindqvist, Ava", category: "Purple category", online: false),
+                meeting("demo-cal-oneonone", "1:1 with Megan", day: 1, 13, 0, minutes: 30,
+                        organizer: "Harper, Megan", category: "Yellow category"),
+                meeting("demo-cal-hiring", "Hiring sync", day: 1, 15, 30, minutes: 30,
+                        organizer: "Norris, Paula", category: "Red category"),
                 MeetingItem(
                     meetingId: "demo-cal-roadmap", subject: "Roadmap review",
-                    start: at(dayOffset: 2, hour: 10, minute: 15),
-                    end: at(dayOffset: 2, hour: 11, minute: 15),
+                    start: at(dayOffset: 2, hour: 10, minute: 0),
+                    end: at(dayOffset: 2, hour: 11, minute: 30),
                     joinURL: "https://teams.microsoft.com/l/meetup-join/19:demo_roadmap@thread.v2/0",
                     // Organized by the demo owner (Cancel Meeting… by identity).
                     organizer: DemoData.ownerDisplayName,
                     organizerEmail: "jordan.fox@contoso.example",
-                    isOrganizer: true, isOnline: true),
-                MeetingItem(
-                    meetingId: "demo-cal-design", subject: "Design sync",
-                    start: at(dayOffset: 3, hour: 13, minute: 0),
-                    end: at(dayOffset: 3, hour: 14, minute: 0),
-                    joinURL: "https://teams.microsoft.com/l/meetup-join/19:demo_design@thread.v2/0",
-                    organizer: "Doe, Jane", isOnline: true),
+                    isOrganizer: true, isOnline: true, categories: ["Blue category"]),
+                meeting("demo-cal-vendor", "Vendor demo", day: 2, 13, 0, minutes: 60,
+                        organizer: "Becker, Tom", category: "Orange category"),
+                meeting("demo-cal-focus", "Focus time", day: 2, 14, 30, minutes: 120,
+                        organizer: DemoData.ownerDisplayName, category: "Gray category", online: false),
+                meeting("demo-cal-design", "Design sync", day: 3, 9, 0, minutes: 60,
+                        organizer: "Lindqvist, Ava", category: "Purple category"),
+                meeting("demo-cal-gonogo", "Release go/no-go", day: 3, 11, 0, minutes: 30,
+                        organizer: "Harper, Megan", category: "Red category"),
+                meeting("demo-cal-lunch", "Team lunch", day: 3, 12, 30, minutes: 60,
+                        organizer: "Norris, Paula", category: "Green category", online: false),
+                meeting("demo-cal-demo", "Sprint demo", day: 4, 10, 0, minutes: 60,
+                        organizer: "Harper, Megan", category: "Blue category"),
+                meeting("demo-cal-retro", "Retrospective", day: 4, 11, 0, minutes: 45,
+                        organizer: "Becker, Tom", category: "Teal category"),
+                meeting("demo-cal-tom", "1:1 with Tom", day: 4, 14, 0, minutes: 30,
+                        organizer: DemoData.ownerDisplayName, category: "Yellow category"),
             ])
     }
 

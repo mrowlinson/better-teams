@@ -72,6 +72,11 @@ public final class LocalSearchStore: ObservableObject {
     /// Documents currently indexed.
     public var docCount: Int { snapshot.docs.count }
 
+    /// Posting-list length for one token (tests: re-index must not duplicate).
+    func snapshotPostingCount(for token: String) -> Int {
+        snapshot.postings[token]?.count ?? 0
+    }
+
     // MARK: - Tokenize
 
     /// Lowercase alphanumeric tokens. Non-ASCII letters split (western
@@ -95,6 +100,16 @@ public final class LocalSearchStore: ObservableObject {
     ) {
         for m in messages {
             let key = Self.docKey(chatID: chatID, messageID: m.id)
+            // Re-index: unlink the old doc's postings first so an edited
+            // message neither duplicates keys nor stays findable by stale words.
+            if let old = snapshot.docs[key] {
+                for tok in Set(Self.tokenize("\(old.sender) \(old.content)")) {
+                    snapshot.postings[tok]?.removeAll(where: { $0 == key })
+                    if snapshot.postings[tok]?.isEmpty == true {
+                        snapshot.postings.removeValue(forKey: tok)
+                    }
+                }
+            }
             snapshot.docs[key] = IndexedDoc(
                 chatID: chatID, teamID: teamID, channelID: channelID,
                 messageID: m.id, sender: m.sender,

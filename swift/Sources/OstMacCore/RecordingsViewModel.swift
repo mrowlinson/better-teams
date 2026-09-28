@@ -65,6 +65,12 @@ public final class RecordingsViewModel: ObservableObject {
     @Published public private(set) var playback: RecordingPlayback = .idle
     /// Live player (nil until a play URL resolves).
     @Published public private(set) var player: AVPlayer?
+    /// Playback position (ms) while a player is live, updated twice a
+    /// second and on seeks (Recaps highlights the transcript turn under
+    /// it). Nil without a player.
+    @Published public private(set) var playheadMs: Int?
+    /// Periodic time observer on `player` (removed with the player).
+    private var timeObserver: Any?
     /// Resolved play URL (stream or local file).
     public private(set) var playURL: URL?
     /// Title of the loading/playing recording.
@@ -223,6 +229,7 @@ public final class RecordingsViewModel: ObservableObject {
                 let p = playerFactory(url)
                 player = p
                 playURL = url
+                observePlayhead(p)
                 if autoplay {
                     p.play()
                     playback = .playing
@@ -281,8 +288,21 @@ public final class RecordingsViewModel: ObservableObject {
         }
     }
 
+    private func observePlayhead(_ p: AVPlayer) {
+        playheadMs = 0
+        timeObserver = p.addPeriodicTimeObserver(
+            forInterval: CMTime(value: 1, timescale: 2), queue: .main
+        ) { [weak self] time in
+            let ms = time.isNumeric ? Int(time.seconds * 1000) : nil
+            Task { @MainActor [weak self] in self?.playheadMs = ms }
+        }
+    }
+
     private func stopPlayer() {
         player?.pause()
+        if let o = timeObserver { player?.removeTimeObserver(o) }
+        timeObserver = nil
+        playheadMs = nil
         player = nil
         playURL = nil
         playTitle = nil

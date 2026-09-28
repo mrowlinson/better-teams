@@ -304,7 +304,8 @@ final class Top10FilesTests: XCTestCase {
         store.showDemo(
             specs: DemoData.unifiedDemoSpecs, rows: DemoData.unifiedDemoRows())
         XCTAssertEqual(store.state, .loaded)
-        XCTAssertEqual(store.rows.count, 4)
+        XCTAssertEqual(store.rows.count, DemoData.unifiedDemoRows().count)
+        XCTAssertGreaterThanOrEqual(store.rows.count, 12, "demo Recent reads as a real library")
         // Chat + channel legs both present in the demo seed.
         XCTAssertTrue(store.rows.contains { $0.source == .chat })
         XCTAssertTrue(store.rows.contains { $0.source == .channel })
@@ -320,10 +321,10 @@ final class Top10FilesTests: XCTestCase {
         store.showDemo(
             specs: DemoData.unifiedDemoSpecs, rows: DemoData.unifiedDemoRows())
         store.upload(paths: ["/tmp/demo-notes.txt"])
-        XCTAssertEqual(store.rows.count, 5)
+        XCTAssertEqual(store.rows.count, DemoData.unifiedDemoRows().count + 1)
         XCTAssertEqual(store.rows[0].file.name, "demo-notes.txt")
         XCTAssertEqual(store.rows[0].source, .chat)
-        XCTAssertEqual(store.rows[0].sourceName, "Demo — Design Sync")
+        XCTAssertEqual(store.rows[0].sourceName, "Design Sync")
     }
 
     func testUploadPregatesOversize() async {

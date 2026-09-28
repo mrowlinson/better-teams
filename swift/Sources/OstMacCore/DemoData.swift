@@ -44,7 +44,7 @@ public enum DemoData {
     /// preview/sender/time track the floating Today timestamps.
     public static let chats: [ChatItem] = [
         ChatItem(
-            chatId: "demo", name: "Demo — Design Sync", is_group: true,
+            chatId: "demo", name: "Design Sync", is_group: true,
             last_message_time: "2026-09-22T09:12:05Z",
             last_message_sender: "Megan Harper",
             last_message_preview: "Ship it. I'll take screenshots for the review deck."),
@@ -82,66 +82,66 @@ public enum DemoData {
     ]
 
     /// Rich sidebar row: preview/sender/time from the rich thread's tail.
-    public static func richChat(now: Date = Date()) -> ChatItem {
+    public static func richChat(now: Date = DemoClock.now) -> ChatItem {
         let msgs = ConversationStore.richDemoMessages(now: now)
         let last = msgs.last
         return ChatItem(
-            chatId: richID, name: "Demo — Rich Conversation", is_group: true,
+            chatId: richID, name: "Q3 Review Deck", is_group: true,
             last_message_time: last?.timestamp,
             last_message_sender: last?.sender,
             last_message_preview: last?.content)
     }
 
     /// Media sidebar row: preview/sender/time from the media thread's tail.
-    public static func mediaChat(now: Date = Date()) -> ChatItem {
+    public static func mediaChat(now: Date = DemoClock.now) -> ChatItem {
         let msgs = mediaMessages(now: now)
         let last = msgs.last
         return ChatItem(
-            chatId: mediaID, name: "Demo — Photos & Emoji", is_group: true,
+            chatId: mediaID, name: "Offsite Crew", is_group: true,
             last_message_time: last?.timestamp,
             last_message_sender: last?.sender,
             last_message_preview: last?.content)
     }
 
     /// Reactions sidebar row: preview/sender/time from the reacted tail.
-    public static func reactionsChat(now: Date = Date()) -> ChatItem {
+    public static func reactionsChat(now: Date = DemoClock.now) -> ChatItem {
         let msgs = reactionsMessages(now: now)
         let last = msgs.last
         return ChatItem(
-            chatId: reactionsID, name: "Demo — Reactions", is_group: true,
+            chatId: reactionsID, name: "Product Marketing", is_group: true,
             last_message_time: last?.timestamp,
             last_message_sender: last?.sender,
             last_message_preview: last?.content)
     }
 
     /// Replies sidebar row: preview/sender/time from the replies thread's tail.
-    public static func repliesChat(now: Date = Date()) -> ChatItem {
+    public static func repliesChat(now: Date = DemoClock.now) -> ChatItem {
         let msgs = repliesMessages(now: now)
         let last = msgs.last
         return ChatItem(
-            chatId: repliesID, name: "Demo — Threaded Replies", is_group: true,
+            chatId: repliesID, name: "Onboarding Review", is_group: true,
             last_message_time: last?.timestamp,
             last_message_sender: last?.sender,
             last_message_preview: last?.content)
     }
 
     /// History sidebar row: preview/sender/time from the long tail.
-    public static func historyChat(now: Date = Date()) -> ChatItem {
+    public static func historyChat(now: Date = DemoClock.now) -> ChatItem {
         let msgs = historyMessages(now: now)
         let last = msgs.last
         return ChatItem(
-            chatId: historyID, name: "Demo — Long History", is_group: true,
+            chatId: historyID, name: "Release Train", is_group: true,
             last_message_time: last?.timestamp,
             last_message_sender: last?.sender,
             last_message_preview: last?.content)
     }
 
     /// Bot-posts sidebar row: preview/sender/time from the bot thread's tail.
-    public static func botPostsChat(now: Date = Date()) -> ChatItem {
+    public static func botPostsChat(now: Date = DemoClock.now) -> ChatItem {
         let msgs = botPostsMessages(now: now)
         let last = msgs.last
         return ChatItem(
-            chatId: botpostsID, name: "Demo — Bot Posts", is_group: true,
+            chatId: botpostsID, name: "Build Alerts", is_group: true,
             last_message_time: last?.timestamp,
             last_message_sender: last?.sender,
             last_message_preview: last?.content)
@@ -157,22 +157,22 @@ public enum DemoData {
     }
 
     /// Inline-docs sidebar row: preview/sender/time from the docs tail.
-    public static func docsChat(now: Date = Date()) -> ChatItem {
+    public static func docsChat(now: Date = DemoClock.now) -> ChatItem {
         let msgs = docsMessages(now: now)
         let last = msgs.last
         return ChatItem(
-            chatId: docsID, name: "Demo — Shared Docs", is_group: true,
+            chatId: docsID, name: "Launch Checklist", is_group: true,
             last_message_time: last?.timestamp,
             last_message_sender: last?.sender,
             last_message_preview: last?.content)
     }
 
     /// Showcase sidebar row: preview/sender/time from the showcase tail.
-    public static func showcaseChat(now: Date = Date()) -> ChatItem {
+    public static func showcaseChat(now: Date = DemoClock.now) -> ChatItem {
         let msgs = showcaseMessages(now: now)
         let last = msgs.last
         return ChatItem(
-            chatId: showcaseID, name: "Demo — Showcase", is_group: true,
+            chatId: showcaseID, name: "Product Team", is_group: true,
             last_message_time: last?.timestamp,
             last_message_sender: last?.sender,
             last_message_preview: last?.content)
@@ -192,7 +192,7 @@ public enum DemoData {
             TeamChannel(channelId: "demo-chan-long", name: "Release Review"),
         ]),
         TeamItem(teamId: "demo-team-design", name: "Design", channels: [
-            TeamChannel(channelId: "demo-chan-crit", name: "Crit"),
+            TeamChannel(channelId: "demo-chan-crit", name: "Design Critique"),
         ]),
     ]
 
@@ -461,10 +461,10 @@ public enum DemoData {
     /// name; blank returns every row. Off-main safe (literals only).
     public static func fileSearchResponse(for query: String) -> FileSearchResponse {
         // Search rows name the conversation each file was shared in.
-        let rows = designFiles.map { $0.withSource(name: "Demo — Design Sync", id: "demo") }
+        let rows = designFiles.map { $0.withSource(name: "Design Sync", id: "demo") }
             + [avaFile.withSource(name: "Ava Lindqvist", id: "demo-2"),
                planFile.withSource(name: "Engineering > #General", id: "demo-chan-general"),
-               specFile.withSource(name: "Demo — Design Sync", id: "demo")]
+               specFile.withSource(name: "Design Sync", id: "demo")]
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let files = q.isEmpty ? rows : rows.filter { $0.name.lowercased().contains(q) }
         return FileSearchResponse(ok: true, query: query, files: files)
@@ -491,7 +491,7 @@ public enum DemoData {
     /// Canned unified Files surface for `--show-files` (top10-files
     /// lane): two conversation legs (chat + channel) plus drive recents.
     public static let unifiedDemoSpecs: [UnifiedSourceSpec] = [
-        UnifiedSourceSpec(kind: .chat, id: demoID, name: "Demo — Design Sync"),
+        UnifiedSourceSpec(kind: .chat, id: demoID, name: "Design Sync"),
         UnifiedSourceSpec(
             kind: .channel, id: "demo-chan-general",
             name: "Engineering > #General"),
@@ -512,7 +512,7 @@ public enum DemoData {
                     drive_id: "demo-drive-1",
                     created: "2026-09-21T10:02:11Z",
                     modified: "2026-09-21T10:02:11Z", sender: "Tom Becker"),
-                source: .chat, sourceName: "Demo — Design Sync", sourceID: demoID),
+                source: .chat, sourceName: "Design Sync", sourceID: demoID),
             UnifiedFileRow(
                 file: SharedFile(
                     id: "demo-u-chat2", name: "empty-states.png", size: 184320,
@@ -522,7 +522,7 @@ public enum DemoData {
                     drive_id: "demo-drive-1",
                     created: "2026-09-22T08:41:02Z",
                     modified: "2026-09-22T08:41:02Z", sender: "Ava Lindqvist"),
-                source: .chat, sourceName: "Demo — Design Sync", sourceID: demoID),
+                source: .chat, sourceName: "Design Sync", sourceID: demoID),
             UnifiedFileRow(
                 file: SharedFile(
                     id: "demo-u-chan1", name: "launch-checklist.xlsx", size: 9216,
@@ -539,8 +539,66 @@ public enum DemoData {
                     web_url: "https://example.sharepoint.com/qna-export-sept.csv",
                     drive_id: "demo-drive-9",
                     created: "2026-09-25T09:58:00Z",
-                    modified: "2026-09-25T09:58:00Z"),
+                    modified: "2026-09-25T09:58:00Z", sender: ownerDisplayName),
                 source: .drive, sourceName: "OneDrive"),
+        ] + unifiedDemoLibrary()
+    }
+
+    /// The rest of the demo Recent list: Office documents, PDFs and
+    /// images across chats, channels and OneDrive (older than the four
+    /// rows above, so those keep the top of the recents order).
+    private static func unifiedDemoLibrary() -> [UnifiedFileRow] {
+        let docx = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        let xlsx = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        let pptx = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+        let general = ("Engineering > #General", "demo-chan-general")
+        let shipping = ("Engineering > #Shipping", DemoTeams.threadedChannelID)
+        let mkt = ("Marketing > #Launch Plan", "demo-chan-mkt-launch")
+        func row(_ id: String, _ name: String, _ size: UInt64, _ mime: String, _ modified: String,
+                 by: String, chat: (String, String)? = nil, channel: (String, String)? = nil) -> UnifiedFileRow {
+            let file = SharedFile(
+                id: id, name: name, size: size, mime: mime,
+                web_url: "https://example.sharepoint.com/\(name)",
+                download_url: "https://example.sharepoint.com/download/\(name)",
+                drive_id: channel != nil ? "demo-drive-3" : chat != nil ? "demo-drive-1" : "demo-drive-9",
+                created: modified, modified: modified, sender: by)
+            if let chat { return UnifiedFileRow(file: file, source: .chat, sourceName: chat.0, sourceID: chat.1) }
+            if let channel {
+                return UnifiedFileRow(file: file, source: .channel, sourceName: channel.0, sourceID: channel.1)
+            }
+            return UnifiedFileRow(file: file, source: .drive, sourceName: "OneDrive")
+        }
+        let design = ("Design Sync", demoID)
+        let product = ("Product Team", showcaseID)
+        return [
+            row("demo-u-l01", "Q3 Business Review.pptx", 4_812_544, pptx, "2026-09-24T16:42:00Z",
+                by: "Megan Harper", chat: ("Q3 Review Deck", richID)),
+            row("demo-u-l02", "Release Notes 3.2.docx", 86_016, docx, "2026-09-24T11:05:00Z",
+                by: "Luis Ortega", channel: shipping),
+            row("demo-u-l03", "Onboarding Flow v4.pdf", 2_359_296, "application/pdf", "2026-09-23T15:20:00Z",
+                by: "Ava Lindqvist", chat: design),
+            row("demo-u-l04", "Budget FY27 Draft.xlsx", 312_320, xlsx, "2026-09-23T09:48:00Z",
+                by: ownerDisplayName),
+            row("demo-u-l05", "App Store Screenshots.png", 1_468_006, "image/png", "2026-09-22T17:31:00Z",
+                by: "Ava Lindqvist", channel: shipping),
+            row("demo-u-l06", "Launch Plan.docx", 142_336, docx, "2026-09-22T13:02:00Z",
+                by: "Paula Norris", channel: mkt),
+            row("demo-u-l07", "Customer Interviews Summary.docx", 64_512, docx, "2026-09-21T10:15:00Z",
+                by: "Megan Harper", chat: product),
+            row("demo-u-l08", "Hiring Pipeline.xlsx", 48_128, xlsx, "2026-09-19T15:44:00Z",
+                by: "Paula Norris"),
+            row("demo-u-l09", "Offsite Agenda.pdf", 204_800, "application/pdf", "2026-09-18T12:10:00Z",
+                by: "Tom Becker", chat: ("Offsite Crew", mediaID)),
+            row("demo-u-l10", "Architecture Overview.pptx", 3_145_728, pptx, "2026-09-17T09:30:00Z",
+                by: "Tom Becker", channel: general),
+            row("demo-u-l11", "Brand Guidelines 2026.pdf", 7_864_320, "application/pdf", "2026-09-16T14:25:00Z",
+                by: "Ava Lindqvist", channel: mkt),
+            row("demo-u-l12", "Sprint 12 Burndown.xlsx", 27_648, xlsx, "2026-09-15T17:05:00Z",
+                by: ownerDisplayName, channel: general),
+            row("demo-u-l13", "Icon Set Export.png", 655_360, "image/png", "2026-09-12T11:40:00Z",
+                by: "Ava Lindqvist", chat: design),
+            row("demo-u-l14", "Security Review Checklist.docx", 39_936, docx, "2026-09-10T08:55:00Z",
+                by: "Luis Ortega", channel: general),
         ]
     }
 
@@ -557,7 +615,7 @@ public enum DemoData {
         func path(_ name: String) -> String { UnifiedFilesStore.demoSaveDestination(filename: name) }
         return [
             FileTransfer(id: "demo-t-up", name: "sprint-review-notes.md", direction: .upload,
-                         origin: "Demo — Design Sync", originID: demoID, size: 6144,
+                         origin: "Design Sync", originID: demoID, size: 6144,
                          date: base.addingTimeInterval(day + 3_600), progress: 0.7),
             FileTransfer(id: "demo-t-run", name: "roadmap-q4.csv", direction: .download,
                          origin: "OneDrive", size: 20480,
@@ -566,7 +624,7 @@ public enum DemoData {
                          origin: "Planner", path: path("planner-export.csv"), size: 3072,
                          date: base.addingTimeInterval(day), progress: 1, status: .done),
             FileTransfer(id: "demo-d-chat", name: "retro-notes.txt", direction: .download,
-                         origin: "Demo — Design Sync", originID: demoID, path: path("retro-notes.txt"),
+                         origin: "Design Sync", originID: demoID, path: path("retro-notes.txt"),
                          size: 1843, date: base.addingTimeInterval(7_200), progress: 1, status: .done),
             FileTransfer(id: "demo-d-chan", name: "release-plan.md", direction: .download,
                          origin: "Engineering > #General", originID: "demo-chan-general",
@@ -634,7 +692,7 @@ public enum DemoData {
     /// shortcodes, a captioned photo, an image-only bubble, a broken-image
     /// failure, and an emoticon-sized reply. Fully offline (`demo://`
     /// fixtures). Timestamps float off now (Today).
-    public static func mediaMessages(now: Date = Date()) -> [ChatMessage] {
+    public static func mediaMessages(now: Date = DemoClock.now) -> [ChatMessage] {
         func iso(_ d: Date) -> String { demoISO.string(from: d) }
         func at(h: Int, m: Int) -> Date {
             var cal = Calendar.current
@@ -684,7 +742,7 @@ public enum DemoData {
     /// Reactions thread (om-reactions): reacted bubbles (single + multi
     /// counts), one bare bubble for the picker shot. Fully offline.
     /// Timestamps float off now (Today).
-    public static func reactionsMessages(now: Date = Date()) -> [ChatMessage] {
+    public static func reactionsMessages(now: Date = DemoClock.now) -> [ChatMessage] {
         func iso(_ d: Date) -> String { demoISO.string(from: d) }
         func at(h: Int, m: Int) -> Date {
             var cal = Calendar.current
@@ -728,7 +786,7 @@ public enum DemoData {
     /// reply-to-reply, one own reply, and one reply whose parent aged out
     /// of history (evicted-parent fallback). Fully offline. Timestamps
     /// float off now (Today). `raw` mirrors the core quote-block format.
-    public static func repliesMessages(now: Date = Date()) -> [ChatMessage] {
+    public static func repliesMessages(now: Date = DemoClock.now) -> [ChatMessage] {
         func iso(_ d: Date) -> String { demoISO.string(from: d) }
         func at(h: Int, m: Int) -> Date {
             var cal = Calendar.current
@@ -776,7 +834,7 @@ public enum DemoData {
     /// (38 bubbles) exercising the few-days window + day separators at every
     /// scroll state. Fully offline. Timestamps float off now so the
     /// separators always read <date>/Yesterday/Today.
-    public static func historyMessages(now: Date = Date()) -> [ChatMessage] {
+    public static func historyMessages(now: Date = DemoClock.now) -> [ChatMessage] {
         func iso(_ d: Date) -> String { demoISO.string(from: d) }
         func at(dayOffset: Int, h: Int, m: Int) -> Date {
             var cal = Calendar.current
@@ -820,10 +878,10 @@ public enum DemoData {
             (0, 9, 15, "Megan Harper", "Bottom: the tail of the last 24 hours.", false),
             (0, 9, 28, "Tom Becker", "Screenshots at every state, all viewed.", false),
             (0, 9, 41, "Megan Harper", "One more check: the error state with its Try Again.", false),
-            (0, 10, 2, "Me", "Covered — it shows when you're offline, too.", true),
-            (0, 10, 20, "Tom Becker", "Then we're good to go. Shipping it.", false),
-            (0, 10, 35, "Megan Harper", "Release review complete. Great thread, everyone.", false),
-            (0, 10, 41, "Me", "Archiving these notes — see you at the next review.", true),
+            (0, 9, 52, "Me", "Covered — it shows when you're offline, too.", true),
+            (0, 10, 4, "Tom Becker", "Then we're good to go. Shipping it.", false),
+            (0, 10, 12, "Megan Harper", "Release review complete. Great thread, everyone.", false),
+            (0, 10, 18, "Me", "Archiving these notes — see you at the next review.", true),
         ]
         return script.enumerated().map { i, line in
             ChatMessage(
@@ -839,7 +897,7 @@ public enum DemoData {
     /// placeholder), and a mixed deploy note (prose + one row). Fully
     /// offline. Timestamps float off now (Today). `content` mirrors
     /// core strip semantics (tags removed, no spaces added).
-    public static func botPostsMessages(now: Date = Date()) -> [ChatMessage] {
+    public static func botPostsMessages(now: Date = DemoClock.now) -> [ChatMessage] {
         func iso(_ d: Date) -> String { demoISO.string(from: d) }
         func at(h: Int, m: Int) -> Date {
             var cal = Calendar.current
@@ -882,7 +940,7 @@ public enum DemoData {
     /// ids match `designFiles` (the Shared tab for this chat), so rows
     /// resolve fully offline. Timestamps float off now (Today). `content`
     /// mirrors core strip semantics (attachment tags remove cleanly).
-    public static func docsMessages(now: Date = Date()) -> [ChatMessage] {
+    public static func docsMessages(now: Date = DemoClock.now) -> [ChatMessage] {
         func iso(_ d: Date) -> String { demoISO.string(from: d) }
         func at(h: Int, m: Int) -> Date {
             var cal = Calendar.current
@@ -918,7 +976,7 @@ public enum DemoData {
     /// Seen via the demo adopt), and day separators (Yesterday/Today).
     /// Fully offline. Timestamps float off now. Zero real data: the same
     /// fictional crew as every other demo thread.
-    public static func showcaseMessages(now: Date = Date()) -> [ChatMessage] {
+    public static func showcaseMessages(now: Date = DemoClock.now) -> [ChatMessage] {
         func iso(_ d: Date) -> String { demoISO.string(from: d) }
         func at(dayOffset: Int, h: Int, m: Int) -> Date {
             var cal = Calendar.current
@@ -1012,7 +1070,7 @@ public enum DemoData {
     /// numbers in the text so shots show their position. Fully offline.
     /// Bigger than every initial-load cap (open 3×50, day-load 4×50,
     /// 72h window), so window math always has older pages waiting.
-    public static func longChannelMessages(now: Date = Date()) -> [ChatMessage] {
+    public static func longChannelMessages(now: Date = DemoClock.now) -> [ChatMessage] {
         func iso(_ d: Date) -> String { demoISO.string(from: d) }
         func at(dayOffset: Int, minutes: Int) -> Date {
             var cal = Calendar.current
@@ -1154,24 +1212,37 @@ public enum DemoData {
     private static let demoPageBodies: [String: (title: String, html: String)] = [
         "demo-page-kickoff": ("Kickoff Notes",
             "<html><head><title>Kickoff Notes</title></head><body>" +
-                "<h1>Kickoff Notes</h1>" +
-                "<p>Goals: ship the chat window, keep edits in place.</p>" +
-                "<p>Owners: Megan (design), Tom (render), Me (core).</p>" +
+                "<p>Onboarding refresh \u{00B7} kickoff held Monday with design, engineering and support.</p>" +
+                "<h2>Goals</h2>" +
+                "<ul><li>Cut time to first message from 4 minutes to under 90 seconds.</li>" +
+                "<li>Replace the six-step setup with three screens and a skip option.</li>" +
+                "<li>Ship to 10% of new sign-ups before the October release.</li></ul>" +
+                "<h2>Milestones</h2>" +
+                "<table><tr><th>Milestone</th><th>Owner</th><th>Date</th></tr>" +
+                "<tr><td>Final mocks approved</td><td>Ava Lindqvist</td><td>Oct 2</td></tr>" +
+                "<tr><td>Sign-in error states</td><td>Tom Becker</td><td>Oct 7</td></tr>" +
+                "<tr><td>Localized copy</td><td>Hannah Moore</td><td>Oct 9</td></tr>" +
+                "<tr><td>10% rollout</td><td>Megan Harper</td><td>Oct 14</td></tr></table>" +
+                "<h2>Decisions</h2>" +
+                "<ul><li>Keep the progress dots on every step.</li>" +
+                "<li>Support gets a preview build a week before rollout.</li></ul>" +
+                "<h2>Action items</h2>" +
+                "<p data-tag=\"to-do:completed\">Share the kickoff deck with the wider team</p>" +
+                "<p data-tag=\"to-do\">Book usability sessions with five new customers</p>" +
+                "<p data-tag=\"to-do\">Draft help-center article for the new setup flow</p>" +
+                "<p data-tag=\"to-do\">Confirm analytics events with the data team</p>" +
                 "</body></html>"),
         "demo-page-empty": ("Empty States Review",
             "<html><head><title>Empty States Review</title></head><body>" +
-                "<h1>Empty States Review</h1>" +
-                "<p>Illustration approved. Copy still TBD.</p>" +
+                                "<p>Illustration approved. Copy still TBD.</p>" +
                 "</body></html>"),
         "demo-page-roadmap": ("Roadmap Draft",
             "<html><head><title>Roadmap Draft</title></head><body>" +
-                "<h1>Roadmap Draft</h1>" +
-                "<p>Q4: notes, search, polish.</p>" +
+                                "<p>Q4: notes, search, polish.</p>" +
                 "</body></html>"),
         "demo-page-onboard": ("Onboarding",
             "<html><head><title>Onboarding</title></head><body>" +
-                "<h1>Onboarding</h1>" +
-                "<p>Welcome! Start with the Design Sync notebook.</p>" +
+                                "<p>Welcome! Start with the Design Sync notebook.</p>" +
                 "</body></html>"),
     ]
 

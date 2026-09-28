@@ -94,8 +94,9 @@ struct FilesDetailPane: View {
     private func content(_ m: WindowModel, _ app: AppState) -> some View {
         let source = FilesSection.source(m)
         let items = section.items(source, app)
+        let storeState = section.state(source, app)
         let state = FilesPaneState.resolve(
-            section.state(source, app), count: items.count, forced: m.forced(.files),
+            storeState, count: items.count, forced: m.forced(.files),
             forcedOffline: m.options.demo && section.evidence.offline, offline: m.connection == .offline)
         let shown = state == .files ? items : []
         let selection = Binding<Set<String>>(
@@ -112,6 +113,13 @@ struct FilesDetailPane: View {
                 guard !m.options.demo else { return }
                 if isChannel { library.refresh() } else { unified.refresh() }
             }
+            // R12: a refresh (or an uncached folder) loads behind the rows.
+            .refreshStatus(state == .files && storeState == .loading,
+                           failure: state == .files ? FilesPaneState.failure(storeState) : nil,
+                           label: "Updating Files", retry: {
+                               guard !m.options.demo else { return }
+                               if isChannel { library.refresh() } else { unified.refresh() }
+                           })
         }
     }
 }
@@ -158,7 +166,8 @@ struct FileTableView: View {
             TableColumn("Modified", value: \.modifiedKey) { f in
                 Text(FilesFormat.date(f.modified)).foregroundStyle(.secondary).monospacedDigit().lineLimit(1)
             }
-            .width(min: 110, ideal: 160)
+            // Fits "Sep 25, 2026 at 10:58 AM" without truncating.
+            .width(min: 170, ideal: 190)
             TableColumn("Modified By", value: \.modifiedBy) { f in
                 Text(f.modifiedBy).foregroundStyle(.secondary).lineLimit(1)
             }
@@ -179,7 +188,13 @@ struct FileTableView: View {
             let args = items.filter { ids.contains($0.id) }.map { argPrefix + $0.id }
             if !args.isEmpty { FilesContextMenu(arg: FilesSection.multiArg(args)) }
         } primaryAction: { ids in
-            if let id = ids.first { run(FilesCommands.open, id, m) }
+            // Double-click / Return opens every selected item (Finder).
+            let args = items.filter { ids.contains($0.id) }.map { argPrefix + $0.id }
+            if args.count > 1 {
+                _ = m.provider(.files).perform(FilesCommands.open, arg: FilesSection.multiArg(args), m)
+            } else if let id = ids.first {
+                run(FilesCommands.open, id, m)
+            }
         }
         .onKeyPress(.space) {
             guard let id = items.first(where: { selection.contains($0.id) })?.id else { return .ignored }
@@ -214,7 +229,7 @@ struct FileTableView: View {
         case .files:
             EmptyView()
         case .loading:
-            LoadingPane()
+            LoadingPane("Loading Files\u{2026}")
         case .error(let message):
             ErrorPane(title: FilesPaneState.errorTitle, message: message, retry: retry)
         case .empty:

@@ -24,6 +24,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     public init(args: [String]) {
         let options = LaunchOptions(args: args)
         self.options = options
+        // Evidence captures stamp demo data from a pinned working-hours
+        // moment (set before AppState builds any demo data).
+        if options.evidence, options.demo { DemoClock.pinForEvidence() }
         // Core restores its own last chat at startup (SelectionRestore)
         // and would open it over the window's selection. Hand it the
         // chat the window will show so both agree (`--chat` wins there).
@@ -75,8 +78,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         CallEvidence.prepare(options)
         if options.evidence {
-            // Frozen at launch: demo data is stamped relative to now.
-            RelativeClock.shared.pin(Date())
+            // Frozen at launch: demo data is stamped relative to the
+            // same pinned demo moment.
+            RelativeClock.shared.pin(DemoClock.now)
         } else {
             RelativeClock.shared.start()
         }
@@ -104,7 +108,15 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         // After content is installed: the content controller resizes
         // the window to its fitting size when it is set.
         wc.placeWindow()
-        if options.evidence {
+        if options.evidenceActive {
+            // Active-appearance capture, requested for unattended runs.
+            wc.window?.makeKeyAndOrderFront(nil)
+            NSApp.activate()
+            // No field focused: a key window's text view draws the
+            // insertion point and input-source indicator in the shot.
+            wc.window?.makeFirstResponder(nil)
+            DispatchQueue.main.async { [weak wc] in wc?.window?.makeFirstResponder(nil) }
+        } else if options.evidence {
             // Evidence captures run while the owner uses this Mac: order
             // the window in without activating the app or taking key, so
             // no keystroke ever lands in it (ui-shot.sh captures by

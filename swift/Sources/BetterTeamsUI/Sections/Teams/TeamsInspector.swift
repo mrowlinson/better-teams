@@ -60,7 +60,7 @@ struct ThreadInspector: View {
             .padding(.vertical, 10)
             Divider()
             if !loaded {
-                LoadingPane()
+                LoadingPane("Loading Members\u{2026}")
             } else if root == nil {
                 EmptyPane("Post No Longer Available", systemImage: "exclamationmark.bubble",
                           message: "It may have been deleted, or it's older than the loaded history.")
@@ -188,7 +188,7 @@ struct TeamInspector: View {
     private var content: some View {
         switch roster.state {
         case .loading where roster.members.isEmpty:
-            LoadingPane()
+            LoadingPane("Loading Members\u{2026}")
         case .error(let msg) where roster.members.isEmpty:
             ErrorPane(title: "Couldn't Load Members",
                       message: model?.connection == .offline ? "You're offline." : msg) { roster.refresh() }
