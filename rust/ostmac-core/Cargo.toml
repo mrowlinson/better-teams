@@ -1,0 +1,20 @@
+[package]
+name = "ostmac-core"
+version = "1.0.0"
+edition = "2021"
+description = "Minimal embeddable surface over vendored ost: auth device-code, chat list, messages, send, trouter events"
+license = "MIT"
+
+[lib]
+name = "ostmac_core"
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+ost = { package = "teams-cli", path = "../ost", features = ["audio"] }
+base64 = "0.22"
+rand = "0.8"
+sha2 = "0.10"
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "time", "net"] }
+reqwest = { version = "0.11", features = ["json", "native-tls"], default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
