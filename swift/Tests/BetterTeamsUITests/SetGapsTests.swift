@@ -111,13 +111,17 @@ final class SetGapsTests: XCTestCase {
         func scripts(_ a: FrameApp) -> Int {
             host.webView(.app(a.id))?.configuration.userContentController.userScripts.count ?? -1
         }
+        // Stylesheet + SPA route hook (re-sheet and re-probe on in-page navigation).
         XCTAssertEqual(scripts(direct), 0, "control: standalone hosts load as they are")
-        XCTAssertEqual(scripts(teamsApp), 1)
+        XCTAssertEqual(scripts(teamsApp), 2)
         XCTAssertTrue(FrameChromeStyle.injectJS.contains("app-bar"))
+        for hook in ["pushState", "replaceState", "popstate", "hashchange", FrameChromeStyle.routeMessage] {
+            XCTAssertTrue(FrameChromeStyle.routeHookJS.contains(hook), hook)
+        }
         host.hideChrome = false
         XCTAssertEqual(scripts(teamsApp), 0)
         host.hideChrome = true
-        XCTAssertEqual(scripts(teamsApp), 1)
+        XCTAssertEqual(scripts(teamsApp), 2)
     }
 
     /// §9.4 Advanced: Rebuild Offline Index and Reset Caches do nothing

@@ -721,6 +721,13 @@ public enum RustCore {
         }
     }
 
+    /// 1:1 video call with live media (VIDEO1).
+    public static func callPlaceLiveVideo(threadID: String, timeoutSecs: Int32 = 30) throws -> CallResult {
+        try threadID.withCString { ptr in
+            try call(ostmac_call_place_live_video(ptr, timeoutSecs), as: CallResult.self)
+        }
+    }
+
     public static func callEchoLive(timeoutSecs: Int32 = 30) throws -> CallResult {
         try call(ostmac_call_echo_live(timeoutSecs), as: CallResult.self)
     }
@@ -731,6 +738,11 @@ public enum RustCore {
 
     public static func callAcceptLive() throws -> CallResult {
         try call(ostmac_call_accept_live(), as: CallResult.self)
+    }
+
+    /// Accept the ringing call as a video call with live media (VIDEO1).
+    public static func callAcceptLiveVideo() throws -> CallResult {
+        try call(ostmac_call_accept_live_video(), as: CallResult.self)
     }
 
     public static func callEnd() throws -> CallResult {

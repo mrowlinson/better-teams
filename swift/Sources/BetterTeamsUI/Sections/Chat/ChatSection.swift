@@ -149,6 +149,8 @@ final class ChatSection: SectionProvider, InspectorCapable {
             state.filter = ChatFilter(arg: arg ?? "all")
         case ChatCommands.audioCall:
             return ConversationToolbar.startAudioCall(m) != nil
+        case ChatCommands.videoCall:
+            return ConversationToolbar.startVideoCall(m) != nil
         case ChatCommands.catchUp:
             guard let id = ConversationToolbar.chatID(m) else { return false }
             // The Catch Up inspector lives in Chat: other hosts (Activity,
@@ -193,9 +195,11 @@ final class ChatSection: SectionProvider, InspectorCapable {
             return CommandValidation(enabled: true, title: m.graph.chats.isPinned(id) ? "Unpin Chat" : "Pin Chat")
         case ChatCommands.audioCall:
             return CommandValidation(enabled: ConversationToolbar.canStartCall(m))
+        case ChatCommands.videoCall:
+            // 1:1 chats only: group and meeting video need core source
+            // subscription (not built); the tooltip gives the reason.
+            return CommandValidation(enabled: ConversationToolbar.canStartVideoCall(m))
         default:
-            // Video Call: the core has no video call-start path (P4a gap
-            // 1); the command's tooltip gives the reason.
             return .disabled
         }
     }

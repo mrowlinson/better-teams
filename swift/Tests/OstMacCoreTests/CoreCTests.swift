@@ -184,7 +184,7 @@ final class CoreCTests: XCTestCase {
 
     func testCallTargetResolverOneToOneGroupDemoAndEmpty() async throws {
         let ava = TeamMember(id: "m1", displayName: "Ava Stone", userId: "u-ava")
-        let tom = TeamMember(id: "m2", displayName: "Tom Chen", email: "tom@x.io")
+        let tom = TeamMember(id: "m2", displayName: "Tom Carr", email: "tom@x.io")
         let nobody = TeamMember(id: "m3", displayName: "No Ref")
         let seen = CoreCBox<[String]>([])
         let one = try await CallTargetResolver.resolve(

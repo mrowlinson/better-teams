@@ -1121,6 +1121,18 @@ Notes:
     against a tenant (the overlap form of the schedule filter is not the
     docs' example shape; Planner assign needs `Tasks.ReadWrite`/Group
     scopes already used by complete).
+68. [minor] `src/calling/signaling.rs` — **accept an incoming call as
+    video (video1 lane)**. `accept_call` hardcoded
+    `acceptedCallModalities: ["Audio"]`, so an answering endpoint could
+    never accept a video call. New `accept_call_with_video(http,
+    skype_token, notification, video)` sends `["Audio","Video"]` when
+    `video` is set (pure helper `accepted_call_modalities`);
+    `accept_call` keeps its signature and delegates with `false` (no
+    behavior change for existing callers). The SDP answer already
+    carried the video m-line. Outgoing 1:1 video needed no ost change
+    (`invite_user(.., include_video)` existed). Test pinned in
+    `ostmac-core` (`video_call_offer_answer_carry_video_mline`). NOT
+    live-verified against a tenant.
 
 ## Upstream PRs, wave 9 (2026-09-25 R10 audit; base 0892144; origin/main still 0892144)
 

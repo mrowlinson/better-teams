@@ -127,7 +127,8 @@ struct CallRailItem: View {
         Button {
             navigator.select(section: .call)
         } label: {
-            RailButtonLabel(title: session.indicatorText, symbol: "phone.connection.fill", badge: nil)
+            RailButtonLabel(title: session.indicatorText, symbol: session.video ? "video.fill" : "phone.connection.fill",
+                            badge: nil)
                 .monospacedDigit()
         }
         .buttonStyle(RailButtonStyle(selected: selected, height: height))

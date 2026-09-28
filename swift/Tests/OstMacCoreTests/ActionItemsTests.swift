@@ -79,7 +79,7 @@ final class ActionItemsTests: XCTestCase {
     func testCueTranscriptTailCap() {
         let long = (0 ..< 400).map {
             TranscriptCue(
-                id: $0, speaker: "Sam Lee", startMs: $0 * 1000,
+                id: $0, speaker: "Sam Ray", startMs: $0 * 1000,
                 endMs: $0 * 1000 + 500,
                 text: String(repeating: "word ", count: 20))
         }
@@ -87,7 +87,7 @@ final class ActionItemsTests: XCTestCase {
         XCTAssertTrue(t.truncated)
         XCTAssertLessThanOrEqual(t.text.count, CatchUp.maxTranscriptChars)
         // Cut lands on a line boundary: the first line is whole.
-        XCTAssertTrue(t.text.hasPrefix("Sam Lee ["))
+        XCTAssertTrue(t.text.hasPrefix("Sam Ray ["))
         // Small inputs stay whole and unflagged.
         let small = ActionItems.transcript(from: [cues()[0]])
         XCTAssertFalse(small.truncated)
@@ -114,7 +114,7 @@ final class ActionItemsTests: XCTestCase {
         // Truncated transcripts name the fragment scope.
         let long = ActionItems.transcript(from: (0 ..< 400).map {
             TranscriptCue(
-                id: $0, speaker: "Sam Lee", startMs: $0 * 1000,
+                id: $0, speaker: "Sam Ray", startMs: $0 * 1000,
                 endMs: $0 * 1000 + 500,
                 text: String(repeating: "word ", count: 20))
         })

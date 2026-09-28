@@ -3601,6 +3601,19 @@ pub extern "C" fn ostmac_call_place_live(
     }
 }
 
+/// Place a 1:1 video call with live media (Audio + Video modalities).
+/// See [`calls::call_place_live_video_json`].
+#[no_mangle]
+pub extern "C" fn ostmac_call_place_live_video(
+    thread_id: *const c_char,
+    timeout_secs: c_int,
+) -> *mut c_char {
+    match cstr_to_string(thread_id) {
+        Ok(t) => string_to_c(calls::call_place_live_video_json(&t, timeout_secs as i32)),
+        Err(e) => string_to_c(err_json("arg", e)),
+    }
+}
+
 /// Place the echo-bot test call with live media. See [`calls::call_echo_live_json`].
 #[no_mangle]
 pub extern "C" fn ostmac_call_echo_live(timeout_secs: c_int) -> *mut c_char {
@@ -3618,6 +3631,13 @@ pub extern "C" fn ostmac_call_accept() -> *mut c_char {
 #[no_mangle]
 pub extern "C" fn ostmac_call_accept_live() -> *mut c_char {
     string_to_c(calls::call_accept_live_json())
+}
+
+/// Accept the ringing incoming call with live media as a video call.
+/// See [`calls::call_accept_live_video_json`].
+#[no_mangle]
+pub extern "C" fn ostmac_call_accept_live_video() -> *mut c_char {
+    string_to_c(calls::call_accept_live_video_json())
 }
 
 /// End/decline the active call. See [`calls::call_end_json`].

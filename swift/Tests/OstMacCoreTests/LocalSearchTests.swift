@@ -282,4 +282,37 @@ final class LocalSearchTests: XCTestCase {
         let evil = LocalSearchStore.defaultIndexURL(for: "../../x")
         XCTAssertEqual(evil?.lastPathComponent, "search-index..._.._x.omix")
     }
+
+    /// Rebuild Index walks every stored chat (not just the open one),
+    /// keeps live history/deletes that land mid-pass, and a cancelled
+    /// pass leaves the live index untouched.
+    func testRebuildWalksEveryCachedThread() async {
+        let live = LocalSearchStore()
+        live.index(chatID: "c1", messages: [Self.msg("m1", "Ann", "2026-01-01T00:00:00Z", "ship alpha")])
+        live.index(chatID: "c2", teamID: "t", channelID: "ch",
+                   messages: [Self.msg("m2", "Bob", "2026-01-02T00:00:00Z", "ship beta"),
+                              Self.msg("m3", "Bob", "2026-01-03T00:00:00Z", "gamma")])
+        let threads = live.cachedThreads()
+        XCTAssertEqual(threads.map(\.chatID), ["c1", "c2"])
+        XCTAssertEqual(threads[1].channelID, "ch")
+
+        let run = SearchIndexRebuild()
+        var rebuilt: LocalSearchStore?
+        run.start(threads: threads) { fresh in rebuilt = fresh; return .finished(docs: fresh.docCount) }
+        XCTAssertEqual(run.progress, .init(done: 0, total: 2))
+        run.noteRemoved(chatID: "c2", messageID: "m3")
+        run.noteIndexed(chatID: "c3", messages: [Self.msg("m4", "Cy", "2026-01-04T00:00:00Z", "ship delta")])
+        await run.wait()
+        XCTAssertNil(run.progress)
+        XCTAssertEqual(run.outcome, .finished(docs: 3))
+        guard let rebuilt else { return XCTFail("no rebuilt store") }
+        await rebuilt.search(query: "ship")
+        XCTAssertEqual(rebuilt.total, 3)
+
+        run.start(threads: threads) { _ in XCTFail("cancelled pass finished"); return .cancelled }
+        run.cancel()
+        await run.wait()
+        XCTAssertEqual(run.outcome, .cancelled)
+        XCTAssertEqual(live.docCount, 3, "control: live index untouched")
+    }
 }

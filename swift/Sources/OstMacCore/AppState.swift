@@ -67,6 +67,8 @@ public final class AppState: ObservableObject {
     /// for offline-first merge. Fed by history fetches (`conv`
     /// onHistory) + realtime ingest; persists per-account OMIX.
     public let localSearch = LocalSearchStore()
+    /// Settings ▸ Advanced ▸ Rebuild Index pass (progress + cancel).
+    public let searchIndexRebuild = SearchIndexRebuild()
     /// Sticky palette search memory (gap-g6g7): scope chip + last
     /// query + 5 recents. Device-scoped (global, like picker flags).
     /// Demo: memory-only (never reads or writes the real recents).
@@ -1005,6 +1007,7 @@ public final class AppState: ObservableObject {
     }
 
     public func shutdown() {
+        searchIndexRebuild.cancel()
         stateTimer?.invalidate()
         stateTimer = nil
         bgTimer?.invalidate()
@@ -1655,6 +1658,7 @@ public final class AppState: ObservableObject {
     private func indexHistory(chatID: String, messages: [ChatMessage]) {
         guard !messages.isEmpty else { return }
         localSearch.index(chatID: chatID, messages: messages)
+        searchIndexRebuild.noteIndexed(chatID: chatID, messages: messages)
         searchIndexDocs = localSearch.docCount
         searchIndexError = nil
         scheduleSearchIndexSave()
@@ -1663,27 +1667,43 @@ public final class AppState: ObservableObject {
     /// Drop one doc after a confirmed delete (conv.onDelete).
     private func dropIndexed(chatID: String, messageID: String) {
         localSearch.remove(chatID: chatID, messageID: messageID)
+        searchIndexRebuild.noteRemoved(chatID: chatID, messageID: messageID)
         searchIndexDocs = localSearch.docCount
         scheduleSearchIndexSave()
     }
 
-    /// Settings ▸ Advanced ▸ Rebuild Offline Index: drop every indexed
-    /// message, re-index the open conversation and save the fresh index
-    /// now; other chats index again as their history loads. No-op in demo.
+    /// Settings ▸ Advanced ▸ Rebuild Offline Index: re-index every chat
+    /// and channel stored on this Mac (the index's own docs; the open
+    /// conversation's loaded messages win over their stored copies) in a
+    /// background pass, then swap the fresh index in and save it. Search
+    /// answers from the old index until then; cancel (quit, account
+    /// switch) leaves it untouched. No-op in demo.
     public func rebuildSearchIndex() {
         guard !isDemo else { return }
-        searchIndexSaveTask?.cancel()
-        searchIndexSaveTask = nil
-        localSearch.removeAll()
+        var threads = localSearch.cachedThreads()
         if let id = conv.chatID, !conv.messages.isEmpty {
-            localSearch.index(chatID: id, messages: conv.messages)
+            let open = Set(conv.messages.map(\.id))
+            if let i = threads.firstIndex(where: { $0.chatID == id }) {
+                threads[i].messages = threads[i].messages.filter { !open.contains($0.id) } + conv.messages
+            } else {
+                threads.append(.init(chatID: id, messages: conv.messages))
+            }
         }
-        searchIndexDocs = localSearch.docCount
-        do {
-            try localSearch.saveDefault(for: searchIndexAccountID)
-            searchIndexError = nil
-        } catch {
-            searchIndexError = "index save: \(error)"
+        let accountID = searchIndexAccountID
+        searchIndexRebuild.start(threads: threads) { [weak self] fresh in
+            guard let self, self.searchIndexAccountID == accountID else { return .cancelled }
+            self.searchIndexSaveTask?.cancel()
+            self.searchIndexSaveTask = nil
+            self.localSearch.adopt(fresh)
+            self.searchIndexDocs = self.localSearch.docCount
+            do {
+                try self.localSearch.saveDefault(for: accountID)
+                self.searchIndexError = nil
+                return .finished(docs: self.searchIndexDocs)
+            } catch {
+                self.searchIndexError = "index save: \(error)"
+                return .failed("\(error)")
+            }
         }
     }
 
@@ -1713,6 +1733,7 @@ public final class AppState: ObservableObject {
     /// Flush the old account's index, then point the store at the new
     /// account's file (empty when the account never indexed).
     private func switchSearchIndex(to accountID: String) {
+        searchIndexRebuild.cancel()
         searchIndexSaveTask?.cancel()
         searchIndexSaveTask = nil
         do {
@@ -2363,7 +2384,7 @@ public final class AppState: ObservableObject {
                     meetingId: "demo-cal-crit", subject: "Design crit (Room 3B)",
                     start: at(dayOffset: 1, hour: 14, minute: 0),
                     end: at(dayOffset: 1, hour: 15, minute: 0),
-                    organizer: "Lee, Sam"),
+                    organizer: "Ray, Sam"),
                 // Two overlapping online meetings (week-grid lanes).
                 MeetingItem(
                     meetingId: "demo-cal-oneonone", subject: "1:1 with Megan",
@@ -2378,7 +2399,7 @@ public final class AppState: ObservableObject {
                     joinURL: "https://teams.microsoft.com/l/meetup-join/19:demo_roadmap@thread.v2/0",
                     // Organized by the demo owner (Cancel Meeting… by identity).
                     organizer: DemoData.ownerDisplayName,
-                    organizerEmail: "jordan.lee@contoso.example",
+                    organizerEmail: "jordan.fox@contoso.example",
                     isOrganizer: true, isOnline: true),
                 MeetingItem(
                     meetingId: "demo-cal-design", subject: "Design sync",

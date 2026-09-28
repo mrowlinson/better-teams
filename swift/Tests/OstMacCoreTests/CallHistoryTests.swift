@@ -100,13 +100,13 @@ final class CallHistoryTests: XCTestCase {
         s.noteActiveCall(
             CallInfo(
                 id: "c9", dir: "out", peer: "8:orgid:bbb",
-                peerName: "Chen, Tom", thread: "19:t",
+                peerName: "Carr, Tom", thread: "19:t",
                 state: "ringing", startedAt: 1_700_000_000),
             at: t0)
         s.noteActiveCall(
             CallInfo(
                 id: "c9", dir: "out", peer: "8:orgid:bbb",
-                peerName: "Chen, Tom", thread: "19:t",
+                peerName: "Carr, Tom", thread: "19:t",
                 state: "ended", startedAt: 1_700_000_000),
             at: t0.addingTimeInterval(10))
         XCTAssertEqual(s.records.count, 1)
@@ -191,7 +191,7 @@ final class CallHistoryTests: XCTestCase {
         var got: [CallRecord] = []
         s.onRedial = { got.append($0) }
         let record = CallRecord(
-            id: "c1", direction: .outgoing, peerName: "Chen, Tom",
+            id: "c1", direction: .outgoing, peerName: "Carr, Tom",
             thread: "19:t", startedAt: 1, endedAt: 2, durationSecs: 1)
         s.redial(record)
         XCTAssertEqual(got.count, 1)

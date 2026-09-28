@@ -140,7 +140,7 @@ final class ActivityTests: XCTestCase {
     func testLiveReplyToOtherNeverIngests() {
         let s = store()
         ingest(s, live(
-            raw: #"<quote author="Chen, Tom" guid="p1">orig</quote><p>reply</p>"#))
+            raw: #"<quote author="Carr, Tom" guid="p1">orig</quote><p>reply</p>"#))
         XCTAssertTrue(s.visibleItems.isEmpty)
     }
 
@@ -172,7 +172,7 @@ final class ActivityTests: XCTestCase {
     func testHistoryReplyToOtherNeverIngests() {
         let s = store()
         let parent = ChatMessage(
-            id: "p1", sender: "Chen, Tom", timestamp: "t", content: "orig")
+            id: "p1", sender: "Carr, Tom", timestamp: "t", content: "orig")
         let reply = ChatMessage(
             id: "r1", sender: "Doe, Jane", timestamp: "t",
             content: "reply", reply_to: "p1")
@@ -187,7 +187,7 @@ final class ActivityTests: XCTestCase {
         XCTAssertEqual(ActivityStore.quoteParentGuid(raw: raw), "p1")
         XCTAssertEqual(ActivityStore.quoteParentAuthor(raw: raw), "Smith, Alex")
         XCTAssertTrue(ActivityStore.isReplyToOwner(raw: raw, ownName: "Smith, Alex"))
-        XCTAssertFalse(ActivityStore.isReplyToOwner(raw: raw, ownName: "Chen, Tom"))
+        XCTAssertFalse(ActivityStore.isReplyToOwner(raw: raw, ownName: "Carr, Tom"))
         XCTAssertFalse(ActivityStore.isReplyToOwner(raw: nil, ownName: "Smith, Alex"))
         XCTAssertFalse(ActivityStore.isReplyToOwner(raw: "<p>no quote</p>", ownName: "Smith, Alex"))
     }

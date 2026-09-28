@@ -46,7 +46,7 @@ final class P2bSearchActivityTests: XCTestCase {
         XCTAssertNotNil(CommandCatalog.command(ShellCommand.find))
     }
 
-    private func item(_ kind: ActivityKind, actor: String = "Alex Kim", chat: String = "Design Sync",
+    private func item(_ kind: ActivityKind, actor: String = "Alex Kay", chat: String = "Design Sync",
                       reviewed: Bool = false) -> ActivityItem {
         ActivityItem(kind: kind, chatID: "c", messageID: "m", actor: actor, chatName: chat, snippet: "s",
                      at: 1_000, reviewed: reviewed)
@@ -68,12 +68,12 @@ final class P2bSearchActivityTests: XCTestCase {
     }
 
     func testActivityHeadlines() {
-        XCTAssertEqual(ActivityRowModel.headline(item(.mention)), "Alex Kim mentioned you in Design Sync")
-        XCTAssertEqual(ActivityRowModel.headline(item(.reply, chat: "Alex Kim")), "Alex Kim replied to you")
+        XCTAssertEqual(ActivityRowModel.headline(item(.mention)), "Alex Kay mentioned you in Design Sync")
+        XCTAssertEqual(ActivityRowModel.headline(item(.reply, chat: "Alex Kay")), "Alex Kay replied to you")
         XCTAssertEqual(ActivityRowModel.headline(item(.reaction, actor: "")), "Reactions to your message in Design Sync")
-        XCTAssertEqual(ActivityRowModel.headline(item(.reaction, actor: "Alex Kim")),
-                       "Alex Kim reacted to your message in Design Sync")
-        XCTAssertEqual(ActivityRowModel.headline(item(.missedCall, chat: "Alex Kim")), "Missed call from Alex Kim")
+        XCTAssertEqual(ActivityRowModel.headline(item(.reaction, actor: "Alex Kay")),
+                       "Alex Kay reacted to your message in Design Sync")
+        XCTAssertEqual(ActivityRowModel.headline(item(.missedCall, chat: "Alex Kay")), "Missed call from Alex Kay")
         XCTAssertTrue(ActivityRowModel(item(.mention, reviewed: false)).unread)
     }
 

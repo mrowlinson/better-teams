@@ -31,6 +31,33 @@ enum ConversationToolbar {
         chatID(m) != nil && m.app != nil && (m.call.map(\.ended) ?? true)
     }
 
+    /// Video Call (VIDEO1): a 1:1 video call on the conversation's thread
+    /// (`placeLiveVideo`), camera on, hosted like Audio Call. Group chats
+    /// and meetings are refused (no core video for them yet).
+    @discardableResult
+    static func startVideoCall(_ m: WindowModel, show: Bool = true, store: CallStore? = nil) -> CallSession? {
+        guard let id = chatID(m), isOneOnOne(id, m), let slot = store ?? m.app?.call else { return nil }
+        let name = m.graph.chats.chats.first { $0.id == id }?.name ?? ""
+        guard let s = m.beginCall(.person(name: name.isEmpty ? "Call" : name, thread: id),
+                                  show: show, store: store, video: true) else { return nil }
+        slot.placeLiveVideo(threadID: id)
+        return s
+    }
+
+    /// Video Call is available: a call could start and the conversation
+    /// is a 1:1 chat.
+    static func canStartVideoCall(_ m: WindowModel) -> Bool {
+        guard canStartCall(m), let id = chatID(m) else { return false }
+        return isOneOnOne(id, m)
+    }
+
+    /// A known 1:1 chat (not a group chat, not a meeting chat).
+    static func isOneOnOne(_ id: String, _ m: WindowModel) -> Bool {
+        guard !id.hasPrefix("19:meeting_"), let chat = m.graph.chats.chats.first(where: { $0.id == id })
+        else { return false }
+        return !chat.is_group
+    }
+
     /// The conversation the detail pane shows, whatever the host: the
     /// search detail's conversation while searching, the selected chat in
     /// Chat, the opened item's chat in Activity; nil when none is shown.

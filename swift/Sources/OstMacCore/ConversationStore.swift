@@ -1132,8 +1132,8 @@ public final class ConversationStore: ObservableObject {
             ChatMessage(
                 id: "rich-5", sender: "Megan Harper",
                 timestamp: iso(at(dayOffset: 0, h: 9, m: 4)),
-                content: "Thanks. @Jordan Lee can you check the timeline slide before 10?",
-                raw: "<p>Thanks. <at id=\"8:me\">@Jordan Lee</at> can you check the timeline slide before 10?</p>",
+                content: "Thanks. @Jordan Fox can you check the timeline slide before 10?",
+                raw: "<p>Thanks. <at id=\"8:me\">@Jordan Fox</at> can you check the timeline slide before 10?</p>",
                 edited: true),
             ChatMessage(
                 id: "rich-6", sender: "Me",
