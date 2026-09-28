@@ -26,6 +26,10 @@ public final class ConversationStore: ObservableObject {
     @Published public private(set) var error: String?
     @Published public private(set) var didLoad = false
     @Published public private(set) var failedIDs: Set<String> = []
+    /// A background `refresh()` is running behind the bubbles on screen.
+    @Published public private(set) var refreshing = false
+    /// The last background refresh failed (bubbles stay; quiet notice).
+    @Published public private(set) var refreshError: String?
     /// Armed quote-reply target (om-replies): set by the bubble Reply
     /// action, cleared by send/cancel/chat-switch. `send(text:)` posts
     /// through the reply path while set.
@@ -197,6 +201,8 @@ public final class ConversationStore: ObservableObject {
         pageToken = nil
         loading = true
         loadingMore = false
+        refreshing = false
+        refreshError = nil
         error = nil
         replyTarget = nil
         jumpTargetID = nil
@@ -309,6 +315,58 @@ public final class ConversationStore: ObservableObject {
         }
     }
 
+    /// Re-fetch the open chat's newest page behind the bubbles on screen
+    /// (push resync, reconnect): merged in place, nothing cleared, so
+    /// the timeline keeps its rows, scroll and older pages. A failure
+    /// keeps the bubbles (`refreshError`, quiet). Nothing on screen yet
+    /// falls back to `open`; an open already running is left to land.
+    public func refresh(limit: Int32 = 50) {
+        guard !isDemo, let id = chatID else { return }
+        guard !messages.isEmpty else {
+            if !loading { open(chatID: id, limit: limit) }
+            return
+        }
+        let gen = openGeneration
+        refreshGeneration += 1
+        let rgen = refreshGeneration
+        refreshing = true
+        let hop = coreHop
+        Task {
+            do {
+                let resp = try await Task.detached {
+                    try hop.run { try RustCore.messages(chatID: id, limit: limit) }
+                }.value
+                guard gen == self.openGeneration, rgen == self.refreshGeneration else { return }
+                let stamped = Self.stampOwnership(resp.messages, ownName: self.ownDisplayName)
+                let next = Self.mergedNewest(stamped, into: self.messages)
+                if next != self.messages { self.messages = next }
+                self.onHistory?(id, stamped)
+                self.refreshError = nil
+            } catch {
+                guard gen == self.openGeneration, rgen == self.refreshGeneration else { return }
+                self.refreshError = String(describing: error)
+            }
+            self.refreshing = false
+        }
+    }
+
+    private var refreshGeneration = 0
+
+    /// Pure refresh merge: the newest page replaces its own window of
+    /// the list (edits and deletes inside it land), rows older than the
+    /// page stay, and local rows the server can't know yet (pending
+    /// sends) stay at the end. Without overlap (a gap wider than one
+    /// page) the loaded rows stay ahead of the page. Empty page = no-op.
+    public static func mergedNewest(_ page: [ChatMessage], into list: [ChatMessage]) -> [ChatMessage] {
+        guard let first = page.first else { return list }
+        let pageIDs = Set(page.map(\.id))
+        guard let i = list.firstIndex(where: { $0.id == first.id }) else {
+            return prepend(list, to: page)
+        }
+        let pending = list[i...].filter { $0.id.hasPrefix("pending-") && !pageIDs.contains($0.id) }
+        return Array(list[..<i]) + page + pending
+    }
+
     /// Re-run `open` for the current chat (empty-state Try Again).
     /// No-op without a chat, or in demo mode (demo never hits core).
     public func retryOpen(limit: Int32 = 50) {
@@ -327,6 +385,8 @@ public final class ConversationStore: ObservableObject {
         pageToken = nil
         loading = false
         loadingMore = false
+        refreshing = false
+        refreshError = nil
         error = nil
         didLoad = false
         failedIDs = []
@@ -442,6 +502,8 @@ public final class ConversationStore: ObservableObject {
         messages = []
         loading = false
         loadingMore = false
+        refreshing = false
+        refreshError = nil
         error = nil
         didLoad = false
         failedIDs = []
@@ -1044,7 +1106,7 @@ public final class ConversationStore: ObservableObject {
         let s = ConversationStore()
         s.isDemo = true
         s.chatID = "demo"
-        s.chatName = "Demo — Design Sync"
+        s.chatName = "Design Sync"
         s.messages = demoMessages
         s.didLoad = true
         return s
@@ -1091,14 +1153,14 @@ public final class ConversationStore: ObservableObject {
         let s = ConversationStore()
         s.isDemo = true
         s.chatID = "demo-rich"
-        s.chatName = "Demo — Rich Conversation"
+        s.chatName = "Q3 Review Deck"
         s.messages = richDemoMessages()
         s.didLoad = true
         s.failedIDs = ["rich-fail"]
         return s
     }
 
-    public nonisolated static func richDemoMessages(now: Date = Date()) -> [ChatMessage] {
+    public nonisolated static func richDemoMessages(now: Date = DemoClock.now) -> [ChatMessage] {
         func iso(_ d: Date) -> String {
             d.ISO8601Format() // == isoPlain output; nonisolated-safe
         }

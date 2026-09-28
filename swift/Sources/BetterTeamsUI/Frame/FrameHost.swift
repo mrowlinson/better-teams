@@ -50,6 +50,14 @@ public final class FramePage: NSObject {
     public fileprivate(set) var committed = false
     public fileprivate(set) var progress: Double = 0
     public fileprivate(set) var pageTitle = ""
+    /// The page's last on-screen picture (taken as its view leaves the
+    /// window). A page re-created after eviction shows it, under the
+    /// progress line, until the restore finishes: never a blank or white
+    /// pane on app switch.
+    public fileprivate(set) var snapshot: NSImage?
+    /// The view was re-created from saved state and has not finished
+    /// loading yet (the snapshot stands in until it does).
+    public fileprivate(set) var restoring = false
 
     init(key: FrameKey, url: URL, title: String) {
         self.key = key
@@ -140,6 +148,7 @@ extension FramePage: WKNavigationDelegate {
 
     public func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         committed = true
+        restoring = false
         state = .loaded
         host?.probeChrome(self)
     }
@@ -154,6 +163,7 @@ extension FramePage: WKNavigationDelegate {
     }
 
     public func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        restoring = false
         state = .failed(message: "The page stopped unexpectedly.", offline: false)
     }
 
@@ -162,6 +172,7 @@ extension FramePage: WKNavigationDelegate {
         // Cancelled / interrupted by a policy decision (download, browser hand-off).
         if e.domain == NSURLErrorDomain, e.code == NSURLErrorCancelled { return }
         if e.domain == WKErrorDomain || e.domain == "WebKitErrorDomain", e.code == 102 { return }
+        restoring = false
         let offline = e.domain == NSURLErrorDomain && [
             NSURLErrorNotConnectedToInternet, NSURLErrorNetworkConnectionLost,
             NSURLErrorDataNotAllowed, NSURLErrorInternationalRoamingOff,
@@ -379,9 +390,21 @@ public final class FrameHost {
     /// Removes `key`'s view from `container` without destroying it.
     public func detach(_ key: FrameKey, from container: NSView) {
         guard let p = pages[key.raw], let web = p.web, web.superview === container else { return }
+        captureSnapshot(key)
         web.removeFromSuperview()
         p.lastUsed = Date()
         rebalance()
+    }
+
+    /// The page's picture as it leaves the screen (`FramePage.snapshot`).
+    /// Best effort: no snapshot falls back to the loading pane. A page
+    /// still restoring keeps the picture it is standing in with.
+    func captureSnapshot(_ key: FrameKey) {
+        guard let p = pages[key.raw], let web = p.web, web.window != nil,
+              p.committed, !p.restoring else { return }
+        web.takeSnapshot(with: nil) { [weak p] image, _ in
+            if let image { p?.snapshot = image }
+        }
     }
 
     /// A container left or re-entered a window (a hidden pane child is
@@ -493,7 +516,10 @@ public final class FrameHost {
             web.setAllMediaPlaybackSuspended(true, completionHandler: nil)
         }
         for k in FramePolicy.evict(residents, cap: keepInMemory, pressure: pressure) {
-            if let p = pages[k] { evict(p, keepState: true) }
+            guard let p = pages[k] else { continue }
+            evict(p, keepState: true)
+            // Under memory pressure the stand-in picture goes too.
+            if pressure != .normal { p.snapshot = nil }
         }
     }
 
@@ -506,6 +532,7 @@ public final class FrameHost {
         } else {
             p.savedInteraction = nil
             p.savedURL = nil
+            p.snapshot = nil
         }
         p.stopObserving()
         web.stopLoading()
@@ -516,6 +543,7 @@ public final class FrameHost {
         p.web = nil
         p.suspended = false
         p.committed = false
+        p.restoring = false
         p.progress = 0
         p.state = .idle
         if findKey == p.key { endFind() }
@@ -549,6 +577,8 @@ public final class FrameHost {
         } else {
             load(p, in: web)
         }
+        // Re-created after eviction: its last picture stands in.
+        p.restoring = p.snapshot != nil
         return web
     }
 

@@ -201,6 +201,19 @@ public final class ContactsStore: ObservableObject {
         savePins()
     }
 
+    /// Reorder speed dial (List `onMove` offsets). Persists the new
+    /// order; an empty or no-op move writes nothing.
+    public func movePins(fromOffsets source: IndexSet, toOffset destination: Int) {
+        guard !source.isEmpty else { return }
+        let moving = source.filter { $0 < pinnedIDs.count }.map { pinnedIDs[$0] }
+        var next = pinnedIDs.enumerated().filter { !source.contains($0.offset) }.map(\.element)
+        let at = destination - source.filter { $0 < destination }.count
+        next.insert(contentsOf: moving, at: max(0, min(at, next.count)))
+        guard next != pinnedIDs else { return }
+        pinnedIDs = next
+        savePins()
+    }
+
     /// Speed-dial rows in pin-time order: pins resolved through known
     /// details, unknown pins degraded to the raw ref (never blank).
     public func pinnedContacts() -> [TeamMember] {

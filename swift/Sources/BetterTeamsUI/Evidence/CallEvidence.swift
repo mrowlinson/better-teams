@@ -9,8 +9,9 @@
 //       an incoming ring (no system banner in demo: the geometry line
 //       reports the CALL notification it would carry); accept=1 accepts
 //       through the core slot and the DL1 host shows the call
-//   call?state=prejoin|active|muted|sharing|ended&presentation=main|window
+//   call?state=prejoin|active|muted|sharing|ended|meetingvideo&presentation=main|window
 //       [&inspector=1|people|chat][&popover=devices]
+//       (meetingvideo: the meeting joined with video, the tile grid)
 //   <any route>?call=prejoin|active&presentation=main|window
 //       a demo call behind the route (rail + toolbar call items)
 //
@@ -71,7 +72,7 @@ enum CallEvidence {
     /// Demo meeting roster: one speaking, two muted (deterministic).
     static let roster = [
         MeetingParticipant(id: "8:orgid:ava", name: "Ava Lindqvist", speaking: true),
-        MeetingParticipant(id: "8:orgid:jane", name: "Jane Doe", muted: true),
+        MeetingParticipant(id: "8:orgid:hannah", name: "Hannah Clarke", muted: true),
         MeetingParticipant(id: "8:orgid:tom", name: "Tom Becker"),
         MeetingParticipant(id: "8:orgid:megan", name: "Megan Harper", muted: true),
     ]
@@ -82,12 +83,19 @@ enum CallEvidence {
         organizer: "Doe, Jane", isOnline: true)
 
     /// Starts the demo call for `state` (prejoin, active, muted,
-    /// sharing, ended).
+    /// sharing, ended; video: 1:1 video call).
     @discardableResult
     private static func begin(_ state: String, presentation p: CallPresentation, show: Bool,
                               _ wc: ShellWindowController) -> CallSession? {
         let m = wc.model
         guard let app = m.app else { return nil }
+        if state == "video" {
+            // 1:1 video call (VIDEO1): demo remote video fills the
+            // stage, placeholder self view picture-in-picture.
+            app.call.seedDemo(state: "active")
+            return m.beginCall(.person(name: "Ava Lindqvist", thread: "19:demo@thread.v2"),
+                               presentation: p, show: show, video: true)
+        }
         let kind = CallKind.meeting(id: standup.id, subject: standup.subject)
         guard state != "prejoin" else {
             let s = m.beginCall(kind, presentation: p, show: show)
@@ -99,7 +107,7 @@ enum CallEvidence {
         app.meetingChat.showDemo(threadID: "19:demo_standup@thread.v2", chatName: standup.subject,
                                  messages: MeetingDemo.messages)
         let s = m.beginCall(kind, presentation: p, show: show)
-        s?.joinForDemo()
+        s?.joinForDemo(video: state == "meetingvideo")
         switch state {
         case "muted": app.call.setMuted(true)
         case "sharing": s?.toggleShare()
@@ -129,12 +137,14 @@ enum CallEvidence {
             roster: s.isMeeting ? (m.app?.meeting.participants ?? []) : [], peer: s.peerName, ownName: own,
             isOwn: { p in m.isOwnID(p.id) || p.name == own || p.name == "Me" },
             muted: s.controls.muted, cameraOn: s.controls.cameraOn, sharing: s.sharing)
-        let g = TileGridLayout.grid(count: tiles.count, in: CGSize(width: max(0, stage.width - 32),
+        // Meeting video: remote tiles + self view (+ share).
+        let count = s.meetingVideo.map { $0.tiles.count + 1 + (s.sharing ? 1 : 0) } ?? tiles.count
+        let g = TileGridLayout.grid(count: count, in: CGSize(width: max(0, stage.width - 32),
                                                                   height: max(0, stage.height - 32)),
                                     spacing: 8, aspect: 16.0 / 9.0)
         var out = " call[presentation=\(s.presentation.rawValue) joined=\(s.joined) connected=\(s.connected)"
             + " attached=\(s.stage.parent.map { String(describing: type(of: $0)) } ?? "none")"
-            + " stage=\(Int(stage.width))x\(Int(stage.height)) tiles=\(tiles.count) grid=\(g.columns)x\(g.rows)"
+            + " stage=\(Int(stage.width))x\(Int(stage.height)) tiles=\(count) grid=\(g.columns)x\(g.rows)"
             + " tile=\(Int(g.tile.width))x\(Int(g.tile.height)) indicator=\(s.indicatorText)"
             + " subtitle=\(s.statusLine) muted=\(s.controls.muted) sharing=\(s.sharing)"
             + " popover=\(s.devices.isShown)"

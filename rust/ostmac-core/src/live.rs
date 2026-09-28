@@ -3,7 +3,7 @@
 //! Signaling (`calls.rs`) places the call; this module owns everything after
 //! the SDP answer: ICE, SRTP, RTP send/recv loops, and the two Swift joins:
 //! - send: Swift AVCapture -> VideoToolbox encode -> `video_send_push` NAL
-//!   queue -> packetizer -> SRTP -> UDP (black IDR fallback when idle).
+//!   queue -> packetizer -> SRTP -> UDP (camera off: no video RTP at all).
 //! - recv: UDP -> SRTP -> depacketize -> access-unit framing (MS PACSI /
 //!   prefix NALs stripped) -> `video_incoming_poll` queue -> Swift
 //!   VideoToolbox decode -> SwiftUI display.
@@ -46,19 +46,138 @@ pub struct RecvUnit {
 
 /// Max queued send units (drop-oldest past this; Swift paces at ~15fps).
 pub const SEND_QUEUE_CAP: usize = 8;
-/// Max queued recv units (drop-oldest; SwiftUI drains at display pace).
-pub const RECV_QUEUE_CAP: usize = 4;
+/// Max queued recv units per queue (~1 s at 30 fps). The host decodes
+/// every unit in order (P-frames need their references); overflow drops
+/// whole GOPs, never a lone reference frame (see [`GopQueue`]).
+pub const RECV_QUEUE_CAP: usize = 30;
+/// Max queued recv bytes per queue.
+pub const RECV_QUEUE_MAX_BYTES: usize = 4 * 1024 * 1024;
 /// Max decoded NAL bytes accepted over FFI per push (4 MiB).
 pub const MAX_SEND_BYTES: usize = 4 * 1024 * 1024;
+/// A recv queue polled within this window has a live decoder.
+const CONSUMER_WINDOW_MS: u64 = 1_000;
+/// Min spacing of keyframe requests for one queue.
+const KEYFRAME_REQUEST_GAP_MS: u64 = 1_000;
 
 fn send_queue() -> &'static Mutex<VecDeque<SendUnit>> {
     static S: OnceLock<Mutex<VecDeque<SendUnit>>> = OnceLock::new();
     S.get_or_init(|| Mutex::new(VecDeque::new()))
 }
 
-fn recv_queue() -> &'static Mutex<VecDeque<RecvUnit>> {
-    static S: OnceLock<Mutex<VecDeque<RecvUnit>>> = OnceLock::new();
-    S.get_or_init(|| Mutex::new(VecDeque::new()))
+fn recv_queue() -> &'static Mutex<GopQueue> {
+    static S: OnceLock<Mutex<GopQueue>> = OnceLock::new();
+    S.get_or_init(|| Mutex::new(GopQueue::new()))
+}
+
+/// An access unit a decoder can start from: it carries an SPS or an IDR
+/// slice.
+fn is_keyframe(unit: &RecvUnit) -> bool {
+    unit.nals.iter().any(|n| matches!(nal_type(n), 5 | 7))
+}
+
+fn unit_bytes(unit: &RecvUnit) -> usize {
+    unit.nals.iter().map(Vec::len).sum()
+}
+
+/// A decoder-safe receive queue: FIFO, so the host decodes every access
+/// unit in order. It starts (and restarts after an overflow or packet
+/// loss) at a keyframe: units that cannot decode without a missing
+/// reference are dropped instead of smearing. Overflow keeps the newest
+/// run that starts at a keyframe, else empties and waits for the next
+/// keyframe. While a polled (live) queue waits, it asks for a keyframe
+/// at most once per [`KEYFRAME_REQUEST_GAP_MS`].
+struct GopQueue {
+    q: VecDeque<RecvUnit>,
+    bytes: usize,
+    awaiting_key: bool,
+    /// Units dropped since the host's last poll.
+    dropped: usize,
+    last_poll_ms: u64,
+    last_key_request_ms: u64,
+}
+
+impl GopQueue {
+    fn new() -> Self {
+        GopQueue {
+            q: VecDeque::new(),
+            bytes: 0,
+            awaiting_key: true,
+            dropped: 0,
+            last_poll_ms: 0,
+            last_key_request_ms: 0,
+        }
+    }
+
+    fn clear(&mut self) {
+        *self = GopQueue::new();
+    }
+
+    fn drop_units(&mut self, n: usize) {
+        self.dropped += n;
+        RECV_DROPPED.fetch_add(n as u64, Ordering::Relaxed);
+    }
+
+    /// A keyframe request is due: a decoder polls this queue and the
+    /// last request is older than the gap.
+    fn want_key(&mut self, now: u64) -> bool {
+        let consumed = self.last_poll_ms > 0
+            && now.saturating_sub(self.last_poll_ms) <= CONSUMER_WINDOW_MS;
+        if consumed && now.saturating_sub(self.last_key_request_ms) >= KEYFRAME_REQUEST_GAP_MS {
+            self.last_key_request_ms = now;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Queue one access unit. True = request a keyframe from the sender now.
+    fn push(&mut self, unit: RecvUnit, now: u64) -> bool {
+        if self.awaiting_key && !is_keyframe(&unit) {
+            self.drop_units(1);
+            return self.want_key(now);
+        }
+        self.awaiting_key = false;
+        self.bytes += unit_bytes(&unit);
+        self.q.push_back(unit);
+        if self.q.len() <= RECV_QUEUE_CAP && self.bytes <= RECV_QUEUE_MAX_BYTES {
+            return false;
+        }
+        match self.q.iter().rposition(is_keyframe) {
+            Some(i) if i > 0 => {
+                for u in self.q.drain(..i) {
+                    self.bytes -= unit_bytes(&u);
+                }
+                self.drop_units(i);
+                false
+            }
+            _ => {
+                let n = self.q.len();
+                self.q.clear();
+                self.bytes = 0;
+                self.awaiting_key = true;
+                self.drop_units(n);
+                self.want_key(now)
+            }
+        }
+    }
+
+    /// Packet loss inside the next unit: drop it and everything after it
+    /// until a keyframe. True = request a keyframe now.
+    fn lose(&mut self, now: u64) -> bool {
+        self.awaiting_key = true;
+        self.drop_units(1);
+        self.want_key(now)
+    }
+
+    /// The oldest queued unit plus the units dropped since the last poll.
+    fn pop(&mut self, now: u64) -> (Option<RecvUnit>, usize) {
+        self.last_poll_ms = now;
+        let u = self.q.pop_front();
+        if let Some(ref u) = u {
+            self.bytes -= unit_bytes(u);
+        }
+        (u, std::mem::take(&mut self.dropped))
+    }
 }
 
 fn lock<T>(m: &'static Mutex<T>) -> std::sync::MutexGuard<'static, T> {
@@ -88,25 +207,388 @@ fn push_send(unit: SendUnit) -> usize {
     q.len()
 }
 
-/// Take the newest send unit, dropping older ones (live pacing: never lag).
-fn take_send_latest() -> Option<SendUnit> {
-    let mut q = lock(send_queue());
-    let unit = q.pop_back()?;
-    let stale = q.len() as u64;
-    if stale > 0 {
-        q.clear();
-        SEND_DROPPED.fetch_add(stale, Ordering::Relaxed);
-    }
-    Some(unit)
+/// Take every queued send unit, oldest first. Each one goes out: the
+/// receiver's decoder needs every frame an encoder chained (dropping one
+/// smears the peer's picture until the next keyframe). Nothing queued
+/// (camera off) sends nothing: no black filler, as Teams sends no video
+/// while the camera is off.
+fn take_send_all() -> Vec<SendUnit> {
+    lock(send_queue()).drain(..).collect()
 }
 
-fn push_recv(unit: RecvUnit) {
-    let mut q = lock(recv_queue());
-    if q.len() >= RECV_QUEUE_CAP {
-        q.pop_front();
-        RECV_DROPPED.fetch_add(1, Ordering::Relaxed);
+/// Queue a 1:1 access unit. True = request a keyframe now.
+fn push_recv(unit: RecvUnit) -> bool {
+    lock(recv_queue()).push(unit, now_ms())
+}
+
+// ---------------------------------------------------------------------------
+// Per-source recv queues + source subscription (meeting video, MS-RTP)
+// ---------------------------------------------------------------------------
+//
+// A conference mixer forwards each subscribed video source on its own
+// SSRC and lists the source's MSI as the first CSRC (MS-RTP 2.2.1:
+// mixer packets carry MSI in the CSRC list). The recv loop reassembles
+// per SSRC and files each access unit under its source key: the CSRC
+// MSI, else the MSI this client subscribed into that SSRC slot, else the
+// SSRC itself (1:1 peers). The host polls one queue per visible tile.
+//
+// Subscriptions go out as Video Source Requests (RTCP PSFB FMT=15, AFB
+// type 1): one per slot, "SSRC of media source" = the remote side's
+// x-ssrc-range base + slot index, retransmitted 4x at 190 ms then 5x at
+// 3 s (MS-RTP 3.2). With no host subscription, slot 0 asks SOURCE_ANY
+// (the sender picks: the 1:1 peer, or the mixer's active speaker).
+
+/// One source's queue (a [`GopQueue`], like the 1:1 queue).
+struct SourceQueue {
+    q: GopQueue,
+    frames: u64,
+    last_ms: u64,
+}
+
+/// Max tracked sources (least recently fed evicted past this).
+pub const MAX_SOURCES: usize = 16;
+/// Max subscribed sources (tiles with live video).
+pub const MAX_SUBSCRIPTIONS: usize = 9;
+/// MS-RTP MSI: the receiver requests no source.
+pub const SOURCE_NONE: u32 = 0xFFFF_FFFF;
+/// MS-RTP MSI: the sender selects the source.
+pub const SOURCE_ANY: u32 = 0xFFFF_FFFE;
+/// Reserved queue key (never a subscribed MSI): someone else's shared
+/// screen, received on the applicationsharing-video leg.
+pub const SOURCE_SHARE: u32 = 0xFFFF_FFFD;
+
+fn source_queues() -> &'static Mutex<std::collections::HashMap<u32, SourceQueue>> {
+    static S: OnceLock<Mutex<std::collections::HashMap<u32, SourceQueue>>> = OnceLock::new();
+    S.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// The source's queue (created on its first unit; the least recently fed
+/// source is evicted past [`MAX_SOURCES`]), with its delivery stamped.
+fn source_entry(map: &mut std::collections::HashMap<u32, SourceQueue>, key: u32) -> &mut SourceQueue {
+    if !map.contains_key(&key) && map.len() >= MAX_SOURCES {
+        if let Some(old) = map.iter().min_by_key(|(_, s)| s.last_ms).map(|(k, _)| *k) {
+            map.remove(&old);
+        }
     }
-    q.push_back(unit);
+    let s = map.entry(key).or_insert_with(|| SourceQueue {
+        q: GopQueue::new(),
+        frames: 0,
+        last_ms: 0,
+    });
+    s.frames += 1;
+    s.last_ms = now_ms();
+    s
+}
+
+/// File one source's access unit. True = request a keyframe now.
+fn push_source(key: u32, unit: RecvUnit) -> bool {
+    let mut map = lock(source_queues());
+    source_entry(&mut map, key).q.push(unit, now_ms())
+}
+
+/// A source's next unit lost packets: it and its dependents are dropped
+/// until a keyframe. True = request a keyframe now.
+fn lose_source(key: u32) -> bool {
+    let mut map = lock(source_queues());
+    source_entry(&mut map, key).q.lose(now_ms())
+}
+
+/// Take the oldest access unit of one source (FIFO: the host decodes
+/// every unit), as [`video_incoming_poll_raw`] does for the 1:1 queue.
+/// The count is units dropped (overflow, loss) since the last poll.
+pub fn video_source_poll_raw(key: u32) -> (Vec<u8>, usize, bool) {
+    let (au, dropped) = {
+        let mut map = lock(source_queues());
+        match map.get_mut(&key) {
+            Some(s) => s.q.pop(now_ms()),
+            None => (None, 0),
+        }
+    };
+    let nals = au.map(|u| u.nals.into_iter().filter(|n| !is_wrapper_nal(n)).collect::<Vec<_>>());
+    match nals {
+        Some(nals) if !nals.is_empty() => (frame_nals(&nals), dropped, true),
+        _ => (Vec::new(), dropped, false),
+    }
+}
+
+/// Sources that delivered video this call: `{ok, sources:[{id, frames,
+/// age_ms}]}` (id = MSI or SSRC, see the section note).
+pub fn video_sources_json() -> String {
+    let now = now_ms();
+    let map = lock(source_queues());
+    let mut list: Vec<_> = map
+        .iter()
+        .map(|(k, s)| serde_json::json!({"id": k, "frames": s.frames,
+            "age_ms": now.saturating_sub(s.last_ms)}))
+        .collect();
+    list.sort_by_key(|v| v["id"].as_u64().unwrap_or(0));
+    serde_json::json!({"ok": true, "sources": list}).to_string()
+}
+
+/// Host-wanted source MSIs in priority order (slot 0 first) + a version
+/// the VSR task watches.
+struct Subscriptions {
+    wanted: Vec<u32>,
+    version: u64,
+}
+
+fn subscriptions() -> &'static Mutex<Subscriptions> {
+    static S: OnceLock<Mutex<Subscriptions>> = OnceLock::new();
+    S.get_or_init(|| Mutex::new(Subscriptions { wanted: Vec::new(), version: 0 }))
+}
+
+/// Set the subscribed video sources (MSIs, priority order; deduped,
+/// capped at [`MAX_SUBSCRIPTIONS`]; reserved MSIs dropped). Empty =
+/// SOURCE_ANY on slot 0. Takes effect on the running engine within ~50 ms.
+pub fn video_subscribe_json(msis: &[u32]) -> String {
+    let mut wanted: Vec<u32> = Vec::new();
+    for m in msis {
+        if *m != SOURCE_NONE && *m != SOURCE_ANY && *m != SOURCE_SHARE && !wanted.contains(m) && wanted.len() < MAX_SUBSCRIPTIONS {
+            wanted.push(*m);
+        }
+    }
+    let mut s = lock(subscriptions());
+    if s.wanted != wanted {
+        s.wanted = wanted.clone();
+        s.version += 1;
+    }
+    serde_json::json!({"ok": true, "subscribed": wanted}).to_string()
+}
+
+/// The effective per-slot MSIs: the host's list, or SOURCE_ANY alone.
+fn effective_slots(wanted: &[u32]) -> Vec<u32> {
+    if wanted.is_empty() {
+        vec![SOURCE_ANY]
+    } else {
+        wanted.to_vec()
+    }
+}
+
+/// Source key for a received packet (see the section note).
+pub fn source_key(csrc: Option<u32>, ssrc: u32, slots: &[(u32, u32)]) -> u32 {
+    if let Some(m) = csrc {
+        return m;
+    }
+    slots
+        .iter()
+        .find(|(slot_ssrc, msi)| *slot_ssrc == ssrc && *msi != SOURCE_ANY && *msi != SOURCE_NONE)
+        .map(|(_, msi)| *msi)
+        .unwrap_or(ssrc)
+}
+
+/// First CSRC of a (decrypted) RTP packet, if any.
+pub fn rtp_first_csrc(rtp: &[u8]) -> Option<u32> {
+    if rtp.len() >= 16 && rtp[0] & 0x0F > 0 {
+        Some(u32::from_be_bytes([rtp[12], rtp[13], rtp[14], rtp[15]]))
+    } else {
+        None
+    }
+}
+
+/// The lowest SSRC of a media section's `a=x-ssrc-range:S-E` (`section`
+/// = "video"/"audio"), from the remote SDP.
+pub fn remote_ssrc_base(sdp: &str, section: &str) -> Option<u32> {
+    let mut in_section = false;
+    for line in sdp.lines() {
+        let line = line.trim();
+        if let Some(m) = line.strip_prefix("m=") {
+            in_section = m.starts_with(section);
+            continue;
+        }
+        if in_section {
+            if let Some(r) = line.strip_prefix("a=x-ssrc-range:") {
+                return r.split('-').next().and_then(|s| s.trim().parse::<u32>().ok());
+            }
+        }
+    }
+    None
+}
+
+/// MS-RTP Video Source Request (RTCP PSFB, FMT=15, AFB type 1) asking
+/// `msi` in X-H264UC (PT 122, UCConfig mode 1) up to `width`x`height`
+/// at 15/30 fps. SOURCE_NONE carries zero entries. Reduced-size RTCP
+/// (sent alone, never compounded), per MS-RTP 2.2.12.
+pub fn build_vsr(
+    sender_ssrc: u32,
+    media_ssrc: u32,
+    msi: u32,
+    request_id: u16,
+    keyframe: bool,
+    width: u16,
+    height: u16,
+) -> Vec<u8> {
+    const ENTRY_LEN: usize = 0x44;
+    let entries = if msi == SOURCE_NONE { 0 } else { 1 };
+    let fci_len = 20 + ENTRY_LEN * entries;
+    let total = 12 + fci_len;
+    let mut b = Vec::with_capacity(total);
+    b.push(0x80 | 15); // V=2, P=0, FMT=15 (AFB)
+    b.push(206); // PT=PSFB
+    b.extend_from_slice(&((total / 4 - 1) as u16).to_be_bytes());
+    b.extend_from_slice(&sender_ssrc.to_be_bytes());
+    b.extend_from_slice(&media_ssrc.to_be_bytes());
+    // VSR header (20 bytes).
+    b.extend_from_slice(&1u16.to_be_bytes()); // AFB type: VSR
+    b.extend_from_slice(&(fci_len as u16).to_be_bytes());
+    b.extend_from_slice(&msi.to_be_bytes());
+    b.extend_from_slice(&request_id.to_be_bytes());
+    b.extend_from_slice(&[0, 0]); // Reserve1
+    b.push(0); // Version
+    b.push(if keyframe { 0x80 } else { 0 }); // K + Reserve2
+    b.push(entries as u8);
+    b.push(ENTRY_LEN as u8);
+    b.extend_from_slice(&[0, 0, 0, 0]); // Reserve3
+    if entries == 1 {
+        let entry_start = b.len();
+        b.push(video::PT_H264); // payload type 122 (X-H264UC)
+        b.push(1); // UCConfig mode 1
+        b.push(0); // flags
+        b.push(0x03); // aspect: 4:3 | 16:9
+        b.extend_from_slice(&width.to_be_bytes());
+        b.extend_from_slice(&height.to_be_bytes());
+        let min_bitrate: u32 = 100_000;
+        let per_level: u32 = 100_000;
+        b.extend_from_slice(&min_bitrate.to_be_bytes());
+        b.extend_from_slice(&[0, 0, 0, 0]); // reserved (video)
+        b.extend_from_slice(&per_level.to_be_bytes());
+        // Bitrate histogram: one receiver at the level for this size.
+        let want: u32 = if width as u32 * height as u32 >= 1280 * 720 { 1_000_000 } else { 500_000 };
+        let level = ((want - min_bitrate) / per_level).min(9) as usize;
+        for i in 0..10 {
+            b.extend_from_slice(&(if i == level { 1u16 } else { 0 }).to_be_bytes());
+        }
+        b.extend_from_slice(&((1u32 << 2) | (1u32 << 4)).to_be_bytes()); // 15 | 30 fps
+        b.extend_from_slice(&1u16.to_be_bytes()); // MUST instances
+        b.extend_from_slice(&0u16.to_be_bytes()); // MAY instances
+        b.extend_from_slice(&[0u8; 16]); // quality report histogram
+        b.extend_from_slice(&(width as u32 * height as u32).to_be_bytes());
+        debug_assert_eq!(b.len() - entry_start, ENTRY_LEN);
+    }
+    b
+}
+
+/// Application-layer feedback blocks (PSFB FMT=15) in a decrypted RTCP
+/// (compound or reduced-size) packet: `(afb_type, fci)`. PLI (PSFB
+/// FMT=1) reads as type 0 with an empty FCI.
+pub fn parse_afb(rtcp: &[u8]) -> Vec<(u16, Vec<u8>)> {
+    let mut out = Vec::new();
+    let mut at = 0usize;
+    while at + 4 <= rtcp.len() {
+        let fmt = rtcp[at] & 0x1F;
+        let pt = rtcp[at + 1];
+        let words = u16::from_be_bytes([rtcp[at + 2], rtcp[at + 3]]) as usize;
+        let end = at + (words + 1) * 4;
+        if rtcp[at] >> 6 != 2 || end > rtcp.len() {
+            break;
+        }
+        if pt == 206 && end >= at + 12 {
+            if fmt == 15 && end >= at + 16 {
+                let t = u16::from_be_bytes([rtcp[at + 12], rtcp[at + 13]]);
+                out.push((t, rtcp[at + 12..end].to_vec()));
+            } else if fmt == 1 {
+                out.push((0, Vec::new()));
+            }
+        }
+        at = end;
+    }
+    out
+}
+
+/// Sends per VSR: the original + 4 resends at 190 ms + 5 at 3 s (MS-RTP).
+pub const VSR_SENDS: u8 = 10;
+
+/// Delay before the next send of a VSR already sent `sent` times.
+pub fn vsr_resend_delay(sent: u8) -> Duration {
+    if sent <= 4 {
+        Duration::from_millis(190)
+    } else {
+        Duration::from_secs(3)
+    }
+}
+
+/// `(slot SSRC, MSI)` per subscription slot: the remote x-ssrc-range
+/// base + slot index. Empty without a remote range.
+fn slot_table(base: Option<u32>, wanted: &[u32]) -> Vec<(u32, u32)> {
+    let Some(b) = base else {
+        return Vec::new();
+    };
+    effective_slots(wanted)
+        .iter()
+        .enumerate()
+        .map(|(i, m)| (b.wrapping_add(i as u32), *m))
+        .collect()
+}
+
+/// Dominant speaker MSI from a DSH FCI (AFB type 3): None = SOURCE_NONE.
+pub fn dsh_dominant(fci: &[u8]) -> Option<Option<u32>> {
+    if fci.len() < 8 || u16::from_be_bytes([fci[0], fci[1]]) != 3 {
+        return None;
+    }
+    let msi = u32::from_be_bytes([fci[4], fci[5], fci[6], fci[7]]);
+    Some(if msi == SOURCE_NONE { None } else { Some(msi) })
+}
+
+/// RTCP Picture Loss Indication (PSFB FMT=1, RFC 4585 6.3.1): asks the
+/// sender of `media_ssrc` for a keyframe. Reduced-size, sent alone.
+pub fn build_pli(sender_ssrc: u32, media_ssrc: u32) -> Vec<u8> {
+    let mut b = Vec::with_capacity(12);
+    b.push(0x80 | 1); // V=2, P=0, FMT=1 (PLI)
+    b.push(206); // PT=PSFB
+    b.extend_from_slice(&2u16.to_be_bytes());
+    b.extend_from_slice(&sender_ssrc.to_be_bytes());
+    b.extend_from_slice(&media_ssrc.to_be_bytes());
+    b
+}
+
+/// Source keys that asked for a keyframe; the leg's VSR loop re-sends the
+/// matching slot's request (every VSR carries the keyframe flag). One set
+/// for main video, one for the share leg.
+fn keyframe_requests(share: bool) -> &'static Mutex<std::collections::HashSet<u32>> {
+    static MAIN: OnceLock<Mutex<std::collections::HashSet<u32>>> = OnceLock::new();
+    static SHARE: OnceLock<Mutex<std::collections::HashSet<u32>>> = OnceLock::new();
+    let s = if share { &SHARE } else { &MAIN };
+    s.get_or_init(|| Mutex::new(std::collections::HashSet::new()))
+}
+
+/// Where a VSR loop reads the sources it requests: main video follows the
+/// host's subscription; the share leg follows the roster's presenter
+/// (SOURCE_ANY until the roster names one).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum VsrFeed {
+    Main,
+    Share,
+}
+
+impl VsrFeed {
+    /// `(version, wanted MSIs)`; a new version re-plans the slots.
+    fn wanted(self) -> (u64, Vec<u32>) {
+        match self {
+            VsrFeed::Main => {
+                let s = lock(subscriptions());
+                (s.version, s.wanted.clone())
+            }
+            VsrFeed::Share => {
+                let m = crate::call_roster::presenter_screen_msi();
+                (m.map(|x| x as u64 + 1).unwrap_or(0), m.into_iter().collect())
+            }
+        }
+    }
+
+    /// Requested size for slot `i`.
+    fn size(self, i: usize) -> (u16, u16) {
+        match (self, i) {
+            (VsrFeed::Share, _) => (1920, 1080),
+            (VsrFeed::Main, 0) => (1280, 720),
+            _ => (640, 360),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -137,6 +619,20 @@ pub struct LiveStats {
     /// Last speaker-reroute failure (cleared by the next success).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub speaker_error: Option<String>,
+    /// Video Source Requests sent / received (MS-RTP AFB type 1).
+    pub vsr_sent: u32,
+    pub vsr_recv: u32,
+    /// Picture loss indications received on video.
+    pub pli_recv: u32,
+    /// Dominant Speaker History notifications received on audio.
+    pub dsh_recv: u32,
+    /// Distinct video sources that delivered frames this call.
+    pub video_sources: usize,
+    /// Keyframe requests sent (RTCP PLI; a VSR re-send rides along).
+    pub pli_sent: u32,
+    /// Screen share leg: RTP packets received, and its ICE pair.
+    pub share_recv: u32,
+    pub ice_share: String,
 }
 
 fn engine_stats() -> &'static Mutex<LiveStats> {
@@ -228,22 +724,14 @@ pub fn video_send_push_bytes_json(data: &[u8]) -> String {
     serde_json::json!({"ok": true, "queued": queued}).to_string()
 }
 
-/// Drain the newest recv-side access unit (older ones count as dropped).
-/// Returns the framed payload (empty when none), the stale count, and
-/// whether an AU is present. All-wrapper AUs read as absent, as before.
+/// Take the oldest recv-side access unit (FIFO: the host decodes every
+/// unit in order). Returns the framed payload (empty when none), the
+/// units dropped (overflow, loss) since the last poll, and whether an AU
+/// is present. All-wrapper AUs read as absent, as before.
 pub fn video_incoming_poll_raw() -> (Vec<u8>, usize, bool) {
     // Pop under the lock; filter + frame outside it so the mutex is
     // never held across AU-sized allocs/copies.
-    let (au, stale) = {
-        let mut q = lock(recv_queue());
-        let au = q.pop_back();
-        let stale = q.len();
-        if stale > 0 {
-            q.clear();
-            RECV_DROPPED.fetch_add(stale as u64, Ordering::Relaxed);
-        }
-        (au, stale)
-    };
+    let (au, stale) = lock(recv_queue()).pop(now_ms());
     let nals = au.map(|u| {
         u.nals
             .iter()
@@ -261,7 +749,7 @@ pub fn video_incoming_poll_raw() -> (Vec<u8>, usize, bool) {
 pub fn call_media_json() -> String {
     let mut s = lock(engine_stats()).clone();
     s.send_queued = lock(send_queue()).len();
-    s.recv_pending = lock(recv_queue()).len();
+    s.recv_pending = lock(recv_queue()).q.len();
     s.send_dropped = SEND_DROPPED.load(Ordering::Relaxed);
     s.recv_dropped = RECV_DROPPED.load(Ordering::Relaxed);
     s.muted = muted();
@@ -373,6 +861,8 @@ pub struct EngineParams {
     pub controlling: bool,
     pub video_ssrc: u32,
     pub cname: String,
+    /// Screen share receive leg (group / meeting joins that offered one).
+    pub share: Option<ShareParams>,
 }
 
 struct EngineHandle {
@@ -405,6 +895,9 @@ pub fn start_engine(p: EngineParams) -> Result<(), String> {
     };
     lock(send_queue()).clear();
     lock(recv_queue()).clear();
+    lock(source_queues()).clear();
+    lock(keyframe_requests(false)).clear();
+    lock(keyframe_requests(true)).clear();
 
     let shutdown = std::sync::Arc::new(AtomicBool::new(false));
     let flag = shutdown.clone();
@@ -437,6 +930,12 @@ pub fn stop_engine() -> LiveStats {
         if let Some(t) = h.thread.take() {
             let _ = t.join();
         }
+    }
+    // Subscriptions are per call (set before or after the engine starts).
+    {
+        let mut subs = lock(subscriptions());
+        subs.wanted.clear();
+        subs.version += 1;
     }
     let mut s = lock(engine_stats());
     s.running = false;
@@ -856,6 +1355,13 @@ async fn drive_inner(p: EngineParams, shutdown: std::sync::Arc<AtomicBool>) -> R
                             rs.last_sr_recv_time = Some(std::time::Instant::now());
                         }
                     }
+                    // Mixer Dominant Speaker History (MS-RTP AFB type 3).
+                    for (_, fci) in parse_afb(&rtcp_data) {
+                        if let Some(dominant) = dsh_dominant(&fci) {
+                            stat_add(|s| s.dsh_recv += 1);
+                            crate::call_roster::set_dominant_msi(dominant);
+                        }
+                    }
                     continue;
                 }
                 let rtp_data = {
@@ -928,7 +1434,7 @@ async fn drive_inner(p: EngineParams, shutdown: std::sync::Arc<AtomicBool>) -> R
         }));
     }
 
-    // -- video send (NAL queue > black IDR, ~15fps) --
+    // -- video send (host NAL queue, ~15fps; camera off sends no video RTP) --
     if let (Some(vctx), Some(vaddr)) =
         (video_pair.as_ref().map(|(c, _, _)| c.clone()), video_remote)
     {
@@ -943,157 +1449,81 @@ async fn drive_inner(p: EngineParams, shutdown: std::sync::Arc<AtomicBool>) -> R
                 tokio::time::interval(Duration::from_millis(video::FRAME_INTERVAL_MS));
             while !flag.load(Ordering::Relaxed) {
                 interval.tick().await;
-                let nals = take_send_latest()
-                    .map(|u| u.nals)
-                    .unwrap_or_else(video::generate_black_iframe);
-                for rtp_pkt in packetizer.packetize_frame(&nals) {
-                    let ts = if rtp_pkt.len() >= 8 {
-                        u32::from_be_bytes([rtp_pkt[4], rtp_pkt[5], rtp_pkt[6], rtp_pkt[7]])
-                    } else {
-                        0
-                    };
-                    let paylen = rtp_pkt.len().saturating_sub(rtp::RTP_HEADER_SIZE);
-                    let wire = {
-                        let mut c = vctx_send.lock().await;
-                        srtp::protect(&mut c, &rtp_pkt)
-                    };
-                    if let Ok(wire) = wire {
-                        if socket.send_to(&wire, vaddr).await.is_ok() {
-                            let mut st = stats.lock().await;
-                            st.packets_sent += 1;
-                            st.bytes_sent += paylen as u32;
-                            st.last_rtp_timestamp = ts;
-                            stat_add(|s| s.video_sent += 1);
+                for unit in take_send_all() {
+                    for rtp_pkt in packetizer.packetize_frame(&unit.nals) {
+                        let ts = if rtp_pkt.len() >= 8 {
+                            u32::from_be_bytes([rtp_pkt[4], rtp_pkt[5], rtp_pkt[6], rtp_pkt[7]])
+                        } else {
+                            0
+                        };
+                        let paylen = rtp_pkt.len().saturating_sub(rtp::RTP_HEADER_SIZE);
+                        let wire = {
+                            let mut c = vctx_send.lock().await;
+                            srtp::protect(&mut c, &rtp_pkt)
+                        };
+                        if let Ok(wire) = wire {
+                            if socket.send_to(&wire, vaddr).await.is_ok() {
+                                let mut st = stats.lock().await;
+                                st.packets_sent += 1;
+                                st.bytes_sent += paylen as u32;
+                                st.last_rtp_timestamp = ts;
+                                stat_add(|s| s.video_sent += 1);
+                            }
                         }
                     }
                 }
             }
         }));
 
-        // -- video recv (SRTP -> depacketize -> AU framing -> incoming queue) --
-        {
-            let socket = video_sock.clone();
-            let vctx = vctx.clone();
-            let stats = vid_recv_stats.clone();
-            let rssrc = vid_remote_ssrc.clone();
-            let vid_pwd = video_pair.as_ref().map(|(_, _, pwd)| pwd.clone()).unwrap_or_default();
-            let flag = shutdown.clone();
-            tasks.push(tokio::spawn(async move {
-                let mut buf = [0u8; 2048];
-                let mut depacketizer = video::VideoDepacketizer::new();
-                let mut au: Vec<Vec<u8>> = Vec::new();
-                while !flag.load(Ordering::Relaxed) {
-                    let got = tokio::time::timeout(
-                        Duration::from_millis(500),
-                        socket.recv_from(&mut buf),
-                    )
-                    .await;
-                    let (len, from) = match got {
-                        Ok(Ok(v)) => v,
-                        _ => continue,
-                    };
-                    let data = &buf[..len];
-                    if len >= 20 && ice::is_stun_message(data) {
-                        if ice::is_stun_request(data) {
-                            if let Some(txn) = ice::get_transaction_id(data) {
-                                let resp = ice::build_binding_response(
-                                    &txn,
-                                    from,
-                                    Some(vid_pwd.as_bytes()),
-                                );
-                                let _ = socket.send_to(&resp, from).await;
-                            }
-                        }
-                        continue;
-                    }
-                    {
-                        let mut c = vctx.lock().await;
-                        if let Ok(rtcp_data) = srtp::unprotect_rtcp(&mut c, data) {
-                            let mut rs = stats.lock().await;
-                            for block in rtcp::parse_rtcp(&rtcp_data) {
-                                if let rtcp::RtcpBlock::SenderReport { ntp_timestamp, .. } =
-                                    block
-                                {
-                                    rs.last_sr_ntp =
-                                        ((ntp_timestamp >> 16) & 0xFFFF_FFFF) as u32;
-                                    rs.last_sr_recv_time = Some(std::time::Instant::now());
-                                }
-                            }
-                            continue;
-                        }
-                    }
-                    let rtp_data = {
-                        let mut c = vctx.lock().await;
-                           srtp::unprotect(&mut c, data)
-                    };
-                    let rtp_data = match rtp_data {
-                        Ok(d) => d,
-                        Err(_) => continue,
-                    };
-                    if let Ok(pkt) = rtp::decode(&rtp_data) {
-                        {
-                            let mut rs = stats.lock().await;
-                            rs.packets_received += 1;
-                            if pkt.sequence_number as u32 > rs.highest_seq {
-                                rs.highest_seq = pkt.sequence_number as u32;
-                            }
-                        }
-                        stat_add(|s| s.video_recv += 1);
-                        {
-                            let mut r = rssrc.lock().await;
-                            if *r == 0 {
-                                *r = pkt.ssrc;
-                            }
-                        }
-                        match depacketizer.depacketize(&pkt.payload, pkt.marker) {
-                            Ok(Some(nal)) => {
-                                if !is_wrapper_nal(&nal) {
-                                    au.push(nal);
-                                }
-                                if pkt.marker && !au.is_empty() {
-                                    push_recv(RecvUnit { nals: std::mem::take(&mut au) });
-                                }
-                            }
-                            Ok(None) => {}
-                            Err(_) => {}
-                        }
-                    }
-                }
-            }));
-        }
+        // -- video recv (SRTP -> depacketize -> AU framing -> queues) --
+        tasks.push(tokio::spawn(video_recv_loop(VideoLeg {
+            socket: video_sock.clone(),
+            ctx: vctx.clone(),
+            pwd: video_pair.as_ref().map(|(_, _, pwd)| pwd.clone()).unwrap_or_default(),
+            stats: vid_recv_stats.clone(),
+            remote_ssrc: vid_remote_ssrc.clone(),
+            flag: shutdown.clone(),
+            slot_base: remote_ssrc_base(&p.remote_sdp, "video"),
+            sender_ssrc: p.video_ssrc,
+            dest: vaddr,
+            share: false,
+        })));
+
+        // -- video source requests (MS-RTP VSR, one per slot) --
+        tasks.push(tokio::spawn(vsr_loop(
+            video_sock.clone(),
+            vctx.clone(),
+            shutdown.clone(),
+            p.video_ssrc,
+            remote_ssrc_base(&p.remote_sdp, "video"),
+            vaddr,
+            VsrFeed::Main,
+        )));
 
         // -- video RTCP (5s) --
-        {
-            let socket = video_sock.clone();
-            let stats = vid_send_stats.clone();
-            let rs = vid_recv_stats.clone();
-            let rssrc = vid_remote_ssrc.clone();
-            let cname = p.cname.clone();
-            let flag = shutdown.clone();
-            tasks.push(tokio::spawn(async move {
-                let mut ticks = 0u32;
-                while !flag.load(Ordering::Relaxed) {
-                    tokio::time::sleep(Duration::from_millis(250)).await;
-                    ticks += 1;
-                    if ticks < 20 {
-                        continue;
-                    }
-                    ticks = 0;
-                    let s = stats.lock().await.clone();
-                    let r = rs.lock().await.clone();
-                    let remote = *rssrc.lock().await;
-                    let pkt = if s.packets_sent > 0 {
-                        rtcp::build_sender_report(&s, &r, remote, &cname)
-                    } else {
-                        rtcp::build_receiver_report(s.ssrc, &r, remote, &cname)
-                    };
-                    let mut c = vctx.lock().await;
-                    if let Ok(wire) = srtp::protect_rtcp(&mut c, &pkt) {
-                        let _ = socket.send_to(&wire, vaddr).await;
-                    }
-                }
-            }));
-        }
+        tasks.push(tokio::spawn(rtcp_report_loop(
+            video_sock.clone(),
+            vctx.clone(),
+            vid_send_stats.clone(),
+            vid_recv_stats.clone(),
+            vid_remote_ssrc.clone(),
+            p.cname.clone(),
+            shutdown.clone(),
+            vaddr,
+        )));
+    }
+
+    // -- screen share receive (applicationsharing-video leg; own ICE, never
+    //    blocks audio/video) --
+    if let Some(sp) = p.share {
+        let cname = p.cname.clone();
+        let controlling = p.controlling;
+        let flag = shutdown.clone();
+        tasks.push(tokio::spawn(async move {
+            if let Err(e) = share_leg(sp, controlling, cname, flag).await {
+                crate::call_roster::diag(format!("share: {}", e));
+            }
+        }));
     }
 
     // Park until shutdown, then abort loops.
@@ -1108,6 +1538,544 @@ async fn wait_shutdown(flag: &std::sync::Arc<AtomicBool>) {
     while !flag.load(Ordering::Relaxed) {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+}
+
+// ---------------------------------------------------------------------------
+// Video legs: receive loop, VSR loop, RTCP reports, screen share leg
+// ---------------------------------------------------------------------------
+
+/// One video receive leg: main video, or the screen share leg.
+struct VideoLeg {
+    socket: std::sync::Arc<tokio::net::UdpSocket>,
+    ctx: std::sync::Arc<tokio::sync::Mutex<srtp::SrtpContext>>,
+    /// Our ICE password (answers the remote connectivity checks).
+    pwd: String,
+    stats: std::sync::Arc<tokio::sync::Mutex<rtcp::RtpRecvStats>>,
+    remote_ssrc: std::sync::Arc<tokio::sync::Mutex<u32>>,
+    flag: std::sync::Arc<AtomicBool>,
+    /// Remote x-ssrc-range base (VSR slot SSRCs).
+    slot_base: Option<u32>,
+    /// Our SSRC on this leg (PLI sender).
+    sender_ssrc: u32,
+    dest: std::net::SocketAddr,
+    /// Share leg: every unit files under [`SOURCE_SHARE`], no 1:1 queue.
+    share: bool,
+}
+
+/// Per remote SSRC: SRTP rollover state, FU-A reassembly, the access
+/// unit being built, and loss tracking.
+struct SsrcRecv {
+    ctx: srtp::SrtpContext,
+    depack: video::VideoDepacketizer,
+    au: Vec<Vec<u8>>,
+    last_seq: Option<u16>,
+    /// A packet of the unit being built was lost.
+    lossy: bool,
+}
+
+/// RTP payload types carrying H.264 this client decodes: X-H264UC (122)
+/// and H264 (124, screen share). FEC (123) and RTVC1 (121) carry no NALs.
+fn is_h264_pt(pt: u8) -> bool {
+    pt == video::PT_H264 || pt == 124
+}
+
+/// Lost packets between `last` and `seq` (mod 2^16). A late, duplicate or
+/// wildly jumped (sender restart) sequence number is not loss.
+fn seq_gap(last: u16, seq: u16) -> bool {
+    let d = seq.wrapping_sub(last);
+    d > 1 && d < 3000
+}
+
+/// `seq` is newer than `last` (mod 2^16).
+fn seq_newer(last: u16, seq: u16) -> bool {
+    let d = seq.wrapping_sub(last);
+    d != 0 && d < 0x8000
+}
+
+/// NALs of a STAP-A aggregate (type 24: `u16 size + NAL` repeated, e.g.
+/// SPS + PPS in one packet); None for any other payload.
+fn stap_a_nals(payload: &[u8]) -> Option<Vec<Vec<u8>>> {
+    if payload.first().map(|b| b & 0x1F) != Some(24) {
+        return None;
+    }
+    let mut out = Vec::new();
+    let mut at = 1usize;
+    while at + 2 <= payload.len() {
+        let n = u16::from_be_bytes([payload[at], payload[at + 1]]) as usize;
+        at += 2;
+        if n == 0 || at + n > payload.len() {
+            break;
+        }
+        out.push(payload[at..at + n].to_vec());
+        at += n;
+    }
+    Some(out)
+}
+
+/// UDP -> SRTP -> depacketize -> access units -> queues, per SSRC (a
+/// mixer forwards several sources, each with its own sequence space and
+/// FU-A reassembly). Main video files each unit under its source key and
+/// in the 1:1 queue; the share leg files under [`SOURCE_SHARE`]. Loss
+/// drops the damaged unit and its dependents until a keyframe; a starved
+/// live queue asks the sender for one (PLI now, VSR re-send next tick).
+async fn video_recv_loop(leg: VideoLeg) {
+    let mut buf = [0u8; 2048];
+    let base_ctx = leg.ctx.lock().await.clone();
+    let mut per_ssrc: std::collections::HashMap<u32, SsrcRecv> = std::collections::HashMap::new();
+    let mut subs_version = u64::MAX;
+    let mut slots: Vec<(u32, u32)> = Vec::new();
+    while !leg.flag.load(Ordering::Relaxed) {
+        let got = tokio::time::timeout(Duration::from_millis(500), leg.socket.recv_from(&mut buf)).await;
+        let (len, from) = match got {
+            Ok(Ok(v)) => v,
+            _ => continue,
+        };
+        let data = &buf[..len];
+        if len >= 20 && ice::is_stun_message(data) {
+            if ice::is_stun_request(data) {
+                if let Some(txn) = ice::get_transaction_id(data) {
+                    let resp = ice::build_binding_response(&txn, from, Some(leg.pwd.as_bytes()));
+                    let _ = leg.socket.send_to(&resp, from).await;
+                }
+            }
+            continue;
+        }
+        // RTCP (rtcp-mux demux, RFC 5761: PT byte 192..=223).
+        if len >= 2 && (192..=223).contains(&data[1]) {
+            let rtcp_data = {
+                let mut c = leg.ctx.lock().await;
+                srtp::unprotect_rtcp(&mut c, data)
+            };
+            if let Ok(rtcp_data) = rtcp_data {
+                {
+                    let mut rs = leg.stats.lock().await;
+                    for block in rtcp::parse_rtcp(&rtcp_data) {
+                        if let rtcp::RtcpBlock::SenderReport { ntp_timestamp, .. } = block {
+                            rs.last_sr_ntp = ((ntp_timestamp >> 16) & 0xFFFF_FFFF) as u32;
+                            rs.last_sr_recv_time = Some(std::time::Instant::now());
+                        }
+                    }
+                }
+                for (t, _) in parse_afb(&rtcp_data) {
+                    match t {
+                        0 => stat_add(|s| s.pli_recv += 1),
+                        1 => stat_add(|s| s.vsr_recv += 1),
+                        _ => {}
+                    }
+                }
+            }
+            continue;
+        }
+        if len < rtp::RTP_HEADER_SIZE {
+            continue;
+        }
+        let ssrc = u32::from_be_bytes([data[8], data[9], data[10], data[11]]);
+        if !per_ssrc.contains_key(&ssrc) && per_ssrc.len() >= 32 {
+            if let Some(k) = per_ssrc.keys().next().copied() {
+                per_ssrc.remove(&k);
+            }
+        }
+        let entry = per_ssrc.entry(ssrc).or_insert_with(|| {
+            let mut c = base_ctx.clone();
+            c.remote_roc = 0;
+            c.remote_highest_seq = 0;
+            SsrcRecv {
+                ctx: c,
+                depack: video::VideoDepacketizer::new(),
+                au: Vec::new(),
+                last_seq: None,
+                lossy: false,
+            }
+        });
+        let rtp_data = match srtp::unprotect(&mut entry.ctx, data) {
+            Ok(d) => d,
+            Err(_) => continue,
+        };
+        let pkt = match rtp::decode(&rtp_data) {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+        {
+            let mut rs = leg.stats.lock().await;
+            rs.packets_received += 1;
+            if pkt.sequence_number as u32 > rs.highest_seq {
+                rs.highest_seq = pkt.sequence_number as u32;
+            }
+        }
+        if leg.share {
+            stat_add(|s| s.share_recv += 1);
+        } else {
+            stat_add(|s| s.video_recv += 1);
+        }
+        {
+            let mut r = leg.remote_ssrc.lock().await;
+            if *r == 0 {
+                *r = pkt.ssrc;
+            }
+        }
+        // Loss (counted over every payload type: FEC shares the sequence
+        // space) damages the unit being built.
+        let seq = pkt.sequence_number;
+        match entry.last_seq {
+            Some(last) => {
+                if seq_gap(last, seq) {
+                    entry.lossy = true;
+                }
+                if seq_newer(last, seq) {
+                    entry.last_seq = Some(seq);
+                }
+            }
+            None => entry.last_seq = Some(seq),
+        }
+        if !is_h264_pt(pkt.payload_type) {
+            continue;
+        }
+        if let Some(nals) = stap_a_nals(&pkt.payload) {
+            entry.au.extend(nals.into_iter().filter(|n| !is_wrapper_nal(n)));
+        } else if let Ok(Some(nal)) = entry.depack.depacketize(&pkt.payload, pkt.marker) {
+            if !is_wrapper_nal(&nal) {
+                entry.au.push(nal);
+            }
+        }
+        if !pkt.marker {
+            continue;
+        }
+        // Access unit complete.
+        let unit = RecvUnit { nals: std::mem::take(&mut entry.au) };
+        let lossy = std::mem::replace(&mut entry.lossy, false);
+        let key = if leg.share {
+            SOURCE_SHARE
+        } else {
+            {
+                let subs = lock(subscriptions());
+                if subs.version != subs_version {
+                    subs_version = subs.version;
+                    slots = slot_table(leg.slot_base, &subs.wanted);
+                }
+            }
+            source_key(rtp_first_csrc(&rtp_data), pkt.ssrc, &slots)
+        };
+        let want = if lossy {
+            let w = lose_source(key);
+            if leg.share {
+                w
+            } else {
+                lock(recv_queue()).lose(now_ms()) || w
+            }
+        } else if unit.nals.is_empty() {
+            false
+        } else if leg.share {
+            push_source(key, unit)
+        } else {
+            let w = push_source(key, unit.clone());
+            push_recv(unit) || w
+        };
+        if !leg.share {
+            let n = lock(source_queues()).len();
+            stat_add(|s| s.video_sources = n);
+        }
+        if want {
+            let pli = build_pli(leg.sender_ssrc, pkt.ssrc);
+            let wire = {
+                let mut c = leg.ctx.lock().await;
+                srtp::protect_rtcp(&mut c, &pli)
+            };
+            if let Ok(w) = wire {
+                if leg.socket.send_to(&w, leg.dest).await.is_ok() {
+                    stat_add(|s| s.pli_sent += 1);
+                }
+            }
+            lock(keyframe_requests(leg.share)).insert(key);
+        }
+    }
+}
+
+/// MS-RTP Video Source Requests, one per slot: "SSRC of media source" =
+/// the remote x-ssrc-range base + slot index, retransmitted 4x at 190 ms
+/// then 5x at 3 s. A keyframe request for a slot's source re-sends that
+/// slot's request (the keyframe flag is always set).
+async fn vsr_loop(
+    socket: std::sync::Arc<tokio::net::UdpSocket>,
+    ctx: std::sync::Arc<tokio::sync::Mutex<srtp::SrtpContext>>,
+    flag: std::sync::Arc<AtomicBool>,
+    sender: u32,
+    base: Option<u32>,
+    dest: std::net::SocketAddr,
+    feed: VsrFeed,
+) {
+    struct Slot {
+        msi: u32,
+        request_id: u16,
+        sent: u8,
+        next: tokio::time::Instant,
+    }
+    let share = feed == VsrFeed::Share;
+    let mut slots: Vec<Slot> = Vec::new();
+    let mut version = u64::MAX;
+    let mut next_id: u16 = (now_secs() as u16) | 1;
+    while !flag.load(Ordering::Relaxed) {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let (v, wanted) = feed.wanted();
+        let now = tokio::time::Instant::now();
+        if v != version {
+            version = v;
+            let eff = effective_slots(&wanted);
+            for i in 0..eff.len().max(slots.len()) {
+                let msi = eff.get(i).copied().unwrap_or(SOURCE_NONE);
+                let fresh = Slot { msi, request_id: next_id, sent: 0, next: now };
+                match slots.get_mut(i) {
+                    Some(s) if s.msi == msi => continue,
+                    Some(s) => *s = fresh,
+                    None => slots.push(fresh),
+                }
+                next_id = next_id.wrapping_add(1);
+            }
+        }
+        let asked: Vec<u32> = lock(keyframe_requests(share)).drain().collect();
+        for key in asked {
+            let i = slots.iter().position(|s| s.msi == key).or_else(|| {
+                let any = slots.first().map(|s| s.msi == SOURCE_ANY).unwrap_or(false);
+                (share || any).then_some(0).filter(|_| !slots.is_empty())
+            });
+            if let Some(s) = i.and_then(|i| slots.get_mut(i)) {
+                if s.msi == SOURCE_NONE {
+                    continue;
+                }
+                if s.sent >= VSR_SENDS {
+                    s.sent = VSR_SENDS - 1; // one more send, as a new request
+                    s.request_id = next_id;
+                    next_id = next_id.wrapping_add(1);
+                }
+                s.next = now;
+            }
+        }
+        for (i, s) in slots.iter_mut().enumerate() {
+            if s.sent >= VSR_SENDS || now < s.next {
+                continue;
+            }
+            let media = base.map(|b| b.wrapping_add(i as u32)).unwrap_or(0);
+            let (w, h) = feed.size(i);
+            let pkt = build_vsr(sender, media, s.msi, s.request_id, true, w, h);
+            let wire = {
+                let mut c = ctx.lock().await;
+                srtp::protect_rtcp(&mut c, &pkt)
+            };
+            if let Ok(wire) = wire {
+                if socket.send_to(&wire, dest).await.is_ok() {
+                    stat_add(|st| st.vsr_sent += 1);
+                }
+            }
+            s.sent += 1;
+            s.next = now + vsr_resend_delay(s.sent);
+        }
+        while slots
+            .last()
+            .map(|s| s.msi == SOURCE_NONE && s.sent >= VSR_SENDS)
+            .unwrap_or(false)
+        {
+            slots.pop();
+        }
+    }
+}
+
+/// RTCP sender / receiver report every 5 s (250 ms-granular shutdown).
+#[allow(clippy::too_many_arguments)]
+async fn rtcp_report_loop(
+    socket: std::sync::Arc<tokio::net::UdpSocket>,
+    ctx: std::sync::Arc<tokio::sync::Mutex<srtp::SrtpContext>>,
+    send_stats: std::sync::Arc<tokio::sync::Mutex<rtcp::RtpSendStats>>,
+    recv_stats: std::sync::Arc<tokio::sync::Mutex<rtcp::RtpRecvStats>>,
+    remote_ssrc: std::sync::Arc<tokio::sync::Mutex<u32>>,
+    cname: String,
+    flag: std::sync::Arc<AtomicBool>,
+    dest: std::net::SocketAddr,
+) {
+    let mut ticks = 0u32;
+    while !flag.load(Ordering::Relaxed) {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        ticks += 1;
+        if ticks < 20 {
+            continue;
+        }
+        ticks = 0;
+        let s = send_stats.lock().await.clone();
+        let r = recv_stats.lock().await.clone();
+        let remote = *remote_ssrc.lock().await;
+        let pkt = if s.packets_sent > 0 {
+            rtcp::build_sender_report(&s, &r, remote, &cname)
+        } else {
+            rtcp::build_receiver_report(s.ssrc, &r, remote, &cname)
+        };
+        let mut c = ctx.lock().await;
+        if let Ok(wire) = srtp::protect_rtcp(&mut c, &pkt) {
+            let _ = socket.send_to(&wire, dest).await;
+        }
+    }
+}
+
+/// The screen share receive leg (applicationsharing-video m-line of a
+/// group / meeting join): its own port, ICE and SRTP; receive only. VSRs
+/// ask for the roster's presenter (SOURCE_ANY until one is known).
+pub struct ShareParams {
+    pub sock: std::net::UdpSocket,
+    pub local_crypto: String,
+    pub local_ufrag: String,
+    pub local_pwd: String,
+    /// Our SSRC on the leg (RTCP / VSR sender; no media is sent).
+    pub ssrc: u32,
+    /// The answer's share media section (see [`split_share_section`]).
+    pub remote_section: String,
+}
+
+async fn share_leg(
+    sp: ShareParams,
+    controlling: bool,
+    cname: String,
+    flag: std::sync::Arc<AtomicBool>,
+) -> Result<(), String> {
+    use tokio::sync::Mutex as AMutex;
+    let socket = std::sync::Arc::new(
+        tokio::net::UdpSocket::from_std(sp.sock).map_err(|e| format!("socket: {}", e))?,
+    );
+    let info = section_info(&sp.remote_section);
+    let local = srtp::parse_crypto_line(&sp.local_crypto).map_err(|e| format!("crypto: {:#}", e))?;
+    let remote = info
+        .crypto
+        .iter()
+        .find_map(|l| srtp::parse_crypto_line(l).ok())
+        .ok_or_else(|| "no crypto in the answer".to_string())?;
+    let ctx = std::sync::Arc::new(AMutex::new(
+        srtp::create_context(&local, &remote).map_err(|e| format!("srtp: {:#}", e))?,
+    ));
+    let cands = ice::parse_candidates_from_sdp_section(&sp.remote_section, "video");
+    let agent = ice::IceAgent::new(
+        ice::IceCredentials { ufrag: sp.local_ufrag.clone(), pwd: sp.local_pwd.clone() },
+        ice::IceCredentials { ufrag: info.ufrag.clone(), pwd: info.pwd.clone() },
+        controlling,
+    );
+    let dest = tokio::select! {
+        r = agent.check_connectivity(socket.clone(), &cands) => r
+            .map(|c| Some(c.remote_addr))
+            .unwrap_or_else(|_| ice::select_remote_candidate(&cands)),
+        _ = wait_shutdown(&flag) => return Ok(()),
+    };
+    let dest = dest.ok_or_else(|| "no candidate in the answer".to_string())?;
+    lock(engine_stats()).ice_share = dest.to_string();
+    crate::call_roster::diag(format!(
+        "share: leg up, source base {}",
+        info.ssrc_base.map(|b| b.to_string()).unwrap_or_else(|| "-".to_string())
+    ));
+    let send_stats = std::sync::Arc::new(AMutex::new(rtcp::RtpSendStats::default()));
+    send_stats.lock().await.ssrc = sp.ssrc;
+    let recv_stats = std::sync::Arc::new(AMutex::new(rtcp::RtpRecvStats::default()));
+    let remote_ssrc = std::sync::Arc::new(AMutex::new(0u32));
+    let vsr = tokio::spawn(vsr_loop(
+        socket.clone(),
+        ctx.clone(),
+        flag.clone(),
+        sp.ssrc,
+        info.ssrc_base,
+        dest,
+        VsrFeed::Share,
+    ));
+    let reports = tokio::spawn(rtcp_report_loop(
+        socket.clone(),
+        ctx.clone(),
+        send_stats,
+        recv_stats.clone(),
+        remote_ssrc.clone(),
+        cname,
+        flag.clone(),
+        dest,
+    ));
+    video_recv_loop(VideoLeg {
+        socket,
+        ctx,
+        pwd: sp.local_pwd,
+        stats: recv_stats,
+        remote_ssrc,
+        flag,
+        slot_base: info.ssrc_base,
+        sender_ssrc: sp.ssrc,
+        dest,
+        share: true,
+    })
+    .await;
+    vsr.abort();
+    reports.abort();
+    Ok(())
+}
+
+/// ICE credentials, crypto lines, port and x-ssrc-range base of one SDP
+/// media section.
+#[derive(Debug, Default, PartialEq)]
+pub struct SectionInfo {
+    pub port: u16,
+    pub ufrag: String,
+    pub pwd: String,
+    pub crypto: Vec<String>,
+    pub ssrc_base: Option<u32>,
+}
+
+pub fn section_info(section: &str) -> SectionInfo {
+    let mut out = SectionInfo::default();
+    for line in section.lines().map(str::trim) {
+        if let Some(m) = line.strip_prefix("m=") {
+            out.port = m.split_whitespace().nth(1).and_then(|p| p.parse().ok()).unwrap_or(0);
+        } else if let Some(v) = line.strip_prefix("a=ice-ufrag:") {
+            out.ufrag = v.to_string();
+        } else if let Some(v) = line.strip_prefix("a=ice-pwd:") {
+            out.pwd = v.to_string();
+        } else if line.starts_with("a=crypto:") || line.starts_with("a=cryptoscale:") {
+            out.crypto.push(line.to_string());
+        } else if let Some(r) = line.strip_prefix("a=x-ssrc-range:") {
+            out.ssrc_base = r.split('-').next().and_then(|s| s.trim().parse().ok());
+        }
+    }
+    out
+}
+
+/// Split a remote SDP into the SDP without its screen share media section
+/// and that section alone (session-level ICE credentials folded in). The
+/// share section is the `m=video` section labelled
+/// `applicationsharing-video` (a=label or a=x-source); it is None when
+/// absent or rejected (port 0). Every other parser keeps seeing exactly
+/// the audio + main video sections it was written for.
+pub fn split_share_section(sdp: &str) -> (String, Option<String>) {
+    let mut sections: Vec<String> = vec![String::new()];
+    for line in sdp.split_inclusive('\n') {
+        if line.starts_with("m=") {
+            sections.push(String::new());
+        }
+        sections.last_mut().unwrap().push_str(line);
+    }
+    let is_share = |s: &str| {
+        s.starts_with("m=video")
+            && s.lines().map(str::trim).any(|l| {
+                l == "a=label:applicationsharing-video" || l == "a=x-source:applicationsharing-video"
+            })
+    };
+    let Some(i) = sections.iter().position(|s| is_share(s)) else {
+        return (sdp.to_string(), None);
+    };
+    let share = sections.remove(i);
+    let main = sections.concat();
+    if section_info(&share).port == 0 {
+        return (main, None);
+    }
+    let mut section = share;
+    if !section.ends_with('\n') {
+        section.push_str("\r\n");
+    }
+    let head = section_info(&sections[0]);
+    let own = section_info(&section);
+    if own.ufrag.is_empty() && !head.ufrag.is_empty() {
+        section.push_str(&format!("a=ice-ufrag:{}\r\n", head.ufrag));
+    }
+    if own.pwd.is_empty() && !head.pwd.is_empty() {
+        section.push_str(&format!("a=ice-pwd:{}\r\n", head.pwd));
+    }
+    (main, Some(section))
 }
 
 // ---------------------------------------------------------------------------
@@ -1149,6 +2117,53 @@ pub extern "C" fn ostmac_video_poll_incoming_bytes(
             *out_len = 0;
             0
         }
+    }
+}
+
+/// Drain the newest AU of one video source (meeting tiles); same
+/// contract as [`ostmac_video_poll_incoming_bytes`].
+#[no_mangle]
+pub extern "C" fn ostmac_video_poll_source_bytes(
+    source: u32,
+    out: *mut *mut u8,
+    out_len: *mut usize,
+    dropped: *mut c_int,
+) -> c_int {
+    if out.is_null() || out_len.is_null() || dropped.is_null() {
+        return -1;
+    }
+    let (payload, stale, has) = video_source_poll_raw(source);
+    unsafe {
+        *dropped = stale as c_int;
+        if has {
+            let boxed = payload.into_boxed_slice();
+            *out_len = boxed.len();
+            *out = Box::into_raw(boxed) as *mut u8;
+            1
+        } else {
+            *out = std::ptr::null_mut();
+            *out_len = 0;
+            0
+        }
+    }
+}
+
+/// Video sources seen this call. See [`video_sources_json`].
+#[no_mangle]
+pub extern "C" fn ostmac_video_sources() -> *mut c_char {
+    string_to_c(video_sources_json())
+}
+
+/// Subscribe video sources: `msis_json` is a JSON array of MSIs in
+/// priority order. See [`video_subscribe_json`].
+#[no_mangle]
+pub extern "C" fn ostmac_video_subscribe(msis_json: *const c_char) -> *mut c_char {
+    match crate::cstr_to_string(msis_json) {
+        Ok(s) => match serde_json::from_str::<Vec<u32>>(&s) {
+            Ok(v) => string_to_c(video_subscribe_json(&v)),
+            Err(e) => string_to_c(err_json("arg", format!("msis: {}", e))),
+        },
+        Err(e) => string_to_c(err_json("arg", e)),
     }
 }
 
@@ -1495,5 +2510,134 @@ mod tests {
             );
         }
         drain_queues();
+    }
+
+    /// meetvideo: VSR wire layout (MS-RTP 2.2.12.2), AFB/DSH parse,
+    /// source keying, and per-source queues (FIFO per source).
+    #[test]
+    fn vsr_layout_and_source_queues() {
+        let _t = test_lock();
+        let be16 = |b: &[u8], i: usize| u16::from_be_bytes([b[i], b[i + 1]]);
+        let be32 = |b: &[u8], i: usize| u32::from_be_bytes([b[i], b[i + 1], b[i + 2], b[i + 3]]);
+        let v = build_vsr(0x1111_1111, 0x2222_2222, 21, 7, true, 1280, 720);
+        assert_eq!(v.len(), 12 + 20 + 0x44);
+        assert_eq!((v[0], v[1]), (0x8F, 206), "V=2 FMT=15, PT=PSFB");
+        assert_eq!(be16(&v, 2) as usize, v.len() / 4 - 1);
+        assert_eq!((be32(&v, 4), be32(&v, 8)), (0x1111_1111, 0x2222_2222));
+        assert_eq!(be16(&v, 12), 1, "AFB type VSR");
+        assert_eq!(be16(&v, 14) as usize, 20 + 0x44, "FCI length incl. type+length");
+        assert_eq!(be32(&v, 16), 21, "requested MSI");
+        assert_eq!(be16(&v, 20), 7, "request id");
+        assert_eq!((v[25], v[26], v[27]), (0x80, 1, 0x44), "K, entries, entry length");
+        let e = 32;
+        assert_eq!((v[e], v[e + 1]), (122, 1), "X-H264UC, UCConfig mode 1");
+        assert_eq!((be16(&v, e + 4), be16(&v, e + 6)), (1280, 720));
+        assert_eq!(be32(&v, e + 64), 1280 * 720, "max pixels closes the 0x44 entry");
+        let none = build_vsr(1, 2, SOURCE_NONE, 8, false, 0, 0);
+        assert_eq!((none.len(), none[26]), (32, 0), "SOURCE_NONE: header only");
+
+        // Compound: PLI + our VSR + a mixer DSH (dominant 20, history 30).
+        let mut rtcp = vec![0x81u8, 206, 0, 2, 0, 0, 0, 1, 0, 0, 0, 2];
+        rtcp.extend_from_slice(&v);
+        rtcp.extend_from_slice(&[0x8F, 206, 0, 5, 0, 0, 0, 1, 0, 0, 0, 0,
+            0, 3, 0, 12, 0, 0, 0, 20, 0, 0, 0, 30]);
+        let afb = parse_afb(&rtcp);
+        assert_eq!(afb.iter().map(|(t, _)| *t).collect::<Vec<_>>(), vec![0, 1, 3]);
+        assert_eq!(dsh_dominant(&afb[2].1), Some(Some(20)));
+        assert_eq!(dsh_dominant(&afb[1].1), None, "a VSR is not a DSH");
+
+        // Source keys: CSRC MSI > subscribed slot > SSRC.
+        let slots = slot_table(Some(5000), &[7, 9]);
+        assert_eq!(slots, vec![(5000, 7), (5001, 9)]);
+        assert_eq!(source_key(Some(21), 5001, &slots), 21);
+        assert_eq!(source_key(None, 5001, &slots), 9);
+        assert_eq!(source_key(None, 5000, &slot_table(Some(5000), &[])), 5000, "SOURCE_ANY keeps SSRC");
+        assert_eq!(source_key(None, 42, &[]), 42);
+        let sdp = "m=audio 1 RTP/SAVP 0\r\na=x-ssrc-range:10-10\r\nm=video 2 RTP/SAVP 122\r\na=x-ssrc-range:5000-5099\r\n";
+        assert_eq!(remote_ssrc_base(sdp, "video"), Some(5000));
+        assert_eq!(remote_ssrc_base(sdp, "audio"), Some(10));
+        assert_eq!(vsr_resend_delay(4), Duration::from_millis(190));
+        assert_eq!(vsr_resend_delay(5), Duration::from_secs(3));
+        let sub: serde_json::Value =
+            serde_json::from_str(&video_subscribe_json(&[21, 21, SOURCE_ANY, 31])).unwrap();
+        assert_eq!(sub["subscribed"], serde_json::json!([21, 31]));
+        video_subscribe_json(&[]);
+
+        lock(source_queues()).clear();
+        push_source(21, RecvUnit { nals: vec![vec![0x65, 1]] });
+        push_source(21, RecvUnit { nals: vec![vec![0x65, 2]] });
+        push_source(31, RecvUnit { nals: vec![vec![0x65, 3]] });
+        let (payload, stale, has) = video_source_poll_raw(21);
+        assert!(has);
+        assert_eq!(stale, 0);
+        assert_eq!(unframe_nals(&payload).unwrap(), vec![vec![0x65, 1]], "oldest first");
+        assert_eq!(unframe_nals(&video_source_poll_raw(21).0).unwrap(), vec![vec![0x65, 2]]);
+        assert!(!video_source_poll_raw(21).2, "drained");
+        assert!(video_source_poll_raw(31).2, "other source untouched");
+        let list: serde_json::Value = serde_json::from_str(&video_sources_json()).unwrap();
+        assert_eq!(list["sources"].as_array().unwrap().len(), 2);
+        lock(source_queues()).clear();
+    }
+
+    /// callfix: every queued unit reaches the decoder in order; overflow
+    /// and loss drop whole GOPs (never a lone reference), and a starved
+    /// live queue asks for a keyframe once a second. Send side: every
+    /// frame goes out in order, and camera off sends nothing (no black).
+    #[test]
+    fn gop_queue_decodes_every_unit_and_drops_whole_gops() {
+        let key = |n: u8| RecvUnit { nals: vec![vec![0x67, 0x42], vec![0x65, n]] };
+        let p = |n: u8| RecvUnit { nals: vec![vec![0x41, n]] };
+        let tag = |u: &RecvUnit| *u.nals.last().unwrap().last().unwrap();
+        let mut q = GopQueue::new();
+        assert!(!q.push(p(1), 10_000), "leading P-frame dropped; no decoder yet, no request");
+        q.push(key(2), 10_001);
+        q.push(p(3), 10_002);
+        let (u, dropped) = q.pop(10_003);
+        assert_eq!((tag(&u.unwrap()), dropped), (2, 1));
+        assert_eq!(tag(&q.pop(10_004).0.unwrap()), 3);
+        assert!(q.pop(10_005).0.is_none());
+
+        q.push(key(10), 10_010);
+        for i in 0..20 {
+            q.push(p(11 + i), 10_010);
+        }
+        q.push(key(40), 10_010);
+        for i in 0..9 {
+            q.push(p(41 + i), 10_010);
+        }
+        assert_eq!(q.q.len(), 10, "overflow kept the newest GOP from its keyframe");
+        let (u, dropped) = q.pop(20_000);
+        assert_eq!((tag(&u.unwrap()), dropped), (40, 21));
+
+        let asked = (0..40u8).filter(|i| q.push(p(*i), 20_100)).count();
+        assert_eq!(asked, 1, "one-GOP overflow: empty, wait, ask once");
+        assert!(q.q.is_empty() && q.awaiting_key);
+        q.pop(21_150);
+        assert!(q.push(p(99), 21_200), "still starved a second later: ask again");
+        q.push(key(100), 21_201);
+        assert_eq!(tag(&q.pop(21_202).0.unwrap()), 100, "resumes at the keyframe");
+        q.push(p(101), 21_203);
+        q.lose(21_204);
+        q.push(p(102), 21_205);
+        assert_eq!(tag(&q.pop(21_206).0.unwrap()), 101, "units before the loss still decode");
+        assert!(q.pop(21_207).0.is_none(), "the damaged unit's dependents drop");
+
+        {
+            let _t = test_lock();
+            lock(send_queue()).clear();
+            push_send(SendUnit { nals: vec![vec![0x65, 1]] });
+            push_send(SendUnit { nals: vec![vec![0x41, 2]] });
+            let sent: Vec<u8> = take_send_all().into_iter().map(|u| u.nals[0][1]).collect();
+            assert_eq!(sent, vec![1, 2], "every queued frame goes out, oldest first");
+            assert!(take_send_all().is_empty(), "camera off: nothing to send, no black filler");
+        }
+        assert_eq!(
+            stap_a_nals(&[24, 0, 2, 0x67, 1, 0, 1, 0x68]),
+            Some(vec![vec![0x67, 1], vec![0x68]])
+        );
+        assert_eq!(stap_a_nals(&[0x65, 1]), None);
+        assert!(seq_gap(10, 12) && !seq_gap(10, 11) && !seq_gap(10, 9) && seq_gap(65535, 1));
+        assert!(is_h264_pt(122) && is_h264_pt(124) && !is_h264_pt(123));
+        assert_eq!(build_pli(1, 2), vec![0x81, 206, 0, 2, 0, 0, 0, 1, 0, 0, 0, 2]);
     }
 }

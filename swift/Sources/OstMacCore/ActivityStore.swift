@@ -607,11 +607,11 @@ public final class ActivityStore: ObservableObject {
         save()
     }
 
-    /// Offline demo feed (mention + reply + reaction + 1:1 missed
-    /// call). Each row is built from the demo message it opens
+    /// Offline demo feed (mentions, replies, a reaction, a channel
+    /// announcement and 1:1 missed calls). Each row is built from the demo message it opens
     /// (same id, sender, text and time), so the row matches the landed
     /// bubble. In-memory only — demo never touches the persisted list.
-    public func seedDemo(now: Date = Date()) {
+    public func seedDemo(now: Date = DemoClock.now) {
         // Demo reviews stay in memory: never persist canned rows over
         // the account's real feed.
         persists = false
@@ -644,6 +644,25 @@ public final class ActivityStore: ObservableObject {
                 snippet: Self.reactionSnippet(reactions: m.reactions, total: total, chatName: showcase),
                 at: stamp(m)))
         }
+        if let m = message(DemoData.richID, "rich-5") {
+            feed.append(ActivityItem(
+                kind: .mention, chatID: DemoData.richID, messageID: m.id,
+                actor: m.sender, chatName: DemoData.name(for: DemoData.richID) ?? "",
+                snippet: Self.historySnippet(m), at: stamp(m)))
+        }
+        // Shipping channel: mentions, a reply to the owner's post and a
+        // channel-wide announcement.
+        let shipping = DemoTeams.threadedChannelID
+        let posts: [(String, ActivityKind)] = [
+            ("ship-q2", .mention), ("ship-q3-r1", .mention), ("ship-p0", .channelBlast), ("ship-p3-r1", .reply),
+        ]
+        for (id, kind) in posts {
+            guard let m = message(shipping, id) else { continue }
+            feed.append(ActivityItem(
+                kind: kind, chatID: shipping, messageID: m.id, actor: m.sender,
+                chatName: "Engineering > Shipping", snippet: Self.historySnippet(m), at: stamp(m),
+                reviewed: kind != .mention))
+        }
         // A 1:1 call carries its chat thread and the caller's id (as
         // `noteCallRecord` does), so the card offers Message + presence.
         feed.append(ActivityItem(
@@ -652,6 +671,12 @@ public final class ActivityStore: ObservableObject {
             chatName: "Ava Lindqvist", snippet: "Missed call",
             at: Self.stamp(now) - 3600, id: "missedCall:-:demo-missed",
             callerID: "demo-u-ava"))
+        feed.append(ActivityItem(
+            kind: .missedCall, chatID: DemoData.tomID,
+            messageID: nil, actor: "Tom Becker",
+            chatName: "Tom Becker", snippet: "Missed call",
+            at: Self.stamp(now) - 19 * 3600, reviewed: true, id: "missedCall:-:demo-missed-tom",
+            callerID: "demo-u-tom"))
         items = feed.sorted { $0.at > $1.at }
     }
 

@@ -127,6 +127,9 @@ struct MessageUser {
 
 #[derive(Debug, Deserialize)]
 struct GraphAttachment {
+    /// The `<attachment id>` the message body references.
+    #[serde(default)]
+    id: Option<String>,
     #[serde(rename = "contentType")]
     content_type: Option<String>,
     #[serde(rename = "contentUrl")]
@@ -315,46 +318,127 @@ async fn list_via_chat_messages(
     let mut files = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for msg in &msgs.value {
-        let sender = sender_of(msg);
-        for att in &msg.attachments {
-            if att.content_type.as_deref() != Some("reference") {
-                continue;
-            }
-            let Some(url) = att.content_url.as_deref().filter(|s| !s.is_empty()) else {
-                continue;
-            };
-            let share_id = encode_share_id(url);
-            let spath = format!("/shares/{}/driveItem", share_id);
-            let item: DriveItem = match client.graph_get(&spath).await {
-                Ok(r) => match r.json().await {
-                    Ok(it) => it,
-                    Err(e) => {
-                        tracing::warn!("Shares resolve parse failed for {}: {:#}", url, e);
-                        continue;
-                    }
-                },
-                Err(e) => {
-                    tracing::warn!("Shares resolve failed for {}: {:#}", url, e);
-                    continue;
-                }
-            };
-            if !keep_item(&item, include_folders) {
-                continue;
-            }
-            if !seen.insert(item.id.clone()) {
-                continue;
-            }
-            // Fall back to the attachment name when the item omits it.
-            let mut file = shared_from_item(item, sender.clone());
-            if file.name == "[unnamed]" {
-                if let Some(n) = att.name.clone() {
-                    file.name = n;
-                }
-            }
+        for (_, file) in reference_files(client, msg, include_folders, &mut seen).await {
             files.push(file);
         }
     }
     Ok(files)
+}
+
+/// Resolve one message's `reference` attachments to driveItems through
+/// `/shares/{id}/driveItem`, paired with each attachment's own id.
+/// Unresolvable attachments are skipped (logged); `seen` dedupes by item
+/// id across calls.
+async fn reference_files(
+    client: &TeamsClient,
+    msg: &GraphChatMessage,
+    include_folders: bool,
+    seen: &mut std::collections::HashSet<String>,
+) -> Vec<(Option<String>, SharedFile)> {
+    let sender = sender_of(msg);
+    let mut files = Vec::new();
+    for att in &msg.attachments {
+        if att.content_type.as_deref() != Some("reference") {
+            continue;
+        }
+        let Some(url) = att.content_url.as_deref().filter(|s| !s.is_empty()) else {
+            continue;
+        };
+        let share_id = encode_share_id(url);
+        let spath = format!("/shares/{}/driveItem", share_id);
+        let item: DriveItem = match client.graph_get(&spath).await {
+            Ok(r) => match r.json().await {
+                Ok(it) => it,
+                Err(e) => {
+                    tracing::warn!("Shares resolve parse failed for {}: {:#}", url, e);
+                    continue;
+                }
+            },
+            Err(e) => {
+                tracing::warn!("Shares resolve failed for {}: {:#}", url, e);
+                continue;
+            }
+        };
+        if !keep_item(&item, include_folders) {
+            continue;
+        }
+        if !seen.insert(item.id.clone()) {
+            continue;
+        }
+        // Fall back to the attachment name when the item omits it.
+        let mut file = shared_from_item(item, sender.clone());
+        if file.name == "[unnamed]" {
+            if let Some(n) = att.name.clone() {
+                file.name = n;
+            }
+        }
+        files.push((att.id.clone(), file));
+    }
+    files
+}
+
+// -- One message's files (timeline file chips) --
+
+/// Graph path for one chat message (`team_id` None) or one channel post
+/// (`team_id` Some). Ids are path segments: blank ids and ids carrying
+/// `/`, `?`, `#` or whitespace are rejected before any network.
+pub fn message_path(conversation_id: &str, message_id: &str, team_id: Option<&str>) -> Result<String> {
+    let bad = |s: &str| {
+        s.is_empty() || s.chars().any(|c| c == '/' || c == '?' || c == '#' || c.is_whitespace())
+    };
+    let conv = conversation_id.trim();
+    let msg = message_id.trim();
+    if bad(conv) {
+        bail!("invalid conversation id");
+    }
+    if bad(msg) {
+        bail!("invalid message id");
+    }
+    Ok(match team_id {
+        Some(team) => {
+            if bad(team.trim()) {
+                bail!("invalid team id");
+            }
+            format!("/teams/{}/channels/{}/messages/{}", team.trim(), conv, msg)
+        }
+        None => format!("/me/chats/{}/messages/{}", conv, msg),
+    })
+}
+
+/// The files one message shares: its `reference` attachments resolved
+/// to driveItems, each tagged with the attachment's own id (the
+/// `<attachment id>` in the body) so a timeline chip matches it even
+/// past the first page of the Shared list. Chats read
+/// `/me/chats/{c}/messages/{m}`; channel ids (`@thread.tacv2`) read the
+/// channel post under its team. Folders are skipped.
+pub async fn list_message_files_data(
+    client: &TeamsClient,
+    conversation_id: &str,
+    message_id: &str,
+) -> Result<Vec<SharedFile>> {
+    let team = if is_channel_id(conversation_id) {
+        message_path(conversation_id, message_id, Some("t"))?; // guard ids pre-network
+        Some(find_team_for_channel(client, conversation_id.trim()).await?)
+    } else {
+        None
+    };
+    let path = message_path(conversation_id, message_id, team.as_deref())?;
+    let resp = client.graph_get(&path).await?;
+    let msg: GraphChatMessage = resp
+        .json()
+        .await
+        .context("Failed to parse chat message response")?;
+    let mut seen = std::collections::HashSet::new();
+    Ok(reference_files(client, &msg, false, &mut seen)
+        .await
+        .into_iter()
+        .map(|(att_id, mut file)| {
+            if let Some(id) = att_id.filter(|s| !s.trim().is_empty()) {
+                file.attachment_id = Some(id);
+            }
+            file
+        })
+        .collect())
 }
 
 async fn list_via_channel_folder(
@@ -1291,6 +1375,22 @@ mod tests {
             create_link_body("bogus"),
             serde_json::json!({"type": "view", "scope": "organization"})
         );
+    }
+
+    #[test]
+    fn message_paths_and_attachment_ids() {
+        assert_eq!(message_path("19:a@thread.v2", "1727", None).unwrap(),
+                   "/me/chats/19:a@thread.v2/messages/1727");
+        assert_eq!(message_path("19:c@thread.tacv2", "1727", Some("t1")).unwrap(),
+                   "/teams/t1/channels/19:c@thread.tacv2/messages/1727");
+        for bad in ["", " ", "a/b", "a?b", "a#b", "a b"] {
+            assert!(message_path(bad, "1727", None).is_err());
+            assert!(message_path("19:a@thread.v2", bad, None).is_err());
+        }
+        let msg: GraphChatMessage = serde_json::from_str(
+            r#"{"attachments":[{"id":"6D2A-1","contentType":"reference","contentUrl":"https://x/a.pdf","name":"a.pdf"}]}"#,
+        ).unwrap();
+        assert_eq!(msg.attachments[0].id.as_deref(), Some("6D2A-1"));
     }
 
     #[test]

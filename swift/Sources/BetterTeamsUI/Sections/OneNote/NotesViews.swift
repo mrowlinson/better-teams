@@ -1,6 +1,7 @@
 // NotesViews.swift — OneNote page list, page, and Append field (UI-SPEC
 // §6.2 Notes tab, §6.7 OneNote). Shared by the conversation Notes tab
 // and the OneNote app; each passes its own `NotesStore`.
+import AppKit
 import OstMacCore
 import SwiftUI
 
@@ -107,7 +108,7 @@ struct NotesPageView: View {
             pages: store.pages.count, hasPage: store.page != nil, sectionSelected: store.selectedSectionID != nil,
             forced: forced, offline: model?.connection == .offline)
         switch state {
-        case .loading: LoadingPane()
+        case .loading: LoadingPane("Loading Notes\u{2026}")
         case .error(let title, let message):
             ErrorPane(title: title, message: message) { store.retry() }
         case .noNotebooks:
@@ -135,17 +136,10 @@ private struct NotesPageBody: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 10) {
-                    Text(page.title)
-                        .font(AppFont.title3(scale))
-                    Text(NotesRender.text(page.html))
-                        .font(AppFont.body(scale))
-                        .textSelection(.enabled)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(16)
-            }
+            // AppKit text view: OneNote pages are HTML with headings,
+            // lists, tables and to-do tags, which a SwiftUI Text flattens.
+            NotesPageTextView(title: page.title, html: page.html, scale: scale)
+                .accessibilityLabel(page.title)
             Divider()
             NotesAppendBar(draft: $draft, appending: store.appending, error: store.appendError) {
                 store.append(text: draft)
@@ -192,15 +186,81 @@ struct NotesAppendBar: View {
     }
 }
 
-/// Last rendered page (the HTML importer is too slow to run per body).
+/// Read-only, selectable page: the title, then the page HTML in the
+/// system font and label colors (both appearances), tables and lists
+/// kept. Rebuilt only when the page or text size changes.
+struct NotesPageTextView: NSViewRepresentable {
+    let title: String
+    let html: String
+    let scale: Double
+
+    final class Coordinator { var key: String? }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scroll = NSTextView.scrollableTextView()
+        scroll.drawsBackground = false
+        scroll.autohidesScrollers = true
+        if let tv = scroll.documentView as? NSTextView {
+            tv.isEditable = false
+            tv.isSelectable = true
+            tv.drawsBackground = false
+            tv.textContainerInset = NSSize(width: 12, height: 14)
+            tv.isAutomaticLinkDetectionEnabled = false
+        }
+        return scroll
+    }
+
+    func updateNSView(_ scroll: NSScrollView, context: Context) {
+        let key = "\(scale)|\(title)|\(html)"
+        guard context.coordinator.key != key, let tv = scroll.documentView as? NSTextView else { return }
+        context.coordinator.key = key
+        tv.textStorage?.setAttributedString(NotesRender.page(title: title, html: html, scale: scale))
+    }
+}
+
+/// OneNote page rendering for `NotesPageTextView`.
 @MainActor
 enum NotesRender {
-    private static var last: (html: String, text: AttributedString)?
-
-    static func text(_ html: String) -> AttributedString {
-        if let last, last.html == html { return last.text }
-        let text = NotesStore.rendered(html: html)
-        last = (html, text)
-        return text
+    /// OneNote page HTML → attributed text for `NotesPageTextView`:
+    /// system font at the app's text size, label colors (so dark mode
+    /// reads), OneNote to-do tags as check boxes, hairline table grid.
+    static func page(title: String, html: String, scale: Double) -> NSAttributedString {
+        let size = 13 * scale
+        let out = NSMutableAttributedString(string: title + "\n", attributes: [
+            .font: NSFont.systemFont(ofSize: 20 * scale, weight: .semibold),
+            .foregroundColor: NSColor.labelColor,
+            .paragraphStyle: { let p = NSMutableParagraphStyle(); p.paragraphSpacing = 10 * scale; return p }(),
+        ])
+        let css = "<style>body{font-family:-apple-system,'Helvetica Neue';font-size:\(size)px;line-height:1.35}"
+            + "h1,h2,h3{font-weight:600;margin:14px 0 4px}h1{font-size:\(size * 1.3)px}"
+            + "h2{font-size:\(size * 1.15)px}h3{font-size:\(size)px}"
+            + "table{border-collapse:collapse}td,th{border:1px solid #9a9a9a;padding:4px 10px;text-align:left}"
+            + "th{font-weight:600}</style>"
+        let tagged = html
+            .replacingOccurrences(of: #"<p data-tag="to-do:completed">"#, with: "<p>\u{2611}\u{2002}")
+            .replacingOccurrences(of: #"<p data-tag="to-do">"#, with: "<p>\u{2610}\u{2002}")
+        guard let data = (css + tagged).data(using: .utf8),
+              let body = try? NSMutableAttributedString(
+                  data: data,
+                  options: [.documentType: NSAttributedString.DocumentType.html,
+                            .characterEncoding: String.Encoding.utf8.rawValue],
+                  documentAttributes: nil)
+        else {
+            out.append(NSAttributedString(string: MessageRender.stripTags(html), attributes: [
+                .font: NSFont.systemFont(ofSize: size), .foregroundColor: NSColor.labelColor,
+            ]))
+            return out
+        }
+        // The importer paints text black: labels follow the appearance.
+        let all = NSRange(location: 0, length: body.length)
+        body.enumerateAttribute(.link, in: all) { link, range, _ in
+            if link == nil { body.addAttribute(.foregroundColor, value: NSColor.labelColor, range: range) }
+        }
+        while body.string.hasSuffix("\n") { body.deleteCharacters(in: NSRange(location: body.length - 1, length: 1)) }
+        out.append(body)
+        return out
     }
+
 }

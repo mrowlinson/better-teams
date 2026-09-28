@@ -37,7 +37,7 @@ public struct FrameContainer: View {
         } else {
             // Registered by its owner in the same pass (channel tabs load
             // their list first).
-            LoadingPane()
+            LoadingPane("Loading\u{2026}")
         }
     }
 }
@@ -74,16 +74,33 @@ private struct FrameContent: View {
                 Button("Try Again") { host.retry(page.key) }
             }
             .background(.background)
+        } else if forced == nil, page.restoring, let snapshot = page.snapshot {
+            // Back to an evicted page: its last picture until the restore
+            // finishes (no blank or white pane), the progress line on top.
+            ZStack(alignment: .top) {
+                Image(nsImage: snapshot)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .clipped()
+                    .accessibilityHidden(true)
+                progressLine
+            }
         } else if forced == .loading || !page.committed {
-            LoadingPane()
+            // First load: labelled, determinate once WebKit reports progress.
+            LoadingPane("Loading \(page.title)\u{2026}", progress: page.progress > 0 ? page.progress : nil)
                 .background(.background)
-                .accessibilityLabel("Loading \(page.title)")
         } else if page.state == .loading {
-            ProgressView(value: page.progress)
-                .progressViewStyle(.linear)
-                .controlSize(.small)
-                .accessibilityLabel("Loading \(page.title)")
+            progressLine
         }
+    }
+
+    /// The thin determinate bar along the top while a page loads.
+    private var progressLine: some View {
+        ProgressView(value: page.progress)
+            .progressViewStyle(.linear)
+            .controlSize(.small)
+            .accessibilityLabel("Loading \(page.title)")
     }
 
     private func failure(_ message: String) -> some View {
@@ -118,6 +135,13 @@ final class FrameContainerView: NSView {
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) unavailable") }
+
+    /// Leaving the window (app switch): keep the page's last picture
+    /// while it is still on screen.
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        if newWindow == nil, window != nil { host?.captureSnapshot(key) }
+        super.viewWillMove(toWindow: newWindow)
+    }
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()

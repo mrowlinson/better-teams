@@ -2,7 +2,7 @@
 
 public enum MeetingDemo {
     public static let threadID = "19:meeting_demo@thread.v2"
-    public static let threadName = "Demo — Design Sync (meeting)"
+    public static let threadName = "Design Sync (meeting)"
 
     public static let participants = [
         MeetingParticipant(id: "8:orgid:megan", name: "Megan Harper", speaking: true),

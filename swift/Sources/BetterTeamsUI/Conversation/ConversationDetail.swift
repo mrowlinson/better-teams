@@ -60,7 +60,7 @@ struct ConversationDetail: View {
     @ViewBuilder
     private func chatTab(name: String, services: ConversationServices) -> some View {
         if conv.chatID != ref || (conv.loading && conv.messages.isEmpty) {
-            LoadingPane()
+            LoadingPane("Loading Messages\u{2026}")
         } else if let err = conv.error, conv.messages.isEmpty {
             ErrorPane(title: model?.connection == .offline ? "You're Offline" : "Couldn't Load Messages",
                       message: err) { conv.retryOpen() }
@@ -84,7 +84,10 @@ struct ConversationDetail: View {
                     EmptyPane("No Messages Yet", systemImage: "bubble.left",
                               message: "Send a message to start the conversation.")
                 } else {
+                    // R12: a resync refresh merges in behind the bubbles.
                     TimelineRepresentable(conv: conv)
+                        .refreshStatus(conv.refreshing, failure: conv.refreshError,
+                                       label: "Updating Messages", retry: { conv.refresh() })
                 }
                 Divider()
                 Composer(chatID: ref, chatName: name, placeholder: "Message \(name)", conv: conv,

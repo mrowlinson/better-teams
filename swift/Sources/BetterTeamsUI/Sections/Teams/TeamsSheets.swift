@@ -199,7 +199,7 @@ struct JoinTeamSheet: View {
     @ViewBuilder private var overlay: some View {
         switch Self.state(teams, forced: forced) {
         case .results: EmptyView()
-        case .loading: LoadingPane()
+        case .loading: LoadingPane("Searching Teams\u{2026}")
         case .error(let message): ErrorPane(title: Self.errorTitle, message: message, retry: searchNow)
         case .empty:
             EmptyPane("No Teams Found", systemImage: "magnifyingglass",

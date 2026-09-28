@@ -1134,6 +1134,59 @@ Notes:
     `ostmac-core` (`video_call_offer_answer_carry_video_mline`). NOT
     live-verified against a tenant.
 
+69. [minor] `src/api/todo.rs` + `src/api/files.rs` + `src/api/schedule.rs`
+    + `src/api/mod.rs` — **To Do reopen, one message's files, documented
+    Shifts range filter (left2 lane)**. (a) `reopen_todo_task_data`
+    PATCHes `{"status":"notStarted"}`; complete and reopen share
+    `set_todo_task_status` / `todo_status_body`. (b)
+    `list_message_files_data` resolves one message's `reference`
+    attachments (chat message or channel post, `message_path`), tagging
+    each file with the attachment id the body references, so file chips
+    resolve past the first shared-files page. (c) `list_shifts_range_data`
+    / `list_timesoffs_range_data` now use the docs' containment shape
+    `$filter=<slot>/startDateTime ge <from> and <slot>/endDateTime le
+    <to>` over a window padded by `range_pad_days` (per collection), then
+    keep only rows overlapping `[start, end]` client-side
+    (`overlaps_range`) — replaces §67(b)'s undocumented overlap filter;
+    overlap semantics unchanged. Tests: `status_bodies_complete_and_reopen`,
+    `message_paths_and_attachment_ids`,
+    `range_path_uses_documented_filter_and_keeps_overlaps`. NOT
+    live-verified against a tenant.
+70. [minor] `src/calling/signaling.rs` — **join a group call / meeting
+    with video (meetvideo lane)**. `join_conversation_with_sdp`
+    hardcoded `callInvitation.callModalities: ["Audio"]`, so a group
+    call or meeting join could never ask for video. New
+    `join_conversation_with_sdp_video(http, controller, params, sdp,
+    video)` sends `["Audio","Video"]` when `video` is set (reuses
+    `accepted_call_modalities`); the body moved into the pure
+    `join_conversation_payload(params, sdp, video)` so it can be
+    pinned without network. `join_conversation_with_sdp` keeps its
+    signature and delegates with `false` (no behavior change). Test
+    pinned in `ostmac-core` (`group_join_payload_carries_video`). NOT
+    live-verified against a tenant.
+71. [minor] `src/calling/signaling.rs` — **join with explicit call
+    modalities (callfix lane)**. §70's join could only say `["Audio"]`
+    or `["Audio","Video"]`, tied to the camera. A live group call /
+    meeting join receives video with the camera off too (its offer's
+    main video goes `a=recvonly`), and receiving a screen share needs
+    the `ScreenViewer` modality that `create_echo_call` /
+    `create_1to1_call` already declare. New pure
+    `join_call_modalities(video, screen_viewer)` (`Audio` [+ `Video`]
+    [+ `ScreenViewer`]), `join_conversation_payload_with_modalities(params,
+    sdp, &[&str])` and async `join_conversation_with_modalities(http,
+    controller, params, sdp, &[&str])`. `join_conversation_payload` and
+    `join_conversation_with_sdp_video` keep their signatures and delegate
+    with `accepted_call_modalities(video)` (no behavior change for
+    existing callers; `call_test.rs` untouched). The screen share receive
+    m-line itself (`applicationsharing-video`, own ICE / SRTP, recvonly)
+    is built in `ostmac-core` (`calls.rs` `share_offer_section`, answer
+    split `live.rs` `split_share_section`), as are PLI keyframe requests
+    and the decoder-safe receive queue; candidates to upstream with this
+    entry once live-verified. Tests pinned in `ostmac-core`
+    (`group_join_payload_carries_video` ScreenViewer body,
+    `share_leg_offer_answer_split_and_camera_off` modality choice). NOT
+    live-verified against a tenant.
+
 ## Upstream PRs, wave 9 (2026-09-25 R10 audit; base 0892144; origin/main still 0892144)
 
 No-file wave. `git diff 307d221..db62ed7 -- rust/ost` is empty (wave-8

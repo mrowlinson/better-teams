@@ -14,6 +14,11 @@ public final class CallHistoryStore: ObservableObject {
     /// Fires once per finalized record, after persistence.
     public var onRecord: ((CallRecord) -> Void)?
 
+    /// Realtime missed-call feed rows (`ActivityItem` ids) the user
+    /// removed from Recents. The Activity feed keeps them; only the Calls
+    /// list drops them. Persisted beside the records.
+    @Published public private(set) var hiddenFeedIDs: Set<String> = []
+
     public nonisolated static let defaultsKey = "omCallHistoryV1"
     /// Per-account key (d1-accounts): default keeps the legacy key.
     nonisolated public static func key(for accountID: String) -> String {
@@ -36,7 +41,10 @@ public final class CallHistoryStore: ObservableObject {
         let loaded = Self.load(defaults: defaults, key: key)
         records = loaded
         recordedIDs = Set(loaded.map(\.id))
+        hiddenFeedIDs = Set(defaults.stringArray(forKey: key + Self.hiddenSuffix) ?? [])
     }
+
+    private static let hiddenSuffix = ".hiddenFeed"
 
     // MARK: - Counts (Diagnostics only)
 
@@ -109,6 +117,22 @@ public final class CallHistoryStore: ObservableObject {
 
     public func canRedial(_ record: CallRecord) -> Bool {
         Self.canRedial(record)
+    }
+
+    /// Remove from Recents: drop the records with `recordIDs` and hide
+    /// the realtime missed-call rows with `feedIDs` (the Activity feed
+    /// keeps them). A removed record's call id stays known, so a late
+    /// end event never re-adds it. Persists immediately; unknown ids are
+    /// a no-op (no write).
+    public func remove(recordIDs: Set<String>, feedIDs: Set<String> = []) {
+        let before = records.count
+        records.removeAll { recordIDs.contains($0.id) }
+        let newFeed = feedIDs.subtracting(hiddenFeedIDs)
+        if !newFeed.isEmpty {
+            hiddenFeedIDs.formUnion(newFeed)
+            defaults.set(Array(hiddenFeedIDs).sorted(), forKey: key + Self.hiddenSuffix)
+        }
+        if records.count != before { save() }
     }
 
     /// Drop every record (in-flight pending survives: the live call

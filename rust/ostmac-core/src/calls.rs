@@ -592,11 +592,11 @@ pub fn call_accept_live_video_json() -> String {
 }
 
 fn accept_inner(live: bool, video: bool) -> String {
-    let (notification, id) = {
+    let (notification, id, thread) = {
         let guard = lock_current();
         match guard.as_ref() {
             Some(s) if s.info.state == "ringing" && s.info.dir == "in" => {
-                (s.notification.clone(), s.info.id.clone())
+                (s.notification.clone(), s.info.id.clone(), s.info.thread.clone())
             }
             Some(s) => {
                 return err_json(
@@ -649,10 +649,16 @@ fn accept_inner(live: bool, video: bool) -> String {
                 .and_then(|i| i.media_content.as_ref())
                 .and_then(|m| m.blob.as_ref())
             {
-                match sdp::parse_sdp_offer(blob) {
+                // The single-video parsers let a later m=video overwrite
+                // the main video's ICE / crypto: answer and run audio +
+                // main video from the offer without its screen share line.
+                let plain = ost::calling::sdp_compress::decompress_sdp(blob)
+                    .unwrap_or_else(|_| blob.to_string());
+                let (main_blob, _) = crate::live::split_share_section(&plain);
+                match sdp::parse_sdp_offer(&main_blob) {
                     Ok(offer) => {
                         let local_ip = sdp::get_local_ip();
-                        let (answer, socks) = match live_socks {
+                        let (mut answer, socks) = match live_socks {
                             Some((ref a, ref v, ref a_srflx, ref v_srflx)) => {
                                 let ap = a.local_addr().map(|x| x.port()).unwrap_or(0);
                                 let vp = v.local_addr().map(|x| x.port()).unwrap_or(0);
@@ -683,6 +689,11 @@ fn accept_inner(live: bool, video: bool) -> String {
                                 false,
                             ),
                         };
+                        // Camera-off accept of a group call: receive video,
+                        // send none (the roster shows the avatar).
+                        if !video && is_group_thread(&thread) {
+                            answer.sdp = main_video_recvonly(&answer.sdp);
+                        }
                         match signaling::send_media_answer(&http, &skype, &notification, &answer.sdp)
                             .await
                         {
@@ -705,11 +716,12 @@ fn accept_inner(live: bool, video: bool) -> String {
                                         local_audio_pwd: answer.audio_ice_pwd.clone(),
                                         local_video_ufrag: answer.video_ice_ufrag.clone(),
                                         local_video_pwd: answer.video_ice_pwd.clone(),
-                                        remote_sdp: blob.clone(),
+                                        remote_sdp: main_blob.clone(),
                                         controlling: false,
                                         video_ssrc: video::generate_ssrc(),
                                         cname: extract_mri(&skype)
                                             .unwrap_or_else(|| "ostmac".to_string()),
+                                        share: None,
                                     });
                                 }
                             }
@@ -988,6 +1000,169 @@ async fn wait_acceptance(
     }
 }
 
+/// Roster of the active call (see `call_roster`); empty participants
+/// when no call is active or the active call has no call socket.
+pub fn call_roster_json() -> String {
+    let active = lock_current()
+        .as_ref()
+        .filter(|s| s.info.active())
+        .map(|s| s.info.id.clone());
+    crate::call_roster::roster_json(active.as_deref())
+}
+
+/// True while `call_id` is the slot's call and still active.
+fn call_is_active(call_id: &str) -> bool {
+    lock_current()
+        .as_ref()
+        .map(|s| s.info.id == call_id && s.info.active())
+        .unwrap_or(false)
+}
+
+/// Keep a placed call's Trouter socket read for the life of the call
+/// (meetvideo). Every delivery is acked by `recv_frame` (an unread
+/// socket makes Trouter 504 the Call Controller, which drops the call);
+/// roster and media-controller frames feed `call_roster`; a callEnd /
+/// conversationEnd ends the slot like the background feed's end does.
+/// Stops when the call leaves the slot or the socket closes.
+fn spawn_call_pump(mut ws: websocket::TrouterSocket, call_id: String) {
+    let Ok(r) = rt() else {
+        return;
+    };
+    r.spawn(async move {
+        loop {
+            if !call_is_active(&call_id) {
+                break;
+            }
+            let text = match tokio::time::timeout(Duration::from_secs(1), ws.recv_frame()).await {
+                Err(_) => continue,
+                Ok(Ok(Some(t))) => t,
+                Ok(Ok(None)) => {
+                    crate::call_roster::diag("call socket closed");
+                    break;
+                }
+                Ok(Err(e)) => {
+                    crate::call_roster::diag(format!("call socket: {:#}", e));
+                    break;
+                }
+            };
+            if text.starts_with("2::") {
+                ws.send_text("2::").await.ok();
+                continue;
+            }
+            let kind = crate::call_roster::frame_kind(&text);
+            let Some(v) = ost::calling::call_test::extract_call_payload(&text) else {
+                continue;
+            };
+            let ended = end_text(&v).or_else(|| {
+                (kind.eq_ignore_ascii_case("conversationEnd") || kind.eq_ignore_ascii_case("end"))
+                    .then(|| "conversation ended".to_string())
+            });
+            if let Some(t) = ended {
+                crate::call_roster::diag(format!("call end via call socket ({})", kind));
+                if call_is_active(&call_id) {
+                    note_end(Some(t));
+                }
+                break;
+            }
+            crate::call_roster::ingest(&kind, &v);
+        }
+    });
+}
+
+/// Group chat or meeting thread (1:1 chat threads end in
+/// `@unq.gbl.spaces`); mirrors the host's `CallGroup.isGroupThread`. An
+/// empty thread (incoming legs that name none) is not a group.
+fn is_group_thread(thread: &str) -> bool {
+    !thread.is_empty() && (thread.starts_with("19:meeting_") || !thread.ends_with("@unq.gbl.spaces"))
+}
+
+/// `callModalities` of a group call / meeting join. Live joins receive
+/// video whether or not the camera is on (a camera-off join's offer is
+/// `a=recvonly`), and declare ScreenViewer when they offer the share
+/// leg; signaling-only joins keep the camera choice (audio / + video).
+fn group_join_modalities(live: bool, video: bool, share: bool) -> Vec<&'static str> {
+    if live {
+        signaling::join_call_modalities(true, share)
+    } else {
+        signaling::accepted_call_modalities(video)
+    }
+}
+
+/// Camera-off group / meeting join or accept: the main video m-line goes
+/// `a=recvonly`, so the roster reports this camera off (others see the
+/// avatar) while this client still receives video.
+fn main_video_recvonly(sdp: &str) -> String {
+    match sdp.find("m=video") {
+        Some(v) => {
+            let (head, tail) = sdp.split_at(v);
+            format!("{}{}", head, tail.replacen("a=sendrecv\r\n", "a=recvonly\r\n", 1))
+        }
+        None => sdp.to_string(),
+    }
+}
+
+/// A fresh SDES line (30 random key+salt bytes), as the ost offers use.
+fn srtp_crypto_line() -> String {
+    use base64::Engine as _;
+    use rand::RngCore;
+    let mut key = [0u8; 30];
+    rand::thread_rng().fill_bytes(&mut key);
+    format!(
+        "a=crypto:2 AES_CM_128_HMAC_SHA1_80 inline:{}|2^31",
+        base64::engine::general_purpose::STANDARD.encode(key)
+    )
+}
+
+/// The screen share media section (applicationsharing-video, VBSS):
+/// receive only, its own port / ICE / SRTP, X-H264UC or H264.
+fn share_offer_section(
+    port: u16,
+    ufrag: &str,
+    pwd: &str,
+    cands: &[ice::IceCandidate],
+    crypto: &str,
+    ssrc: u32,
+) -> String {
+    let mut s = format!("m=video {} RTP/SAVP 122 124 123\r\n", port);
+    s.push_str(&format!("a=x-ssrc-range:{}-{}\r\n", ssrc, ssrc));
+    s.push_str("a=rtcp-fb:* x-message app send:src,x-pli recv:src,x-pli\r\n");
+    s.push_str("a=rtcp-rsize\r\n");
+    s.push_str("a=mid:2\r\n");
+    s.push_str("a=rtpmap:122 X-H264UC/90000\r\n");
+    s.push_str("a=fmtp:122 packetization-mode=1;mst-mode=NI-TC\r\n");
+    s.push_str("a=rtpmap:124 H264/90000\r\n");
+    s.push_str("a=fmtp:124 profile-level-id=42C02A;packetization-mode=1\r\n");
+    s.push_str("a=rtpmap:123 x-ulpfecuc/90000\r\n");
+    s.push_str("a=recvonly\r\n");
+    s.push_str("a=rtcp-mux\r\n");
+    s.push_str("a=label:applicationsharing-video\r\n");
+    s.push_str("a=x-source:applicationsharing-video\r\n");
+    s.push_str(&format!("a=ice-ufrag:{}\r\n", ufrag));
+    s.push_str(&format!("a=ice-pwd:{}\r\n", pwd));
+    for c in cands {
+        s.push_str(&format!("a={}\r\n", c.to_sdp_line()));
+    }
+    s.push_str(crypto);
+    s.push_str("\r\n");
+    s
+}
+
+/// The offer with the share section last and its bandwidth line at
+/// session level.
+fn with_share_offer(sdp: &str, section: &str) -> String {
+    const MAIN_BW: &str = "a=x-mediabw:main-video send=12000;recv=12000\r\n";
+    let mut out = sdp.replacen(
+        MAIN_BW,
+        &format!("{}a=x-mediabw:applicationsharing-video send=8100;recv=8000\r\n", MAIN_BW),
+        1,
+    );
+    if !out.ends_with('\n') {
+        out.push_str("\r\n");
+    }
+    out.push_str(section);
+    out
+}
+
 fn clamp_timeout(secs: i32) -> Duration {
     Duration::from_secs((secs.max(5).min(120)) as u64)
 }
@@ -1027,9 +1202,10 @@ pub fn call_place_live_json(thread_id: &str, timeout_secs: i32) -> String {
 /// [`call_place_live_json`], but the callee invitation carries Audio +
 /// Video modalities so the peer rings as a video call. The SDP offer
 /// always carries the video m-line; camera NALs come from the host via
-/// `ostmac_video_send_push_bytes` (black IDR while the camera is off).
-/// Group/channel threads are refused: their video needs MCU source
-/// subscription, which is not implemented.
+/// `ostmac_video_send_push_bytes` (no video RTP while the camera is off).
+/// Group, channel and meeting threads join with Audio + Video modalities
+/// (meetvideo); remote sources are subscribed per tile via
+/// `ostmac_video_subscribe` and read from per-source queues.
 pub fn call_place_live_video_json(thread_id: &str, timeout_secs: i32) -> String {
     if thread_id.trim().is_empty() {
         return err_json("arg", "empty thread_id");
@@ -1121,12 +1297,8 @@ fn place_inner(
                     if a == caller_oid || b == caller_oid)
             })
             .unwrap_or(false);
-    if video && !is_1to1 {
-        return err_json(
-            "unsupported",
-            "video is 1:1 only; group and meeting video need MCU source subscription",
-        );
-    }
+    // Live group / meeting joins receive screen shares on a third leg.
+    let offers_share = live && !is_1to1;
     let display_name = display_name_or("(unknown)");
     let epconv_url = match derive_epconv_url(&region_gtms) {
         Some(u) => u,
@@ -1174,6 +1346,7 @@ fn place_inner(
             Option<String>,
             String,
             Option<crate::live::EngineParams>,
+            websocket::TrouterSocket,
         ),
         String,
     > {
@@ -1210,6 +1383,17 @@ fn place_inner(
             let video_sock = tokio::net::UdpSocket::bind("0.0.0.0:0")
                 .await
                 .map_err(|e| format!("udp bind: {}", e))?;
+            // Group / meeting joins also receive screen shares, on their
+            // own leg (applicationsharing-video).
+            let share_sock = if offers_share {
+                Some(
+                    tokio::net::UdpSocket::bind("0.0.0.0:0")
+                        .await
+                        .map_err(|e| format!("udp bind: {}", e))?,
+                )
+            } else {
+                None
+            };
             let audio_port = audio_sock.local_addr().map(|a| a.port()).unwrap_or(0);
             let video_port = video_sock.local_addr().map(|a| a.port()).unwrap_or(0);
             let local_ip = sdp::get_local_ip();
@@ -1239,13 +1423,23 @@ fn place_inner(
                     video_cands.push(c);
                 }
             };
-            let _ = tokio::time::timeout(Duration::from_secs(10), srflx).await;
+            // The share leg gathers alongside (never adds join latency).
+            let share_srflx = async {
+                match share_sock {
+                    Some(ref s) => ice::gather_srflx_candidate(s, ice::DEFAULT_STUN_SERVER).await,
+                    None => None,
+                }
+            };
+            let (_, share_srflx) = tokio::join!(
+                tokio::time::timeout(Duration::from_secs(10), srflx),
+                tokio::time::timeout(Duration::from_secs(10), share_srflx)
+            );
             let our_audio_ufrag = sdp::generate_ice_ufrag();
             let our_audio_pwd = sdp::generate_ice_pwd();
             let our_video_ufrag = sdp::generate_ice_ufrag();
             let our_video_pwd = sdp::generate_ice_pwd();
             let video_ssrc = video::generate_ssrc();
-            let offer = sdp::generate_av_sdp_offer(&sdp::AvSdpParams {
+            let mut offer = sdp::generate_av_sdp_offer(&sdp::AvSdpParams {
                 local_ip: &local_ip,
                 audio_port,
                 video_port,
@@ -1258,6 +1452,27 @@ fn place_inner(
                 video_ssrc_base: video_ssrc,
                 audio_ssrc: video::generate_ssrc(),
             });
+            // Camera-off group / meeting join: receive video, send none.
+            if !is_1to1 && !video {
+                offer.sdp = main_video_recvonly(&offer.sdp);
+            }
+            let plain_offer = offer.sdp.clone();
+            let mut join_warns: Vec<String> = Vec::new();
+            let mut share_local = match share_sock {
+                Some(ref s) => {
+                    let port = s.local_addr().map(|a| a.port()).unwrap_or(0);
+                    let mut cands = vec![host(port)];
+                    cands.extend(share_srflx.ok().flatten());
+                    let ufrag = sdp::generate_ice_ufrag();
+                    let pwd = sdp::generate_ice_pwd();
+                    let crypto = srtp_crypto_line();
+                    let ssrc = video::generate_ssrc();
+                    let section = share_offer_section(port, &ufrag, &pwd, &cands, &crypto, ssrc);
+                    offer.sdp = with_share_offer(&offer.sdp, &section);
+                    Some((ufrag, pwd, crypto, ssrc))
+                }
+                None => None,
+            };
             // Place.
             let endpoint_id = gen_id();
             let participant_id = gen_id();
@@ -1303,14 +1518,33 @@ fn place_inner(
                 let created = signaling::create_conversation(&http, &epconv_url, &params)
                     .await
                     .map_err(|e| format!("place phase1: {:#}", e))?;
-                signaling::join_conversation_with_sdp(
+                let joined = signaling::join_conversation_with_modalities(
                     &http,
                     &created.conversation_controller,
                     &params,
                     &offer.sdp,
+                    &group_join_modalities(live, video, share_local.is_some()),
                 )
-                .await
-                .map_err(|e| format!("place phase2: {:#}", e))?;
+                .await;
+                if let Err(e) = joined {
+                    if share_local.is_none() {
+                        return Err(format!("place phase2: {:#}", e));
+                    }
+                    // The share leg's m-line is modelled on Teams SDP, not
+                    // a spec: a join refused with it retries once without
+                    // (audio + video still join).
+                    share_local = None;
+                    join_warns.push("share leg refused at join; joined without it".to_string());
+                    signaling::join_conversation_with_modalities(
+                        &http,
+                        &created.conversation_controller,
+                        &params,
+                        &plain_offer,
+                        &group_join_modalities(live, video, false),
+                    )
+                    .await
+                    .map_err(|e| format!("place phase2: {:#}", e))?;
+                }
                 created.conversation_controller
             };
             // Answer wait on our own socket (bg feed has another epid).
@@ -1319,7 +1553,7 @@ fn place_inner(
                 return Err(rej);
             }
             // Phase 3 signaling: ack + CC callbacks (best-effort).
-            let mut warns = Vec::new();
+            let mut warns = join_warns;
             if let Some(ref ack) = acc.ack_url {
                 if let Err(e) =
                     signaling::acknowledge_call_acceptance(&http, ack, &params).await
@@ -1346,24 +1580,52 @@ fn place_inner(
             let mut warns = warns;
             let handoff = if live {
                 match acc.sdp {
-                    Some(ref answer) => Some(crate::live::EngineParams {
-                        audio_sock: audio_sock
-                            .into_std()
-                            .map_err(|e| format!("audio sock: {}", e))?,
-                        video_sock: video_sock
-                            .into_std()
-                            .map_err(|e| format!("video sock: {}", e))?,
-                        local_audio_crypto: offer.audio_crypto_line.clone(),
-                        local_video_crypto: Some(offer.video_crypto_line.clone()),
-                        local_audio_ufrag: our_audio_ufrag,
-                        local_audio_pwd: our_audio_pwd,
-                        local_video_ufrag: Some(our_video_ufrag),
-                        local_video_pwd: Some(our_video_pwd),
-                        remote_sdp: answer.clone(),
-                        controlling: true,
-                        video_ssrc,
-                        cname: caller_mri.clone(),
-                    }),
+                    Some(ref answer) => {
+                        // Offered a share leg: the engine sees the answer
+                        // without it (audio + main video parsers unchanged);
+                        // the share section drives its own leg.
+                        let (remote_sdp, share_section) = if share_local.is_some() {
+                            let plain = ost::calling::sdp_compress::decompress_sdp(answer)
+                                .unwrap_or_else(|_| answer.clone());
+                            crate::live::split_share_section(&plain)
+                        } else {
+                            (answer.clone(), None)
+                        };
+                        let share = match (share_sock, share_local, share_section) {
+                            (Some(sock), Some((ufrag, pwd, crypto, ssrc)), Some(section)) => {
+                                Some(crate::live::ShareParams {
+                                    sock: sock
+                                        .into_std()
+                                        .map_err(|e| format!("share sock: {}", e))?,
+                                    local_crypto: crypto,
+                                    local_ufrag: ufrag,
+                                    local_pwd: pwd,
+                                    ssrc,
+                                    remote_section: section,
+                                })
+                            }
+                            _ => None,
+                        };
+                        Some(crate::live::EngineParams {
+                            audio_sock: audio_sock
+                                .into_std()
+                                .map_err(|e| format!("audio sock: {}", e))?,
+                            video_sock: video_sock
+                                .into_std()
+                                .map_err(|e| format!("video sock: {}", e))?,
+                            local_audio_crypto: offer.audio_crypto_line.clone(),
+                            local_video_crypto: Some(offer.video_crypto_line.clone()),
+                            local_audio_ufrag: our_audio_ufrag,
+                            local_audio_pwd: our_audio_pwd,
+                            local_video_ufrag: Some(our_video_ufrag),
+                            local_video_pwd: Some(our_video_pwd),
+                            remote_sdp,
+                            controlling: true,
+                            video_ssrc,
+                            cname: caller_mri.clone(),
+                            share,
+                        })
+                    }
                     None => {
                         warns.push("accepted without SDP; no live media".to_string());
                         None
@@ -1372,12 +1634,23 @@ fn place_inner(
             } else {
                 None
             };
-            Ok((controller, acc.end_url, warns.join("; "), handoff))
+            Ok((controller, acc.end_url, warns.join("; "), handoff, ws))
         })
     };
 
     match run() {
-        Ok((controller, end_url, warns, handoff)) => {
+        Ok((controller, end_url, warns, handoff, ws)) => {
+            // Keep the call's Trouter leg for the call: roster, media
+            // controller signals and remote end arrive (and are acked) there.
+            crate::call_roster::reset(&call_id, &caller_mri);
+            spawn_call_pump(ws, call_id.clone());
+            if let (true, Some(p)) = (offers_share, handoff.as_ref()) {
+                crate::call_roster::diag(if p.share.is_some() {
+                    "share: answer carries the share leg"
+                } else {
+                    "share: answer has no share leg"
+                });
+            }
             let mut warns = warns;
             let mut live_on = false;
             if let Some(params) = handoff {
@@ -1754,5 +2027,95 @@ mod tests {
         assert!(answer.video_crypto_line.is_some());
         assert_eq!(signaling::accepted_call_modalities(true), vec!["Audio", "Video"]);
         assert_eq!(signaling::accepted_call_modalities(false), vec!["Audio"]);
+    }
+
+    /// meetvideo (ost §70): a group call / meeting join asks Audio +
+    /// Video, keeps the media-controller callbacks (where source control
+    /// and dominant speaker land) and the roster link, and carries the
+    /// offer blob; an audio join still asks Audio only.
+    #[test]
+    fn group_join_payload_carries_video() {
+        let region = signaling::TeamsRegion::default();
+        let params = signaling::ConversationCallParams {
+            ic3_token: "t",
+            trouter_surl: "https://trouter.example/s",
+            caller_mri: "8:orgid:me",
+            caller_display_name: "Me",
+            endpoint_id: "ep",
+            participant_id: "pa",
+            thread_id: "19:meeting_x@thread.v2",
+            chain_id: "ch",
+            message_id: "0123456789",
+            caller_oid: "me",
+            tenant_id: "tn",
+            region: &region,
+        };
+        let v = signaling::join_conversation_payload(&params, "v=0 offer", true);
+        assert_eq!(v["callInvitation"]["callModalities"], serde_json::json!(["Audio", "Video"]));
+        assert_eq!(v["callInvitation"]["mediaContent"]["blob"], "v=0 offer");
+        let mc = &v["callInvitation"]["clientContentForMediaController"];
+        for k in ["controlVideoStreaming", "dominantSpeakerInfo", "csrcInfo"] {
+            assert!(mc[k].as_str().unwrap_or("").contains("trouter.example"), "{} link", k);
+        }
+        assert!(v["conversationRequest"]["roster"]["rosterUpdate"].is_string());
+        assert_eq!(v["groupChat"]["threadId"], "19:meeting_x@thread.v2");
+        let a = signaling::join_conversation_payload(&params, "v=0", false);
+        assert_eq!(a["callInvitation"]["callModalities"], serde_json::json!(["Audio"]));
+        let s = signaling::join_conversation_payload_with_modalities(
+            &params,
+            "v=0",
+            &signaling::join_call_modalities(true, true),
+        );
+        assert_eq!(s["callInvitation"]["callModalities"], serde_json::json!(["Audio", "Video", "ScreenViewer"]));
+    }
+
+    /// callfix: the share leg's offer section and answer split (main
+    /// parsers never see it), camera-off joins receive only, and black
+    /// camera-off video is 1:1-only.
+    #[test]
+    fn share_leg_offer_answer_split_and_camera_off() {
+        let answer = "v=0\r\na=ice-ufrag:SESS\r\na=ice-pwd:SESSPW\r\nm=audio 10 RTP/SAVP 0\r\n\
+            a=ice-ufrag:au\r\nm=video 20 RTP/SAVP 122\r\na=ice-ufrag:vu\r\na=ice-pwd:vp\r\n\
+            a=label:main-video\r\nm=video 30 RTP/SAVP 122\r\na=x-ssrc-range:900-999\r\n\
+            a=label:applicationsharing-video\r\na=crypto:2 AES_CM_128_HMAC_SHA1_80 inline:y|2^31\r\n\
+            a=candidate:1 1 UDP 2130706431 10.0.0.9 30 typ host";
+        let (main, share) = crate::live::split_share_section(answer);
+        assert_eq!(main.matches("m=").count(), 2);
+        assert!(!main.contains("applicationsharing"));
+        let parsed = sdp::parse_sdp_offer(&main).unwrap();
+        assert_eq!(parsed.video.unwrap().ice_ufrag, "vu", "main video keeps its own ICE");
+        let share = share.expect("share leg");
+        let info = crate::live::section_info(&share);
+        assert_eq!(
+            (info.port, info.ufrag.as_str(), info.pwd.as_str(), info.ssrc_base, info.crypto.len()),
+            (30, "SESS", "SESSPW", Some(900), 1),
+            "session-level ICE folded in"
+        );
+        assert_eq!(ice::parse_candidates_from_sdp_section(&share, "video").len(), 1);
+        let rejected = answer.replace("m=video 30", "m=video 0");
+        assert!(crate::live::split_share_section(&rejected).1.is_none(), "port 0: no leg");
+        assert_eq!(crate::live::split_share_section(&main), (main.clone(), None));
+
+        let base = "v=0\r\na=x-mediabw:main-video send=12000;recv=12000\r\nm=audio 1 RTP/SAVP 0\r\n\
+            a=sendrecv\r\nm=video 2 RTP/SAVP 122\r\na=sendrecv\r\n";
+        let section = share_offer_section(3, "uf", "pw", &[], "a=crypto:2 X", 77);
+        let offer = with_share_offer(&main_video_recvonly(base), &section);
+        assert!(
+            offer.contains("m=audio 1 RTP/SAVP 0\r\na=sendrecv\r\nm=video 2 RTP/SAVP 122\r\na=recvonly\r\n"),
+            "camera-off join: main video receive only, audio untouched"
+        );
+        assert!(offer.contains("a=x-mediabw:applicationsharing-video send=8100;recv=8000\r\nm=audio"));
+        let own = crate::live::split_share_section(&offer).1.expect("offer's share section");
+        assert!(own.starts_with("m=video 3 RTP/SAVP 122 124 123\r\n"));
+        assert!(own.contains("a=recvonly\r\n") && own.ends_with("a=crypto:2 X\r\n"));
+
+        assert!(!is_group_thread("19:a_b@unq.gbl.spaces") && !is_group_thread(""));
+        assert!(is_group_thread("19:meeting_x@thread.v2") && is_group_thread("19:grp@thread.v2"));
+
+        // Live joins receive video camera-off too; the share leg adds
+        // ScreenViewer; signaling-only joins keep the camera choice.
+        assert_eq!(group_join_modalities(true, false, true), vec!["Audio", "Video", "ScreenViewer"]);
+        assert_eq!(group_join_modalities(true, true, false), vec!["Audio", "Video"]);
+        assert_eq!(group_join_modalities(false, false, false), vec!["Audio"]);
     }
 }

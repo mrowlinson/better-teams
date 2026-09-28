@@ -46,14 +46,21 @@ public final class CallSession {
     @ObservationIgnored let camera: CameraCapture?
     /// Mic / speaker / camera pickers + level meter (§8 Devices).
     @ObservationIgnored let devices: CallDevices
-    /// A 1:1 video call (VIDEO1): the stage shows the remote video large
+    /// A video call. 1:1 (VIDEO1): the stage shows the remote video large
     /// with the self view as a picture-in-picture, and the camera starts
-    /// on. Group and meeting video are not supported by the core.
-    public let video: Bool
-    /// Remote video decoders keyed by remote participant id (live video
-    /// calls only; demo shows synthetic frames and never touches the core
-    /// video queues). 1:1 holds one entry, the peer's MRI, created when
-    /// live media flows; meeting video adds one per subscribed source.
+    /// on. Group chats and meetings (MEETVIDEO): the tile grid of
+    /// `meetingVideo`; a meeting becomes a video call at Join with Video.
+    public private(set) var video: Bool
+    /// A group chat or meeting call (not 1:1): video uses the tile grid.
+    public let group: Bool
+    /// Group / meeting video tiles (nil for 1:1 and audio calls). Live
+    /// polls the core roster and per-source queues once media flows; demo
+    /// shows a fixed roster with synthetic video and never touches the core.
+    public private(set) var meetingVideo: MeetingVideoModel? = nil
+    /// Remote video decoders keyed by remote participant id (live 1:1
+    /// video calls only; demo shows synthetic frames and never touches the
+    /// core video queues): one entry, the peer's MRI, created when live
+    /// media flows. Group video keeps its decoders in `meetingVideo`.
     public private(set) var remoteVideos: [String: LiveVideoModel] = [:]
     /// Meetings: the person pressed Join Now on the pre-join step.
     public private(set) var joined: Bool
@@ -84,10 +91,10 @@ public final class CallSession {
     @ObservationIgnored private var armed = false
 
     /// Evidence shows a fixed duration (deterministic captures).
-    static let evidenceElapsed = 754
+    static let evidenceElapsed = 1_127
 
     public init(kind: CallKind, presentation: CallPresentation, model: WindowModel?, store: CallStore? = nil,
-                video: Bool = false) {
+                video: Bool = false, group: Bool = false) {
         self.kind = kind
         self.presentation = presentation
         self.model = model
@@ -101,12 +108,15 @@ public final class CallSession {
         let isVideo: Bool
         if video, case .person = kind { isVideo = true } else { isVideo = false }
         self.video = isVideo
+        if case .meeting = kind { self.group = true } else { self.group = group }
         stage = CallStageViewController()
         stage.session = self
+        if isVideo, self.group { meetingVideo = MeetingVideoModel(demo: !live) }
         subscribe()
-        // Video calls start with the camera on (camera off later sends
-        // the core's black frames: the video track stays negotiated).
+        // Video calls start with the camera on (camera off later sends no
+        // video at all, as Teams does).
         if isVideo, self.store?.cameraOn == false { self.store?.setCameraOn(true) }
+        if !live { meetingVideo?.start() } // demo roster up at once
         devices.load()
         if !joined { devices.setLevelWanted(true, by: .preJoin) }
     }
@@ -201,12 +211,23 @@ public final class CallSession {
     // MARK: controls
 
     /// Pre-join ▸ Join Now (meetings): dials through the core join flow
-    /// with the pre-join Mic and Camera choices.
+    /// with the pre-join Mic and Camera choices. Camera on = Join with
+    /// Video: the live Audio + Video leg and the meeting tile grid. A live
+    /// camera-off join still receives everyone's video and screen shares
+    /// (CALLFIX): the same tile grid, own tile camera-off.
     func joinNow() {
         guard !joined, !ended else { return }
         joined = true
         devices.setLevelWanted(false, by: .preJoin)
-        model?.app?.meetings.confirmJoin(micOn: preMicOn, cameraOn: preCameraOn)
+        if preCameraOn {
+            video = true
+            let mv = MeetingVideoModel(demo: !live)
+            meetingVideo = mv
+            if !live { mv.start() }
+        } else if live, meetingVideo == nil {
+            meetingVideo = MeetingVideoModel(demo: false)
+        }
+        model?.app?.meetings.confirmJoin(micOn: preMicOn, cameraOn: preCameraOn, video: preCameraOn)
         if store?.muted != !preMicOn { store?.setMuted(!preMicOn) }
         if store?.cameraOn != preCameraOn { store?.setCameraOn(preCameraOn) }
         pushControls()
@@ -214,11 +235,19 @@ public final class CallSession {
     }
 
     /// Demo/evidence only: a meeting already joined and admitted (the
-    /// demo core has no join leg).
-    func joinForDemo() {
+    /// demo core has no join leg); `video`: joined with video (tile grid,
+    /// demo roster, camera on).
+    func joinForDemo(video withVideo: Bool = false) {
         guard model?.options.demo == true, !joined, !ended else { return }
         joined = true
         lobby = .admitted
+        if withVideo, meetingVideo == nil {
+            video = true
+            let mv = MeetingVideoModel(demo: true)
+            meetingVideo = mv
+            mv.start()
+            if store?.cameraOn == false { store?.setCameraOn(true) }
+        }
         devices.setLevelWanted(false, by: .preJoin)
         if phase == .active { noteConnected() }
         pushControls()
@@ -312,6 +341,7 @@ public final class CallSession {
         camera?.setLiveSend(false)
         camera?.stop()
         for v in remoteVideos.values { v.stop() }
+        meetingVideo?.stop()
         devices.close()
         stage.detachFromHost()
         let w = window
@@ -336,18 +366,25 @@ public final class CallSession {
         if live {
             store.cameraHook = { [weak self] on in self?.setLocalCamera(on) }
         }
-        if video, live {
-            // `@Published` emits in willSet: the sink's value is the new slot.
+        if live {
+            // `@Published` emits in willSet: the sink's value is the new
+            // slot. Meetings become video calls at Join with Video, so
+            // every live session follows the slot (syncVideo checks).
             store.$call.sink { [weak self] c in self?.syncVideo(c) }.store(in: &subs)
         }
     }
 
     /// Live video calls: once the core reports live media on the active
     /// leg, camera frames go to the core send queue and the remote video
-    /// decoder starts (both idempotent).
+    /// decoder starts (both idempotent). Camera-off meeting joins carry a
+    /// tile grid too (they receive video).
     private func syncVideo(_ c: CallInfo?) {
-        guard video, live, !ended, let c, c.isActive, c.liveMedia == true else { return }
+        guard video || meetingVideo != nil, live, !ended, let c, c.isActive, c.liveMedia == true else { return }
         if store?.cameraOn == true, camera?.liveSend == false { camera?.setLiveSend(true) }
+        if let mv = meetingVideo {
+            mv.start() // roster + per-source decoders (idempotent)
+            return
+        }
         // 1:1: the core's single incoming queue is the peer's video.
         let peer = c.peer.isEmpty ? "peer" : c.peer
         let decoder = remoteVideos[peer] ?? LiveVideoModel()
@@ -373,6 +410,9 @@ public final class CallSession {
     private func mirror(lobby l: LobbyState) {
         guard !ended else { return }
         lobby = l
+        // Meeting joins dial outside the call slot: re-read it so the live
+        // media flag lands (camera send, tile decoders).
+        if joined, l == .admitted, video || meetingVideo != nil, live { store?.refresh() }
         if joined, l == .admitted { noteConnected() }
         pushTick()
     }
@@ -430,6 +470,8 @@ public final class CallSession {
         let e = max(0, Int(Date().timeIntervalSince(c)))
         guard e != elapsed else { return }
         elapsed = e
+        // Demo meeting video: the active speaker moves every few seconds.
+        if !live, e % 5 == 0 { meetingVideo?.advanceDemo() }
         pushTick()
     }
 
@@ -474,13 +516,13 @@ public extension WindowModel {
     /// overrides the account's call slot (tests).
     @discardableResult
     func beginCall(_ kind: CallKind, presentation: CallPresentation? = nil, show: Bool = true,
-                   store: CallStore? = nil, video: Bool = false) -> CallSession? {
+                   store: CallStore? = nil, video: Bool = false, group: Bool = false) -> CallSession? {
         if let running = call, !running.ended {
             running.show()
             return nil
         }
         let s = CallSession(kind: kind, presentation: presentation ?? .current, model: self, store: store,
-                            video: video)
+                            video: video, group: group)
         call = s
         (provider(.call) as? CallSection)?.title = s.title
         navigator?.refreshToolbar()

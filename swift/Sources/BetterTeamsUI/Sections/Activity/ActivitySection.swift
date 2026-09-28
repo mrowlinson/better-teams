@@ -208,7 +208,7 @@ struct ActivityListPane: View {
             place: { m.app?.chatNameOrNil(for: $0) ?? DemoData.name(for: $0) ?? "Conversation" },
             isGroup: { id in m.graph.chats.chat(id: id)?.is_group ?? DemoData.chats.first { $0.id == id }?.is_group ?? false })
         if forced == .loading {
-            LoadingPane()
+            LoadingPane("Loading Activity\u{2026}")
         } else if forced == .error, !feed {
             ErrorPane(title: "Couldn't Load Activity",
                       message: m.connection == .offline ? "You\u{2019}re offline." : "Something went wrong.") {

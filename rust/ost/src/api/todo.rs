@@ -247,21 +247,50 @@ pub async fn complete_todo_task_data(
     list_id: &str,
     task_id: &str,
 ) -> Result<TodoTaskInfo> {
+    set_todo_task_status(client, list_id, task_id, "completed").await
+}
+
+/// Reopen one completed task (status back to `notStarted`) and return it.
+pub async fn reopen_todo_task_data(
+    client: &TeamsClient,
+    list_id: &str,
+    task_id: &str,
+) -> Result<TodoTaskInfo> {
+    set_todo_task_status(client, list_id, task_id, "notStarted").await
+}
+
+/// PATCH body that sets a task's status (Graph todoTask `status`).
+pub fn todo_status_body(status: &str) -> serde_json::Value {
+    serde_json::json!({ "status": status })
+}
+
+/// PATCH one task's status; Graph answers with the updated task.
+async fn set_todo_task_status(
+    client: &TeamsClient,
+    list_id: &str,
+    task_id: &str,
+    status: &str,
+) -> Result<TodoTaskInfo> {
     check_id("list_id", list_id)?;
     check_id("task_id", task_id)?;
     let path = format!("/me/todo/lists/{}/tasks/{}", list_id, task_id);
-    let body = serde_json::json!({ "status": "completed" });
-    let resp = client.graph_patch(&path, &body).await?;
+    let resp = client.graph_patch(&path, &todo_status_body(status)).await?;
     let task: TodoTask = resp
         .json()
         .await
-        .context("Failed to parse completed todo task response")?;
+        .with_context(|| format!("Failed to parse {} todo task response", status))?;
     Ok(task_info(task))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn status_bodies_complete_and_reopen() {
+        assert_eq!(todo_status_body("completed"), serde_json::json!({"status": "completed"}));
+        assert_eq!(todo_status_body("notStarted"), serde_json::json!({"status": "notStarted"}));
+    }
 
     #[test]
     fn id_guard_rejects_path_breaking() {

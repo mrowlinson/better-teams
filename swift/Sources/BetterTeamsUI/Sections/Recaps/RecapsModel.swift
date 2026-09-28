@@ -93,4 +93,23 @@ enum RecapsListState: Equatable {
         if case .error(let m) = transcripts { return failed(m) }
         return .empty
     }
+
+    /// A failed list refresh behind the rows on screen (quiet notice).
+    static func failure(_ recordings: RecordingsState, _ transcripts: TranscriptsState) -> String? {
+        if case .error(let m) = recordings { return m }
+        if case .error(let m) = transcripts { return m }
+        return nil
+    }
+}
+
+/// The transcript turn under the playhead (Recaps highlights it).
+enum TranscriptPlayhead {
+    /// The last turn that started at or before `ms` while `ms` is still
+    /// inside it; nil between turns, before the first, or without a
+    /// playhead.
+    static func currentCueID(_ cues: [TranscriptCue], at ms: Int?) -> Int? {
+        guard let ms else { return nil }
+        guard let cue = cues.last(where: { $0.startMs <= ms }), ms < cue.endMs else { return nil }
+        return cue.id
+    }
 }

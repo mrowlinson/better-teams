@@ -24,6 +24,8 @@ public extension Notification.Name {
     static let omNotifReply = Notification.Name("om-notif-reply")
     /// userInfo: ["callID": String] — accept the ringing call (gap-g3).
     static let omNotifAcceptCall = Notification.Name("om-notif-accept-call")
+    /// userInfo: ["callID": String] — accept the ringing call with video.
+    static let omNotifAcceptCallVideo = Notification.Name("om-notif-accept-call-video")
     /// userInfo: ["callID": String] — decline the ringing call (gap-g3).
     static let omNotifDeclineCall = Notification.Name("om-notif-decline-call")
     /// userInfo: ["callID": String] — foreground the app on the call.
@@ -270,6 +272,8 @@ public enum NotificationRoute: Sendable, Equatable {
     case reply(chatID: String, text: String)
     /// gap-g3: incoming-call banner actions (Accept / Decline / click).
     case acceptCall(callID: String)
+    /// Accept with Video (MEETVIDEO).
+    case acceptCallVideo(callID: String)
     case declineCall(callID: String)
     case showCall(callID: String)
     case none
@@ -449,6 +453,10 @@ public final class MessageNotifications: ObservableObject {
             NotificationCenter.default.post(
                 name: .omNotifAcceptCall, object: nil, userInfo: ["callID": call])
             return .acceptCall(callID: call)
+        case .acceptCallVideo(let call):
+            NotificationCenter.default.post(
+                name: .omNotifAcceptCallVideo, object: nil, userInfo: ["callID": call])
+            return .acceptCallVideo(callID: call)
         case .declineCall(let call):
             NotificationCenter.default.post(
                 name: .omNotifDeclineCall, object: nil, userInfo: ["callID": call])

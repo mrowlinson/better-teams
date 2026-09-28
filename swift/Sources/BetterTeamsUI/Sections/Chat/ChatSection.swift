@@ -196,8 +196,8 @@ final class ChatSection: SectionProvider, InspectorCapable {
         case ChatCommands.audioCall:
             return CommandValidation(enabled: ConversationToolbar.canStartCall(m))
         case ChatCommands.videoCall:
-            // 1:1 chats only: group and meeting video need core source
-            // subscription (not built); the tooltip gives the reason.
+            // Every conversation: 1:1 (VIDEO1), group chats and meeting
+            // chats (MEETVIDEO: the meeting tile grid).
             return CommandValidation(enabled: ConversationToolbar.canStartVideoCall(m))
         default:
             return .disabled

@@ -18,13 +18,17 @@ struct PlannerListPane: View {
                 plansError: planner.plansError, forced: model.forced(.native(.planner)),
                 offline: model.connection == .offline)
             switch state {
-            case .loading: LoadingPane()
+            case .loading: LoadingPane("Loading Plans\u{2026}")
             case .error(let title, let message):
                 ErrorPane(title: title, message: message) { planner.refresh() }
             case .empty:
                 EmptyPane(PlannerListState.emptyTitle, systemImage: NativeAppID.planner.symbol,
                           message: PlannerListState.emptyMessage)
-            case .plans: list(groups, model)
+            case .plans:
+                // R12: a refresh runs behind the plans on screen.
+                list(groups, model)
+                    .refreshStatus(planner.state == .loading, failure: PlannerListState.failure(planner),
+                                   label: "Updating Plans", retry: { planner.refresh() })
             }
         }
     }
@@ -82,13 +86,16 @@ struct PlannerBoardPane: View {
                 offline: model.connection == .offline)
             switch state {
             case .noSelection: NoSelectionPane(PlannerBoardState.noSelectionTitle)
-            case .loading: LoadingPane()
+            case .loading: LoadingPane("Loading Board\u{2026}")
             case .error(let title, let message):
                 ErrorPane(title: title, message: message) { planner.refreshBoard() }
             case .noBuckets:
                 EmptyPane("No Buckets", systemImage: NativeAppID.planner.symbol,
                           message: "Add buckets to this plan in Planner to add tasks here.")
-            case .board: board(model)
+            case .board:
+                board(model)
+                    .refreshStatus(planner.boardLoading, failure: planner.boardError,
+                                   label: "Updating Board", retry: { planner.refreshBoard() })
             }
         }
     }

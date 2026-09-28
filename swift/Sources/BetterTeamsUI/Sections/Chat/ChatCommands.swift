@@ -35,7 +35,7 @@ public enum ChatCommands {
                 menu: .init(.call, group: 0, order: 0), toolbar: .detail, owner: .chat),
         Command(videoCall, "Start Video Call", symbol: "video",
                 menu: .init(.call, group: 0, order: 1), toolbar: .detail, owner: .chat,
-                help: "Start a video call. Video works in one-on-one chats; group and meeting video aren\u{2019}t available yet."),
+                help: "Start a video call with everyone in this conversation."),
         Command(catchUp, "Catch Up", symbol: "sparkles",
                 menu: .init(.conversation, group: 2, order: 0), toolbar: .detail, owner: .chat),
         Command(markUnread, "Mark as Unread", alternateTitle: "Mark as Read", key: "u", modifiers: [.command, .shift],

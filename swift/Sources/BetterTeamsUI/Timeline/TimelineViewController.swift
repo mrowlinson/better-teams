@@ -272,6 +272,21 @@ final class TimelineViewController: NSViewController, NSTableViewDataSource, NST
                     return self.noteSharedFiles(files, chat: shared.chatID) ? () : nil
                 }
                 .eraseToAnyPublisher())
+            // Refs past the first page: files looked up by message.
+            side.append(shared.$attachmentFiles
+                .compactMap { [weak self, weak shared] files -> Void? in
+                    guard let self, let shared else { return nil }
+                    return self.noteSharedFiles(files, chat: shared.attachmentsChatID) ? () : nil
+                }
+                .eraseToAnyPublisher())
+            // The first page landed for this conversation: unmatched refs
+            // can now be looked up.
+            side.append(shared.$state
+                .compactMap { [weak self, weak shared] state -> Void? in
+                    guard let self, let shared, state != .loading, shared.chatID == self.conv.chatID else { return nil }
+                    return ()
+                }
+                .eraseToAnyPublisher())
         }
         Publishers.MergeMany(side)
             .receive(on: DispatchQueue.main)
@@ -547,8 +562,12 @@ final class TimelineViewController: NSViewController, NSTableViewDataSource, NST
         let pins = model?.graph.pinnedMessages
         let saves = model?.graph.savedMessages
         var data: [String: MessageRowData] = [:]
+        var unmatched: [String] = []
         let out = list.map { item -> TimelineItem in
             guard case .message(let id, let rev, let header) = item, let m = messagesByID[id] else { return item }
+            let refs = InlineDocs.refs(fromRaw: m.raw)
+            let chips = refs.isEmpty || docs.isEmpty ? [] : InlineDocs.resolve(refs: refs, filesByAttachmentID: docs)
+            if chips.count < min(refs.count, InlineDocs.maxRows), !failed.contains(id) { unmatched.append(id) }
             let row = MessageRowData(
                 message: m, showsHeader: header, send: SendState.of(m, failed: failed),
                 quote: TimelineSnapshot.showsQuote(m, scope: scope) ? TimelineRowState.quote(for: m, in: messagesByID) : nil,
@@ -558,13 +577,25 @@ final class TimelineViewController: NSViewController, NSTableViewDataSource, NST
                 isSaved: saves?.isSaved(chatID: chat, messageID: id) ?? false,
                 ownName: ownName, chatID: chat,
                 ownTrailing: scope == .conversation && m.isOwn,
-                docs: docs.isEmpty ? [] : InlineDocs.resolve(refs: InlineDocs.refs(fromRaw: m.raw),
-                                                            filesByAttachmentID: docs))
+                docs: chips)
             data[id] = row
             return .message(id: id, revision: TimelineRowState.combine(rev, row.extraRevision), showsHeader: header)
         }
         rowData = data
+        lookUpAttachments(unmatched)
         return out
+    }
+
+    /// File chips past the Shared list's first page: once that page has
+    /// landed for this conversation, each message whose attachment refs
+    /// still miss is looked up by message id (the store asks once per
+    /// message). Live only; thread replies have no lookup path.
+    private func lookUpAttachments(_ ids: [String]) {
+        guard !ids.isEmpty else { return }
+        if case .thread = scope { return }
+        guard model?.options.demo != true, let shared = model?.app?.shared, let chat = conv.chatID,
+              shared.chatID == chat, shared.state != .loading else { return }
+        for id in ids { shared.resolveAttachments(chatID: chat, messageID: id) }
     }
 
     private func premeasure(_ list: [TimelineItem]) {
@@ -621,6 +652,7 @@ final class TimelineViewController: NSViewController, NSTableViewDataSource, NST
     override func viewDidLayout() {
         super.viewDidLayout()
         if !view.inLiveResize { widthSettled() }
+        retryPendingJump()
     }
 
     private var lastScale: Double = 1.0
@@ -698,6 +730,7 @@ final class TimelineViewController: NSViewController, NSTableViewDataSource, NST
     private func viewportChanged() {
         guard isViewLoaded, !items.isEmpty else { return }
         if pinnedToBottom { scrollToBottom() } else { fitShortThread() }
+        retryPendingJump()
     }
 
     /// Bottom-anchors a thread shorter than the viewport: row 0 takes
@@ -755,6 +788,16 @@ final class TimelineViewController: NSViewController, NSTableViewDataSource, NST
             pendingJump = messageID
             return
         }
+        // No viewport yet (Activity/Search open the pane with the target
+        // already set): a jump now lands against a zero-size clip and
+        // the first real layout leaves the timeline mid-thread. Hold it
+        // (not pinned, so layout never re-pins the newest row) and land
+        // it once the pane has its size.
+        guard scroll.contentView.bounds.height > 0, table.bounds.width > 0 else {
+            pendingJump = messageID
+            pinnedToBottom = false
+            return
+        }
         pendingJump = nil
         let old = highlightID.flatMap { h in items.firstIndex(where: { $0.messageID == h }) }
         highlightID = messageID
@@ -774,8 +817,15 @@ final class TimelineViewController: NSViewController, NSTableViewDataSource, NST
         // overwritten by the setter, so the handled target clears on the
         // next main-actor turn (state cleanup only, not layout).
         Task { @MainActor [conv] in
-            if conv.jumpTargetID == id { conv.clearJumpTarget() }
+            if conv.jumpTargetID == target { conv.clearJumpTarget() }
         }
+    }
+
+    /// Message ids of the rows inside the visible viewport (tests).
+    var visibleMessageIDs: [String] {
+        let r = table.rows(in: scroll.contentView.bounds)
+        guard r.length > 0 else { return [] }
+        return (r.location..<(r.location + r.length)).compactMap { items[$0].messageID }
     }
 
     private func retryPendingJump() {

@@ -1,6 +1,6 @@
 // PreJoinView.swift — the pre-join step (UI-SPEC §8): camera preview,
 // mic level, device pickers, Mic and Camera toggles, Join Now (default
-// button). The Mic/Camera toggles are the same state the toolbar's
+// button; Join with Video while the camera is on). The Mic/Camera toggles are the same state the toolbar's
 // Mute and Camera items show before joining.
 import OstMacCore
 import SwiftUI
@@ -34,7 +34,7 @@ struct PreJoinView: View {
                 .toggleStyle(.switch)
                 CallDevicesForm(devices: session.devices)
                     .frame(width: 400)
-                Button("Join Now") { session.joinNow() }
+                Button(session.preCameraOn ? "Join with Video" : "Join Now") { session.joinNow() }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.large)
                     .keyboardShortcut(.defaultAction)

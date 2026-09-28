@@ -68,6 +68,11 @@ enum CalendarPaneState: Equatable {
         case .empty, .loaded: return .empty
         }
     }
+
+    /// A failed refresh behind the meetings on screen (quiet notice).
+    static func failure(_ state: MeetingsState) -> String? {
+        if case .error(let m) = state { m } else { nil }
+    }
 }
 
 /// Meeting times. Graph datetimes are local wall-clock strings

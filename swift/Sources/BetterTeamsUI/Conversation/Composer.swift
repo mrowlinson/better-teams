@@ -118,13 +118,18 @@ struct Composer: View {
         .padding(.top, 8)
         .padding(.bottom, 10)
         .onAppear {
-            composer.focusRequest += 1
+            // Evidence captures leave the field unfocused: a focused
+            // field draws the system input-source bubble at its caret,
+            // over the accessory buttons.
+            if !(model?.options.evidence ?? false) { composer.focusRequest += 1 }
             applyEvidencePopover()
         }
         .onChange(of: chatID) {
             composer.popover = nil
             composer.editing = nil
-            composer.focusRequest += 1
+            // Same evidence guard as onAppear: a route that lands on a
+            // chat after launch must not focus the field either.
+            if !(model?.options.evidence ?? false) { composer.focusRequest += 1 }
         }
     }
 

@@ -58,6 +58,13 @@ enum PlannerListState: Equatable {
         case .loaded: return plansError.map(failed) ?? .empty
         }
     }
+
+    /// A failed refresh behind the plans on screen (quiet notice).
+    @MainActor
+    static func failure(_ planner: PlannerViewModel) -> String? {
+        if case .error(let m) = planner.state { return m }
+        return planner.plansError
+    }
 }
 
 /// What the plan detail (bucket list) shows.

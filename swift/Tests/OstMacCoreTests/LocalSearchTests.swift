@@ -238,6 +238,26 @@ final class LocalSearchTests: XCTestCase {
         XCTAssertEqual(store.docCount, 4)
     }
 
+    func testReindexReplacesPostings() async {
+        let store = LocalSearchStore()
+        store.index(chatID: "c1", messages: [
+            Self.msg("1", "Megan Harper", "2026-09-20T09:00:00Z", "alpha draft"),
+        ])
+        store.index(chatID: "c1", messages: [
+            Self.msg("1", "Megan Harper", "2026-09-20T09:00:00Z", "beta draft"),
+        ])
+        store.index(chatID: "c1", messages: [
+            Self.msg("1", "Megan Harper", "2026-09-20T09:00:00Z", "beta draft"),
+        ])
+        XCTAssertEqual(store.docCount, 1)
+        XCTAssertEqual(store.snapshotPostingCount(for: "draft"), 1)
+        await store.search(query: "alpha") // stale word from the old body
+        XCTAssertTrue(store.hits.isEmpty)
+        XCTAssertEqual(store.snapshotPostingCount(for: "alpha"), 0)
+        await store.search(query: "beta")
+        XCTAssertEqual(store.hits.count, 1)
+    }
+
     func testRemoveAllDropsIndexAndQuery() async {
         let store = LocalSearchStore()
         store.index(chatID: "c1", messages: Self.seedMessages())

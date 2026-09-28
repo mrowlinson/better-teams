@@ -279,11 +279,54 @@ fn checked_datetime(what: &str, value: &str) -> Result<String> {
     Ok(v.to_string())
 }
 
+/// Days the server window reaches past each side of `[start, end]`.
+/// Graph documents only containment filters for the schedule
+/// collections (`startDateTime ge` + `endDateTime le`, each property
+/// once), so a row that overlaps the range but crosses one of its
+/// bounds is fetched through this margin and kept or dropped by
+/// [`overlaps_range`]. Shifts are at most 24 hours long; time off can
+/// run for weeks, so its margin covers a quarter.
+pub fn range_pad_days(collection: &str) -> i64 {
+    if collection == "timesOff" {
+        92
+    } else {
+        1
+    }
+}
+
+/// Parse a range bound or a row date-time: RFC 3339 (offset or `Z`),
+/// a naive `YYYY-MM-DDTHH:MM:SS[.f]` read as UTC, or a bare date
+/// (midnight UTC).
+fn parse_datetime(value: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
+    let v = value.trim();
+    if let Ok(dt) = DateTime::parse_from_rfc3339(v) {
+        return Some(dt.with_timezone(&Utc));
+    }
+    if let Ok(n) = NaiveDateTime::parse_from_str(v, "%Y-%m-%dT%H:%M:%S%.f") {
+        return Some(n.and_utc());
+    }
+    NaiveDate::parse_from_str(v, "%Y-%m-%d")
+        .ok()
+        .and_then(|d| d.and_hms_opt(0, 0, 0))
+        .map(|n| n.and_utc())
+}
+
+fn checked_bound(what: &str, value: &str) -> Result<chrono::DateTime<chrono::Utc>> {
+    let v = checked_datetime(what, value)?;
+    match parse_datetime(&v) {
+        Some(dt) => Ok(dt),
+        None => bail!("{} must be an ISO-8601 date-time", what),
+    }
+}
+
 /// Collection path for one slot (`sharedShift`, `draftShift`,
-/// `sharedTimeOff`, `draftTimeOff`) overlapping `[start, end]`: the
-/// slot starts no later than `end` and ends no earlier than `start`.
-/// Each property appears once (Graph rejects a property used twice).
-/// Spaces are `%20`, `+` (UTC offsets) is `%2B`.
+/// `sharedTimeOff`, `draftTimeOff`) in the documented filter shape:
+/// the slot starts at or after `start` and ends at or before `end`,
+/// both widened by [`range_pad_days`] so rows overlapping the range
+/// are fetched too (the caller keeps only those, [`overlaps_range`]).
+/// Each property appears once. Bounds travel as UTC `...Z`; spaces are
+/// `%20`.
 pub fn schedule_range_path(
     team_id: &str,
     collection: &str,
@@ -292,12 +335,38 @@ pub fn schedule_range_path(
     end: &str,
 ) -> Result<String> {
     let team_id = checked_team_id(team_id)?;
-    let start = checked_datetime("start", start)?.replace('+', "%2B");
-    let end = checked_datetime("end", end)?.replace('+', "%2B");
+    let pad = chrono::Duration::days(range_pad_days(collection));
+    let from = (checked_bound("start", start)? - pad).format("%Y-%m-%dT%H:%M:%SZ");
+    let to = (checked_bound("end", end)? + pad).format("%Y-%m-%dT%H:%M:%SZ");
     Ok(format!(
-        "/teams/{}/schedule/{}?$filter={}/startDateTime%20le%20{}%20and%20{}/endDateTime%20ge%20{}",
-        team_id, collection, slot, end, slot, start
+        "/teams/{}/schedule/{}?$filter={}/startDateTime%20ge%20{}%20and%20{}/endDateTime%20le%20{}",
+        team_id, collection, slot, from, slot, to
     ))
+}
+
+/// True when a row `[row_start, row_end]` overlaps `[start, end]`: it
+/// starts before `end` and ends after `start`. A missing or unparseable
+/// row date never excludes the row (nothing is hidden on bad data).
+pub fn overlaps_range(
+    row_start: Option<&str>,
+    row_end: Option<&str>,
+    start: &str,
+    end: &str,
+) -> bool {
+    let (Some(lo), Some(hi)) = (parse_datetime(start), parse_datetime(end)) else {
+        return true;
+    };
+    if let Some(s) = row_start.and_then(parse_datetime) {
+        if s >= hi {
+            return false;
+        }
+    }
+    if let Some(e) = row_end.and_then(parse_datetime) {
+        if e <= lo {
+            return false;
+        }
+    }
+    true
 }
 
 /// Follow `@odata.nextLink` pages (bounded) for one filtered query.
@@ -336,8 +405,9 @@ fn dedupe_by_id<T>(rows: Vec<T>, id: impl Fn(&T) -> &str) -> Vec<T> {
         .collect()
 }
 
-/// List one team's shifts overlapping `[start, end]` (server-side
-/// filter, shared then draft slot, all pages). Bad bounds / empty
+/// List one team's shifts overlapping `[start, end]` (padded
+/// server-side containment filter, then the overlap test here; shared
+/// then draft slot, all pages). Bad bounds / empty
 /// `team_id` bail pre-network.
 pub async fn list_shifts_range_data(
     client: &TeamsClient,
@@ -354,11 +424,13 @@ pub async fn list_shifts_range_data(
         .await?;
         rows.extend(wire.into_iter().map(shift_from_wire));
     }
+    rows.retain(|s| overlaps_range(s.start.as_deref(), s.end.as_deref(), start, end));
     Ok(dedupe_by_id(rows, |s| s.id.as_str()))
 }
 
 /// List one team's time-off instances overlapping `[start, end]`
-/// (server-side filter, shared then draft slot, all pages).
+/// (padded server-side containment filter, then the overlap test here;
+/// shared then draft slot, all pages).
 pub async fn list_timesoffs_range_data(
     client: &TeamsClient,
     team_id: &str,
@@ -374,6 +446,7 @@ pub async fn list_timesoffs_range_data(
         .await?;
         rows.extend(wire.into_iter().map(time_off_from_wire));
     }
+    rows.retain(|t| overlaps_range(t.start.as_deref(), t.end.as_deref(), start, end));
     Ok(dedupe_by_id(rows, |t| t.id.as_str()))
 }
 
@@ -415,15 +488,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn range_path_filters_overlap_and_guards_bounds() {
+    fn range_path_uses_documented_filter_and_keeps_overlaps() {
         assert_eq!(
             schedule_range_path("t1", "shifts", "sharedShift",
                 "2026-09-28T00:00:00Z", "2026-10-05T00:00:00+02:00").unwrap(),
-            "/teams/t1/schedule/shifts?$filter=sharedShift/startDateTime%20le%20\
-             2026-10-05T00:00:00%2B02:00%20and%20sharedShift/endDateTime%20ge%20\
-             2026-09-28T00:00:00Z"
+            "/teams/t1/schedule/shifts?$filter=sharedShift/startDateTime%20ge%20\
+             2026-09-27T00:00:00Z%20and%20sharedShift/endDateTime%20le%20\
+             2026-10-05T22:00:00Z"
         );
-        for bad in ["", "  ", "2026-09-28 00:00", "x&$top=1", "2026'"] {
+        assert_eq!(
+            schedule_range_path("t1", "timesOff", "draftTimeOff", "2026-09-28", "2026-10-05").unwrap(),
+            "/teams/t1/schedule/timesOff?$filter=draftTimeOff/startDateTime%20ge%20\
+             2026-06-28T00:00:00Z%20and%20draftTimeOff/endDateTime%20le%20\
+             2027-01-05T00:00:00Z"
+        );
+        let (w0, w1) = ("2026-09-28T00:00:00Z", "2026-10-05T00:00:00Z");
+        // Overnight shift into the week, week-long leave across it: kept.
+        assert!(overlaps_range(Some("2026-09-27T22:00:00Z"), Some("2026-09-28T06:00:00Z"), w0, w1));
+        assert!(overlaps_range(Some("2026-09-01T00:00:00"), Some("2026-10-20T00:00:00"), w0, w1));
+        // Ends at the week start / starts at its end: dropped.
+        assert!(!overlaps_range(Some("2026-09-27T09:00:00Z"), Some(w0), w0, w1));
+        assert!(!overlaps_range(Some(w1), Some("2026-10-05T08:00:00Z"), w0, w1));
+        assert!(overlaps_range(None, Some("junk"), w0, w1));
+        for bad in ["", "  ", "2026-09-28 00:00", "x&$top=1", "2026'", "2026-13-40"] {
             assert!(schedule_range_path("t1", "shifts", "sharedShift", bad, "2026-10-05").is_err());
             assert!(schedule_range_path("t1", "timesOff", "draftTimeOff", "2026-09-28", bad).is_err());
         }

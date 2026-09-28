@@ -86,7 +86,7 @@ struct ChannelDetail: View {
     private func posts(_ m: WindowModel) -> some View {
         let services = ConversationServices.of(m)
         if conv.chatID != channel.channelId || (conv.loading && conv.messages.isEmpty) {
-            LoadingPane()
+            LoadingPane("Loading Posts\u{2026}")
         } else if let err = conv.error, conv.messages.isEmpty {
             ErrorPane(title: m.connection == .offline ? "You're Offline" : "Couldn't Load Posts",
                       message: err) { conv.retryOpen() }
@@ -109,6 +109,8 @@ struct ChannelDetail: View {
                               message: "Start a post to get the conversation going.")
                 } else {
                     TimelineRepresentable(conv: conv, scope: .posts, selectedID: sel.threadID)
+                        .refreshStatus(conv.refreshing, failure: conv.refreshError,
+                                       label: "Updating Posts", retry: { conv.refresh() })
                 }
                 Divider()
                 Composer(chatID: channel.channelId, chatName: channel.name,

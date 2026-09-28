@@ -43,13 +43,15 @@ final class AppsFixTests: XCTestCase {
         XCTAssertEqual(model.nav.section, .call)
         b?.leave()
 
-        // Video Call states where it works (1:1 only; VIDEO1).
+        // Video Call carries help text.
         XCTAssertNotNil(CommandCatalog.command(ChatCommands.videoCall)?.help)
     }
 
-    /// VIDEO1: Video Call is offered in a 1:1 chat only and starts a video
-    /// session (camera on) through the core's video place path.
-    func testVideoCallStartsOnlyInOneOnOneChat() {
+    /// VIDEO1 + MEETVIDEO: Video Call starts a video session (camera on)
+    /// through the core's video place path; a group chat gets the tile
+    /// grid (demo roster, never the core's video queues), a 1:1 chat the
+    /// 1:1 stage.
+    func testVideoCallStartsInOneOnOneAndGroupChats() {
         let model = makeModel()
         CallSettings.shared.useVolatileStorage(.separateWindow)
         defer { CallSettings.shared.useVolatileStorage() }
@@ -58,12 +60,22 @@ final class AppsFixTests: XCTestCase {
         model.navigator?.select(section: .chat)
 
         model.navigator?.select(SectionSelection(id: "19:group"), in: .chat)
-        XCTAssertNil(ConversationToolbar.startVideoCall(model, show: false, store: CallStore(demo: true)))
+        let groupStore = CallStore(demo: true)
+        let g = ConversationToolbar.startVideoCall(model, show: false, store: groupStore)
+        XCTAssertEqual(g?.group, true)
+        XCTAssertEqual(groupStore.lastAction, "demo:place-video")
+        XCTAssertEqual(g?.meetingVideo?.tiles.count, MeetingVideoModel.demoRoster.count)
+        XCTAssertEqual(g?.meetingVideo?.tiles.filter(\.videoOn).count, 3, "a mix of cameras on and off")
+        XCTAssertTrue(g?.meetingVideo?.videos.isEmpty ?? false, "demo never decodes core video")
+        g?.leave()
+        XCTAssertFalse(groupStore.cameraOn)
 
         model.navigator?.select(SectionSelection(id: "19:peer"), in: .chat)
         let store = CallStore(demo: true)
         let s = ConversationToolbar.startVideoCall(model, show: false, store: store)
         XCTAssertEqual(s?.video, true)
+        XCTAssertEqual(s?.group, false)
+        XCTAssertNil(s?.meetingVideo)
         XCTAssertEqual(store.lastAction, "demo:place-video")
         XCTAssertTrue(store.cameraOn)
         XCTAssertEqual(s?.connected, true)

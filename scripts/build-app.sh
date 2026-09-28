@@ -23,7 +23,19 @@ if [ -z "${IDENT:-}" ]; then
     echo "WARNING: no Apple Development identity found; signing ad-hoc (TCC will not stick)."
     codesign --force --deep --sign - "$APP"
 else
+    # Communication notifications (sender-avatar banners) need a restricted
+    # entitlement, which only launches with a matching embedded profile.
+    PROFILE="$("$ROOT/scripts/find-profile.sh" "$IDENT")"
+    if [ -n "$PROFILE" ]; then
+        cp "$PROFILE" "$APP/Contents/embedded.provisionprofile"
+    fi
     codesign --force --deep --sign "$IDENT" "$APP"
+    if [ -n "$PROFILE" ]; then
+        codesign --force --sign "$IDENT" --entitlements OstMac.entitlements "$APP"
+        echo "entitled: communication notifications"
+    else
+        echo "WARNING: no provisioning profile for dev.ostmac.OstMac; signing without entitlements."
+    fi
     echo "signed: $IDENT"
 fi
 echo "APP=$APP"

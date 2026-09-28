@@ -33,14 +33,15 @@ struct CallsRowModel: Identifiable, Equatable {
     static let demoPersonAlias = "demo-person"
     static let demoPersonID = activityPrefix + "missedCall:-:demo-missed"
 
-    /// Newest first.
-    static func rows(history: [CallRecord], activity: [ActivityItem]) -> [CallsRowModel] {
+    /// Newest first. `hidden` = feed rows removed from Recents.
+    static func rows(history: [CallRecord], activity: [ActivityItem],
+                     hidden: Set<String> = []) -> [CallsRowModel] {
         var out = history.map { r in
             CallsRowModel(id: recordPrefix + r.id, personKey: key(r.peer, r.displayName),
                           personID: r.peer.isEmpty ? nil : r.peer, name: r.displayName, direction: r.direction,
                           at: r.startedAt, durationSecs: r.durationSecs, thread: r.thread)
         }
-        for item in activity where item.kind == .missedCall {
+        for item in activity where item.kind == .missedCall && !hidden.contains(item.id) {
             let caller = item.callerID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             let seen = history.contains { r in
                 guard r.isMissed, !caller.isEmpty, r.peer.lowercased() == caller.lowercased() else { return false }

@@ -605,10 +605,12 @@ public struct MeetingItem: Decodable, Sendable, Identifiable, Equatable {
     /// organizer-only actions such as Cancel Meeting. False when absent.
     public let isOrganizer: Bool
     public let isOnline: Bool
+    /// Graph `categories` (Outlook color categories); empty when absent.
+    public let categories: [String]
 
     enum CodingKeys: String, CodingKey {
         case meetingId = "id"
-        case subject, start, end, organizer
+        case subject, start, end, organizer, categories
         case organizerEmail = "organizer_email"
         case isOrganizer = "is_organizer"
         case joinURL = "join_url"
@@ -626,6 +628,7 @@ public struct MeetingItem: Decodable, Sendable, Identifiable, Equatable {
         organizerEmail = try c.decodeIfPresent(String.self, forKey: .organizerEmail)
         isOrganizer = try c.decodeIfPresent(Bool.self, forKey: .isOrganizer) ?? false
         isOnline = try c.decode(Bool.self, forKey: .isOnline)
+        categories = try c.decodeIfPresent([String].self, forKey: .categories) ?? []
     }
 
     /// Host-side construction (demo data, previews).
@@ -633,8 +636,10 @@ public struct MeetingItem: Decodable, Sendable, Identifiable, Equatable {
         meetingId: String, subject: String, start: String? = nil,
         end: String? = nil, joinURL: String? = nil,
         organizer: String? = nil, organizerEmail: String? = nil,
-        isOrganizer: Bool = false, isOnline: Bool = false
+        isOrganizer: Bool = false, isOnline: Bool = false,
+        categories: [String] = []
     ) {
+        self.categories = categories
         self.meetingId = meetingId
         self.subject = subject
         self.start = start

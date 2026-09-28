@@ -25,7 +25,7 @@ struct TeamsListPane: View {
     private func content(_ m: WindowModel) -> some View {
         let forced = m.forced(.teams)
         if forced == .loading || (teams.state == .loading && teams.teams.isEmpty) {
-            LoadingPane()
+            LoadingPane("Loading Teams\u{2026}")
         } else if forced == .error {
             ErrorPane(title: "Couldn't Load Teams", message: "You're offline.") {}
         } else if case .error(let msg) = teams.state, teams.teams.isEmpty {
@@ -40,8 +40,16 @@ struct TeamsListPane: View {
                 .disabled(m.connection == .offline)
             }
         } else {
+            // R12: a refresh runs behind the rows on screen.
             list(m)
+                .refreshStatus(teams.state == .loading, failure: Self.failure(teams.state),
+                               label: "Updating Teams", retry: { teams.refresh() })
         }
+    }
+
+    /// A failed refresh behind the rows on screen (quiet notice).
+    static func failure(_ state: TeamsState) -> String? {
+        if case .error(let message) = state { message } else { nil }
     }
 
     private func list(_ m: WindowModel) -> some View {

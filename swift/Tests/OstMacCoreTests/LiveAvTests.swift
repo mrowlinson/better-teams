@@ -82,9 +82,11 @@ final class LiveAvTests: XCTestCase {
     }
 
     func testIncomingPollDrains() throws {
-        // Loopback may leave a unit behind; drain, then expect null.
-        _ = try RustCore.videoPollIncoming()
-        _ = try RustCore.videoPollIncoming()
+        // Loopback may leave units behind (FIFO: one AU per poll); the
+        // queue holds at most ~30, so it drains within 64 polls.
+        var polls = 0
+        while try RustCore.videoPollIncoming().au != nil, polls < 64 { polls += 1 }
+        XCTAssertLessThan(polls, 64)
         XCTAssertNil(try RustCore.videoPollIncoming().au)
     }
 
@@ -134,7 +136,8 @@ final class LiveAvTests: XCTestCase {
     /// Full join proof (offline): stream-encode -> send_push -> engine
     /// packetize/SRTP/depacketize -> poll incoming -> stream-decode -> image.
     func testLiveLoopbackEndToEnd() throws {
-        _ = try RustCore.videoPollIncoming() // drain stale
+        var stale = 0 // drain stale (FIFO: one AU per poll)
+        while try RustCore.videoPollIncoming().au != nil, stale < 64 { stale += 1 }
         let w = 320, h = 240
         let enc = try XCTUnwrap(H264StreamEncoder(width: w, height: h))
         let nals = try enc.encode(bgra: markerFrame(w: w, h: h))

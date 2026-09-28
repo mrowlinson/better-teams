@@ -27,8 +27,19 @@ if [[ -z "${IDENT:-}" ]]; then
     codesign --force --sign - "$APP"
 else
     echo "signing with: $IDENT"
+    # Communication notifications (sender-avatar banners) need a restricted
+    # entitlement, which only launches with a matching embedded profile.
+    PROFILE="$("$ROOT/scripts/find-profile.sh" "$IDENT")"
+    ENT=()
+    if [[ -n "$PROFILE" ]]; then
+        cp "$PROFILE" "$APP/Contents/embedded.provisionprofile"
+        ENT=(--entitlements OstMac.entitlements)
+        echo "entitled: communication notifications"
+    else
+        echo "WARNING: no provisioning profile for dev.ostmac.OstMac; signing without entitlements."
+    fi
     codesign --force --sign "$IDENT" "$APP/Contents/MacOS/OstMac"
-    codesign --force --sign "$IDENT" "$APP"
+    codesign --force --sign "$IDENT" ${ENT[@]+"${ENT[@]}"} "$APP"
 fi
 codesign --verify --verbose=1 "$APP"
 

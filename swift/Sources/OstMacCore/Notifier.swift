@@ -72,6 +72,7 @@ public final class Notifier: NSObject, @unchecked Sendable {
     /// Used only when this delegate is installed; the live app routes
     /// call actions through the shared delegate's .omNotif*Call notes.
     public var onAcceptCall: (@Sendable (String) async -> Void)?
+    public var onAcceptCallVideo: (@Sendable (String) async -> Void)?
     public var onDeclineCall: (@Sendable (String) async -> Void)?
 
     /// Screen-lock probe (om-nc-delivery). Nil = live CGSession read;
@@ -237,6 +238,9 @@ extension Notifier: UNUserNotificationCenterDelegate {
             return
         case .acceptCall(let callID):
             await onAcceptCall?(callID)
+            return
+        case .acceptCallVideo(let callID):
+            await onAcceptCallVideo?(callID)
             return
         case .declineCall(let callID):
             await onDeclineCall?(callID)

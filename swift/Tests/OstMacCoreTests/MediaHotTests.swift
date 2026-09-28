@@ -7,11 +7,42 @@ import XCTest
 @MainActor
 final class MediaHotTests: XCTestCase {
     func testLiveVideoPacingBacksOff() {
-        XCTAssertEqual(LiveVideoPacing.delayMs(nilStreak: 0), 250)
-        XCTAssertEqual(LiveVideoPacing.delayMs(nilStreak: 1), 500)
-        XCTAssertEqual(LiveVideoPacing.delayMs(nilStreak: 2), 1000)
-        XCTAssertEqual(LiveVideoPacing.delayMs(nilStreak: 9), 1000)
-        XCTAssertEqual(LiveVideoPacing.delayMs(nilStreak: -1), 250)
+        // One 30 fps frame while video flows; misses double to the ceiling.
+        XCTAssertEqual(LiveVideoPacing.delayMs(nilStreak: 0), 33)
+        XCTAssertEqual(LiveVideoPacing.delayMs(nilStreak: 1), 66)
+        XCTAssertEqual(LiveVideoPacing.delayMs(nilStreak: 3), 264)
+        XCTAssertEqual(LiveVideoPacing.delayMs(nilStreak: 4), 500)
+        XCTAssertEqual(LiveVideoPacing.delayMs(nilStreak: 9), 500)
+        XCTAssertEqual(LiveVideoPacing.delayMs(nilStreak: -1), 33)
+    }
+
+    /// CALLFIX: a tick decodes every queued unit in order (no reference
+    /// frame skipped) and shows the newest; after a decode failure units
+    /// are skipped until a keyframe.
+    func testLiveVideoDrainDecodesEveryUnitInOrder() throws {
+        enum Bad: Error { case frame }
+        let key = { (n: UInt8) in [Data([0x67, 0x42]), Data([0x65, n])] }
+        let p = { (n: UInt8) in [Data([0x41, n])] }
+        var queue: [[Data]] = [key(1), p(2), p(3), p(4), p(5), key(6), p(7)]
+        var decoded: [UInt8] = []
+        var needKey = false
+        let tick = try LiveVideoDrain.run(needKey: &needKey, poll: {
+            queue.isEmpty ? nil : queue.removeFirst()
+        }, decode: { (nals: [Data]) throws -> UInt8? in
+            let tag = nals.last!.last!
+            if tag == 3 { throw Bad.frame }
+            decoded.append(tag)
+            return tag
+        })
+        XCTAssertEqual(decoded, [1, 2, 6, 7], "4 and 5 wait for the keyframe after 3 failed")
+        XCTAssertEqual(tick.latest, 7)
+        XCTAssertEqual(tick.units, 7)
+        XCTAssertEqual(tick.decoded, 4)
+        XCTAssertFalse(needKey)
+        let idle = try LiveVideoDrain.run(needKey: &needKey, poll: { nil as [Data]? },
+                                          decode: { (_: [Data]) throws -> UInt8? in nil })
+        XCTAssertEqual(idle.units, 0)
+        XCTAssertNil(idle.latest)
     }
 
     func testCameraStatsGate() {

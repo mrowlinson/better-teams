@@ -233,10 +233,16 @@ private struct WeekEventBlock: View {
     let action: () -> Void
     @Environment(\.contentTextScale) private var scale
 
+    /// The first Outlook category's color, else the accent tint.
+    private var color: AnyShapeStyle {
+        meeting.categories.lazy.compactMap(WeekEventColor.color(forCategory:)).first
+            .map { AnyShapeStyle($0) } ?? AnyShapeStyle(.tint)
+    }
+
     var body: some View {
         Button(action: action) {
             HStack(spacing: 0) {
-                Rectangle().fill(.tint).frame(width: 3)
+                Rectangle().fill(color).frame(width: 3)
                 VStack(alignment: .leading, spacing: 1) {
                     Text(meeting.subject)
                         .font(AppFont.caption(scale).weight(.semibold))
@@ -256,13 +262,28 @@ private struct WeekEventBlock: View {
                 Spacer(minLength: 0)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .background(RoundedRectangle(cornerRadius: 4).fill(.tint.opacity(selected ? 0.32 : 0.14)))
-            .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(.tint, lineWidth: selected ? 1.5 : 0))
+            .background(RoundedRectangle(cornerRadius: 4).fill(color.opacity(selected ? 0.32 : 0.14)))
+            .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(color, lineWidth: selected ? 1.5 : 0))
             .clipShape(RoundedRectangle(cornerRadius: 4))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel("\(meeting.subject), \(CalendarFormat.range(meeting))")
         .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+}
+
+/// Outlook color categories: the preset names ("Blue category", or any
+/// name containing a color word) map to system colors; other names
+/// keep the accent tint.
+enum WeekEventColor {
+    static func color(forCategory name: String) -> Color? {
+        let n = name.lowercased()
+        let table: [(String, Color)] = [
+            ("red", .red), ("orange", .orange), ("yellow", .yellow), ("green", .green),
+            ("teal", .teal), ("blue", .blue), ("purple", .purple), ("pink", .pink),
+            ("gray", .gray), ("grey", .gray),
+        ]
+        return table.first { n.contains($0.0) }?.1
     }
 }

@@ -147,6 +147,20 @@ final class NotesTests: XCTestCase {
         try await waitFor("reload", store.state == .loaded)
     }
 
+    /// STABLEUI: another chat of the same scope keeps the notebooks and
+    /// open page on screen (no reset, no refetch blank).
+    func testReopenSameScopeKeepsNotebooksAndPage() async throws {
+        let store = NotesStore(fetchers: Self.mockFetchers())
+        store.open(groupID: nil)
+        try await waitFor("notebooks", store.state == .loaded)
+        store.selectNotebook("nb-1")
+        try await waitFor("page", store.page != nil)
+        store.open(groupID: nil)
+        XCTAssertEqual(store.selectedNotebookID, "nb-1")
+        XCTAssertNotNil(store.page)
+        XCTAssertEqual(store.notebooks.count, 2)
+    }
+
     func testSelectNotebookDrillsToFirstPage() async throws {
         let store = NotesStore(fetchers: Self.mockFetchers())
         store.open(groupID: nil)

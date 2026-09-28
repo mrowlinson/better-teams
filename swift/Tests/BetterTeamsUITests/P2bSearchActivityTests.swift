@@ -93,7 +93,7 @@ final class P2bSearchActivityTests: XCTestCase {
     func testDemoFeedRowsMatchTheirMessages() {
         let store = ActivityStore(defaults: UserDefaults(suiteName: "p2bfix-tests-\(UUID().uuidString)")!)
         store.seedDemo()
-        XCTAssertEqual(store.items.count, 4)
+        XCTAssertEqual(store.items.count, 10)
         for item in store.items where item.messageID != nil {
             let m = DemoData.messages(for: item.chatID).first { $0.id == item.messageID }
             XCTAssertNotNil(m, item.id)
@@ -106,8 +106,12 @@ final class P2bSearchActivityTests: XCTestCase {
                 XCTAssertEqual(item.actor, m.sender)
             }
         }
-        let reply = store.items.first { $0.kind == .reply }
-        XCTAssertEqual(reply.flatMap { r in DemoData.messages(for: r.chatID).first { $0.id == r.messageID } }?.reply_to,
-                       "ava-2")
+        let replies = store.items.filter { $0.kind == .reply }
+        XCTAssertEqual(replies.count, 2)
+        for r in replies {
+            let m = DemoData.messages(for: r.chatID).first { $0.id == r.messageID }
+            let parent = m?.reply_to.flatMap { p in DemoData.messages(for: r.chatID).first { $0.id == p } }
+            XCTAssertEqual(parent?.isOwn, true, "\(r.id) replies to the owner")
+        }
     }
 }

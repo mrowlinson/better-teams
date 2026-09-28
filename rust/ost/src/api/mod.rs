@@ -101,7 +101,8 @@ pub use files::{
     content_range_value, copy_body, copy_file_data, create_link_data, delete_file_data,
     download_file_data, download_file_version_data, drive_item_path, drive_recents_path,
     folder_children_path, list_chat_files_data, list_chat_files_data_opts,
-    list_drive_recents_data, list_file_versions_data, list_folder_children_data, move_body,
+    list_drive_recents_data, list_file_versions_data, list_folder_children_data,
+    list_message_files_data, message_path, move_body,
     move_file_data, rename_body, rename_file_data, restore_file_version_data, upload_chunk_ranges,
     upload_file_data, upload_file_data_with_progress, upload_session_body, UploadProgress,
 };
@@ -135,7 +136,7 @@ pub use teams::{
 };
 pub use todo::{
     complete_todo_task_data, create_todo_task_data, list_todo_lists_data,
-    list_todo_tasks_data,
+    list_todo_tasks_data, reopen_todo_task_data,
 };
 
 /// List recent chats (native Teams API)

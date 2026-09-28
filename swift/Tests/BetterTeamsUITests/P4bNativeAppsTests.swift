@@ -44,8 +44,9 @@ final class P4bNativeAppsTests: XCTestCase {
         XCTAssertEqual(vm.buckets.map(\.name), ["Ideas", "Final"])
     }
 
-    /// ‹ › fetch the week on screen (the server filters to it); Today
-    /// returns. Rows = people with roster names, time off as rows.
+    /// ‹ › fetch the week on screen (the server filters to it; adjacent
+    /// weeks prefetched, weeks cached); Today returns. Rows = people with
+    /// roster names, time off in the member's row.
     func testShiftsWeekNavigation() async {
         let asked = WeekLog()
         let store = ShiftsStore(range: { id, start in
@@ -58,26 +59,45 @@ final class P4bNativeAppsTests: XCTestCase {
         await waitUntil { store.state == .loaded && !store.memberNames.isEmpty }
         guard let week = store.week else { return XCTFail("no week") }
         let rows = ShiftsRow.rows(week: week, reasons: store.reasons, names: store.memberNames)
-        XCTAssertEqual(rows.filter { !$0.isTimeOff }.map(\.name),
-                       ["Ava Lindqvist", "Megan Harper", "Paula Norris", "Tom Becker"])
-        XCTAssertEqual(rows.filter(\.isTimeOff).map(\.name), ["Ava Lindqvist", "Paula Norris"])
+        // One row per person: time off sits in the member's own row,
+        // never a second row with the same name.
+        XCTAssertEqual(rows.count, Set(rows.map(\.name)).count, "duplicate person rows")
+        XCTAssertGreaterThanOrEqual(rows.count, 10)
         XCTAssertEqual(rows.first { $0.id == "demo-u-megan" }?.days[0].first?.label, "Front Desk")
-        XCTAssertEqual(rows.first { $0.id == "off:demo-u-ava" }?.days[3].first?.label, "Vacation")
+        let ava = rows.first { $0.id == "demo-u-ava" }
+        XCTAssertEqual(ava?.days[0].first?.label, "Warehouse", "control: shifts stay in the row")
+        XCTAssertEqual(ava?.days[3].first?.label, "Vacation")
+        XCTAssertEqual(ava?.days[3].first?.time, "All Day")
+        let paula = rows.first { $0.id == "demo-u-paula" }
+        XCTAssertEqual(paula?.days[0].map(\.label), ["Sick"])
+        XCTAssertEqual(paula?.days[1].map(\.label), ["Support"])
 
         let start = store.weekStart
-        XCTAssertEqual(asked.all, [start])
+        XCTAssertEqual(asked.all.first, start)
+        let cal = Calendar.current
+        let next = cal.date(byAdding: .weekOfYear, value: 1, to: start)!
+        // LEFT2: the weeks either side are prefetched, so ‹ › shows them
+        // at once; the grid never blanks to the loading pane.
+        await waitUntil { asked.all.contains(next) }
         store.showWeek(offset: 1)
-        let next = Calendar.current.date(byAdding: .weekOfYear, value: 1, to: start)
-        XCTAssertEqual(store.weekStart, next)
+        XCTAssertNotEqual(store.state, .loading)
+        XCTAssertNotNil(store.week)
+        await waitUntil { store.weekStart == next }
         XCTAssertFalse(store.isCurrentWeek)
-        await waitUntil { store.state != .loading }
-        XCTAssertEqual(asked.all.last, next) // refetched for the new week
         XCTAssertTrue(store.week.map {
             ShiftsRow.rows(week: $0, reasons: store.reasons, names: store.memberNames).isEmpty
         } ?? false) // pane: No Shifts This Week
+        // An uncached week keeps the grid on screen until it lands.
+        let far = cal.date(byAdding: .weekOfYear, value: 6, to: next)!
+        store.showWeek(offset: 6)
+        XCTAssertEqual(store.weekStart, next)
+        XCTAssertTrue(store.isLoadingWeek)
+        XCTAssertNotNil(store.week)
+        await waitUntil { store.weekStart == far }
+        XCTAssertFalse(store.isLoadingWeek)
+        XCTAssertTrue(asked.all.contains(far))
         store.showCurrentWeek()
-        XCTAssertEqual(store.weekStart, start)
-        await waitUntil { store.state != .loading }
+        XCTAssertEqual(store.weekStart, start) // cached: at once
         XCTAssertEqual(store.state, .loaded)
         let (lo, hi) = ShiftsStore.rangeBounds(weekStart: start)
         XCTAssertTrue(lo.hasSuffix("Z") && hi.hasSuffix("Z") && lo < hi)

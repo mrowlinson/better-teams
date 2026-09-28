@@ -25,6 +25,9 @@ public final class CallStore: ObservableObject {
     @Published public private(set) var speakerDevices: [String] = []
     @Published public private(set) var speakersLoaded = false
     @Published public private(set) var controlsError: String?
+    /// The incoming call last accepted as a video call (Accept with
+    /// Video): the incoming-call host starts a video session for it.
+    public private(set) var videoAcceptedCallID: String?
     // -- session counters (Diagnostics only — never in the banner)
     @Published public private(set) var rings = 0
     @Published public private(set) var accepts = 0
@@ -546,8 +549,10 @@ public final class CallStore: ObservableObject {
         }
     }
 
+    /// Place a call with live audio media (as `placeLive`): the core's
+    /// signaling-only place connected without audio, so no app path uses it.
     public func place(threadID: String, timeoutSecs: Int32 = 30) {
-        run("place") { try RustCore.callPlace(threadID: threadID, timeoutSecs: timeoutSecs) }
+        placeLive(threadID: threadID, timeoutSecs: timeoutSecs)
     }
 
     public func placeLive(threadID: String, timeoutSecs: Int32 = 30) {
@@ -568,8 +573,11 @@ public final class CallStore: ObservableObject {
         run("echo-live") { try RustCore.callEchoLive(timeoutSecs: timeoutSecs) }
     }
 
+    /// Accept the ringing call with live audio media (as `acceptLive`):
+    /// the banner's plain Accept and every other accept path. The core's
+    /// signaling-only accept connected without audio, so no app path uses it.
     public func accept() {
-        run("accept") { try RustCore.callAccept() }
+        acceptLive()
     }
 
     public func acceptLive() {
@@ -578,6 +586,7 @@ public final class CallStore: ObservableObject {
 
     /// Accept the ringing call as a video call with live media (VIDEO1).
     public func acceptLiveVideo() {
+        videoAcceptedCallID = call?.id
         run("accept-video") { try RustCore.callAcceptLiveVideo() }
     }
 

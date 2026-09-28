@@ -116,4 +116,23 @@ final class CallTests: XCTestCase {
         s.seedDemo(state: "bogus")
         XCTAssertNil(s.call)
     }
+
+    /// CALLFIX: every accept / place / join entry point runs a live-media
+    /// leg (the signaling-only legs connected without audio): the banner's
+    /// plain Accept, Recents redial, and a meeting's Join Now.
+    @MainActor
+    func testEveryAcceptAndJoinEntryAttachesLiveMedia() {
+        let s = CallStore(demo: true)
+        s.seedDemo(state: "incoming")
+        s.accept()
+        XCTAssertEqual(s.lastAction, "demo:accept-live")
+        XCTAssertEqual(s.call?.liveMedia, true)
+        s.end()
+        s.place(threadID: "19:a_b@unq.gbl.spaces")
+        XCTAssertEqual(s.lastAction, "demo:place-live")
+        XCTAssertEqual(s.call?.liveMedia, true)
+        s.end()
+        XCTAssertEqual(MeetingsViewModel.joinLeg(video: false), .liveAudio)
+        XCTAssertEqual(MeetingsViewModel.joinLeg(video: true), .liveVideo)
+    }
 }

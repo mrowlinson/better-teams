@@ -48,7 +48,7 @@ struct OneNoteOutline: View {
     var body: some View {
         let forced = model?.forced(.native(.onenote))
         switch forced {
-        case .loading: LoadingPane()
+        case .loading: LoadingPane("Loading Notebooks\u{2026}")
         case .empty:
             EmptyPane(NotesPaneState.noNotebooksTitle, systemImage: NativeAppID.onenote.symbol,
                       message: NotesStore.noNotebooksBody(groupID: nil))
@@ -60,14 +60,16 @@ struct OneNoteOutline: View {
             if store.notebooks.isEmpty {
                 listState
             } else {
+                // R12: sections load behind the outline on screen.
                 outline
+                    .refreshStatus(store.state == .loading, label: "Updating Notebooks")
             }
         }
     }
 
     @ViewBuilder private var listState: some View {
         switch store.state {
-        case .idle, .loading: LoadingPane()
+        case .idle, .loading: LoadingPane("Loading Notebooks\u{2026}")
         case .error(let m):
             ErrorPane(title: model?.connection == .offline ? NotesPaneState.offlineTitle : NotesPaneState.errorTitle,
                       message: model?.connection == .offline ? NotesPaneState.offlineMessage : m) { store.retry() }

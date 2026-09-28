@@ -115,7 +115,8 @@ final class GapG3G5Tests: XCTestCase {
         XCTAssertEqual(category.identifier, "OM_CALL")
         XCTAssertEqual(
             category.actions.map(\.identifier),
-            ["OM_CALL_ACCEPT", "OM_CALL_DECLINE"])
+            ["OM_CALL_ACCEPT", "OM_CALL_ACCEPT_VIDEO", "OM_CALL_DECLINE"])
+        XCTAssertEqual(category.actions[1].title, "Accept with Video")
     }
 
     func testCallUserInfoRoundTrip() {
@@ -131,6 +132,9 @@ final class GapG3G5Tests: XCTestCase {
         XCTAssertEqual(
             NcDelivery.route(actionID: OmCallInfo.acceptActionID, userInfo: info),
             .acceptCall(callID: "c9"))
+        XCTAssertEqual(
+            NcDelivery.route(actionID: OmCallInfo.acceptVideoActionID, userInfo: info),
+            .acceptCallVideo(callID: "c9"))
         XCTAssertEqual(
             NcDelivery.route(actionID: OmCallInfo.declineActionID, userInfo: info),
             .declineCall(callID: "c9"))

@@ -210,13 +210,14 @@ public actor RichMediaCache {
         memory.removeAllObjects()
     }
 
-    /// Settings ▸ Advanced ▸ Reset Caches: drop memory, in-flight fetches
-    /// and this account's cached files. Top-level files only (the default
-    /// account's dir holds the other accounts' subdirs); memory-only
-    /// (demo) never touches disk.
+    /// Settings ▸ Advanced ▸ Reset Caches: drop memory and this account's
+    /// cached files. Top-level files only (the default account's dir
+    /// holds the other accounts' subdirs); memory-only (demo) never
+    /// touches disk. In-flight fetches keep running: rows on screen are
+    /// waiting for them, and a cancelled fetch would land them failed
+    /// for good (models load once). Decoded images already on screen
+    /// stay with their rows; everything else refetches lazily.
     public func removeAll() {
-        for task in inFlight.values { task.cancel() }
-        inFlight = [:]
         memory.removeAllObjects()
         if let dir = activeDiskDir,
            let items = try? FileManager.default.contentsOfDirectory(

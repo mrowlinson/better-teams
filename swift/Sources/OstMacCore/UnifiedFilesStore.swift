@@ -287,6 +287,8 @@ public final class UnifiedFilesStore: ObservableObject {
         state = .loading
         let list = listFetcher
         let recents = recentsFetcher
+        // R12: a source that fails this refresh keeps the rows it had.
+        let previous = rows
         Task {
             var legs: [(source: UnifiedFileSource, sourceName: String, files: [SharedFile])] =
                 Array(repeating: (source: .chat, sourceName: "", files: []), count: next.count + 1)
@@ -325,8 +327,16 @@ public final class UnifiedFilesStore: ObservableObject {
                         } else {
                             legs[i] = (.drive, UnifiedFileSource.drive.label, files)
                         }
-                    } else if firstError == nil {
-                        firstError = err
+                    } else {
+                        if firstError == nil { firstError = err }
+                        let kept = i < next.count
+                            ? previous.filter { $0.source == next[i].kind && $0.sourceID == next[i].id }
+                            : previous.filter { $0.source == .drive }
+                        if !kept.isEmpty {
+                            legs[i] = i < next.count
+                                ? (next[i].kind, next[i].name, kept.map(\.file))
+                                : (.drive, UnifiedFileSource.drive.label, kept.map(\.file))
+                        }
                     }
                 }
             }
@@ -335,10 +345,12 @@ public final class UnifiedFilesStore: ObservableObject {
                 !($0.sourceName.isEmpty && $0.files.isEmpty)
             })
             rows = merged
-            if !merged.isEmpty {
-                state = .loaded
-            } else if landed == 0, let err = firstError {
+            if landed == 0, let err = firstError {
+                // Every source failed: rows kept above stay on screen
+                // (R12), the error only shows as the quiet refresh notice.
                 state = .error(err)
+            } else if !merged.isEmpty {
+                state = .loaded
             } else {
                 state = .empty
             }
@@ -516,6 +528,59 @@ public final class UnifiedFilesStore: ObservableObject {
             } catch {
                 state = .error(Self.message(for: error))
             }
+        }
+    }
+
+    /// Copy Link for several rows (Files multi-select): one pasteboard
+    /// write, the links in row order joined by newlines. Cached (and
+    /// demo) links are reused; the rest are created one after another.
+    /// A row whose link fails is left out and the failure shows as for a
+    /// single Copy Link. Rows without a drive_id are skipped; one row
+    /// goes through `shareLink`.
+    public func shareLinks(_ rows: [UnifiedFileRow], scope: String = "organization") {
+        let rows = rows.filter { $0.file.drive_id != nil }
+        guard rows.count > 1 else {
+            if let row = rows.first { shareLink(row, scope: scope) }
+            return
+        }
+        var known: [String: String] = [:]
+        var missing: [UnifiedFileRow] = []
+        for row in rows {
+            if let cached = link(for: row) {
+                known[row.id] = cached
+            } else if isDemo {
+                let demo = SharedFileLink.demoLink(for: row.file.id)
+                links[row.id] = demo
+                known[row.id] = demo
+            } else if !linkingIDs.contains(row.id) {
+                missing.append(row)
+            }
+        }
+        guard !missing.isEmpty else {
+            copyLinkFn(rows.compactMap { known[$0.id] }.joined(separator: "\n"))
+            return
+        }
+        for row in missing { linkingIDs.insert(row.id) }
+        let fetcher = linkFetcher
+        let found = known
+        Task {
+            var out = found
+            var failure: Error?
+            for row in missing {
+                let file = row.file
+                guard let drive = file.drive_id else { continue }
+                do {
+                    let resp = try await Task.detached { try fetcher(drive, file.id, scope) }.value
+                    links[row.id] = resp.link
+                    out[row.id] = resp.link
+                } catch {
+                    failure = error
+                }
+                linkingIDs.remove(row.id)
+            }
+            let text = rows.compactMap { out[$0.id] }.joined(separator: "\n")
+            if !text.isEmpty { copyLinkFn(text) }
+            if let failure { state = .error(Self.message(for: failure)) }
         }
     }
 

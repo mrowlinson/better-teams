@@ -206,8 +206,48 @@ final class FilesSection: SectionProvider, InspectorCapable {
             return true
         }
         if Self.manageCommands.contains(c) { return performManage(c, arg: arg, m) }
+        if Self.multiCommands.contains(c) {
+            let all = items(forArg: arg, m)
+            if all.count > 1 { return runMulti(c, all, app, m) }
+        }
         guard let it = item(arg, m) else { return false }
         return run(c, it, arg: arg, app, m)
+    }
+
+    /// Open / Download / Copy Link act on every selected item (Finder).
+    static let multiCommands: Set<CommandID> = [FilesCommands.open, FilesCommands.download, FilesCommands.copyLink]
+
+    /// A multi-item Open / Download / Copy Link. Folders are skipped
+    /// (a folder drills in only on its own); Copy Link copies every link
+    /// at once, one per line.
+    private func runMulti(_ c: CommandID, _ all: [FileItem], _ app: AppState, _ m: WindowModel) -> Bool {
+        let files = all.filter { !$0.isFolder }
+        switch c {
+        case FilesCommands.open:
+            guard let first = files.first else { return false }
+            // Demo previews instead of launching apps: one Quick Look.
+            if m.options.demo { quickLook(first, app, m) } else { for it in files { open(it, app, m) } }
+        case FilesCommands.download:
+            let rows = files.compactMap { it in it.row.map { (it, $0) } }
+            guard !rows.isEmpty else { return false }
+            for (it, row) in rows { download(row, it, app, to: nil) }
+        case FilesCommands.copyLink:
+            let rows = all.compactMap(\.row).filter { $0.file.drive_id != nil }
+            guard !rows.isEmpty else { return false }
+            app.unifiedFiles.shareLinks(rows)
+        default:
+            return false
+        }
+        return true
+    }
+
+    private func validateMulti(_ c: CommandID, _ all: [FileItem]) -> CommandValidation {
+        switch c {
+        case FilesCommands.open: CommandValidation(enabled: all.contains { !$0.isFolder })
+        case FilesCommands.download: CommandValidation(enabled: all.contains { !$0.isFolder && $0.row != nil })
+        case FilesCommands.copyLink: CommandValidation(enabled: all.contains { $0.row?.file.drive_id != nil })
+        default: .disabled
+        }
     }
 
     /// A file command on an explicit file (a timeline file chip): Open,
@@ -268,6 +308,10 @@ final class FilesSection: SectionProvider, InspectorCapable {
             break
         }
         if Self.manageCommands.contains(c) { return validateManage(c, arg: arg, m) }
+        if Self.multiCommands.contains(c) {
+            let all = items(forArg: arg, m)
+            if all.count > 1 { return validateMulti(c, all) }
+        }
         guard let it = item(arg, m) else { return .disabled }
         let file = !it.isFolder
         switch c {

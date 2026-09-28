@@ -6,6 +6,7 @@
 //   --window-size 1280x820
 //   --evidence             pinned clock, static highlights, READY line
 //   --evidence-out <png>   in-process window snapshot after READY
+//   --evidence-active      evidence: activate + key window (active look)
 //   --rail-size small|medium|large   (demo only) sidebar icon size
 //   --dump-menus           print the validated menu bar after READY
 //   --coldstart-quit       launch timeline, then exit (AppState)
@@ -15,6 +16,10 @@ import AppKit
 public struct LaunchOptions: Sendable {
     public var demo = false
     public var evidence = false
+    /// Evidence only (`--evidence-active`, ui-shot.sh ACTIVE=1): activate
+    /// the app and make the window key, for active-appearance captures
+    /// (README shots taken while nobody is using the Mac).
+    public var evidenceActive = false
     public var route: String?
     public var appearance: String?
     public var windowSize: NSSize?
@@ -30,6 +35,7 @@ public struct LaunchOptions: Sendable {
         }
         demo = args.contains("--demo")
         evidence = args.contains("--evidence")
+        evidenceActive = evidence && args.contains("--evidence-active")
         route = value("--route")
         appearance = value("--appearance")
         if let s = value("--window-size") {
