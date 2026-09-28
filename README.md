@@ -5,10 +5,6 @@ Native macOS client for Microsoft Teams, over a Rust core
 [`ost`](https://github.com/eisbaw/ost). Runs fully offline in `--demo`
 with canned data; sign in via device code or browser to go live.
 
-> UI being rebuilt — see docs/design/UI-SPEC.md. The previous app UI
-> was deleted; the app currently launches with no windows while the
-> stores, services, and core below stay intact.
-
 ## Features
 
 Core capabilities (logic + stores kept; surfaces pending the new UI):
@@ -127,4 +123,14 @@ demo-mode only (`--demo`) — no live chats, names, or tokens in commits.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+Better Teams is free for everyone to use, modify, redistribute and sell —
+personally or commercially — under an MIT-style license, with one exception:
+Microsoft (including its affiliates and anyone acting on its behalf) receives
+no rights under it and needs a commercial license from the author. See
+[LICENSE](LICENSE) for the full terms.
+
+Third-party components, including the vendored `rust/ost` and the Rust crates
+it depends on, keep their own licenses; see [NOTICE](NOTICE).
+
+For commercial licensing, contact [@mrowlinson](https://github.com/mrowlinson)
+on GitHub by opening an issue.

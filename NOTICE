@@ -1,0 +1,49 @@
+Better Teams
+Copyright (c) 2026 Michael Rowlinson
+
+Better Teams is licensed under the Better Teams License (MIT with Microsoft
+exclusion); see LICENSE. That license covers only the original Better Teams
+code. The third-party components listed below remain under their own licenses,
+which are not modified or restricted by the Better Teams License.
+
+Vendored source
+---------------
+
+rust/ost
+  Upstream: https://github.com/eisbaw/ost
+  License: MIT. Its original license file is kept at rust/ost/LICENSE.
+
+Ported code
+-----------
+
+A small amount of logic in rust/ostmac-core/src/lib.rs and
+swift/Sources/OstMacCore/ (Health.swift, Mri.swift) is ported from the
+weirdapps teams-access project (MIT), as noted in the source comments.
+
+Rust crates
+-----------
+
+The Rust static library links 195 third-party crates from crates.io, each
+under its own license as declared in its package metadata. Summary of the
+declared license expressions (as reported by cargo on 2026-09-28):
+
+  127  MIT OR Apache-2.0 (any spelling/order)
+   29  MIT
+   18  Unicode-3.0
+    4  Apache-2.0 OR ISC OR MIT
+    2  Unlicense OR MIT
+    2  MPL-2.0 (option-ext, webpki-roots)
+    2  ISC
+    2  Apache-2.0
+    2  BSD-2-Clause OR MIT OR Apache-2.0
+    1  Zlib
+    1  BSD-3-Clause
+    1  Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT
+    1  Apache-2.0 OR BSL-1.0
+    1  Apache-2.0 AND ISC
+    1  (MIT OR Apache-2.0) AND Unicode-3.0
+    1  (Apache-2.0 OR MIT) AND BSD-3-Clause
+
+The MPL-2.0 crates are used unmodified; their source is available from
+crates.io. Run `cargo tree -e normal --format '{p} {l}'` in rust/ostmac-core
+for the full per-crate list.

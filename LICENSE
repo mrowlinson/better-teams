@@ -1,6 +1,6 @@
-MIT License
+Better Teams License (MIT with Microsoft exclusion)
 
-Copyright (c) 2026
+Copyright (c) 2026 Michael Rowlinson
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -9,8 +9,20 @@ to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
 copies of the Software, and to permit persons to whom the Software is
 furnished to do so, subject to the following conditions:
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+The above copyright notice, this permission notice, and the Microsoft
+Exclusion below shall be included in all copies or substantial portions of
+the Software.
+
+MICROSOFT EXCLUSION. Notwithstanding anything above, no permission or license
+of any kind is granted to Microsoft Corporation, to any entity that directly
+or indirectly controls, is controlled by, or is under common control with
+Microsoft Corporation, or to any person or entity acting on behalf of or for
+the benefit of any of them (collectively, "Microsoft"). Microsoft may use,
+copy, modify, merge, publish, distribute, sublicense, or sell the Software or
+any work derived from it only under a separate written commercial license
+from the copyright holder. Anyone who distributes the Software or a derivative
+work must include this exclusion unchanged and may not grant Microsoft any
+rights in the Software.
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
