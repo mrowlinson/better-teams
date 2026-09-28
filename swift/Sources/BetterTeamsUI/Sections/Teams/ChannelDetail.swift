@@ -68,10 +68,16 @@ struct ChannelDetail: View {
     }
 
     /// A web tab renders in-window through FrameHost under `tab:<id>`
-    /// (§6.3, §7.3); registering its URL is idempotent.
+    /// (§6.3, §7.3); registering its URL is idempotent. A tab served by a
+    /// catalog app is hosted natively over TeamsJS with channel context
+    /// (APPHOST-B2); unmatched tabs keep their Teams-shell page.
     private func webTab(_ id: String, _ m: WindowModel) -> some View {
         if let t = tabs.first(where: { $0.id == id }), case .web(let url) = t.target {
-            m.frameHost.registerTab(.tab(id), url: url, title: t.name)
+            if let l = m.frameHost.library.store.launch(forTab: t, team: team, channel: channel) {
+                m.frameHost.registerHostedTab(.tab(id), launch: l, title: t.name)
+            } else {
+                m.frameHost.registerTab(.tab(id), url: url, title: t.name)
+            }
         }
         return FrameContainer(key: .tab(id))
     }

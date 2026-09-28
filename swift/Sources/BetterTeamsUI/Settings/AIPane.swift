@@ -1,55 +1,68 @@
-// AIPane.swift — Settings ▸ AI (UI-SPEC §9.4): catch-up on/off and
-// provider (on-device, OpenCode CLI, OpenAI-compatible) with its
-// endpoint and model, the API key (Keychain, through the core
-// `CatchUpStore`), and whether the chosen provider is available now.
+// AIPane.swift — Settings ▸ AI (UI-SPEC §9.4): the one Catch Up
+// setting (Off / When I click the AI button / Always up to date) and
+// whether this Mac can run it now. Catch Up runs on this Mac only;
+// nothing here offers an engine or model choice (AICATCH).
+// The deprecated provider picker (OpenCode CLI, OpenAI-compatible)
+// appears only behind the hidden `CatchUp.deprecatedProvidersKey`.
 // Demo: the demo store (in-memory config and key, canned transport).
+import AppKit
 import OstMacCore
 import SwiftUI
 
 struct AIPane: View {
     @ObservedObject var catchUp: CatchUpStore
-    @State private var onDevice = OnDeviceSummary.liveAvailability()
+    @State private var availability = Self.currentAvailability()
+
+    /// Demo evidence (`settings/ai?ai=…`): the status row to show instead
+    /// of this Mac's live state.
+    @MainActor static var demoAvailability: OnDeviceAvailability?
+
+    @MainActor static func currentAvailability() -> OnDeviceAvailability {
+        demoAvailability ?? OnDeviceSummary.liveAvailability()
+    }
+
+    /// System Settings ▸ Apple Intelligence & Siri.
+    static let systemSettingsURL = URL(string: "x-apple.systempreferences:com.apple.Siri-Settings.extension")!
 
     @MainActor
     static func make(_ m: WindowModel?) -> AnyView {
         guard let app = m?.app else { return AnyView(SettingsUnavailable(text: "Sign in to set up Catch Up.")) }
-        // The key loads when Settings opens, never at launch (core rule).
-        app.catchUp.ensureKeyLoaded()
+        // Deprecated providers only: the key loads when Settings opens,
+        // never at launch (core rule).
+        if app.catchUp.deprecatedProvidersEnabled { app.catchUp.ensureKeyLoaded() }
         return AnyView(AIPane(catchUp: app.catchUp))
     }
 
     var body: some View {
         Form {
             Section {
-                Toggle("Catch Up", isOn: $catchUp.config.enabled)
-                Picker("Provider", selection: Binding(get: { catchUp.config.provider },
-                                                      set: { catchUp.selectProvider($0) })) {
-                    ForEach(CatchUpProvider.allCases) { Text($0.title).tag($0) }
+                Picker("Catch Up", selection: $catchUp.mode) {
+                    ForEach(CatchUpMode.allCases) { Text($0.title).tag($0) }
                 }
-                .disabled(!catchUp.config.enabled)
+                .pickerStyle(.radioGroup)
             } footer: {
-                Text("Catch Up summarizes a conversation and lists action items.")
+                Text(Self.footer(catchUp.mode))
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            if catchUp.config.provider == .openAICompatible {
-                Section("Service") {
-                    TextField("Base URL", text: $catchUp.config.baseURL)
-                    TextField("Model", text: $catchUp.config.model)
-                    SecureField("API key", text: $catchUp.config.apiKey)
-                }
-            } else if catchUp.config.provider == .openCodeCLI {
-                Section("Service") {
-                    TextField("Model", text: $catchUp.config.model)
+            if catchUp.mode != .off {
+                Section {
+                    LabeledContent("Status", value: Self.status(availability))
+                    // One trailing button row, as in System Settings.
+                    if availability != .available {
+                        HStack {
+                            Spacer()
+                            if availability == .disabled || availability == .downloading {
+                                Button("Open System Settings\u{2026}") { NSWorkspace.shared.open(Self.systemSettingsURL) }
+                            }
+                            Button("Check Again") { availability = Self.currentAvailability() }
+                        }
+                    }
                 }
             }
-            Section("Availability") {
-                LabeledContent("Status", value: availability)
-                if catchUp.config.provider == .openCodeCLI {
-                    Button("Check Again") { catchUp.refreshCLIStatus() }
-                } else if catchUp.config.provider == .onDevice {
-                    Button("Check Again") { onDevice = OnDeviceSummary.liveAvailability() }
-                }
+            if catchUp.deprecatedProvidersEnabled {
+                deprecatedProviderSection
             }
         }
         .formStyle(.grouped)
@@ -58,19 +71,46 @@ struct AIPane: View {
         .fixedSize(horizontal: false, vertical: true)
     }
 
-    private var availability: String {
-        switch catchUp.config.provider {
-        case .onDevice:
-            switch onDevice {
-            case .available: "Ready"
-            case .unsupportedOS, .unsupportedDevice: "Not supported on this Mac"
-            case .disabled: "Apple Intelligence is off"
-            case .downloading: "Model downloading"
+    /// What the chosen setting does, in plain words.
+    static func footer(_ mode: CatchUpMode) -> String {
+        switch mode {
+        case .off:
+            "The Catch Up button is hidden and nothing is summarized."
+        case .onClick:
+            "Click Catch Up in a conversation to get a summary and its action items. Messages that mention you or everyone are listed first. Everything stays on this Mac."
+        case .alwaysUpToDate:
+            "Conversations with new messages are summarized in the background, so you can keep Catch Up open in its own window (Window \u{25B8} Open Catch Up in New Window). Messages that mention you or everyone are listed first. Updates pause in Low Power Mode and while this Mac is hot. Everything stays on this Mac."
+        }
+    }
+
+    static func status(_ a: OnDeviceAvailability) -> String {
+        switch a {
+        case .available: "Ready"
+        case .unsupportedOS, .unsupportedDevice: "Not available on this Mac"
+        case .disabled: "Turn on Apple Intelligence in System Settings"
+        case .downloading: "Getting ready \u{2014} Apple Intelligence is still downloading"
+        }
+    }
+
+    // MARK: - Deprecated: kept for possible return
+
+    /// The pre-AICATCH provider picker, reachable only with the hidden
+    /// defaults key set.
+    @ViewBuilder private var deprecatedProviderSection: some View {
+        Section("Provider (Deprecated)") {
+            Picker("Provider", selection: Binding(get: { catchUp.config.provider },
+                                                  set: { catchUp.selectProvider($0) })) {
+                ForEach(CatchUpProvider.allCases) { Text($0.title).tag($0) }
             }
-        case .openCodeCLI:
-            catchUp.cliAvailable ? "OpenCode CLI found" : "OpenCode CLI not found"
-        case .openAICompatible:
-            catchUp.config.apiKey.isEmpty ? "Needs an API key" : "Ready"
+            if catchUp.config.provider == .openAICompatible {
+                TextField("Base URL", text: $catchUp.config.baseURL)
+                TextField("Model", text: $catchUp.config.model)
+                SecureField("API key", text: $catchUp.config.apiKey)
+            } else if catchUp.config.provider == .openCodeCLI {
+                TextField("Model", text: $catchUp.config.model)
+                LabeledContent("CLI", value: catchUp.cliAvailable ? "Found" : "Not found")
+                Button("Check Again") { catchUp.refreshCLIStatus() }
+            }
         }
     }
 }

@@ -1,5 +1,6 @@
 //! API client module for Microsoft Teams
 
+pub mod apps;
 mod calendar;
 mod calweek;
 mod chat;
@@ -46,6 +47,10 @@ pub use schedule::{
     list_timesoffs_data, list_timesoffs_range_data, schedule_range_path, ScheduleInfo, ShiftInfo, TimeOffInfo, TimeOffReason,
 };
 pub use search::{clamp_size, next_from, parse_search_response, search_body, search_messages_data, SearchHitInfo, SearchPage, SEARCH_MAX_SIZE};
+pub use apps::{
+    app_catalog_data, app_search_data, app_store_data, install_app_for_user, AppCatalog, AppEntitlement, AppManifest,
+    AppStore, ConfigurableTab, StaticTab, StoreSection, WebApplicationInfo,
+};
 pub use tabs::TabInfo;
 pub use teams::TeamInfo;
 pub use teams::TeamMemberInfo;

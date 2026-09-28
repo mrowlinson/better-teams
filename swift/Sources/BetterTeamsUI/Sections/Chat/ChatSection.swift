@@ -163,6 +163,9 @@ final class ChatSection: SectionProvider, InspectorCapable {
             m.setInspectorSegment(InspectorSegment.catchup.rawValue)
             m.navigator?.setInspector(true, explicit: true)
             CatchUpRunner.run(m, chatID: id)
+        case ChatCommands.catchUpWindow:
+            guard m.app?.catchUp.mode ?? .off != .off else { return false }
+            CatchUpWindowController.show(m)
         case ChatCommands.markUnread:
             guard let id = selected(m) else { return false }
             let u = m.graph.unread
@@ -184,8 +187,11 @@ final class ChatSection: SectionProvider, InspectorCapable {
         case ChatCommands.catchUp:
             // Any host of the conversation view; nothing to summarize in
             // a chat with no messages.
-            guard let id = ConversationToolbar.chatID(m) else { return .disabled }
+            // Off hides the button (Navigator) and disables the item.
+            guard let id = ConversationToolbar.chatID(m), m.app?.catchUp.mode ?? .off != .off else { return .disabled }
             return CommandValidation(enabled: m.graph.conv.chatID == id && !m.graph.conv.messages.isEmpty)
+        case ChatCommands.catchUpWindow:
+            return CommandValidation(enabled: m.app?.catchUp.mode ?? .off != .off)
         case ChatCommands.markUnread:
             guard inChat, let id = selected(m) else { return .disabled }
             return CommandValidation(enabled: true,

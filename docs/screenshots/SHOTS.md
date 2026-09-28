@@ -30,3 +30,18 @@ Files over 1 MB are converted with `cwebp -q 85` and the PNG dropped.
 | activity.png | `activity/mention:demo-showcase:sc-1` | light |
 | app-pinned.png | `app/onenote` | dark |
 | settings.png | `settings/general` | light |
+
+## Apps store and native app hosting routes (evidence, not in the README set)
+
+Same capture command. The demo store is local (no network); installed demo
+apps and the channel app tab host the local TeamsJS sample page.
+
+| Demo route | Shows |
+| --- | --- |
+| `apps` | Apps store home: Installed, Built by Microsoft, Popular with Your Team |
+| `apps/store?category=Productivity` | One store category |
+| `apps/detail?id=demo-app-sprintboard` | Store detail of an installed app (Open, Pin to Tab Bar, host mode) |
+| `apps/detail?id=demo-app-forms` | Store detail of an app that is not installed (Add to Teams) |
+| `teams/demo-team-eng/demo-chan-shipping?tab=web:demo-tab-sprint` | Channel tab hosted natively with team/channel context |
+| `app/ta.demo-app-planner` | An installed catalog app hosted natively (personal tab) |
+

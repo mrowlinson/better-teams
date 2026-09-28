@@ -144,6 +144,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if options.demo, let route, wc.isShowingShell {
             // Evidence: `settings/<pane>`, `call?state=…&presentation=…`.
+            CatchUpEvidence.apply(route, wc)
             CallEvidence.apply(route, wc)
         }
         if options.demo, let route, let name = route.query["sheet"], let s = route.section {
@@ -153,7 +154,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         Task {
             await state.startup()
             if wc.isShowingShell { wc.navigator.resyncSelection() }
-            if options.demo, wc.isShowingShell { ConversationEvidence.afterStartup(wc.model) }
+            if options.demo, wc.isShowingShell {
+                ConversationEvidence.afterStartup(wc.model)
+                CatchUpEvidence.afterStartup(wc)
+            }
             if options.demo, wc.isShowingShell, wc.model.nav.section == .files {
                 // Evidence: Files popover / Quick Look once the window is up.
                 (wc.model.provider(.files) as? FilesSection)?.applyEvidence(wc.model)

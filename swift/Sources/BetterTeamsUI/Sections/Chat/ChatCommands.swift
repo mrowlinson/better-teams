@@ -9,6 +9,8 @@ public enum ChatCommands {
     public static let audioCall: CommandID = "chat.audioCall"
     public static let videoCall: CommandID = "chat.videoCall"
     public static let catchUp: CommandID = "chat.catchUp"
+    /// The cross-conversation Catch Up in its own window (AICATCH).
+    public static let catchUpWindow: CommandID = "chat.catchUpWindow"
     public static let markUnread: CommandID = "chat.markUnread"
     public static let pin: CommandID = "chat.pin"
 
@@ -38,6 +40,8 @@ public enum ChatCommands {
                 help: "Start a video call with everyone in this conversation."),
         Command(catchUp, "Catch Up", symbol: "sparkles",
                 menu: .init(.conversation, group: 2, order: 0), toolbar: .detail, owner: .chat),
+        Command(catchUpWindow, "Open Catch Up in New Window", symbol: "sparkles.rectangle.stack",
+                menu: .init(.window, group: 2, order: 0), owner: .chat),
         Command(markUnread, "Mark as Unread", alternateTitle: "Mark as Read", key: "u", modifiers: [.command, .shift],
                 menu: .init(.conversation, group: 0, order: 0), owner: .chat),
         Command(pin, "Pin Chat", alternateTitle: "Unpin Chat",

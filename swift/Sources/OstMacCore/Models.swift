@@ -356,12 +356,15 @@ public struct ChannelTab: Decodable, Sendable, Identifiable, Equatable {
     public let appID: String?
     public let contentURL: String?
     public let websiteURL: String?
+    /// Tab configuration entityId (APPHOST-B2 native hosting context).
+    public let entityID: String?
 
     enum CodingKeys: String, CodingKey {
         case id, name
         case appID = "app_id"
         case contentURL = "content_url"
         case websiteURL = "website_url"
+        case entityID = "entity_id"
     }
 
     /// Teams Files-tab app id (SharePoint file browser).
@@ -373,13 +376,14 @@ public struct ChannelTab: Decodable, Sendable, Identifiable, Equatable {
     /// Wire decoding is untouched.
     public init(
         id: String, name: String, appID: String? = nil,
-        contentURL: String? = nil, websiteURL: String? = nil
+        contentURL: String? = nil, websiteURL: String? = nil, entityID: String? = nil
     ) {
         self.id = id
         self.name = name
         self.appID = appID
         self.contentURL = contentURL
         self.websiteURL = websiteURL
+        self.entityID = entityID
     }
 
     /// Deep-link target: well-known tabs by app id (name fallback for

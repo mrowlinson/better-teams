@@ -51,31 +51,49 @@ public enum Palette {
     /// "New messages" divider line in the timeline.
     public static let newMessages = Color(nsColor: .systemRed)
     /// Message-body mentions (`MessageTextAttributes.mention`): every
-    /// mention takes the accent color; one naming you also gets a tinted
+    /// mention takes the brand color; one naming you also gets a tinted
     /// background (never color alone: weight changes too, §10).
-    /// The system accent (not `.tint`, which draws gray in inactive
-    /// windows): own-message cards and quote bars keep their color.
-    public static let mention = Color(nsColor: .controlAccentColor)
-    public static let ownMentionBackground = Color(nsColor: .controlAccentColor).opacity(0.18)
-    /// Own-message card: the accent at 14% reads in light but sank into
-    /// the dark window background, so Dark Mode doubles it.
-    public static let ownCard = Color(nsColor: accentWash("ownCard", light: 0.14, dark: 0.28))
-    /// Jump / marked message band (§6.2.1): the system accent, not
-    /// `.tint` (gray in inactive windows), stronger in Dark Mode.
-    public static let messageHighlight = Color(nsColor: accentWash("messageHighlight", light: 0.16, dark: 0.32))
+    /// Fixed Teams brand hues, not `controlAccentColor`/`.tint`: those
+    /// wash to gray when the window or app is inactive, and Teams keeps
+    /// own bubbles, mentions and highlights colored regardless of focus.
+    /// Mention text: #5B5FC7 light (5.4:1 on white, 4.6:1 on the own
+    /// bubble), #A9ACFF dark (≥4.7:1 on both dark bubbles).
+    public static let mentionNS = dynamic("mention", light: 0x5B5FC7, dark: 0xA9ACFF)
+    public static let mention = Color(nsColor: mentionNS)
+    public static let ownMentionBackgroundNS = dynamic("ownMentionBackground", light: 0x5B5FC7, dark: 0x7F85F5,
+                                                       lightAlpha: 0.18, darkAlpha: 0.30)
+    public static let ownMentionBackground = Color(nsColor: ownMentionBackgroundNS)
+    /// Own-message bubble (Teams): lavender #E8EBFA in light, muted
+    /// indigo #2F3148 in dark (white text ≥ 12:1). Opaque, so it reads
+    /// the same whatever sits behind it; Increase Contrast adds the
+    /// bubble outline in `MessageRowView`.
+    public static let ownCard = Color(nsColor: dynamic("ownCard", light: 0xE8EBFA, dark: 0x2F3148))
+    /// Others' chat bubble (Teams): a neutral wash — light gray in light,
+    /// dark gray in dark — that follows the window background.
+    public static let otherCard = Color(nsColor: NSColor(name: NSColor.Name("otherCard")) { a in
+        a.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            ? NSColor.white.withAlphaComponent(0.09)
+            : NSColor.black.withAlphaComponent(0.055)
+    })
+    /// Jump / marked message band (§6.2.1): a brand wash (Teams tints
+    /// the jumped-to message), stronger in Dark Mode, stable when the
+    /// window is inactive.
+    public static let messageHighlight = Color(nsColor: dynamic("messageHighlight", light: 0x5B5FC7, dark: 0x7F85F5,
+                                                                lightAlpha: 0.16, darkAlpha: 0.30))
 
-    /// The accent at an appearance-dependent alpha (resolved at draw
-    /// time, so accent and appearance changes follow).
-    private static func accentWash(_ name: String, light: CGFloat, dark: CGFloat) -> NSColor {
-        NSColor(name: NSColor.Name(name)) { a in
-            NSColor.controlAccentColor.withAlphaComponent(
-                a.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? dark : light)
+    /// A fixed sRGB color per appearance (resolved at draw time).
+    private static func dynamic(_ name: String, light: UInt32, dark: UInt32,
+                                lightAlpha: CGFloat = 1, darkAlpha: CGFloat = 1) -> NSColor {
+        func rgb(_ v: UInt32, _ alpha: CGFloat) -> NSColor {
+            NSColor(srgbRed: CGFloat((v >> 16) & 0xFF) / 255, green: CGFloat((v >> 8) & 0xFF) / 255,
+                    blue: CGFloat(v & 0xFF) / 255, alpha: alpha)
+        }
+        return NSColor(name: NSColor.Name(name)) { a in
+            a.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? rgb(dark, darkAlpha) : rgb(light, lightAlpha)
         }
     }
     /// AppKit twins for attributed runs (selectable text renders through
-    /// AppKit attributes).
-    public static let mentionNS = NSColor.controlAccentColor
-    public static let ownMentionBackgroundNS = NSColor.controlAccentColor.withAlphaComponent(0.18)
+    /// AppKit attributes): `mentionNS`, `ownMentionBackgroundNS` above.
     public static let inlineCodeBackgroundNS = NSColor.quaternarySystemFill
 
     /// Rail divider (§5.2). `separatorColor` (what `Divider()` draws)
@@ -88,4 +106,13 @@ public enum Palette {
     /// Edge of in-message panels (code blocks, link cards): their
     /// `.fill.quaternary` alone barely separates from the dark background.
     public static let panelEdge = Color(nsColor: .separatorColor)
+
+    /// A manifest `accentColor` (`#RRGGBB`); nil when absent or malformed.
+    public static func manifestAccent(_ hex: String?) -> Color? {
+        guard var h = hex?.trimmingCharacters(in: .whitespaces), !h.isEmpty else { return nil }
+        if h.hasPrefix("#") { h.removeFirst() }
+        guard h.count == 6, let v = UInt32(h, radix: 16) else { return nil }
+        return Color(red: Double((v >> 16) & 0xFF) / 255, green: Double((v >> 8) & 0xFF) / 255,
+                     blue: Double(v & 0xFF) / 255)
+    }
 }

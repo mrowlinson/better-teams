@@ -31,23 +31,36 @@ struct AppsListPane: View {
         let builtIns = library.builtIns.filter { $0.matches(f) }
         let tabs = forced == .empty ? [] : library.channelTabs.map(LibraryItem.init).filter { $0.matches(f) }
         let links = forced == .empty ? [] : library.webLinks.map(LibraryItem.init).filter { $0.matches(f) }
-        let personal = f.isEmpty || "Browse in Teams on the Web".localizedCaseInsensitiveContains(f)
+        let apps = forced == .empty ? [] : library.personalApps.map(LibraryItem.init).filter { $0.matches(f) }
+        let browse = f.isEmpty || "Browse in Teams on the Web".localizedCaseInsensitiveContains(f)
+        let personal = browse || !apps.isEmpty
         if pinned.isEmpty, builtIns.isEmpty, tabs.isEmpty, links.isEmpty, !personal {
             EmptyPane("No Results", systemImage: "magnifyingglass", message: "No apps match “\(f)”.")
         } else {
             list(m, forced: forced, filtering: !f.isEmpty, pinned: pinned, builtIns: builtIns,
-                 tabs: tabs, links: links, personal: personal)
+                 tabs: tabs, links: links, apps: apps, personal: personal, browse: browse)
         }
     }
 
     private func list(_ m: WindowModel, forced: ForcedPaneState?, filtering: Bool, pinned: [LibraryItem],
                       builtIns: [LibraryItem], tabs: [LibraryItem], links: [LibraryItem],
-                      personal: Bool) -> some View {
+                      apps: [LibraryItem], personal: Bool, browse: Bool) -> some View {
         let selection = Binding<String?>(
             get: { Self.tag(m.nav.selection(in: .apps)) },
             set: { tag in m.navigator?.select(tag.map(Self.selection(for:)), in: .apps) })
         let pinnedSet = Set(m.rail.pinned)
         return List(selection: selection) {
+            if !filtering {
+                // The Apps store (APPHOST-B2): all apps, then categories.
+                Section("Discover") {
+                    StoreNavRow(title: AppStoreRoute.all, symbol: "square.grid.2x2")
+                        .tag("\(AppStoreRoute.group)|\(AppStoreRoute.categoryPrefix)\(AppStoreRoute.all)")
+                    ForEach(library.store.categories.map(NamedItem.init)) { c in
+                        StoreNavRow(title: c.id, symbol: StoreNavRow.symbol(c.id))
+                            .tag("\(AppStoreRoute.group)|\(AppStoreRoute.categoryPrefix)\(c.id)")
+                    }
+                }
+            }
             if !pinned.isEmpty {
                 Section("Pinned") {
                     ForEach(pinned) { AppRow(item: $0, pinned: true).tag("pinned|\($0.id)") }
@@ -69,10 +82,13 @@ struct AppsListPane: View {
             }
             if personal {
                 Section("Personal Apps") {
-                    // Gap G2: no installed-apps API; browse them in Teams on the Web.
-                    AppRow(item: LibraryItem(FrameBuiltIns.teamsWeb), pinned: false,
-                           titleOverride: "Browse in Teams on the Web")
-                        .tag("personal|\(FrameBuiltIns.teamsWebID)")
+                    // Installed apps from the Teams app catalog, hosted natively.
+                    ForEach(apps) { AppRow(item: $0, pinned: pinnedSet.contains($0.entry)).tag($0.id) }
+                    if browse {
+                        AppRow(item: LibraryItem(FrameBuiltIns.teamsWeb), pinned: false,
+                               titleOverride: "Browse in Teams on the Web")
+                            .tag("personal|\(FrameBuiltIns.teamsWebID)")
+                    }
                 }
             }
             if !links.isEmpty {
@@ -158,6 +174,39 @@ struct AppsListPane: View {
     }
 }
 
+/// A Discover row: the store home or one category.
+private struct StoreNavRow: View {
+    let title: String
+    let symbol: String
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: symbol)
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(.tint)
+                .frame(width: 20)
+                .accessibilityHidden(true)
+            Text(title).lineLimit(1)
+        }
+    }
+
+    static func symbol(_ category: String) -> String {
+        switch category.lowercased() {
+        case "productivity": "bolt"
+        case "project management": "chart.bar.doc.horizontal"
+        case "workflow": "arrow.triangle.branch"
+        case "communication": "bubble.left.and.bubble.right"
+        case "utilities": "wrench.and.screwdriver"
+        case "surveys": "checklist"
+        case "finance": "dollarsign.circle"
+        case "developer tools": "hammer"
+        case "design": "paintbrush"
+        case "education": "graduationcap"
+        default: "tag"
+        }
+    }
+}
+
 /// One library row: symbol, name, optional source line, pinned glyph.
 private struct AppRow: View {
     let item: LibraryItem
@@ -199,7 +248,13 @@ struct AppsDetailPane: View {
 
     var body: some View {
         if let m = model {
-            if let id = m.nav.selection(in: .apps)?.id, let item = library.item(id) {
+            let sel = m.nav.selection(in: .apps)
+            if let page = AppStoreRoute.page(sel) {
+                switch page {
+                case .home(let category): AppStoreHome(library: library, category: category)
+                case .detail(let id): AppStoreDetail(library: library, appID: id)
+                }
+            } else if let id = sel?.id, let item = library.item(id) {
                 AppCard(item: item, library: library)
             } else {
                 NoSelectionPane("No App Selected")

@@ -1186,6 +1186,71 @@ Notes:
     (`group_join_payload_carries_video` ScreenViewer body,
     `share_leg_offer_answer_split_and_camera_off` modality choice). NOT
     live-verified against a tenant.
+72. [feature] `src/api/apps.rs` (new), `src/api/mod.rs`,
+    `src/api/client.rs` — **Teams app catalog client (apphost-b1
+    lane)**. Reads the apps-platform middle tier the Teams web shell
+    uses: `GET {mt}/beta/users/apps/entitlements` (installed),
+    `POST {mt}/beta/users/apps/aggregatedEntitlements?appbarview=userpinned`
+    (app bar order) and `POST {mt}/beta/users/apps/batchedDefinitions`
+    (manifests, 50 ids per call). New `TeamsClient::middle_tier_url()`
+    (`region_gtms.middleTier`, default `.../api/mt/amer`) and
+    `mt_get`/`mt_post` (Bearer Teams AAD token + `X-Skypetoken`, the
+    shell's `mtAuthWithSkypeXTokenResource`). Typed `AppManifest`
+    (id, name, description, developer, icons, accent, `staticTabs`
+    contentUrl/websiteUrl/entityId/scopes, `configurableTabs` +
+    legacy `galleryTabs`, `webApplicationInfo {id, resource}`,
+    `validDomains`), `AppEntitlement`, `AppCatalog`; async
+    `app_catalog_data(client)` (pinned view best effort, falls back to
+    entitlement pin flags). Parsers are wrapper-agnostic (collect any
+    object with `appId` / an id plus a manifest marker) because the
+    response wrappers are INFERRED from the shell bundles. Tests:
+    `definitions_parse_manifest_fields`,
+    `entitlements_and_pinned_parse_any_wrapper`, `urls_and_bodies`
+    (fixture JSON). Read-only. NOT live-verified against a tenant
+    (request bodies for aggregatedEntitlements/batchedDefinitions are
+    INFERRED).
+73. [feature] `src/auth/oauth.rs` — **token broker: any scope +
+    nested app auth (apphost-b1 lane)**. The core minted fixed scopes
+    only (skype, ic3, graph, recorder). New pure
+    `normalize_scopes` (resource → `<resource>/.default`, scopes kept,
+    dedup), `scope_grant_form`, `naa_redirect_uri`
+    (`brk-multihub://<host>`), `naa_grant_form` (refresh-token grant
+    on the nested client id with `brk_client_id` = Teams client,
+    `brk_redirect_uri`/`redirect_uri`), `post_token_grant` (sends
+    `Origin` for NAA; errors carry the AAD code + first description
+    line only), and async `token_for_scope_for(profile, scopes)` /
+    `naa_token_for(profile, client_id, scopes, origin)` with an
+    in-memory per (profile, client, scopes) cache (refetch under 5 min
+    left) and `clear_grants_for(profile)`. `TokenGrant`'s `Debug`
+    never prints the token; nothing is logged. Rotated refresh tokens
+    are not persisted (same as the other `acquire_*` grants). Tests
+    (`broker_tests`): `scopes_normalize`, `grant_forms`,
+    `naa_grant_posts_brokered_form_and_parses` and
+    `grant_error_reports_code_not_secrets` (local HTTP stub),
+    `grant_cache_expiry_and_clear`. NOT live-verified: the brokered
+    NAA grant is INFERRED from the MSAL/Teams hub protocol (AAD may
+    require a hub allow-list).
+74. [feature] `src/api/apps.rs`, `src/api/mod.rs`, `src/api/tabs.rs`
+    — **app store, search, personal install, tab entity ids
+    (apphost-b2 lane)**. `AppManifest` gains `full_description`,
+    `has_bot` (`bots`), `has_messaging_extension`
+    (`composeExtensions`/`inputExtensions`), `permissions` (manifest
+    `permissions` + `authorization.permissions.resourceSpecific[].name`),
+    `categories` (`categories`/`category`) and developer
+    `website_url`/`privacy_url`/`terms_of_use_url`. New read-only
+    `app_store_data` (`GET {mt}/beta/users/apps/store`) and
+    `app_search_data` (`GET {mt}/beta/users/apps/search?query=`), with
+    lenient `parse_store_apps` (id + name + a listing marker) and
+    `parse_store_sections` (titled shelves of app objects or ids).
+    `install_app_for_user` is a REMOTE WRITE: Graph
+    `POST /me/teamwork/installedApps` with
+    `teamsApp@odata.bind` = `/appCatalogs/teamsApps/{id}` (documented
+    Graph API; needs `TeamsAppInstallation.ReadWriteSelfForUser`, not
+    known to be in the Teams-client Graph token). `TabInfo` gains
+    `entity_id` from the tab configuration. Test:
+    `store_parse_sections_detail_fields_and_install_body`. NOT
+    live-verified: store/search response shapes and query parameter
+    are INFERRED from the shell bundles; install never exercised.
 
 ## Upstream PRs, wave 9 (2026-09-25 R10 audit; base 0892144; origin/main still 0892144)
 

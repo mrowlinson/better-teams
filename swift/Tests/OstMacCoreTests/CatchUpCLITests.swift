@@ -142,7 +142,7 @@ final class CatchUpCLITests: XCTestCase {
             CatchUpProvider.openCodeCLI.defaultModel,
             "opencode/muse-spark-1.3-contributor-free")
         XCTAssertEqual(
-            CatchUpConfig().model, "opencode/muse-spark-1.3-contributor-free")
+            CatchUpConfig(provider: .openCodeCLI).model, "opencode/muse-spark-1.3-contributor-free")
     }
 
     func testSelectProviderCLIPreloadsQualifiedModel() {

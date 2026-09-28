@@ -77,6 +77,7 @@ enum EvidenceHarness {
         // A presented sheet is its own window; capture it instead.
         let main = primaryWindow ?? wc.window
         let win = (main?.attachedSheet ?? main)?.windowNumber ?? 0
+        if let root = wc.window?.contentView { revealTimelineHeaders(root) }
         if let path = options.snapshotPath, let w = wc.window { snapshot(w, to: path) }
         EvidenceGeometry.append(wc, route: options.route, appearance: options.appearance)
         if options.dumpMenus, let bar = NSApp.mainMenu {
@@ -86,6 +87,15 @@ enum EvidenceHarness {
             + "windowID=\(win) settled=\(settled)" + (main.map { " rect=\(captureRect($0))" } ?? ""))
         fflush(stdout)
         if options.route.flatMap(Route.init(string:))?.query["recents"] == "1" { showRecents(wc) }
+    }
+
+    /// Whole sender header at the top of every visible timeline.
+    private static func revealTimelineHeaders(_ v: NSView) {
+        if let vc = (v as? NSTableView)?.delegate as? TimelineViewController {
+            vc.evidenceRevealTopHeader()
+            v.window?.displayIfNeeded()
+        }
+        for s in v.subviews { revealTimelineHeaders(s) }
     }
 
     /// `<route>?recents=1` (§5.5 recents, G1): focuses the empty search

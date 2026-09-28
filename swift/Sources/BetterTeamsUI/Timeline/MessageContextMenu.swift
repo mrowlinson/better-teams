@@ -185,9 +185,24 @@ final class TimelineActions {
         files.perform(c, file: UnifiedFileRow(file: d.file, source: source, sourceName: name, sourceID: chat), m)
     }
 
+    /// Opens the full-resolution viewer on this image (the bubble shows
+    /// a 520px decode of the timeline URL; the viewer fetches the
+    /// original). ←/→ step through the chat's images.
     func preview(image model: RemoteImageModel) {
-        guard let img = model.image else { return }
-        ImageQuickLook.shared.show(img, name: model.messageID)
+        let alt = MessageRender.images(fromRaw: conv.messages.first { $0.id == model.messageID }?.raw)
+            .first { $0.url == model.url }?.alt ?? ""
+        let item = ImageViewerItem(url: model.url, messageID: model.messageID, alt: alt)
+        let nav = ImageViewerNav(items: ImageViewerNav.items(from: conv.messages), current: item)
+        let media = services.media
+        ImageViewerController.shared.show(
+            nav: nav,
+            thumbs: { media.image(url: $0.url, messageID: $0.messageID).image },
+            demo: self.model?.options.demo ?? false,
+            saver: { [weak self] data, type, alt, choose, window in
+                let ext = type?.preferredFilenameExtension ?? "png"
+                self?.save(bytes: data, name: ImageSave.filename(alt: alt, ext: ext),
+                           type: type ?? .png, choose: choose, window: window)
+            })
     }
 
     /// Saves a timeline image (a chat attachment) to ~/Downloads, or
@@ -195,9 +210,16 @@ final class TimelineActions {
     /// Transfers and Files ▸ Downloads (TransferStore). Demo writes to
     /// the demo tmp dir only, never the chosen folder.
     func save(image media: RemoteImageModel, alt: String, choose: Bool) {
-        guard let m = model, let app = m.app, let img = media.image, let png = ImageSave.png(img) else { return }
+        guard let m = model, let img = media.image, let png = ImageSave.png(img) else { return }
+        save(bytes: png, name: ImageSave.filename(alt: alt), type: .png, choose: choose,
+             window: FilesSection.window(m))
+    }
+
+    /// Writes image bytes (a re-encoded decode, or the viewer's original)
+    /// to ~/Downloads or through a Save panel sheet on `window`.
+    func save(bytes png: Data, name: String, type: UTType, choose: Bool, window: NSWindow?) {
+        guard let m = model, let app = m.app else { return }
         let demo = m.options.demo
-        let name = ImageSave.filename(alt: alt)
         let chat = chatID
         let origin = chat.map { id in
             m.graph.chats.chats.first { $0.id == id }?.name ?? FilesSection.channelName(id, app.teams.teams)
@@ -220,10 +242,10 @@ final class TimelineActions {
         guard choose else {
             return record(unique(demo ? demoDir : TeamsFrameDownloads.defaultDirectory(), name))
         }
-        guard let window = FilesSection.window(m) else { return }
+        guard let window else { return }
         let panel = NSSavePanel()
         panel.nameFieldStringValue = name
-        panel.allowedContentTypes = [.png]
+        panel.allowedContentTypes = [type]
         panel.directoryURL = TeamsFrameDownloads.defaultDirectory()
         panel.beginSheetModal(for: window) { r in
             guard r == .OK, let url = panel.url else { return }

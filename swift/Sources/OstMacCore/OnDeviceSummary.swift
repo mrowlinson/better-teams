@@ -80,6 +80,18 @@ public enum OnDeviceSummary {
 /// the --show-catchup-ondevice shot hook inject `OnDeviceMockRunner`.
 public protocol OnDeviceRunner: Sendable {
     func generate(prompt: String) async throws -> String
+    /// Streaming variant: `onPartial` gets the cumulative text so far
+    /// (never deltas), the return is the final text. `maxTokens` caps
+    /// the response (nil = model default). Default: one `generate`.
+    func stream(prompt: String, maxTokens: Int?, onPartial: @escaping @Sendable (String) -> Void) async throws -> String
+}
+
+extension OnDeviceRunner {
+    public func stream(prompt: String, maxTokens _: Int?, onPartial: @escaping @Sendable (String) -> Void) async throws -> String {
+        let text = try await generate(prompt: prompt)
+        onPartial(text)
+        return text
+    }
 }
 
 #if canImport(FoundationModels)
@@ -97,6 +109,32 @@ final class FoundationModelsOnDeviceRunner: OnDeviceRunner, @unchecked Sendable 
             return text
         } catch let e as CatchUpError {
             throw e
+        } catch {
+            throw CatchUpError.onDeviceFailed(String(describing: error))
+        }
+    }
+
+    /// Streams cumulative snapshots (low temperature: summaries restate,
+    /// never invent). One fresh session per call — no transcript carries
+    /// over, so every call starts from an empty 4096-token context.
+    func stream(prompt: String, maxTokens: Int?, onPartial: @escaping @Sendable (String) -> Void) async throws -> String {
+        do {
+            let session = LanguageModelSession()
+            let options = GenerationOptions(temperature: 0.2, maximumResponseTokens: maxTokens)
+            var last = ""
+            for try await snapshot in session.streamResponse(to: prompt, options: options) {
+                try Task.checkCancellation()
+                last = snapshot.content
+                onPartial(last)
+            }
+            guard !last.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw CatchUpError.empty
+            }
+            return last
+        } catch let e as CatchUpError {
+            throw e
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
             throw CatchUpError.onDeviceFailed(String(describing: error))
         }
@@ -155,6 +193,23 @@ public struct OnDeviceCatchUpTransport: CatchUpTransport {
             return try await runner.generate(prompt: prompt)
         } catch let e as CatchUpError {
             throw e
+        } catch {
+            throw CatchUpError.onDeviceFailed(String(describing: error))
+        }
+    }
+}
+
+extension OnDeviceCatchUpTransport: CatchUpStreamingTransport {
+    public func stream(prompt: String, maxTokens: Int?, onPartial: @escaping @Sendable (String) -> Void) async throws -> String {
+        if let err = OnDeviceSummary.error(for: availability()) {
+            throw err
+        }
+        do {
+            return try await runner.stream(prompt: prompt, maxTokens: maxTokens, onPartial: onPartial)
+        } catch let e as CatchUpError {
+            throw e
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
             throw CatchUpError.onDeviceFailed(String(describing: error))
         }

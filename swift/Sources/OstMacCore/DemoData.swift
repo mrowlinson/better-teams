@@ -9,10 +9,41 @@ public enum DemoData {
     /// Canned Catch Up summary (core-b): demo summaries never reach a
     /// real provider, CLI or on-device model.
     public static let catchUpSummary = """
-        - The team agreed to ship the onboarding flow on Thursday.
+        SUMMARY: The team agreed to ship the onboarding flow on Thursday.
+        POINTS:
         - Ava is finishing the empty-state illustrations.
         - Open question: who reviews the sign-in copy?
+        ACTIONS:
+        - Tom: send the build notes before Thursday.
         """
+
+    /// Conversation-specific canned summaries (CATCHQA), picked by a
+    /// phrase from the conversation's transcript; `catchUpSummary`
+    /// otherwise. Same fictional crew, never real content.
+    public static let catchUpSummaries: [(marker: String, text: String)] = [
+        ("Offsite photos", """
+            SUMMARY: Offsite photos are in and Thursday's agenda is locked: roadmap, hiring and the offsite recap.
+            POINTS:
+            - Megan asked you to share the sunset photo for the offsite-recap deck.
+            - The review deck is ready; Tom's const-generics note unblocked his render patch.
+            - Build Bot reports main passed all checks.
+            ACTIONS:
+            - You: send the recap slides tonight.
+            - Tom: give the review deck a thumbs up.
+            """),
+        ("retro moves", """
+            SUMMARY: The sidebar is done, the conversation view is in review and the build is green.
+            POINTS:
+            - Retro moves to Thursday at 2; everyone brings one win and one snag.
+            - Packaging is next.
+            ACTIONS:
+            - You: take the release notes this week.
+            """),
+    ]
+
+    /// Conversations the demo Catch Up window starts with (mentions of
+    /// the owner, the @everyone standup, and Ava's 1:1).
+    public static let catchUpChatIDs: Set<String> = mentionedChatIDs.union([standupID, avaID])
 
     /// Shared demo stamp formatter (om-s6-renderparse): demo builders
     /// stamp every message through this instead of per-call allocs.
@@ -1139,6 +1170,18 @@ public enum DemoData {
     ]
 
     private static let standupMessages: [ChatMessage] = [
+        // Catch Up evidence (CATCHQA): one @everyone and one mention of
+        // the owner, both before the row's last message (preview stays).
+        ChatMessage(
+            id: "standup-e", sender: "Megan Harper",
+            timestamp: "2026-09-21T16:04:40Z",
+            content: "@Everyone retro moves to Thursday at 2. Bring one win and one snag.",
+            raw: "<p><at id=\"0\">Everyone</at> retro moves to Thursday at 2. Bring one win and one snag.</p>"),
+        ChatMessage(
+            id: "standup-m", sender: "Ava Lindqvist",
+            timestamp: "2026-09-21T16:11:25Z",
+            content: "@Jordan Fox can you take the release notes this week?",
+            raw: "<p><at id=\"1\">Jordan Fox</at> can you take the release notes this week?</p>"),
         ChatMessage(
             id: "standup-1", sender: "Tom Becker",
             timestamp: "2026-09-21T16:18:02Z",

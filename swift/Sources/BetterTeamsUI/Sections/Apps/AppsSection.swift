@@ -23,6 +23,20 @@ final class AppsSection: SectionProvider {
 
     var allToolbarItems: [CommandID] { [AppsCommands.refresh, AppsCommands.addWebLink] }
 
+    /// `apps/detail?id=<appID>` = store detail, `apps/store?category=<c>`
+    /// = store category (APPHOST-B2); other paths select library rows.
+    func selection(for route: Route) -> SectionSelection? {
+        switch route.tail.first {
+        case "detail":
+            guard let id = route.query["id"], !id.isEmpty else { return nil }
+            return AppStoreRoute.detail(id)
+        case "store":
+            return route.query["category"].map(AppStoreRoute.category)
+        default:
+            return route.tail.isEmpty ? nil : SectionSelection(route.tail)
+        }
+    }
+
     func selectionDidChange(_ sel: SectionSelection?, _ m: WindowModel) {
         // First visit on a live account with no cache: scan once (never
         // from evidence or tests: the scan runs teams-cli with real tokens).
