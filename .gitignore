@@ -1,0 +1,23 @@
+# Build outputs
+rust/ost/target/
+rust/ostmac-core/target/
+swift/.build/
+swift/.swiftpm/
+target/
+.build/
+*.app
+*.dmg
+
+# Lane artifacts / local secrets (never commit)
+*.patch
+.env
+
+# Scratch (FLEX lane workspace)
+tmp/
+
+# macOS / editors
+.DS_Store
+*.swp
+*~
+.vscode/
+.idea/

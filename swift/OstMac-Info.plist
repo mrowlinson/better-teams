@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleExecutable</key>
+    <string>OstMac</string>
+    <key>CFBundleIdentifier</key>
+    <string>dev.ostmac.OstMac</string>
+    <key>CFBundleName</key>
+    <string>Better Teams</string>
+    <key>CFBundleDisplayName</key>
+    <string>Better Teams</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>CFBundleIconFile</key>
+    <string>OstMac</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>26.0</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSCameraUsageDescription</key>
+    <string>Better Teams uses the camera for call video and the Call A/V test panel.</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Better Teams uses the microphone for call audio and the Call A/V test panel.</string>
+    <key>NSUserActivityTypes</key>
+    <array>
+        <string>INSendMessageIntent</string>
+    </array>
+</dict>
+</plist>
