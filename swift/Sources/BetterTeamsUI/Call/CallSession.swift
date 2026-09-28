@@ -46,6 +46,15 @@ public final class CallSession {
     @ObservationIgnored let camera: CameraCapture?
     /// Mic / speaker / camera pickers + level meter (§8 Devices).
     @ObservationIgnored let devices: CallDevices
+    /// A 1:1 video call (VIDEO1): the stage shows the remote video large
+    /// with the self view as a picture-in-picture, and the camera starts
+    /// on. Group and meeting video are not supported by the core.
+    public let video: Bool
+    /// Remote video decoders keyed by remote participant id (live video
+    /// calls only; demo shows synthetic frames and never touches the core
+    /// video queues). 1:1 holds one entry, the peer's MRI, created when
+    /// live media flows; meeting video adds one per subscribed source.
+    public private(set) var remoteVideos: [String: LiveVideoModel] = [:]
     /// Meetings: the person pressed Join Now on the pre-join step.
     public private(set) var joined: Bool
     public private(set) var ended = false
@@ -77,7 +86,8 @@ public final class CallSession {
     /// Evidence shows a fixed duration (deterministic captures).
     static let evidenceElapsed = 754
 
-    public init(kind: CallKind, presentation: CallPresentation, model: WindowModel?, store: CallStore? = nil) {
+    public init(kind: CallKind, presentation: CallPresentation, model: WindowModel?, store: CallStore? = nil,
+                video: Bool = false) {
         self.kind = kind
         self.presentation = presentation
         self.model = model
@@ -88,9 +98,15 @@ public final class CallSession {
         if case .meeting = kind { joined = false } else { joined = true }
         camera = live ? CameraCapture() : nil
         devices = CallDevices(live: live, store: self.store, camera: camera)
+        let isVideo: Bool
+        if video, case .person = kind { isVideo = true } else { isVideo = false }
+        self.video = isVideo
         stage = CallStageViewController()
         stage.session = self
         subscribe()
+        // Video calls start with the camera on (camera off later sends
+        // the core's black frames: the video track stays negotiated).
+        if isVideo, self.store?.cameraOn == false { self.store?.setCameraOn(true) }
         devices.load()
         if !joined { devices.setLevelWanted(true, by: .preJoin) }
     }
@@ -102,6 +118,9 @@ public final class CallSession {
         case .test: "Test Call"
         }
     }
+
+    /// Evidence captures (deterministic: no animated demo video).
+    var isEvidence: Bool { evidence }
 
     public var isMeeting: Bool {
         if case .meeting = kind { return true }
@@ -287,9 +306,12 @@ public final class CallSession {
             store?.cameraHook = nil
             if store?.cameraOn == true { store?.setCameraOn(false) }
             if sharing { model?.app?.screenShare.stop() }
+        } else if video, store?.cameraOn == true {
+            store?.setCameraOn(false) // demo: the next call starts camera-off
         }
         camera?.setLiveSend(false)
         camera?.stop()
+        for v in remoteVideos.values { v.stop() }
         devices.close()
         stage.detachFromHost()
         let w = window
@@ -314,6 +336,23 @@ public final class CallSession {
         if live {
             store.cameraHook = { [weak self] on in self?.setLocalCamera(on) }
         }
+        if video, live {
+            // `@Published` emits in willSet: the sink's value is the new slot.
+            store.$call.sink { [weak self] c in self?.syncVideo(c) }.store(in: &subs)
+        }
+    }
+
+    /// Live video calls: once the core reports live media on the active
+    /// leg, camera frames go to the core send queue and the remote video
+    /// decoder starts (both idempotent).
+    private func syncVideo(_ c: CallInfo?) {
+        guard video, live, !ended, let c, c.isActive, c.liveMedia == true else { return }
+        if store?.cameraOn == true, camera?.liveSend == false { camera?.setLiveSend(true) }
+        // 1:1: the core's single incoming queue is the peer's video.
+        let peer = c.peer.isEmpty ? "peer" : c.peer
+        let decoder = remoteVideos[peer] ?? LiveVideoModel()
+        if remoteVideos[peer] == nil { remoteVideos[peer] = decoder }
+        decoder.start()
     }
 
     private func mirror(phase p: CallPhase) {
@@ -435,12 +474,13 @@ public extension WindowModel {
     /// overrides the account's call slot (tests).
     @discardableResult
     func beginCall(_ kind: CallKind, presentation: CallPresentation? = nil, show: Bool = true,
-                   store: CallStore? = nil) -> CallSession? {
+                   store: CallStore? = nil, video: Bool = false) -> CallSession? {
         if let running = call, !running.ended {
             running.show()
             return nil
         }
-        let s = CallSession(kind: kind, presentation: presentation ?? .current, model: self, store: store)
+        let s = CallSession(kind: kind, presentation: presentation ?? .current, model: self, store: store,
+                            video: video)
         call = s
         (provider(.call) as? CallSection)?.title = s.title
         navigator?.refreshToolbar()

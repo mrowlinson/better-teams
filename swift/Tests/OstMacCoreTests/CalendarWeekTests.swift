@@ -20,7 +20,7 @@ final class CalendarWeekTests: XCTestCase {
             "join_url":null,"organizer":null,"is_online":false},\
             {"id":"W3","subject":"Fri demo","start":"2026-10-02T14:00:00.0000000",\
             "end":"2026-10-02T15:00:00.0000000",\
-            "join_url":null,"organizer":"Lee, Sam","is_online":false},\
+            "join_url":null,"organizer":"Ray, Sam","is_online":false},\
             {"id":"W4","subject":"Unscheduled","start":null,"end":null,\
             "join_url":null,"organizer":null,"is_online":false}]}
             """

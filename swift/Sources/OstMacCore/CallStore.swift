@@ -497,8 +497,8 @@ public final class CallStore: ObservableObject {
             // Offline echo: flip local state so the banner is exercisable.
             lastAction = "demo:\(label)"
             switch label {
-            case "accept", "place", "echo", "accept-live", "place-live", "echo-live":
-                let live = label.hasSuffix("-live")
+            case "accept", "place", "echo", "accept-live", "place-live", "echo-live", "place-video", "accept-video":
+                let live = label.hasSuffix("-live") || label.hasSuffix("-video")
                 let now = UInt64(Date().timeIntervalSince1970)
                 if var c = call { c = CallInfo(id: c.id, dir: c.dir, peer: c.peer, peerName: c.peerName, thread: c.thread, state: "connected", controller: c.controller, startedAt: c.startedAt, detail: c.detail, liveMedia: live ? true : c.liveMedia, connectedAt: c.connectedAt ?? now); call = c }
                 else { call = CallInfo(id: "demo-call", dir: "out", peer: "", peerName: "Doe, Jane", state: "connected", liveMedia: live ? true : nil, connectedAt: now) }
@@ -554,6 +554,12 @@ public final class CallStore: ObservableObject {
         run("place-live") { try RustCore.callPlaceLive(threadID: threadID, timeoutSecs: timeoutSecs) }
     }
 
+    /// 1:1 video call with live media (VIDEO1): the invitation carries
+    /// Audio + Video; the host pushes camera NALs and decodes remote AUs.
+    public func placeLiveVideo(threadID: String, timeoutSecs: Int32 = 30) {
+        run("place-video") { try RustCore.callPlaceLiveVideo(threadID: threadID, timeoutSecs: timeoutSecs) }
+    }
+
     public func echo(timeoutSecs: Int32 = 30) {
         run("echo") { try RustCore.callEcho(timeoutSecs: timeoutSecs) }
     }
@@ -568,6 +574,11 @@ public final class CallStore: ObservableObject {
 
     public func acceptLive() {
         run("accept-live") { try RustCore.callAcceptLive() }
+    }
+
+    /// Accept the ringing call as a video call with live media (VIDEO1).
+    public func acceptLiveVideo() {
+        run("accept-video") { try RustCore.callAcceptLiveVideo() }
     }
 
     public func end() {

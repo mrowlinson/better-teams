@@ -576,16 +576,22 @@ async fn post_empty(http: &reqwest::Client, skype_token: &str, url: &str) -> Res
 /// Accept the ringing incoming call: SDP media answer first (generated,
 /// never streamed — ost order), then the acceptance POST.
 pub fn call_accept_json() -> String {
-    accept_inner(false)
+    accept_inner(false, false)
 }
 
 /// Accept the ringing incoming call with live media: the SDP answer carries
 /// real ports + candidates, then the media engine (ICE/SRTP/RTP) attaches.
 pub fn call_accept_live_json() -> String {
-    accept_inner(true)
+    accept_inner(true, false)
 }
 
-fn accept_inner(live: bool) -> String {
+/// Accept the ringing incoming call with live media as a video call:
+/// the acceptance advertises Audio + Video (1:1 video, VIDEO1).
+pub fn call_accept_live_video_json() -> String {
+    accept_inner(true, true)
+}
+
+fn accept_inner(live: bool, video: bool) -> String {
     let (notification, id) = {
         let guard = lock_current();
         match guard.as_ref() {
@@ -715,7 +721,7 @@ fn accept_inner(live: bool) -> String {
             } else {
                 warn = "invitation carries no SDP offer".to_string();
             }
-            signaling::accept_call(&http, &skype, &notification)
+            signaling::accept_call_with_video(&http, &skype, &notification, video)
                 .await
                 .map_err(|e| format!("accept: {:#}", e))?;
             Ok((answered, warn, handoff))
@@ -997,6 +1003,7 @@ pub fn call_place_json(thread_id: &str, timeout_secs: i32) -> String {
         false,
         clamp_timeout(timeout_secs),
         false,
+        false,
     )
 }
 
@@ -1012,18 +1019,39 @@ pub fn call_place_live_json(thread_id: &str, timeout_secs: i32) -> String {
         false,
         clamp_timeout(timeout_secs),
         true,
+        false,
+    )
+}
+
+/// Place a 1:1 video call with live media (VIDEO1): same as
+/// [`call_place_live_json`], but the callee invitation carries Audio +
+/// Video modalities so the peer rings as a video call. The SDP offer
+/// always carries the video m-line; camera NALs come from the host via
+/// `ostmac_video_send_push_bytes` (black IDR while the camera is off).
+/// Group/channel threads are refused: their video needs MCU source
+/// subscription, which is not implemented.
+pub fn call_place_live_video_json(thread_id: &str, timeout_secs: i32) -> String {
+    if thread_id.trim().is_empty() {
+        return err_json("arg", "empty thread_id");
+    }
+    place_inner(
+        Some(thread_id.trim()),
+        false,
+        clamp_timeout(timeout_secs),
+        true,
+        true,
     )
 }
 
 /// Place the echo-bot test call (`UserInitiatedTestCall` via 1:1 epconv
 /// + `invite_echo_bot`, same as `ost call --echo` up to the media leg).
 pub fn call_echo_json(timeout_secs: i32) -> String {
-    place_inner(None, true, clamp_timeout(timeout_secs), false)
+    place_inner(None, true, clamp_timeout(timeout_secs), false, false)
 }
 
 /// Place the echo-bot test call with live media attached on acceptance.
 pub fn call_echo_live_json(timeout_secs: i32) -> String {
-    place_inner(None, true, clamp_timeout(timeout_secs), true)
+    place_inner(None, true, clamp_timeout(timeout_secs), true, false)
 }
 
 fn place_inner(
@@ -1031,6 +1059,7 @@ fn place_inner(
     echo: bool,
     timeout: Duration,
     live: bool,
+    video: bool,
 ) -> String {
     {
         let guard = lock_current();
@@ -1092,6 +1121,12 @@ fn place_inner(
                     if a == caller_oid || b == caller_oid)
             })
             .unwrap_or(false);
+    if video && !is_1to1 {
+        return err_json(
+            "unsupported",
+            "video is 1:1 only; group and meeting video need MCU source subscription",
+        );
+    }
     let display_name = display_name_or("(unknown)");
     let epconv_url = match derive_epconv_url(&region_gtms) {
         Some(u) => u,
@@ -1258,7 +1293,7 @@ fn place_inner(
                         &created.conversation_controller,
                         &params,
                         mri,
-                        false,
+                        video,
                     )
                     .await
                     .map_err(|e| format!("invite: {:#}", e))?;
@@ -1686,5 +1721,38 @@ mod tests {
         assert_eq!(clamp_timeout(0), Duration::from_secs(5));
         assert_eq!(clamp_timeout(30), Duration::from_secs(30));
         assert_eq!(clamp_timeout(9999), Duration::from_secs(120));
+    }
+
+    /// VIDEO1: a 1:1 video call's offer and answer both carry a sendrecv
+    /// video m-line, and a video answer accepts Audio + Video.
+    #[test]
+    fn video_call_offer_answer_carry_video_mline() {
+        let sendrecv_after = |sdp: &str, needle: &str| {
+            let at = sdp.find(needle).unwrap_or_else(|| panic!("no {} in {}", needle, sdp));
+            sdp[at..].contains("a=sendrecv")
+        };
+        let offer = sdp::generate_av_sdp_offer(&sdp::AvSdpParams {
+            local_ip: "10.0.0.2",
+            audio_port: 50000,
+            video_port: 50002,
+            audio_ufrag: "au",
+            audio_pwd: "apwdapwdapwdapwdapwdapwd",
+            video_ufrag: "vu",
+            video_pwd: "vpwdvpwdvpwdvpwdvpwdvpwd",
+            audio_candidates: &[],
+            video_candidates: &[],
+            video_ssrc_base: 1000,
+            audio_ssrc: 2000,
+        });
+        assert!(offer.sdp.contains("m=video 50002 RTP/SAVP 122"), "{}", offer.sdp);
+        assert!(sendrecv_after(&offer.sdp, "m=video"));
+        let parsed = sdp::parse_sdp_offer(&offer.sdp).expect("own offer parses");
+        assert!(parsed.video.is_some(), "parsed offer lost its video m-line");
+        let answer = sdp::generate_sdp_answer_full("10.0.0.3", 40000, 40002, &parsed, &[], &[]);
+        assert!(answer.sdp.contains("m=video 40002 RTP/SAVP 122"), "{}", answer.sdp);
+        assert!(sendrecv_after(&answer.sdp, "m=video"));
+        assert!(answer.video_crypto_line.is_some());
+        assert_eq!(signaling::accepted_call_modalities(true), vec!["Audio", "Video"]);
+        assert_eq!(signaling::accepted_call_modalities(false), vec!["Audio"]);
     }
 }

@@ -31,7 +31,7 @@ public enum TranscriptsDemo {
                 modified: "2026-09-18T11:45:00Z",
                 source: "Design > #crit"),
             TranscriptItem(
-                id: "demo-tr-4", name: "Sprint Retro with Sam Lee.vtt",
+                id: "demo-tr-4", name: "Sprint Retro with Sam Ray.vtt",
                 size: 6_118, mime: "text/vtt",
                 web_url: "https://example.com/tr4", drive_id: "demo-drive",
                 created: "2026-09-15T16:00:00Z",
@@ -76,7 +76,7 @@ public enum TranscriptsDemo {
 
     4
     01:03:00.000 --> 01:03:30.000
-    <b>Sam Lee</b> agreed to take notes.
+    <b>Sam Ray</b> agreed to take notes.
     """
 
     /// Turns the sample parses to (speaker, start ms, text), pinned by
@@ -85,6 +85,6 @@ public enum TranscriptsDemo {
         ("Ava Lindqvist", 0, "Welcome to the weekly sync, everyone."),
         ("Tom Becker", 43_500, "Thanks Ava. The Q3 numbers are up across the board."),
         ("Megan Harper", 3_723_000, "Design crit moved to Thursday."),
-        (nil, 3_780_000, "Sam Lee agreed to take notes."),
+        (nil, 3_780_000, "Sam Ray agreed to take notes."),
     ]
 }

@@ -1,9 +1,12 @@
 // FrameChromeStyle.swift — chrome hiding for Teams-hosted web apps
 // (UI-SPEC §7.3): (1) a document-start stylesheet hides the Teams app bar
 // and header, selectors versioned here (the same set the
-// `TeamsFrameMeasure` probe looks for); (3) the geometric fallback: a
-// per-app crop that outsets the web view inside its clipping container.
-// Settings ▸ Apps turns hiding on or off and edits the crops.
+// `TeamsFrameMeasure` probe looks for); (2) the probe re-runs after every
+// load and in-page route change (`routeHookJS`); (3) the geometric
+// fallback: a per-app crop that outsets the web view inside its clipping
+// container — the app's own crop, else what the probe still sees.
+// Settings ▸ Apps turns hiding on or off; Settings and the app card edit
+// the crops.
 import AppKit
 import OstMacCore
 import WebKit
@@ -44,6 +47,29 @@ enum FrameChromeStyle {
 
     static func userScript() -> WKUserScript {
         WKUserScript(source: injectJS, injectionTime: .atDocumentStart, forMainFrameOnly: true)
+    }
+
+    /// Script message a Teams page posts after an in-page route change.
+    static let routeMessage = "btChromeRoute"
+
+    /// Teams is a single-page app: a route change swaps content without a
+    /// load, so `didFinish` never fires. This hooks `pushState` /
+    /// `replaceState` / `popstate` / `hashchange`, re-adds the sheet (Teams
+    /// may rebuild `head`) and, two frames later (the new route has
+    /// painted), asks the host to re-run the measure probe.
+    static var routeHookJS: String {
+        """
+        (function(){if(window.__btChromeRoute)return;window.__btChromeRoute=1;\
+        var post=function(){requestAnimationFrame(function(){requestAnimationFrame(function(){\
+        \(injectJS)try{window.webkit.messageHandlers.\(routeMessage).postMessage(location.href);}catch(e){}});});};\
+        ['pushState','replaceState'].forEach(function(n){var o=history[n];\
+        history[n]=function(){var r=o.apply(this,arguments);post();return r;};});\
+        window.addEventListener('popstate',post);window.addEventListener('hashchange',post);})();
+        """
+    }
+
+    static func routeScript() -> WKUserScript {
+        WKUserScript(source: routeHookJS, injectionTime: .atDocumentStart, forMainFrameOnly: true)
     }
 
     /// Chrome hiding applies to Teams-hosted pages only (§7.3), never to

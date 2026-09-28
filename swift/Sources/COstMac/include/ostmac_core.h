@@ -428,6 +428,11 @@ char *ostmac_call_echo(int timeout_secs);
 // {ok,placed,accepted,live_media,call}. Caller frees.
 char *ostmac_call_place_live(const char *thread_id, int timeout_secs);
 
+// Place a 1:1 video call with live media (Audio + Video modalities).
+// Same envelope as ostmac_call_place_live; group/channel threads fail
+// with code "unsupported". Caller frees.
+char *ostmac_call_place_live_video(const char *thread_id, int timeout_secs);
+
 // Place the echo-bot test call with live media. Same envelope as
 // ostmac_call_place_live. Caller frees.
 char *ostmac_call_echo_live(int timeout_secs);
@@ -435,6 +440,10 @@ char *ostmac_call_echo_live(int timeout_secs);
 // Accept the ringing incoming call with live media:
 // {ok,accepted,media_answered,live_media,call}. Caller frees.
 char *ostmac_call_accept_live(void);
+
+// Accept the ringing incoming call with live media as a video call
+// (acceptedCallModalities Audio + Video). Same envelope. Caller frees.
+char *ostmac_call_accept_live_video(void);
 
 // Live media engine stats:
 // {ok, media:{running,audio_sent,audio_recv,video_sent,video_recv,

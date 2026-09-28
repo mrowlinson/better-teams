@@ -31,7 +31,7 @@ public enum RecordingsDemo {
                 modified: "2026-09-18T11:45:00Z",
                 duration_ms: 2_700_000, source: "Design > #crit"),
             RecordingItem(
-                id: "demo-rec-4", name: "Sprint Retro with Sam Lee.mp4",
+                id: "demo-rec-4", name: "Sprint Retro with Sam Ray.mp4",
                 size: 62_118_900, mime: "video/mp4",
                 web_url: "https://example.com/rec4", drive_id: "demo-drive",
                 created: "2026-09-15T16:00:00Z",

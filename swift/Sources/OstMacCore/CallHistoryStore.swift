@@ -140,8 +140,8 @@ public final class CallHistoryStore: ObservableObject {
                 durationSecs: 257),
             CallRecord(
                 id: "demo-out", direction: .outgoing,
-                peer: "8:orgid:demo-chen", peerName: "Chen, Tom",
-                thread: "19:demo-chen@thread.v2",
+                peer: "8:orgid:demo-carr", peerName: "Carr, Tom",
+                thread: "19:demo-carr@thread.v2",
                 startedAt: now - 96_000, endedAt: now - 95_372,
                 durationSecs: 628),
         ]

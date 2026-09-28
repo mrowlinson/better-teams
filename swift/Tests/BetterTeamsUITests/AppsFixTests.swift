@@ -43,8 +43,33 @@ final class AppsFixTests: XCTestCase {
         XCTAssertEqual(model.nav.section, .call)
         b?.leave()
 
-        // Video Call stays off with a stated reason (no core video start).
+        // Video Call states where it works (1:1 only; VIDEO1).
         XCTAssertNotNil(CommandCatalog.command(ChatCommands.videoCall)?.help)
+    }
+
+    /// VIDEO1: Video Call is offered in a 1:1 chat only and starts a video
+    /// session (camera on) through the core's video place path.
+    func testVideoCallStartsOnlyInOneOnOneChat() {
+        let model = makeModel()
+        CallSettings.shared.useVolatileStorage(.separateWindow)
+        defer { CallSettings.shared.useVolatileStorage() }
+        model.graph.chats.insertLocally(ChatItem(chatId: "19:peer", name: "Ava Lindqvist"))
+        model.graph.chats.insertLocally(ChatItem(chatId: "19:group", name: "Standup", is_group: true))
+        model.navigator?.select(section: .chat)
+
+        model.navigator?.select(SectionSelection(id: "19:group"), in: .chat)
+        XCTAssertNil(ConversationToolbar.startVideoCall(model, show: false, store: CallStore(demo: true)))
+
+        model.navigator?.select(SectionSelection(id: "19:peer"), in: .chat)
+        let store = CallStore(demo: true)
+        let s = ConversationToolbar.startVideoCall(model, show: false, store: store)
+        XCTAssertEqual(s?.video, true)
+        XCTAssertEqual(store.lastAction, "demo:place-video")
+        XCTAssertTrue(store.cameraOn)
+        XCTAssertEqual(s?.connected, true)
+        XCTAssertTrue(s?.remoteVideos.isEmpty ?? false, "demo never decodes core video")
+        s?.leave()
+        XCTAssertFalse(store.cameraOn, "the next demo call starts camera-off")
     }
 
     /// §7.3: nothing to reload on "Opens in Your Browser", even with a

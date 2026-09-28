@@ -73,6 +73,21 @@ public enum DemoClip {
         }
     }
 
+    /// One sunset frame as an image (demo video call remote feed,
+    /// VIDEO1): same pixels as the clip's frame `i` (wraps).
+    public static func frameImage(_ i: Int) -> CGImage? {
+        guard let buf = makeFrame(((i % frameCount) + frameCount) % frameCount) else { return nil }
+        CVPixelBufferLockBaseAddress(buf, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(buf, .readOnly) }
+        guard let base = CVPixelBufferGetBaseAddress(buf) else { return nil }
+        return CGContext(
+            data: base, width: width, height: height, bitsPerComponent: 8,
+            bytesPerRow: CVPixelBufferGetBytesPerRow(buf),
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.noneSkipFirst.rawValue
+        )?.makeImage()
+    }
+
     /// One sunset frame (progress 0…1 across the loop).
     static func makeFrame(_ i: Int) -> CVPixelBuffer? {
         let f = Double(i) / Double(frameCount - 1)

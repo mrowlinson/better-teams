@@ -2,7 +2,7 @@
 // view (UI-SPEC §6.1, R13).
 //
 // Row: reserved unread dot · kind symbol over the avatar · headline
-// ("Alex Kim mentioned you in Design Sync", up to 2 lines) · time ·
+// ("Alex Kay mentioned you in Design Sync", up to 2 lines) · time ·
 // snippet (up to 2 lines; absent when it would only repeat the
 // headline). Lines that have no text take no height.
 import Foundation

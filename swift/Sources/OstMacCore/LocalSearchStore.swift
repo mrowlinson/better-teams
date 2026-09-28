@@ -324,6 +324,50 @@ public final class LocalSearchStore: ObservableObject {
         clear()
     }
 
+    // MARK: - Rebuild (Settings ▸ Advanced ▸ Rebuild Index)
+
+    /// One chat's or channel's locally stored messages (a rebuild source).
+    public struct CachedThread: Sendable, Equatable {
+        public let chatID: String
+        public let teamID: String?
+        public let channelID: String?
+        public var messages: [ChatMessage]
+
+        public init(chatID: String, teamID: String? = nil, channelID: String? = nil, messages: [ChatMessage]) {
+            self.chatID = chatID
+            self.teamID = teamID
+            self.channelID = channelID
+            self.messages = messages
+        }
+    }
+
+    /// Every indexed doc, grouped per chat (sorted by chat id; messages
+    /// by timestamp) — the on-device message store a rebuild walks.
+    public func cachedThreads() -> [CachedThread] {
+        var byChat: [String: [IndexedDoc]] = [:]
+        for d in snapshot.docs.values { byChat[d.chatID, default: []].append(d) }
+        return byChat.keys.sorted().map { chatID in
+            let docs = byChat[chatID, default: []].sorted {
+                ($0.timestamp, $0.messageID) < ($1.timestamp, $1.messageID)
+            }
+            return CachedThread(
+                chatID: chatID, teamID: docs.first?.teamID, channelID: docs.first?.channelID,
+                messages: docs.map {
+                    ChatMessage(id: $0.messageID, sender: $0.sender, timestamp: $0.timestamp, content: $0.content)
+                })
+        }
+    }
+
+    /// Take `other`'s index wholesale (a finished rebuild swaps in); an
+    /// active query re-runs against it.
+    public func adopt(_ other: LocalSearchStore) {
+        snapshot = other.snapshot
+        rankedKeys = []
+        if !lastQuery.isEmpty {
+            runQuery(lastQuery)
+        }
+    }
+
     /// Write the index snapshot to `url` (overwritten).
     public func save(to url: URL) throws {
         let codec = ArchiveCodec.resolve(ArchiveCodec.defaultCodec)

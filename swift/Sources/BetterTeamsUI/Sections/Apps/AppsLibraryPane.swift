@@ -257,6 +257,9 @@ private struct AppCard: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
+            if case .web(let id) = item.entry, case .teamsHosted = item.launch {
+                AppCardAdvanced(id: id, host: m.frameHost, demo: m.options.demo)
+            }
         }
         .padding(24)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)

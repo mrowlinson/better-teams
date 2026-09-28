@@ -249,7 +249,7 @@ public enum DemoData {
             meetingId: "demo-meet-onsite", subject: "Design crit (Room 3B)",
             start: "2026-09-24T14:00:00.0000000",
             end: "2026-09-24T15:00:00.0000000",
-            organizer: "Lee, Sam"),
+            organizer: "Ray, Sam"),
     ]
 
     public static func meetingsResponse() -> MeetingsResponse {
@@ -383,14 +383,14 @@ public enum DemoData {
     }
 
     /// Demo threads flagging an owner mention (om-mentions): the rich
-    /// thread's edited bubble mines the owner (`@Jordan Lee`) from its `<at>` tag, and the
+    /// thread's edited bubble mines the owner (`@Jordan Fox`) from its `<at>` tag, and the
     /// showcase kickoff does the same. Adopted by the app's MentionStore
     /// at demo launch (offline, no feed).
     public static let mentionedChatIDs: Set<String> = [richID, showcaseID]
 
     /// The demo owner's display name, as Teams writes it in a mention of
     /// them (`<at>`): bubbles show the name, never a placeholder.
-    public static let ownerDisplayName = "Jordan Lee"
+    public static let ownerDisplayName = "Jordan Fox"
 
     /// Canned shared files for `--demo` (om-shared lane). Design Sync has
     /// three (pdf + image + sheet, one with a sender); Ava has one; the
@@ -930,8 +930,8 @@ public enum DemoData {
             ChatMessage(
                 id: "sc-1", sender: "Megan Harper",
                 timestamp: iso(at(dayOffset: -1, h: 16, m: 2)),
-                content: "Offsite photos are in — @Jordan Lee can you share the sunset one?",
-                raw: "<p>Offsite photos are in — <at id=\"8:me\">@Jordan Lee</at> can you share the sunset one?</p>",
+                content: "Offsite photos are in — @Jordan Fox can you share the sunset one?",
+                raw: "<p>Offsite photos are in — <at id=\"8:me\">@Jordan Fox</at> can you share the sunset one?</p>",
                 // Reactors carry ids only: names come from the chat roster.
                 reactions: [
                     ReactionCount(emoji: "👍", count: 3, reactors: [Reactor(id: "8:orgid:demo-u-tom"), Reactor(id: "8:orgid:demo-u-ava"), Reactor(id: "8:orgid:demo-u-me")]),
@@ -941,7 +941,7 @@ public enum DemoData {
                 id: "sc-2", sender: "Tom Becker",
                 timestamp: iso(at(dayOffset: -1, h: 16, m: 5)),
                 content: "Yes please. The best ones go in the `offsite-recap` deck.",
-                raw: #"<quote author="Megan Harper" guid="sc-1">Offsite photos are in — @Jordan Lee can you share the sunset one?</quote><p>Yes please. The best ones go in the `offsite-recap` deck.</p>"#,
+                raw: #"<quote author="Megan Harper" guid="sc-1">Offsite photos are in — @Jordan Fox can you share the sunset one?</quote><p>Yes please. The best ones go in the `offsite-recap` deck.</p>"#,
                 reply_to: "sc-1"),
             ChatMessage(
                 id: "sc-3", sender: "Me",

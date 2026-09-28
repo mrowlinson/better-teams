@@ -141,6 +141,7 @@ extension FramePage: WKNavigationDelegate {
     public func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         committed = true
         state = .loaded
+        host?.probeChrome(self)
     }
 
     public func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
@@ -245,6 +246,21 @@ extension FramePage: WKDownloadDelegate {
     }
 }
 
+// MARK: - chrome route relay
+
+/// Receives a Teams page's in-page route changes (`FrameChromeStyle`
+/// route hook). Weak to its page: the content controller retains it.
+@MainActor
+private final class FrameChromeRouteRelay: NSObject, WKScriptMessageHandler {
+    weak var page: FramePage?
+    init(_ page: FramePage) { self.page = page }
+
+    func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard message.frameInfo.isMainFrame, let page else { return }
+        page.host?.probeChrome(page)
+    }
+}
+
 // MARK: - FrameHost
 
 @MainActor
@@ -275,6 +291,9 @@ public final class FrameHost {
     }
     /// Per-app crops (§7.3 fallback), keyed by `FrameKey.raw`; absent = none.
     private(set) var crops: [String: TeamsFrameCrop]
+    /// Chrome the measure probe still saw after the last load or route
+    /// change, keyed by `FrameKey.raw`; absent = hidden or not measured.
+    private(set) var measured: [String: TeamsFrameCrop] = [:]
 
     static let downloadsFolderKey = "bt.frame.downloadsFolder"
 
@@ -345,7 +364,7 @@ public final class FrameHost {
         let web = p.web ?? makeView(p)
         if web.superview !== container {
             web.removeFromSuperview()
-            web.frame = FrameChromeStyle.frame(in: container.bounds, crop: crop(key), flipped: container.isFlipped)
+            web.frame = FrameChromeStyle.frame(in: container.bounds, crop: layoutCrop(key), flipped: container.isFlipped)
             web.autoresizingMask = [.width, .height]
             container.addSubview(web)
         }
@@ -391,6 +410,34 @@ public final class FrameHost {
 
     func crop(_ key: FrameKey) -> TeamsFrameCrop { crops[key.raw] ?? .none }
 
+    /// The crop the view is laid out with: the app's own crop, else (while
+    /// hiding is on) the chrome the probe still measures, else none.
+    func layoutCrop(_ key: FrameKey) -> TeamsFrameCrop {
+        crops[key.raw] ?? (hideChrome ? measured[key.raw] : nil) ?? .none
+    }
+
+    /// Runs the `TeamsFrameMeasure` probe on a resident Teams page:
+    /// visible app bar + header insets, or nil when none show (or the
+    /// page is not resident / not Teams-hosted). Reads layout only.
+    func measureChrome(_ key: FrameKey) async -> TeamsFrameCrop? {
+        guard !isDemo, let p = pages[key.raw], let web = p.web, FrameChromeStyle.applies(to: p.url) else { return nil }
+        guard let json = try? await web.evaluateJavaScript(TeamsFrameMeasure.script) as? String else { return nil }
+        return TeamsFrameMeasure.parseResult(json)
+    }
+
+    /// §7.3 (2): re-measure after every load and in-page route change;
+    /// chrome still showing despite the sheet becomes the layout crop.
+    func probeChrome(_ p: FramePage) {
+        guard hideChrome, !isDemo, p.web != nil, FrameChromeStyle.applies(to: p.url) else { return }
+        let key = p.key
+        Task { @MainActor [weak self] in
+            let seen = await self?.measureChrome(key)
+            guard let self, self.measured[key.raw] != seen else { return }
+            self.measured[key.raw] = seen
+            self.relayout(key)
+        }
+    }
+
     /// Sets one app's crop and re-lays out its view if resident.
     func setCrop(_ crop: TeamsFrameCrop, for key: FrameKey) {
         crops[key.raw] = crop == .none ? nil : crop
@@ -406,7 +453,7 @@ public final class FrameHost {
 
     private func relayout(_ key: FrameKey) {
         guard let web = pages[key.raw]?.web, let container = web.superview else { return }
-        web.frame = FrameChromeStyle.frame(in: container.bounds, crop: crop(key), flipped: container.isFlipped)
+        web.frame = FrameChromeStyle.frame(in: container.bounds, crop: layoutCrop(key), flipped: container.isFlipped)
     }
 
     /// Hiding toggled: resident Teams pages add or drop the sheet now and
@@ -416,8 +463,16 @@ public final class FrameHost {
             guard let web = p.web, FrameChromeStyle.applies(to: p.url) else { continue }
             let content = web.configuration.userContentController
             content.removeAllUserScripts()
-            if hideChrome { content.addUserScript(FrameChromeStyle.userScript()) }
-            web.evaluateJavaScript(hideChrome ? FrameChromeStyle.injectJS : FrameChromeStyle.removeJS)
+            if hideChrome {
+                content.addUserScript(FrameChromeStyle.userScript())
+                content.addUserScript(FrameChromeStyle.routeScript())
+                web.evaluateJavaScript(FrameChromeStyle.injectJS + FrameChromeStyle.routeHookJS)
+                probeChrome(p)
+            } else {
+                web.evaluateJavaScript(FrameChromeStyle.removeJS)
+                // Hiding off: the probe's fallback crop no longer applies.
+                if measured.removeValue(forKey: p.key.raw) != nil { relayout(p.key) }
+            }
         }
     }
 
@@ -456,6 +511,7 @@ public final class FrameHost {
         web.stopLoading()
         web.navigationDelegate = nil
         web.uiDelegate = nil
+        web.configuration.userContentController.removeScriptMessageHandler(forName: FrameChromeStyle.routeMessage)
         web.removeFromSuperview()
         p.web = nil
         p.suspended = false
@@ -470,8 +526,12 @@ public final class FrameHost {
         config.websiteDataStore = dataStore
         config.applicationNameForUserAgent = TeamsFrameConfig.userAgentSuffix
         config.mediaTypesRequiringUserActionForPlayback = .all
-        if hideChrome, FrameChromeStyle.applies(to: p.url) {
-            config.userContentController.addUserScript(FrameChromeStyle.userScript())
+        if FrameChromeStyle.applies(to: p.url) {
+            config.userContentController.add(FrameChromeRouteRelay(p), name: FrameChromeStyle.routeMessage)
+            if hideChrome {
+                config.userContentController.addUserScript(FrameChromeStyle.userScript())
+                config.userContentController.addUserScript(FrameChromeStyle.routeScript())
+            }
         }
         let web = WKWebView(frame: NSRect(x: 0, y: 0, width: 800, height: 600), configuration: config)
         web.focusRingType = .none

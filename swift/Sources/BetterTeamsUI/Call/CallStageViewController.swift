@@ -115,6 +115,8 @@ struct CallStageView: View {
         Group {
             if session.isMeeting, !session.joined {
                 PreJoinView(session: session, status: status, canJoin: meetings.pendingJoin != nil)
+            } else if session.video {
+                videoStage
             } else {
                 stageGrid
             }
@@ -145,6 +147,27 @@ struct CallStageView: View {
                 ForEach(tiles) { t in
                     CallTileView(tile: t, camera: session.camera)
                 }
+            }
+        }
+        .padding(16)
+    }
+
+    /// 1:1 video call (VIDEO1): the remote video fills the stage, the
+    /// self view floats bottom-trailing as a picture-in-picture.
+    private var videoStage: some View {
+        let own = tiles.first { $0.kind == .selfView }
+        return ZStack(alignment: .bottomTrailing) {
+            // 1:1: the one remote participant (meeting video: a tile per
+            // `remoteVideos` entry in the grid).
+            RemoteVideoTile(model: session.remoteVideos.values.first, name: session.peerName ?? session.title,
+                            demo: session.store?.isDemo == true && session.connected,
+                            animated: !session.isEvidence, status: session.connected ? nil : status)
+            if let own {
+                CallTileView(tile: own, camera: session.camera)
+                    .frame(width: 192, height: 108)
+                    .shadow(radius: 4)
+                    .padding(12)
+                    .animation(VideoFade.animation, value: own.cameraOn)
             }
         }
         .padding(16)
@@ -244,6 +267,115 @@ struct CallTileView: View {
         if tile.muted { parts.append("muted") }
         if tile.kind == .selfView { parts.append(tile.cameraOn ? "camera on" : "camera off") }
         return parts.joined(separator: ", ")
+    }
+}
+
+/// The remote side of a 1:1 video call: decoded frames (live) or the
+/// demo sunset feed; the peer's avatar until the first frame arrives.
+struct RemoteVideoTile: View {
+    /// This participant's decoder (nil: demo, or live media not up yet).
+    let model: LiveVideoModel?
+    let name: String
+    let demo: Bool
+    let animated: Bool
+    let status: String?
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.black)
+            if let model {
+                LiveRemoteVideo(model: model, name: name, status: status)
+            } else if demo {
+                DemoRemoteVideo(animated: animated)
+            } else {
+                RemoteVideoWaiting(name: name, status: status ?? "Waiting for video…")
+            }
+        }
+        // Waiting → first frame crossfades (never a blank flash).
+        .animation(VideoFade.animation, value: model == nil && demo)
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(name), video")
+    }
+}
+
+/// The one crossfade video views use for state changes (a fade, so it
+/// stays under Reduce Motion; never a blank frame between states).
+enum VideoFade {
+    static let animation = Animation.easeInOut(duration: 0.25)
+}
+
+/// Live remote frames (`LiveVideoModel`: core AU queue → VT decode).
+private struct LiveRemoteVideo: View {
+    @ObservedObject var model: LiveVideoModel
+    let name: String
+    let status: String?
+
+    var body: some View {
+        // The last decoded frame stays up through stalls and camera-off
+        // (the peer's black frames are content); the model never clears it.
+        ZStack {
+            if let img = model.remoteImage {
+                Image(decorative: img, scale: 1)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+            } else {
+                RemoteVideoWaiting(name: name, status: status ?? "Waiting for video…")
+            }
+        }
+        .animation(VideoFade.animation, value: model.remoteImage == nil)
+    }
+}
+
+private struct RemoteVideoWaiting: View {
+    let name: String
+    let status: String?
+    @Environment(\.contentTextScale) private var scale
+
+    var body: some View {
+        VStack(spacing: 12) {
+            Avatar(name: name, diameter: 96)
+            if let status {
+                Text(status)
+                    .font(AppFont.body(scale))
+                    .foregroundStyle(.white.opacity(0.8))
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 480)
+            }
+        }
+    }
+}
+
+/// Demo remote video: the DemoMedia sunset scene, looping (demo never
+/// touches the network or the core video queues). Evidence shows one
+/// fixed frame.
+struct DemoRemoteVideo: View {
+    let animated: Bool
+    /// Every 4th clip frame, rendered once per process (12 small images).
+    @MainActor static let frames: [CGImage] = stride(from: 0, to: DemoClip.frameCount, by: 4)
+        .compactMap { DemoClip.frameImage($0) }
+
+    var body: some View {
+        if animated {
+            TimelineView(.periodic(from: .now, by: 1.0 / 8)) { ctx in
+                frame(Int(ctx.date.timeIntervalSinceReferenceDate * 8))
+            }
+        } else {
+            frame(Self.frames.count / 2)
+        }
+    }
+
+    @ViewBuilder
+    private func frame(_ i: Int) -> some View {
+        let all = Self.frames
+        if !all.isEmpty {
+            let n = all.count
+            // Ping-pong so the sun arcs back instead of jumping.
+            let k = i % (2 * n - 2 == 0 ? 1 : 2 * n - 2)
+            Image(decorative: all[k < n ? k : 2 * n - 2 - k], scale: 1)
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+        }
     }
 }
 

@@ -15,6 +15,7 @@ import WebKit
 struct AdvancedPane: View {
     @ObservedObject var app: AppStateDiagnostics
     @ObservedObject var health: HealthStore
+    @ObservedObject var rebuild: SearchIndexRebuild
     let demo: Bool
     var frameHost: FrameHost?
     @State private var exportResult: String?
@@ -23,7 +24,8 @@ struct AdvancedPane: View {
     @MainActor
     static func make(_ m: WindowModel?) -> AnyView {
         guard let m, let app = m.app else { return AnyView(SettingsUnavailable(text: "Sign in to see diagnostics.")) }
-        return AnyView(AdvancedPane(app: AppStateDiagnostics(app), health: HealthStore(), demo: m.options.demo,
+        return AnyView(AdvancedPane(app: AppStateDiagnostics(app), health: HealthStore(),
+                                    rebuild: app.searchIndexRebuild, demo: m.options.demo,
                                     frameHost: m.frameHost))
     }
 
@@ -64,8 +66,17 @@ struct AdvancedPane: View {
             }
             Section {
                 LabeledContent("Offline search") {
-                    Button("Rebuild Index\u{2026}") { rebuildIndex() }
-                        .disabled(demo)
+                    if let p = rebuild.progress {
+                        HStack {
+                            ProgressView(value: Double(p.done), total: Double(max(p.total, 1)))
+                                .frame(width: 120)
+                                .accessibilityLabel("Rebuilding index")
+                            Button("Cancel") { rebuild.cancel() }
+                        }
+                    } else {
+                        Button("Rebuild Index\u{2026}") { rebuildIndex() }
+                            .disabled(demo)
+                    }
                 }
                 LabeledContent("Caches") {
                     Button("Reset Caches\u{2026}") { resetCaches() }
@@ -78,7 +89,7 @@ struct AdvancedPane: View {
             } header: {
                 Text("Maintenance")
             } footer: {
-                Text(maintenanceResult ?? "Resetting caches keeps your sign-in and settings.")
+                Text(maintenanceFooter)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -87,6 +98,19 @@ struct AdvancedPane: View {
         .scrollDisabled(true)
         .frame(width: 500)
         .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private var maintenanceFooter: String {
+        if let p = rebuild.progress {
+            return "Rebuilding the index: \(p.done) of \(p.total) conversations. Search keeps working meanwhile."
+        }
+        if let r = maintenanceResult { return r }
+        switch rebuild.outcome {
+        case .finished(let docs)?: return "Index rebuilt: \(docs) messages."
+        case .failed(let e)?: return "Couldn\u{2019}t rebuild: \(e)"
+        case .cancelled?: return "Index rebuild cancelled; the previous index is kept."
+        case nil: return "Resetting caches keeps your sign-in and settings."
+        }
     }
 
     private var healthText: String {
@@ -113,11 +137,10 @@ struct AdvancedPane: View {
 
     private func rebuildIndex() {
         guard !demo, confirm("Rebuild the offline search index?",
-                             "Better Teams clears the index and fills it again as conversations load. Offline search finds less until then.",
+                             "Better Teams re-indexes every conversation stored on this Mac in the background. Search keeps working while it runs.",
                              "Rebuild") else { return }
+        maintenanceResult = nil
         app.store.rebuildSearchIndex()
-        maintenanceResult = app.store.searchIndexError.map { "Couldn\u{2019}t rebuild: \($0)" }
-            ?? "Index rebuilt: \(app.store.searchIndexDocs) messages so far."
     }
 
     private func resetCaches() {
