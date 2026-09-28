@@ -2,7 +2,7 @@
 import Foundation
 
 /// Which leg a unified row came from.
-public enum UnifiedFileSource: String, CaseIterable, Sendable {
+public enum UnifiedFileSource: String, CaseIterable, Sendable, Codable {
     case chat
     case channel
     case drive

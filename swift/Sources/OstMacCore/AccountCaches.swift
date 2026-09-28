@@ -40,11 +40,23 @@ public enum AccountCaches {
             if let base = MeetingChatStore.meetingsDirectory() {
                 removeTopLevelFiles(in: base, fileManager: fileManager)
             }
+            if let base = MessageHistoryCache.directory(for: accountID) {
+                MessageHistoryCache.removeFiles(in: base, fileManager: fileManager)
+            }
+            if let base = SectionCache.directory(for: accountID) {
+                SectionCache.removeFiles(in: base, fileManager: fileManager)
+            }
         } else {
             if let dir = RichMediaCache.diskDir(for: accountID) {
                 try? fileManager.removeItem(at: dir)
             }
             if let dir = MeetingChatStore.meetingsDirectory(for: accountID) {
+                try? fileManager.removeItem(at: dir)
+            }
+            if let dir = MessageHistoryCache.directory(for: accountID) {
+                try? fileManager.removeItem(at: dir)
+            }
+            if let dir = SectionCache.directory(for: accountID) {
                 try? fileManager.removeItem(at: dir)
             }
         }

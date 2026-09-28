@@ -123,7 +123,8 @@ public struct TeamsAppManifest: Codable, Sendable, Equatable, Identifiable {
     public var personalTab: TeamsAppStaticTab? {
         staticTabs.first { t in
             guard let c = t.contentUrl, !c.isEmpty else { return false }
-            return (t.scopes.isEmpty || t.scopes.contains("personal"))
+            // Live manifests say "Personal" (APPHOST-B3); fixtures "personal".
+            return (t.scopes.isEmpty || t.scopes.contains { $0.caseInsensitiveCompare("personal") == .orderedSame })
                 && !["conversations", "about"].contains(t.entityId.lowercased())
         }
     }
@@ -164,6 +165,22 @@ public struct TeamsAppSearchResponse: Decodable, Sendable {
 
 struct TeamsAppOK: Decodable, Sendable { let ok: Bool }
 
+/// `ostmac_app_sites_for`: SharePoint URLs for tab placeholders
+/// (`{teamSiteDomain}`, `{teamSitePath}`, `{mySiteDomain}`…).
+public struct TeamsAppSites: Decodable, Sendable, Equatable {
+    public var root: String?
+    public var mySite: String?
+    public var teamSite: String?
+
+    public init(root: String? = nil, mySite: String? = nil, teamSite: String? = nil) {
+        self.root = root
+        self.mySite = mySite
+        self.teamSite = teamSite
+    }
+
+    enum CodingKeys: String, CodingKey { case root, mySite = "my_site", teamSite = "team_site" }
+}
+
 /// `ostmac_app_identity_for`: who the host says the user is.
 public struct TeamsAppIdentity: Codable, Sendable, Equatable {
     public var tenantId: String
@@ -188,8 +205,10 @@ public struct TeamsAppToken: Decodable, Sendable, CustomStringConvertible {
     public let token: String
     public let expiresIn: Int?
     public let scope: String?
+    /// OIDC id token (nested app auth replies need one). Never shown.
+    public let idToken: String?
 
-    enum CodingKeys: String, CodingKey { case token, expiresIn = "expires_in", scope }
+    enum CodingKeys: String, CodingKey { case token, expiresIn = "expires_in", scope, idToken = "id_token" }
 
     public var description: String { "TeamsAppToken(<\(token.count) chars>, expiresIn: \(expiresIn ?? -1))" }
 }
@@ -210,6 +229,24 @@ extension RustCore {
     public static func appSearch(profile: String?, query: String) throws -> TeamsAppSearchResponse {
         try withProfile(profile) { p in
             try query.withCString { try call(ostmac_app_search_for(p, $0), as: TeamsAppSearchResponse.self) }
+        }
+    }
+
+    /// Manifests of a team's installed apps plus `ids` (blocking FFI +
+    /// network). Read-only.
+    public static func teamAppDefinitions(profile: String?, teamID: String?, ids: [String]) throws -> TeamsAppSearchResponse {
+        let json = String(data: (try? JSONEncoder().encode(ids)) ?? Data("[]".utf8), encoding: .utf8) ?? "[]"
+        return try withProfile(profile) { p in
+            try (teamID ?? "").withCString { t in
+                try json.withCString { try call(ostmac_team_app_definitions_for(p, t, $0), as: TeamsAppSearchResponse.self) }
+            }
+        }
+    }
+
+    /// SharePoint site URLs (blocking FFI + network). Read-only.
+    public static func appSites(profile: String?, groupID: String?) throws -> TeamsAppSites {
+        try withProfile(profile) { p in
+            try (groupID ?? "").withCString { try call(ostmac_app_sites_for(p, $0), as: TeamsAppSites.self) }
         }
     }
 
@@ -315,6 +352,20 @@ public enum TeamsAppService {
     public static func search(profile: String?, query: String) async -> Result<[TeamsAppManifest], any Error> {
         await Task.detached(priority: .userInitiated) {
             Result { try RustCore.appSearch(profile: profile, query: query).apps }
+        }.value
+    }
+
+    /// Team-installed + channel-tab app manifests (read-only).
+    public static func teamApps(profile: String?, teamID: String?, ids: [String]) async -> Result<[TeamsAppManifest], any Error> {
+        await Task.detached(priority: .utility) {
+            Result { try RustCore.teamAppDefinitions(profile: profile, teamID: teamID, ids: ids).apps }
+        }.value
+    }
+
+    /// SharePoint site URLs for tab placeholders (read-only).
+    public static func sites(profile: String?, groupID: String?) async -> Result<TeamsAppSites, any Error> {
+        await Task.detached(priority: .userInitiated) {
+            Result { try RustCore.appSites(profile: profile, groupID: groupID) }
         }.value
     }
 

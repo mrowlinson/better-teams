@@ -115,6 +115,64 @@ public final class CalendarWeekStore: ObservableObject {
     /// is still the newest one (stale-drop for fast week paging).
     private var loadGeneration: UInt64 = 0
 
+    /// NOLOAD: last-good snapshot store (nil = memory only / demo).
+    public var snapshots: SectionCache?
+    static let snapshotKey = "calendar"
+    /// Weeks kept on disk: this week ± this many.
+    static let snapshotSpanWeeks: Int64 = 4
+
+    struct CachedWeek: Codable {
+        let response: CalWeekResponse
+        let at: Date
+    }
+
+    /// Paint the last good weeks before any fetch: the shown week lands
+    /// at once (stale weeks still revalidate behind — `weekFreshness`).
+    @discardableResult
+    public func restoreSnapshot() -> Bool {
+        guard let snap = snapshots?.load([String: CachedWeek].self, key: Self.snapshotKey)
+        else { return false }
+        for (k, w) in snap {
+            guard let start = Int64(k), weekCache[start] == nil else { continue }
+            weekCache[start] = (w.response, w.at)
+        }
+        guard meetings.isEmpty, let hit = weekCache[key(weekStart)] else { return false }
+        meetings = hit.response.meetings
+        state = hit.response.meetings.isEmpty ? .empty : .loaded
+        return true
+    }
+
+    private func saveSnapshot() {
+        guard let snapshots else { return }
+        let now = key(CalWeek.startOfWeek(containing: Date()))
+        let span = Self.snapshotSpanWeeks * 7 * 86_400
+        var out: [String: CachedWeek] = [:]
+        for (k, w) in weekCache where abs(k - now) <= span + 86_400 {
+            out[String(k)] = CachedWeek(response: w.response, at: w.at)
+        }
+        snapshots.save(out, key: Self.snapshotKey)
+    }
+
+    /// Prefetch one week into the cache (launch / idle pass; no UI
+    /// change). Weeks already fresh are skipped.
+    public func prefetchWeek(offset: Int) async {
+        guard let s = calendar.date(byAdding: .day, value: 7 * offset, to: weekStart) else { return }
+        let k = key(s)
+        if let hit = weekCache[k], Date().timeIntervalSince(hit.at) < Self.weekFreshness { return }
+        guard prefetching.insert(k).inserted else { return }
+        let fetcher = weekFetcher
+        let resp = try? await Task.detached(priority: .utility) { try fetcher(k) }.value
+        prefetching.remove(k)
+        if let resp {
+            weekCache[k] = (resp, Date())
+            saveSnapshot()
+            if k == key(weekStart), !isLoadingWeek, state != .loading {
+                meetings = resp.meetings
+                state = resp.meetings.isEmpty ? .empty : .loaded
+            }
+        }
+    }
+
     /// Fetch the current week window. A slower earlier load that finishes
     /// after a newer one started (or after the week moved) is dropped, so
     /// it can never overwrite the newer week's meetings or state.
@@ -139,7 +197,10 @@ public final class CalendarWeekStore: ObservableObject {
         } catch {
             result = .failure(error)
         }
-        if case .success(let response) = result { weekCache[start] = (response, Date()) }
+        if case .success(let response) = result {
+            weekCache[start] = (response, Date())
+            saveSnapshot()
+        }
         guard Self.isCurrent(
             generation: generation, latest: loadGeneration,
             start: start, weekStart: key(pendingWeekStart ?? weekStart))
@@ -196,7 +257,10 @@ public final class CalendarWeekStore: ObservableObject {
             Task {
                 let resp = try? await Task.detached { try fetcher(k) }.value
                 prefetching.remove(k)
-                if let resp, weekCache[k] == nil { weekCache[k] = (resp, Date()) }
+                if let resp, weekCache[k] == nil {
+                    weekCache[k] = (resp, Date())
+                    saveSnapshot()
+                }
             }
         }
     }
@@ -331,8 +395,7 @@ public final class CalendarWeekStore: ObservableObject {
     }
 
     nonisolated static func message(for error: Error) -> String {
-        if case CoreCallError.failed(let m) = error { return m }
-        return String(describing: error)
+        FriendlyError.message(for: error)
     }
 }
 

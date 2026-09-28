@@ -10,7 +10,14 @@ import Foundation
 /// `download_url` is a pre-authenticated short-lived URL: Swift
 /// streams playback directly; when expired it falls back to the files
 /// download (`drive_id` + `id`).
-public struct RecordingItem: Decodable, Sendable, Identifiable, Equatable {
+public struct RecordingItem: Codable, Sendable, Identifiable, Equatable {
+    /// Disk-snapshot form: the short-lived pre-authenticated URL dropped.
+    public var withoutDownloadURL: RecordingItem {
+        RecordingItem(id: id, name: name, size: size, mime: mime, web_url: web_url,
+                      download_url: nil, drive_id: drive_id, created: created,
+                      modified: modified, duration_ms: duration_ms, source: source)
+    }
+
     public let id: String
     public let name: String
     public let size: UInt64

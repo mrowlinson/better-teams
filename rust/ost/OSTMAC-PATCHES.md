@@ -1251,7 +1251,87 @@ Notes:
     `store_parse_sections_detail_fields_and_install_body`. NOT
     live-verified: store/search response shapes and query parameter
     are INFERRED from the shell bundles; install never exercised.
+75. [bug] `src/api/schedule.rs` — **draft slot 403 is an empty slot,
+    not a failed week (shiftlive lane)**. Live 2026-09-28 (member
+    account, the only team with Shifts): the `sharedShift` /
+    `sharedTimeOff` range queries answer 200, but `draftShift` /
+    `draftTimeOff` answer 403 Forbidden "Sorry, you don't have the
+    permission to filter on draft information." (only schedule
+    managers may filter drafts). `list_shifts_range_data` /
+    `list_timesoffs_range_data` propagated it, so the whole week
+    failed and the Shifts pane showed "Couldn't Load Shifts". New
+    `draft_slot_forbidden(slot, err)`: a draft-slot `HTTP 403` yields
+    no rows; shared-slot failures and every other status still fail.
+    Test: `draft_slot_403_is_empty_not_fatal`. Live-verified
+    read-only after the fix: 85 shifts / 4 time off / 13 reasons.
+76. [fix] `src/api/apps.rs`, `src/auth/oauth.rs` — **live app catalog
+    shape + working nested app auth (applive lane)**. Verified live
+    2026-09-28 (read-only). Catalog: `aggregatedEntitlements` answers
+    `{type, value: {userEntitlements: {<id>: [{id, state,
+    isAppBarPinned, appBarOrder, …}]}, definitions: {<appId>:
+    manifest}, userEntitlementsHash}}`; items are keyed `id`, not
+    `appId`, so the §72 parsers found 0 entitlements, 0 pinned and never
+    asked for definitions. `parse_entitlements` now reads the
+    `userEntitlements` container (else any `appId` object);
+    `parse_pinned` keeps only pinned items (isAppBarPinned /
+    isUserPinned / isAdminPinned) sorted by `appBarOrder`;
+    `app_catalog_data` takes entitlements, pin order and manifests from
+    that one query and asks batchedDefinitions only for ids it left out.
+    `GET beta/users/apps/entitlements` is not the installed list (a few
+    copilot/extension definitions) and is no longer called.
+    `batchedDefinitions` wants a bare JSON array of ids (`{"appIds":…}`
+    returns `[]`). Live: 84 entitlements, 11 pinned, 84 manifests
+    (28 with static tabs) in ~1 s; batchedDefinitions resolved 12/12
+    channel-tab apps. NAA (§73): the brokered grant failed AADSTS9002326
+    (any `Origin` header: a native client's refresh token cannot be
+    redeemed cross-origin) and AADSTS50011 (`brk_redirect_uri` must be
+    the hub's own redirect). Now `brk_redirect_uri` =
+    `HUB_REDIRECT_URI` (`…/oauth2/nativeclient`), `redirect_uri` =
+    `brk-multihub://<app host>`, no `Origin`; live grant for Planner's
+    client returns a token whose `appid` is Planner's own client. Store
+    `GET beta/users/apps/store` and `search` answer 405 (method/shape
+    still unknown; not changed). Tests:
+    `aggregated_view_yields_entitlements_pinned_order_and_manifests`,
+    `urls_and_bodies`, `grant_forms`,
+    `naa_grant_posts_brokered_form_and_parses` (updated).
 
+77. [feature] `src/api/client.rs`, `src/api/files.rs` — **request
+    deadlines + request observer (noload lane)**. The shared reqwest
+    client had no timeout, so one stalled request hung a section load
+    indefinitely. `shared_http()` now sets `connect_timeout` 10s;
+    every `TeamsClient` API call carries a whole-request deadline
+    (`DEFAULT_REQUEST_TIMEOUT` 30s; reqwest 0.11 has no idle read
+    timeout), overridable per client via `with_timeout(None|Some)`.
+    Uploads (`graph_put_bytes`, `drive_session_put`) are connect-only;
+    inline media gets `MEDIA_TIMEOUT` 60s; content downloads move to
+    the new `graph_get_download` (connect-only). New
+    `set_request_observer(fn(method, url, status, ms))`: called once
+    per request after the response head (status 0 = transport failure
+    / timeout) so a host can log latency without touching call sites.
+
+78. [fix] `src/auth/oauth.rs`, `src/api/tabs.rs`, `src/api/apps.rs`,
+    `src/api/mod.rs` — **NAA id token, tab app ids, team apps, site
+    values (apphost-b3 lane)**. Verified live 2026-09-28 (read-only).
+    NAA (§73/§76): the brokered grant asked for `<scopes>
+    offline_access` only, so AAD returned no id token and the host
+    replied `id_token: ""`; MSAL.js rejects that (nullOrEmptyToken),
+    and Planner retried GetToken (26 in 32 s) and showed "couldn't load
+    your settings". New `naa_scope` adds `openid profile
+    offline_access` (deduplicated); `TokenGrant` gains `id_token`
+    (Debug prints its length only); `post_token_grant` parses it. Live
+    after: Planner 9 GetToken, 39 GETs, tasks and plans render. Tabs:
+    Graph v1.0 `teamsTab` has no `teamsAppId`, so every live tab had
+    no app id; both tab reads now use `?$expand=teamsApp` and take
+    `teamsApp.id`. New read-only `installed_apps_path` /
+    `parse_installed_app_ids` / `team_app_definitions_data` (Graph
+    `GET /teams/{id}/installedApps?$expand=teamsAppDefinition`, then
+    batchedDefinitions for those ids plus caller ids) and
+    `sharepoint_sites_data` (`GET /sites/root`, `/me/drive`,
+    `/groups/{id}/sites/root`, `$select=webUrl`, each best effort) for
+    the `{teamSiteDomain}`/`{teamSitePath}`/`{mySiteDomain}` tab
+    placeholders. Tests: `installed_apps_parse_ids_and_path`,
+    `app_id_from_expanded_teams_app`, `grant_forms` (naa_scope; Debug
+    hides id_token).
 ## Upstream PRs, wave 9 (2026-09-25 R10 audit; base 0892144; origin/main still 0892144)
 
 No-file wave. `git diff 307d221..db62ed7 -- rust/ost` is empty (wave-8

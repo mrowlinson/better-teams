@@ -69,6 +69,7 @@ public final class AccountWindowGraph: ObservableObject {
             key: SavedMessages.key(for: account.id))
         conv.accountID = account.id
         conv.coreRunner = runner ?? DirectAccountCoreRunner()
+        conv.historyCache = .disk(for: account.id) // histload
         // Sidebar selection sink (main-window wireChats shape): list
         // picks open here, never in the main window.
         self.chats.$selectedChatID

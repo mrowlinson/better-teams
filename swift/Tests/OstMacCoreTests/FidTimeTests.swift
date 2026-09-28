@@ -64,14 +64,14 @@ final class FidTimeTests: XCTestCase {
     }
 
     /// Bubble day split follows the local key: the Sep-21-local stamp
-    /// renders the older (clock + day) form on Sep 22.
+    /// renders the older (day + clock) form on Sep 22.
     func testShortTimeOlderFormFollowsLocalDay() {
         let now = Self.date("2026-09-22T15:00:00Z")
         XCTAssertEqual(
             Self.norm(ChatMessage.shortTime(
                 "2026-09-22T01:30:00Z", now: now,
                 timeZone: Self.newYork, locale: Self.us)),
-            "9:30 PM 21 Sep")
+            "Sep 21, 9:30 PM")
     }
 
     /// 7-digit fractional stamps (core wire form) parse, not slice.

@@ -146,6 +146,40 @@ public final class ChatListViewModel: ObservableObject, ChatSelection {
         pins.unpin(id)
     }
 
+    /// BUILDFIX: last-good chat list snapshot (nil = memory only / demo).
+    /// Rows only (ids, titles, last-message preview/time/sender) — no
+    /// message bodies; timelines live in MessageHistoryCache.
+    public var snapshots: SectionCache?
+    static let snapshotKey = "chats"
+
+    /// Paint the last good list (launch / account switch) before any
+    /// fetch; the next load revalidates behind the rows. Blocks made
+    /// since the snapshot still apply. No-op when rows are already up.
+    @discardableResult
+    public func restoreSnapshot() -> Bool {
+        guard chats.isEmpty,
+              let cached = snapshots?.load([ChatItem].self, key: Self.snapshotKey)
+        else { return false }
+        let visible = blocked.filtered(cached)
+        guard !visible.isEmpty else { return false }
+        chats = visible
+        state = .loaded
+        return true
+    }
+
+    /// Publish a fetched list: rows only when they changed (a cached
+    /// paint that matches the server republishes nothing), then save
+    /// the snapshot. Drops the selection when its chat is gone.
+    private func apply(_ response: ChatsResponse) {
+        let visible = Self.recencyOrdered(blocked.filtered(response.chats))
+        if visible != chats { chats = visible }
+        state = visible.isEmpty ? .empty : .loaded
+        if let sel = selectedChatID, chatByID[sel] == nil {
+            selectedChatID = nil
+        }
+        snapshots?.save(visible, key: Self.snapshotKey)
+    }
+
     /// Fetch the list. Drops the selection when its chat is gone.
     /// Blocked threads are filtered before publish (they never render).
     public func load(limit: Int32 = 50) async {
@@ -155,12 +189,7 @@ public final class ChatListViewModel: ObservableObject, ChatSelection {
             let response = try await Task.detached {
                 try fetcher(limit)
             }.value
-            let visible = Self.recencyOrdered(blocked.filtered(response.chats))
-            chats = visible
-            state = visible.isEmpty ? .empty : .loaded
-            if let sel = selectedChatID, chatByID[sel] == nil {
-                selectedChatID = nil
-            }
+            apply(response)
         } catch {
             state = .error(Self.message(for: error))
         }
@@ -218,6 +247,7 @@ public final class ChatListViewModel: ObservableObject, ChatSelection {
             removedID: chatID, chats: chats, selectedID: selectedChatID)
         chats.removeAll { $0.id == chatID }
         selectedChatID = next
+        snapshots?.save(chats, key: Self.snapshotKey) // left row never repaints
         onLocalRemove?(chatID)
     }
 
@@ -258,12 +288,7 @@ public final class ChatListViewModel: ObservableObject, ChatSelection {
             let response = try await Task.detached {
                 try fetcher(limit)
             }.value
-            let visible = Self.recencyOrdered(blocked.filtered(response.chats))
-            chats = visible
-            state = visible.isEmpty ? .empty : .loaded
-            if let sel = selectedChatID, chatByID[sel] == nil {
-                selectedChatID = nil
-            }
+            apply(response)
         } catch {
             state = .error(Self.message(for: error))
         }

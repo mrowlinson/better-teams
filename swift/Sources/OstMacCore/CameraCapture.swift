@@ -463,7 +463,8 @@ extension CameraCapture: AVCaptureVideoDataOutputSampleBufferDelegate {
                 }
                 if flag.get() {
                     // Live send: VT-encode + push NALs; transient failures
-                    // drop the frame (engine falls back to black IDR idle).
+                    // drop the frame and nothing replaces it (no black-IDR
+                    // fallback: with the camera off, no video is sent).
                     do {
                         let nals = try box.encode(bgra: packed, width: w, height: h)
                         _ = try RustCore.videoSendPush(nals: nals)

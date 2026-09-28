@@ -833,7 +833,10 @@ final class TimelineViewController: NSViewController, NSTableViewDataSource, NST
     }
 
     /// History paging near the top (user scroll, not a view-appearance
-    /// fetch; the store dedupes in-flight pages).
+    /// fetch; the store dedupes in-flight pages). Prefetches once the
+    /// viewport is within one screen of the top (histload), so the
+    /// older page usually lands before the top is reached; the prepend
+    /// keeps the visible rows in place (anchor restore in `apply`).
     private func scrolled() {
         let b = scroll.contentView.bounds
         // A size change is a resize, not a scroll: keep the pinned state
@@ -849,9 +852,16 @@ final class TimelineViewController: NSViewController, NSTableViewDataSource, NST
             if pinned { newWhileAway = 0 }
             updateJumpButton()
         }
-        guard b.minY < 120, conv.canLoadMore, !conv.loadingMore,
+        guard Self.shouldPrefetchOlder(offsetFromTop: b.minY, viewportHeight: b.height),
+              conv.canLoadMore, !conv.loadingMore,
               !items.isEmpty else { return }
         conv.loadMore()
+    }
+
+    /// Older-page prefetch gate: within one viewport (at least 120pt)
+    /// of the top. Pure, testable.
+    nonisolated static func shouldPrefetchOlder(offsetFromTop: CGFloat, viewportHeight: CGFloat) -> Bool {
+        offsetFromTop < max(120, viewportHeight)
     }
 
     private func updateJumpButton() {

@@ -88,6 +88,8 @@ struct ConversationDetail: View {
                     TimelineRepresentable(conv: conv)
                         .refreshStatus(conv.refreshing, failure: conv.refreshError,
                                        label: "Updating Messages", retry: { conv.refresh() })
+                        // histload: small top spinner while an older page loads.
+                        .refreshStatus(conv.loadingMore, label: "Loading Earlier Messages", alignment: .top)
                 }
                 Divider()
                 Composer(chatID: ref, chatName: name, placeholder: "Message \(name)", conv: conv,

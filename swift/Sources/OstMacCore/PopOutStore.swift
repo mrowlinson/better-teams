@@ -34,6 +34,13 @@ public final class PopOutStore: ObservableObject {
 
     public init() {}
 
+    /// The main window's chat snapshots (histload): a pop-out opens from
+    /// the cached history instantly, like the main timeline. Shared, not
+    /// a second instance, so both windows see one set of snapshots.
+    public var historyCache: MessageHistoryCache? {
+        didSet { for s in stores.values { s.historyCache = historyCache } }
+    }
+
     /// Pure visible set: the main-open chat plus every popped chat.
     nonisolated public static func visibleChatIDs(
         open: String?, popped: Set<String>
@@ -88,6 +95,7 @@ public final class PopOutStore: ObservableObject {
     public func store(for chatID: String) -> ConversationStore {
         if let s = stores[chatID] { return s }
         let s = ConversationStore()
+        s.historyCache = historyCache
         stores[chatID] = s
         wireMirror(s)
         return s

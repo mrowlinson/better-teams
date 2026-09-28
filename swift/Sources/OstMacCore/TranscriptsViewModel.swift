@@ -117,6 +117,21 @@ public final class TranscriptsViewModel: ObservableObject {
         self.actionItems = ActionItemsStore(transport: actionItemsTransport)
     }
 
+    /// NOLOAD: last-good snapshot store (nil = memory only / demo).
+    public var snapshots: SectionCache?
+    static let snapshotKey = "transcripts"
+
+    /// Paint the last good list before any fetch.
+    @discardableResult
+    public func restoreSnapshot() -> Bool {
+        guard let cached = snapshots?.load([TranscriptItem].self, key: Self.snapshotKey),
+              !cached.isEmpty else { return false }
+        listed = cached
+        if !isSearchResults { items = cached }
+        state = .loaded
+        return true
+    }
+
     /// Fetch the list. Search hits showing stay until cleared.
     public func load() async {
         state = .loading
@@ -124,6 +139,7 @@ public final class TranscriptsViewModel: ObservableObject {
         do {
             let response = try await Task.detached { try fetcher() }.value
             listed = response.transcripts
+            snapshots?.save(response.transcripts, key: Self.snapshotKey)
             if !isSearchResults {
                 items = listed
             }
@@ -314,7 +330,6 @@ public final class TranscriptsViewModel: ObservableObject {
     }
 
     public nonisolated static func message(for error: Error) -> String {
-        if case CoreCallError.failed(let m) = error { return m }
-        return String(describing: error)
+        FriendlyError.message(for: error)
     }
 }

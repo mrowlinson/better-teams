@@ -48,8 +48,9 @@ pub use schedule::{
 };
 pub use search::{clamp_size, next_from, parse_search_response, search_body, search_messages_data, SearchHitInfo, SearchPage, SEARCH_MAX_SIZE};
 pub use apps::{
-    app_catalog_data, app_search_data, app_store_data, install_app_for_user, AppCatalog, AppEntitlement, AppManifest,
-    AppStore, ConfigurableTab, StaticTab, StoreSection, WebApplicationInfo,
+    app_catalog_data, app_search_data, app_store_data, install_app_for_user, sharepoint_sites_data,
+    team_app_definitions_data, AppCatalog, AppEntitlement, AppManifest, AppStore, ConfigurableTab, SharePointSites,
+    StaticTab, StoreSection, WebApplicationInfo,
 };
 pub use tabs::TabInfo;
 pub use teams::TeamInfo;

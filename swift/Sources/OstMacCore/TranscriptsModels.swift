@@ -9,7 +9,7 @@ import Foundation
 /// One meeting transcript from core `ostmac_transcripts_list/search`.
 /// VTT bytes download via the existing files download (`drive_id` +
 /// `id`); cue parsing is `parseVTT` (`TranscriptsParser.swift`).
-public struct TranscriptItem: Decodable, Sendable, Identifiable, Equatable {
+public struct TranscriptItem: Codable, Sendable, Identifiable, Equatable {
     public let id: String
     public let name: String
     public let size: UInt64

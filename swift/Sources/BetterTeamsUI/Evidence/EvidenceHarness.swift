@@ -8,6 +8,7 @@
 // capture shows exactly the window with what floats over it. The window stays frontmost at a fixed origin until
 // killed. `--evidence-out` also writes an in-process snapshot.
 import AppKit
+import WebKit
 import OstMacCore
 import SwiftUI
 
@@ -25,6 +26,8 @@ enum EvidenceHarness {
     }
 
     static func settle(_ wc: ShellWindowController, options: LaunchOptions) {
+        // `hover=<messageID>`: pin that message's hover toolbar for the capture.
+        MessageHover.evidence.hoveredID = options.route.flatMap(Route.init(string:))?.query["hover"]
         let deadline = Date().addingTimeInterval(10)
         let earliest = Date().addingTimeInterval(0.8)
         var quiet = 0
@@ -78,7 +81,19 @@ enum EvidenceHarness {
         let main = primaryWindow ?? wc.window
         let win = (main?.attachedSheet ?? main)?.windowNumber ?? 0
         if let root = wc.window?.contentView { revealTimelineHeaders(root) }
-        if let path = options.snapshotPath, let w = wc.window { snapshot(w, to: path) }
+        if let path = options.snapshotPath, let w = wc.window {
+            // Web views snapshot asynchronously: READY only once written.
+            Task { @MainActor in
+                await snapshot(w, to: path)
+                ready(wc, options: options, settled: settled, main: main, win: win)
+            }
+            return
+        }
+        ready(wc, options: options, settled: settled, main: main, win: win)
+    }
+
+    private static func ready(_ wc: ShellWindowController, options: LaunchOptions, settled: Bool,
+                              main: NSWindow?, win: Int) {
         EvidenceGeometry.append(wc, route: options.route, appearance: options.appearance)
         if options.dumpMenus, let bar = NSApp.mainMenu {
             print("EVIDENCE MENUS BEGIN\n\(MainMenu.dump(bar))EVIDENCE MENUS END")
@@ -134,12 +149,37 @@ enum EvidenceHarness {
 
     /// In-process window snapshot (used when screen capture is not
     /// permitted). Renders the window's frame view, titlebar included.
-    static func snapshot(_ w: NSWindow, to path: String) {
+    /// `cacheDisplay` leaves a WKWebView blank (it paints out of
+    /// process), so each visible web view's own `takeSnapshot` is drawn
+    /// over its visible rect.
+    static func snapshot(_ w: NSWindow, to path: String) async {
         guard let frameView = w.contentView?.superview else { return }
         let bounds = frameView.bounds
         guard let rep = frameView.bitmapImageRepForCachingDisplay(in: bounds) else { return }
         frameView.cacheDisplay(in: bounds, to: rep)
+        var shots: [(NSImage, NSRect)] = []
+        for web in webViews(in: frameView) where !web.isHiddenOrHasHiddenAncestor {
+            let visible = web.visibleRect
+            guard !visible.isEmpty else { continue }
+            let config = WKSnapshotConfiguration()
+            config.rect = visible
+            guard let image = try? await web.takeSnapshot(configuration: config) else { continue }
+            var r = web.convert(visible, to: frameView)
+            if frameView.isFlipped { r.origin.y = bounds.height - r.maxY }
+            shots.append((image, r))
+        }
+        if !shots.isEmpty, let ctx = NSGraphicsContext(bitmapImageRep: rep) {
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = ctx
+            for (image, r) in shots { image.draw(in: r) }
+            NSGraphicsContext.restoreGraphicsState()
+        }
         guard let png = rep.representation(using: .png, properties: [:]) else { return }
         try? png.write(to: URL(fileURLWithPath: path))
+    }
+
+    private static func webViews(in v: NSView) -> [WKWebView] {
+        if let w = v as? WKWebView { return [w] }
+        return v.subviews.flatMap(webViews)
     }
 }

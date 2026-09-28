@@ -101,8 +101,47 @@ pub fn app_install_json(profile: &str, app_id: &str) -> String {
     run().unwrap_or_else(|e| err_json("app_install", e))
 }
 
+/// Manifests for a team's installed apps plus `ids_json` (a JSON array
+/// of catalog ids): `{ok, apps:[manifest]}` (read-only).
+pub fn team_app_definitions_json(profile: &str, team_id: &str, ids_json: &str) -> String {
+    let extra: Vec<String> = match serde_json::from_str(ids_json) {
+        Ok(v) => v,
+        Err(e) => return err_json("arg", format!("ids: {}", e)),
+    };
+    let run = || -> Result<String, String> {
+        rt()?.block_on(async {
+            let client = ost::api::client::TeamsClient::new_for_profile(profile)
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            let team = Some(team_id).filter(|t| !t.trim().is_empty());
+            let apps = ost::api::team_app_definitions_data(&client, team, &extra)
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            Ok(json!({"ok": true, "apps": apps.iter().map(manifest_json).collect::<Vec<_>>()}).to_string())
+        })
+    };
+    run().unwrap_or_else(|e| err_json("team_apps", e))
+}
+
+/// SharePoint site URLs for tab placeholders:
+/// `{ok, root?, my_site?, team_site?}` (read-only).
+pub fn app_sites_json(profile: &str, group_id: &str) -> String {
+    let run = || -> Result<String, String> {
+        rt()?.block_on(async {
+            let client = ost::api::client::TeamsClient::new_for_profile(profile)
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            let group = Some(group_id).filter(|g| !g.trim().is_empty());
+            let s = ost::api::sharepoint_sites_data(&client, group).await.map_err(|e| format!("{:#}", e))?;
+            Ok(json!({"ok": true, "root": s.root, "my_site": s.my_site, "team_site": s.team_site}).to_string())
+        })
+    };
+    run().unwrap_or_else(|e| err_json("app_sites", e))
+}
+
 fn grant_json(g: ost::auth::oauth::TokenGrant) -> String {
-    json!({"ok": true, "token": g.access_token, "expires_in": g.expires_in, "scope": g.scope}).to_string()
+    json!({"ok": true, "token": g.access_token, "expires_in": g.expires_in, "scope": g.scope, "id_token": g.id_token})
+        .to_string()
 }
 
 /// `{ok, token, expires_in, scope}` for a resource or scope list.
@@ -191,6 +230,30 @@ pub extern "C" fn ostmac_app_catalog_for(profile: *const c_char) -> *mut c_char 
     match opt_cstr_to_string(profile) {
         Ok(p) => string_to_c(app_catalog_json(&profile_or_active(p))),
         Err(e) => string_to_c(err_json("arg", e)),
+    }
+}
+
+/// Team app manifests (read-only). See [`team_app_definitions_json`].
+#[no_mangle]
+pub extern "C" fn ostmac_team_app_definitions_for(
+    profile: *const c_char,
+    team_id: *const c_char,
+    ids_json: *const c_char,
+) -> *mut c_char {
+    match (opt_cstr_to_string(profile), opt_cstr_to_string(team_id), arg(ids_json)) {
+        (Ok(p), Ok(t), Ok(ids)) => {
+            string_to_c(team_app_definitions_json(&profile_or_active(p), &t.unwrap_or_default(), &ids))
+        }
+        (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => string_to_c(err_json("arg", e)),
+    }
+}
+
+/// SharePoint site URLs (read-only). See [`app_sites_json`].
+#[no_mangle]
+pub extern "C" fn ostmac_app_sites_for(profile: *const c_char, group_id: *const c_char) -> *mut c_char {
+    match (opt_cstr_to_string(profile), opt_cstr_to_string(group_id)) {
+        (Ok(p), Ok(g)) => string_to_c(app_sites_json(&profile_or_active(p), &g.unwrap_or_default())),
+        (Err(e), _) | (_, Err(e)) => string_to_c(err_json("arg", e)),
     }
 }
 

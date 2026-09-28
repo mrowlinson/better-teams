@@ -503,6 +503,9 @@ pub struct TokenGrant {
     pub access_token: String,
     pub expires_in: Option<u64>,
     pub scope: Option<String>,
+    /// OIDC id token (NAA grants ask for `openid`: MSAL.js rejects a
+    /// nested-app-auth reply without one). Never printed.
+    pub id_token: Option<String>,
 }
 
 impl std::fmt::Debug for TokenGrant {
@@ -511,6 +514,7 @@ impl std::fmt::Debug for TokenGrant {
             .field("access_token", &format_args!("<{} chars>", self.access_token.len()))
             .field("expires_in", &self.expires_in)
             .field("scope", &self.scope)
+            .field("id_token", &self.id_token.as_ref().map(|t| format!("<{} chars>", t.len())))
             .finish()
     }
 }
@@ -585,9 +589,18 @@ pub fn naa_redirect_uri(origin: &str) -> Option<String> {
     })
 }
 
+/// The hub's own registered redirect (Teams client `1fec8e78`, native
+/// public client), sent as `brk_redirect_uri` in brokered grants.
+pub const HUB_REDIRECT_URI: &str = "https://login.microsoftonline.com/common/oauth2/nativeclient";
+
 /// Brokered refresh-token grant: the hub (`broker_client_id`, our
 /// Teams client) mints a token for a nested app's own client id.
-/// INFERRED from the MSAL/Teams NAA hub protocol; not verified live.
+/// `redirect_uri` is the nested app's `brk-multihub://<host>` and
+/// `brk_redirect_uri` the hub's own redirect. Verified live 2026-09-28
+/// (APPLIVE, Planner's client): the hub redirect plus NO `Origin`
+/// header succeeds; the app's brk-multihub URI as `brk_redirect_uri`
+/// fails AADSTS50011, and any `Origin` fails AADSTS9002326 (a native
+/// client's refresh token cannot be redeemed cross-origin).
 pub fn naa_grant_form(
     broker_client_id: &str,
     nested_client_id: &str,
@@ -599,11 +612,23 @@ pub fn naa_grant_form(
         ("client_id".into(), nested_client_id.into()),
         ("grant_type".into(), "refresh_token".into()),
         ("refresh_token".into(), refresh_token.into()),
-        ("scope".into(), format!("{} offline_access", normalize_scopes(scopes))),
+        ("scope".into(), naa_scope(scopes)),
         ("brk_client_id".into(), broker_client_id.into()),
-        ("brk_redirect_uri".into(), redirect_uri.into()),
+        ("brk_redirect_uri".into(), HUB_REDIRECT_URI.into()),
         ("redirect_uri".into(), redirect_uri.into()),
     ]
+}
+
+/// NAA grant scope: the app's scopes plus the OIDC scopes (the reply to
+/// MSAL.js needs an id token, as the Teams hub's does), deduplicated.
+pub fn naa_scope(scopes: &str) -> String {
+    let mut out: Vec<String> = normalize_scopes(scopes).split_whitespace().map(String::from).collect();
+    for s in ["openid", "profile", "offline_access"] {
+        if !out.iter().any(|o| o.eq_ignore_ascii_case(s)) {
+            out.push(s.to_string());
+        }
+    }
+    out.join(" ")
 }
 
 /// POSTs one token grant. Errors carry the AAD error code and the first
@@ -640,6 +665,7 @@ pub async fn post_token_grant(
         access_token,
         expires_in: v.get("expires_in").and_then(|e| e.as_u64().or_else(|| e.as_str()?.parse().ok())),
         scope: v.get("scope").and_then(|s| s.as_str()).map(String::from),
+        id_token: v.get("id_token").and_then(|t| t.as_str()).filter(|t| !t.is_empty()).map(String::from),
     })
 }
 
@@ -703,7 +729,8 @@ pub async fn token_for_scope_for(profile: &str, scopes: &str) -> Result<TokenGra
 }
 
 /// Nested app auth token: `client_id` is the nested app's AAD client,
-/// `origin` its page origin (redirect `brk-multihub://<host>`).
+/// `origin` its page origin (redirect `brk-multihub://<host>`). The
+/// grant is sent without an `Origin` header (see [`naa_grant_form`]).
 pub async fn naa_token_for(profile: &str, client_id: &str, scopes: &str, origin: &str) -> Result<TokenGrant> {
     let scopes = normalize_scopes(scopes);
     anyhow::ensure!(!scopes.is_empty(), "no scope");
@@ -720,7 +747,7 @@ pub async fn naa_token_for(profile: &str, client_id: &str, scopes: &str, origin:
         &crate::api::client::shared_http(),
         &token_endpoint(auth.tenant),
         &form,
-        Some(origin),
+        None,
     )
     .await?;
     store_grant(key, &g);
@@ -757,6 +784,7 @@ mod broker_tests {
     fn grant_forms() {
         let f = scope_grant_form("hub", "RT", "https://x.sharepoint.com");
         assert!(f.contains(&("scope".into(), "https://x.sharepoint.com/.default offline_access".into())));
+        assert_eq!(naa_scope("api://a/x openid"), "api://a/x openid profile offline_access");
         assert!(f.contains(&("client_id".into(), "hub".into())));
         assert_eq!(naa_redirect_uri("https://tasks.example.com/teamsui/x").as_deref(), Some("brk-multihub://tasks.example.com"));
         assert_eq!(naa_redirect_uri("http://localhost:8080").as_deref(), Some("brk-multihub://localhost:8080"));
@@ -764,8 +792,9 @@ mod broker_tests {
         let n = naa_grant_form("hub", "nested", "RT", "User.Read", "brk-multihub://a.example.com");
         assert!(n.contains(&("client_id".into(), "nested".into())));
         assert!(n.contains(&("brk_client_id".into(), "hub".into())));
-        assert!(n.contains(&("brk_redirect_uri".into(), "brk-multihub://a.example.com".into())));
-        let dbg = format!("{:?}", TokenGrant { access_token: "SECRET".into(), expires_in: Some(1), scope: None });
+        assert!(n.contains(&("redirect_uri".into(), "brk-multihub://a.example.com".into())));
+        assert!(n.contains(&("brk_redirect_uri".into(), HUB_REDIRECT_URI.into())));
+        let dbg = format!("{:?}", TokenGrant { access_token: "SECRET".into(), expires_in: Some(1), scope: None, id_token: Some("IDSECRET".into()) });
         assert!(!dbg.contains("SECRET"));
     }
 
@@ -816,18 +845,19 @@ mod broker_tests {
         ))
         .await;
         let form = naa_grant_form("hub", "nested", "RT", "User.Read", "brk-multihub://a.example.com");
-        let g = post_token_grant(&reqwest::Client::new(), &url, &form, Some("https://a.example.com"))
+        let g = post_token_grant(&reqwest::Client::new(), &url, &form, None)
             .await
             .expect("grant");
         assert_eq!(g.access_token, "AT-1");
         assert_eq!(g.expires_in, Some(3599));
         let req = seen.lock().unwrap().clone();
         assert!(req.starts_with("POST /common/oauth2/v2.0/token"));
-        assert!(req.to_ascii_lowercase().contains("origin: https://a.example.com"));
+        assert!(!req.to_ascii_lowercase().contains("\norigin:"), "brokered grants carry no Origin");
         assert!(req.contains("brk_client_id=hub"));
         assert!(req.contains("client_id=nested"));
         assert!(req.contains("grant_type=refresh_token"));
-        assert!(req.contains("brk_redirect_uri=brk-multihub%3A%2F%2Fa.example.com"));
+        assert!(req.contains("redirect_uri=brk-multihub%3A%2F%2Fa.example.com"));
+        assert!(req.contains("brk_redirect_uri=https%3A%2F%2Flogin.microsoftonline.com%2Fcommon%2Foauth2%2Fnativeclient"));
     }
 
     #[tokio::test]
@@ -846,7 +876,7 @@ mod broker_tests {
 
     #[test]
     fn grant_cache_expiry_and_clear() {
-        let g = TokenGrant { access_token: "t".into(), expires_in: Some(3600), scope: None };
+        let g = TokenGrant { access_token: "t".into(), expires_in: Some(3600), scope: None, id_token: None };
         store_grant("p1|c|s".into(), &g);
         store_grant("p2|c|s".into(), &TokenGrant { expires_in: Some(60), ..g.clone() });
         assert!(cached_grant("p1|c|s").is_some());

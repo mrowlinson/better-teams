@@ -19,15 +19,20 @@ struct QuoteBlock: View {
     let quote: QuoteData
     let jump: (String) -> Void
     @Environment(\.contentTextScale) private var scale
+    @Environment(\.colorSchemeContrast) private var contrast
 
     var body: some View {
         let content = VStack(alignment: .leading, spacing: 1) {
             Text(quote.sender).font(AppFont.caption(scale).weight(.semibold)).lineLimit(1)
-            Text(quote.preview).font(AppFont.subheadline(scale)).foregroundStyle(.secondary).lineLimit(2)
+            Text(quote.preview).font(AppFont.subheadline(scale))
+                .foregroundStyle(contrast == .increased ? AnyShapeStyle(.primary) : AnyShapeStyle(Palette.quoteText))
+                .lineLimit(2)
         }
-        .padding(.leading, 8)
-        .padding(.vertical, 2)
+        .padding(.leading, 10)
+        .padding(.trailing, 8)
+        .padding(.vertical, 4)
         .frame(maxWidth: 420, alignment: .leading)
+        .background(Palette.blockFill, in: RoundedRectangle(cornerRadius: 4, style: .continuous))
         .overlay(alignment: .leading) { Rectangle().fill(Palette.mention).frame(width: 2) }
         if let id = quote.jumpID {
             Button { jump(id) } label: { content.contentShape(Rectangle()) }
@@ -52,7 +57,7 @@ struct CodeBlockView: View {
             .padding(.horizontal, 8)
             .padding(.vertical, 6)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.fill.quaternary, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+            .background(Palette.blockFill, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
             .overlay {
                 RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(Palette.panelEdge, lineWidth: 1)
             }
@@ -128,6 +133,9 @@ struct AdaptiveCardView: View {
     let card: AdaptiveCard
     let media: MediaLoader?
     let messageID: String
+    /// Click on a card image: the full-resolution viewer (shown alone,
+    /// card images are not in the chat's inline-image run).
+    var open: ((RemoteImageModel) -> Void)?
     @Environment(\.contentTextScale) private var scale
 
     var body: some View {
@@ -173,7 +181,7 @@ struct AdaptiveCardView: View {
         case .image(let img):
             if let media {
                 return AnyView(ImageSlot(model: media.image(url: img.url, messageID: messageID),
-                                         alt: img.altText, open: { _ in }))
+                                         alt: img.altText, open: open ?? { _ in }))
             }
             return AnyView(EmptyView())
         case .container(let items):
@@ -416,6 +424,16 @@ enum ImageSave {
             dest = dir.appendingPathComponent(ext.isEmpty ? "\(base) \(n)" : "\(base) \(n).\(ext)")
         }
         return dest
+    }
+
+    /// Bytes + type to save for a timeline image: the original the
+    /// viewer would load (full-res URL, original encoding); the on-screen
+    /// decode as PNG only when that fetch fails.
+    @MainActor
+    static func bytes(original: FullResImageModel, fallback: NSImage?) async -> (Data, UTType)? {
+        if original.originalData == nil { await original.reload() }
+        if let d = original.originalData { return (d, original.originalType ?? .png) }
+        return fallback.flatMap(png).map { ($0, .png) }
     }
 
     static func png(_ image: NSImage) -> Data? {

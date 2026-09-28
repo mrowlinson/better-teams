@@ -164,6 +164,8 @@ struct AppStoreDetail: View {
     let library: AppsLibrary
     let appID: String
     @State private var hostMode = TeamsJSHostMode.automatic
+    /// Bumped by Try Again (host status re-reads defaults).
+    @State private var hostTick = 0
     @Environment(\.windowModel) private var model
 
     private var store: AppStoreModel { library.store }
@@ -173,7 +175,7 @@ struct AppStoreDetail: View {
             if let app = store.manifest(appID) {
                 page(app, m)
             } else if store.loading {
-                LoadingPane("Loading App\u{2026}")
+                LoadingPane("Loading App\u{2026}", rows: false)
             } else {
                 EmptyPane("App Not Found", systemImage: "questionmark.app",
                           message: "This app isn't in your organization's app store.") {
@@ -225,7 +227,7 @@ struct AppStoreDetail: View {
                         }
                     }
                 }
-                if library.hostedApp(forCatalogApp: app.id) != nil {
+                if let hosted = library.hostedApp(forCatalogApp: app.id) {
                     section("Hosting") {
                         Picker("Host Mode", selection: $hostMode) {
                             ForEach(TeamsJSHostMode.allCases) { Text($0.title).tag($0) }
@@ -236,9 +238,7 @@ struct AppStoreDetail: View {
                             TeamsJSTransportChoice.setMode(mode, app: app.id, demo: store.demo)
                             m.frameHost.hostModeChanged(appID: app.id)
                         }
-                        Text("Automatic runs the app directly and switches to a frame if it doesn't start.")
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
+                        hostStatus(app, hosted, m)
                     }
                 }
                 links(app)
@@ -248,6 +248,38 @@ struct AppStoreDetail: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .task(id: app.id) { hostMode = TeamsJSTransportChoice.mode(app.id, demo: store.demo) }
+    }
+
+    /// Where the app runs now, and Try Again after a remembered failure.
+    @ViewBuilder
+    private func hostStatus(_ app: TeamsAppManifest, _ hosted: FrameApp, _ m: WindowModel) -> some View {
+        let _ = hostTick
+        let demo = store.demo
+        let failure = TeamsJSTransportChoice.failure(app.id, demo: demo)
+        let verified = if case .teamsApp(let l) = hosted.launch { TeamsJSNativeAllowlist.contains(l) } else { false }
+        let text: String = switch hostMode {
+        case .automatic where failure != nil:
+            "This app runs in its Teams web page: it didn't work without it (\(failure ?? ""))."
+        case .automatic where verified:
+            "Automatic runs this app without the Teams web page, and switches to it if the app fails."
+        case .automatic:
+            "Automatic runs this app in its Teams web page. Direct and In a Frame run it without the Teams page, which isn't verified for this app yet."
+        case .frameless, .iframe:
+            m.frameHost.nativeHostFailed(appID: app.id)
+                ? "The app couldn't sign in without the Teams web page, so it runs there until you quit."
+                : "This app runs without the Teams web page."
+        }
+        Text(text)
+            .font(.callout)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+        if hostMode == .automatic, failure != nil {
+            Button("Try Without the Teams Page") {
+                TeamsJSTransportChoice.forgetFailure(app: app.id, demo: demo)
+                m.frameHost.hostModeChanged(appID: app.id)
+                hostTick += 1
+            }
+        }
     }
 
     private func header(_ app: TeamsAppManifest, _ m: WindowModel) -> some View {

@@ -97,7 +97,7 @@ final class ModelsTests: XCTestCase {
             Self.normClock(ChatMessage.shortTime(
                 "2026-02-14T12:53:06.9690000Z", now: now,
                 timeZone: utc, locale: us)),
-            "12:53 PM 14 Feb")
+            "Feb 14, 12:53 PM")
         XCTAssertEqual(ChatMessage.shortTime(""), "?")
         XCTAssertEqual(ChatMessage.shortTime("abc"), "abc")
     }

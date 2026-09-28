@@ -4,7 +4,7 @@
 import Foundation
 
 /// `{ok,week_start,days,meetings}` from `ostmac_cal_week`.
-public struct CalWeekResponse: Decodable, Sendable {
+public struct CalWeekResponse: Codable, Sendable {
     public let ok: Bool
     public let weekStart: Int64
     public let days: Int

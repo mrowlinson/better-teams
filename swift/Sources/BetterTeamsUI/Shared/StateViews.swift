@@ -18,16 +18,35 @@ struct LoadingPane: View {
     let label: String?
     /// 0…1 when the step count is known; nil = indeterminate spinner.
     let progress: Double?
+    /// NOLOAD: list panes show skeleton rows instead of a spinner while
+    /// indeterminate (first-ever run, nothing cached). Detail/content
+    /// panes (a web page, a transcript, a summary) keep the spinner.
+    let rows: Bool
     @Environment(\.windowModel) private var model
     @State private var visible = false
     @State private var delay = Debounce(milliseconds: LoadingPane.delayMilliseconds)
 
-    init(_ label: String? = nil, progress: Double? = nil) {
+    init(_ label: String? = nil, progress: Double? = nil, rows: Bool = true) {
         self.label = label
         self.progress = progress
+        self.rows = rows
     }
 
     var body: some View {
+        if rows && progress == nil {
+            SkeletonRows()
+                .opacity(visible || model?.options.evidence == true ? 1 : 0)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(Self.accessibilityLabel(label))
+                .onAppear { delay.schedule { visible = true } }
+                .onDisappear { delay.cancel() }
+        } else {
+            spinnerBody
+        }
+    }
+
+    private var spinnerBody: some View {
         indicator
             .overlay(alignment: .top) {
                 if let label {
@@ -63,6 +82,53 @@ struct LoadingPane: View {
     }
 }
 
+/// Placeholder row identity: its position in the list (R4).
+private struct SkeletonRow: Identifiable { let id: Int }
+
+/// Placeholder rows (avatar + two text bars) for a list with nothing to
+/// show yet. Tinted with the quaternary label color so it follows the
+/// theme; a slow opacity pulse unless Reduce Motion is on.
+struct SkeletonRows: View {
+    var count = 9
+    private static let titleWidths: [CGFloat] = [210, 160, 240, 180, 140, 225, 170]
+    private static let detailWidths: [CGFloat] = [150, 110, 180, 90, 130, 160, 120]
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var dim = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            ForEach((0 ..< count).map(SkeletonRow.init)) { row in
+                let i = row.id
+                HStack(spacing: 10) {
+                    Circle()
+                        .frame(width: 26, height: 26)
+                    VStack(alignment: .leading, spacing: 6) {
+                        RoundedRectangle(cornerRadius: 3)
+                            .frame(maxWidth: Self.titleWidths[i % Self.titleWidths.count], maxHeight: 10)
+                        RoundedRectangle(cornerRadius: 3)
+                            .frame(maxWidth: Self.detailWidths[i % Self.detailWidths.count], maxHeight: 8)
+                            .opacity(0.7)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .frame(height: 30)
+            }
+        }
+        .foregroundStyle(.quaternary)
+        .padding(.horizontal, 14)
+        .padding(.top, 14)
+        .opacity(dim ? 0.5 : 1)
+        .onAppear {
+            guard !reduceMotion else { return }
+            withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) { dim = true }
+        }
+        .onChange(of: reduceMotion) { _, now in
+            if now { dim = false }
+        }
+        .accessibilityHidden(true)
+    }
+}
+
 /// A refresh running behind content already on screen (R12: the rows
 /// never change for it). A small spinner in the pane's bottom-trailing
 /// corner while `refreshing` (after the same delay as `LoadingPane`, so a
@@ -73,12 +139,13 @@ struct RefreshStatus: ViewModifier {
     let failure: String?
     let label: String
     let retry: (() -> Void)?
+    var alignment: Alignment = .bottomTrailing
     @State private var visible = false
     @State private var delay = Debounce(milliseconds: LoadingPane.delayMilliseconds)
 
     func body(content: Content) -> some View {
         content
-            .overlay(alignment: .bottomTrailing) {
+            .overlay(alignment: alignment) {
                 Group {
                     if refreshing {
                         ProgressView()
@@ -115,8 +182,9 @@ struct RefreshStatus: ViewModifier {
 extension View {
     /// Background-refresh status over this content (see `RefreshStatus`).
     func refreshStatus(_ refreshing: Bool, failure: String? = nil, label: String,
-                       retry: (() -> Void)? = nil) -> some View {
-        modifier(RefreshStatus(refreshing: refreshing, failure: failure, label: label, retry: retry))
+                       retry: (() -> Void)? = nil, alignment: Alignment = .bottomTrailing) -> some View {
+        modifier(RefreshStatus(refreshing: refreshing, failure: failure, label: label, retry: retry,
+                               alignment: alignment))
     }
 }
 

@@ -145,6 +145,7 @@ struct MessageRowView: View {
         .padding(.bottom, 2)
         .background { highlight }
         .contentShape(Rectangle())
+        .onHover { inside in actions?.hover.pointer(inside, id: message.id) }
         .contextMenu { if let actions { MessageContextMenu(row: row, actions: actions) } }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(accessibilityText)
@@ -215,6 +216,10 @@ struct MessageRowView: View {
                 RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(.separator)
             }
         }
+        // Hover toolbar over the bubble's top edge; an overlay, so no layout shift.
+        .overlay(alignment: HoverToolbarRules.alignment(ownTrailing: row.ownTrailing)) {
+            if let actions { HoverToolbarSlot(row: row, actions: actions) }
+        }
     }
 
     /// Reaction chips: under a chat bubble (Teams), inside a plain post.
@@ -264,7 +269,8 @@ struct MessageRowView: View {
             }
             let cards = MessageBubbleState.cards(for: message)
             ForEach(Indexed.wrap(cards)) { c in
-                AdaptiveCardView(card: c.value, media: actions?.media, messageID: message.id)
+                AdaptiveCardView(card: c.value, media: actions?.media, messageID: message.id,
+                                 open: actions.map { a in { a.preview(image: $0) } })
             }
             let posts = MessageRender.botPosts(fromRaw: message.raw ?? message.content)
             if MessageBubbleState.shouldShowFallbackRows(posts: posts, cards: cards) {
@@ -431,13 +437,15 @@ struct MessageRowView: View {
                 piece.appKit.foregroundColor = Palette.mentionNS
                 setAppKitFont(AppFont.nsBodyEmphasized(scale), on: &piece)
                 if m == .own {
+                    piece.swiftUI.foregroundColor = Palette.ownMentionText
+                    piece.appKit.foregroundColor = Palette.ownMentionTextNS
                     piece.swiftUI.backgroundColor = Palette.ownMentionBackground
                     piece.appKit.backgroundColor = Palette.ownMentionBackgroundNS
                 }
             }
             if role == .inline {
                 piece.swiftUI.font = AppFont.code(scale)
-                piece.swiftUI.backgroundColor = Color(nsColor: .quaternarySystemFill)
+                piece.swiftUI.backgroundColor = Palette.blockFill
                 setAppKitFont(AppFont.nsCode(scale), on: &piece)
                 piece.appKit.backgroundColor = Palette.inlineCodeBackgroundNS
             } else if isBlock {
@@ -493,6 +501,14 @@ private struct MessageAccessibilityActions: ViewModifier {
                 .accessibilityAction(named: "Forward") { a.forward(m) }
                 .accessibilityAction(named: row.isSaved ? "Unsave" : "Save") { a.toggleSave(m) }
                 .accessibilityAction(named: row.isPinned ? "Unpin" : "Pin") { a.togglePin(m) }
+                .accessibilityActions {
+                    // The hover toolbar's quick reactions.
+                    if HoverToolbarRules.isAvailable(row) {
+                        ForEach(Indexed.wrap(HoverToolbarRules.quickReactions)) { r in
+                            Button("React \(r.value.name)") { a.toggleReaction(m, r.value.emoji) }
+                        }
+                    }
+                }
         } else {
             content
         }

@@ -181,7 +181,7 @@ struct RecapDetailPane: View {
                     Button("Try Again") { recordings.play(r, autoplay: false) }
                 }
             } else {
-                LoadingPane("Loading Recording\u{2026}")
+                LoadingPane("Loading Recording\u{2026}", rows: false)
             }
         }
         .aspectRatio(16 / 9, contentMode: .fit)
@@ -193,10 +193,10 @@ struct RecapDetailPane: View {
     private func turns(_ recap: Recap) -> some View {
         if let t = recap.transcript {
             if transcripts.selectedID != t.id {
-                LoadingPane("Loading Transcript\u{2026}")
+                LoadingPane("Loading Transcript\u{2026}", rows: false)
             } else {
                 switch transcripts.content {
-                case .idle, .loading: LoadingPane("Loading Transcript\u{2026}")
+                case .idle, .loading: LoadingPane("Loading Transcript\u{2026}", rows: false)
                 case .failed(let message):
                     ErrorPane(title: RecapDetailState.transcriptErrorTitle, message: message) {
                         transcripts.select(t)

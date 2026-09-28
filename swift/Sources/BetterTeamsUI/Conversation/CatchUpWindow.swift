@@ -97,7 +97,7 @@ struct CatchUpDigestView: View {
             EmptyPane("Catch Up Is Off", systemImage: "sparkles", message: CatchUpError.off.message)
         } else if digest.entries.isEmpty, digest.mentions.isEmpty, digest.working == nil || digest.streamingText == nil {
             if digest.working != nil, !digest.hasRunOnce {
-                LoadingPane("Catching up\u{2026}")
+                LoadingPane("Catching up\u{2026}", rows: false)
             } else {
                 EmptyPane("You\u{2019}re All Caught Up", systemImage: "checkmark.circle",
                           message: "New messages are summarized here.")

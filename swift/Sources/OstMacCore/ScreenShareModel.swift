@@ -296,8 +296,9 @@ private final class ShareFrameSink: NSObject, SCStreamOutput, @unchecked Sendabl
                 _ = try RustCore.videoSendPush(nals: nals)
                 sent = true
             } catch {
-                // Transient: the frame still previews, the next one retries
-                // (the engine falls back to black IDR when idle).
+                // Transient: the frame still previews, the next one retries.
+                // Nothing replaces a dropped frame (no black-IDR fallback:
+                // an idle or camera-off sender sends no video).
             }
         }
         note(image: image, sent: sent)

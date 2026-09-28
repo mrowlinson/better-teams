@@ -79,6 +79,12 @@ char *ostmac_naa_token_for(const char *profile, const char *client_id,
 char *ostmac_app_store_for(const char *profile);
 char *ostmac_app_search_for(const char *profile, const char *query);
 char *ostmac_app_install_for(const char *profile, const char *app_id);
+// APPHOST-B3 (read-only): manifests of a team's installed apps plus the
+// catalog ids in ids_json (JSON array) -> {ok, apps:[manifest]}; and the
+// SharePoint URLs tab placeholders use -> {ok, root?, my_site?, team_site?}.
+// team_id / group_id may be null. Caller frees.
+char *ostmac_team_app_definitions_for(const char *profile, const char *team_id, const char *ids_json);
+char *ostmac_app_sites_for(const char *profile, const char *group_id);
 
 // One team's roster JSON: {ok, team_id, members:[{id, display_name,
 // user_id?, email?, roles, is_owner}]} (requires sign-in). Caller frees.
@@ -601,6 +607,14 @@ char *ostmac_av_black_iframe(void);
 // Offline call pipeline: SRTP loopback + H.264 packetize round-trip
 // (no network/auth/hardware). Caller frees.
 char *ostmac_call_dry_run(void);
+
+// NOLOAD: per-request log hook. cb(method, url, status, elapsed_ms) runs
+// on a core worker thread once per HTTP request (status 0 = transport
+// failure / timeout); strings are valid for the call only. First
+// install wins; NULL ignored.
+typedef void (*ostmac_request_log_cb)(const char *method, const char *url,
+                                      uint16_t status, uint64_t ms);
+void ostmac_set_request_log(ostmac_request_log_cb cb);
 
 // Free a string from any ostmac_* call. Null-safe.
 void ostmac_free(char *s);

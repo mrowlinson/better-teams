@@ -131,7 +131,7 @@ public struct WhoamiResponse: Decodable, Sendable {
     public let mail: String?
 }
 
-public struct ChatItem: Decodable, Sendable, Identifiable, Equatable {
+public struct ChatItem: Codable, Sendable, Identifiable, Equatable {
     public var id: String { chatId }
     public let chatId: String
     public let name: String
@@ -180,7 +180,7 @@ public struct ChatsResponse: Decodable, Sendable {
 /// The id opens as a conversation through the same messages/send path
 /// as chat ids (ost TUI parity). Detail fields are nil on pre-H1
 /// payloads and when Graph omits them.
-public struct TeamChannel: Decodable, Sendable, Identifiable {
+public struct TeamChannel: Codable, Sendable, Identifiable {
     public var id: String { channelId }
     public let channelId: String
     public let name: String
@@ -211,7 +211,7 @@ public struct TeamChannel: Decodable, Sendable, Identifiable {
 }
 
 /// One joined team with its channels.
-public struct TeamItem: Decodable, Sendable, Identifiable {
+public struct TeamItem: Codable, Sendable, Identifiable {
     public var id: String { teamId }
     public let teamId: String
     public let name: String
@@ -510,7 +510,7 @@ public struct TrouterPoll: Decodable, Sendable {
 // MARK: - Reminders (om-remind lane: Microsoft To Do via Graph /me/todo)
 
 /// One To Do list from core `ostmac_reminders`: `{"id","name","wellknown?"}`.
-public struct ReminderList: Decodable, Sendable, Identifiable, Equatable {
+public struct ReminderList: Codable, Sendable, Identifiable, Equatable {
     public var id: String { listId }
     public let listId: String
     public let name: String
@@ -542,7 +542,7 @@ public struct RemindersResponse: Decodable, Sendable {
 
 /// One To Do task from core `ostmac_reminder_tasks`: `{"id","title",
 /// "status","importance","due?","reminder?","completed"}`.
-public struct ReminderTask: Decodable, Sendable, Identifiable, Equatable {
+public struct ReminderTask: Codable, Sendable, Identifiable, Equatable {
     public var id: String { taskId }
     public let taskId: String
     public let title: String
@@ -594,7 +594,7 @@ public struct ReminderTaskResult: Decodable, Sendable {
 
 /// One upcoming meeting from `CoreReads.meetings`: `{"id","subject",
 /// "start?","end?","join_url?","organizer?","is_online"}`.
-public struct MeetingItem: Decodable, Sendable, Identifiable, Equatable {
+public struct MeetingItem: Codable, Sendable, Identifiable, Equatable {
     public var id: String { meetingId }
     public let meetingId: String
     public let subject: String
@@ -854,9 +854,11 @@ public struct ChatMessage: Codable, Sendable, Identifiable, Equatable {
         if let date = TeamsTime.parseISO(trimmed) {
             var cal = Calendar(identifier: .gregorian)
             cal.timeZone = timeZone
-            let clock = TeamsTime.clock(date, timeZone: timeZone, locale: locale)
-            if cal.isDate(date, inSameDayAs: now) { return clock }
-            return "\(clock) \(TeamsTime.dayMonth(date, timeZone: timeZone))"
+            if cal.isDate(date, inSameDayAs: now) {
+                return TeamsTime.clock(date, timeZone: timeZone, locale: locale)
+            }
+            // Date first, like the chat list and day dividers.
+            return TeamsTime.dayTime(date, now: now, timeZone: timeZone, locale: locale)
         }
         // Garbage >= 16 chars: legacy fixed-offset slice (unchanged
         // shape; unparseable stamps never gain a shifted day).
@@ -876,9 +878,9 @@ public struct ChatMessage: Codable, Sendable, Identifiable, Equatable {
                 "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
             ]
             let m = Int(parts[1]).flatMap { (1 ... 12).contains($0) ? months[$0 - 1] : nil } ?? String(parts[1])
-            return "\(Int(parts[2]) ?? 0) \(m)"
+            return "\(m) \(Int(parts[2]) ?? 0)"
         }()
-        return "\(clockPart) \(monthDay)"
+        return "\(monthDay), \(clockPart)"
     }
 }
 
@@ -1113,7 +1115,7 @@ public struct MediaResponse: Decodable, Sendable {
 /// `download_url` is a pre-authenticated short-lived URL: Swift downloads
 /// directly (no bearer). `drive_id`+`id` drive `ostmac_files_download`
 /// when the pre-signed URL expired.
-public struct SharedFile: Decodable, Sendable, Identifiable, Equatable {
+public struct SharedFile: Codable, Sendable, Identifiable, Equatable {
     public let id: String
     public let name: String
     public let size: UInt64
@@ -1170,6 +1172,19 @@ public struct SharedFile: Decodable, Sendable, Identifiable, Equatable {
     }
 
     /// Copy with a sharing link attached (store caches createLink results).
+    /// Disk-snapshot form (NOLOAD): the short-lived pre-authenticated
+    /// download URL is never persisted.
+    public var withoutDownloadURL: SharedFile {
+        SharedFile(
+            id: id, name: name, size: size, mime: mime,
+            web_url: web_url, download_url: nil,
+            drive_id: drive_id, created: created, modified: modified,
+            sender: sender, attachment_id: attachment_id,
+            is_folder: is_folder, share_url: share_url, source_name: source_name,
+            source_id: source_id
+        )
+    }
+
     public func withShareURL(_ url: String) -> SharedFile {
         SharedFile(
             id: id, name: name, size: size, mime: mime,

@@ -190,9 +190,11 @@ final class ShiftsTests: XCTestCase {
         ])
         store.open(teamID: "team-a")
         try await waitFor("loaded") { store.state == .loaded }
-        XCTAssertEqual(log.all, ["team-a", "team-b", "team-c"])
+        // Fetched together (bounded), so arrival order is free.
+        XCTAssertEqual(log.all.sorted(), ["team-a", "team-b", "team-c"])
         XCTAssertEqual(store.selectedTeamID, "team-c")
         XCTAssertNotNil(store.week)
+        XCTAssertNil(store.loadProgress)
     }
 
     func testFallbackFromMiddleStartsThere() async throws {
@@ -209,8 +211,8 @@ final class ShiftsTests: XCTestCase {
         ])
         store.open(teamID: "team-b")
         try await waitFor("loaded") { store.state == .loaded }
-        // Requested first, then the rest of the picker in order.
-        XCTAssertEqual(log.all, ["team-b", "team-a"])
+        // Requested first, then the rest of the picker.
+        XCTAssertEqual(log.all.sorted(), ["team-a", "team-b"])
         XCTAssertEqual(store.selectedTeamID, "team-a")
     }
 
@@ -230,7 +232,7 @@ final class ShiftsTests: XCTestCase {
             return false
         }
         // Bounded: one pass, each team tried once.
-        XCTAssertEqual(log.all, ["team-a", "team-b"])
+        XCTAssertEqual(log.all.sorted(), ["team-a", "team-b"])
         guard case .unavailable(let message) = store.state else {
             return XCTFail("wrong state: \(store.state)")
         }
@@ -241,9 +243,10 @@ final class ShiftsTests: XCTestCase {
         XCTAssertEqual(store.selectedTeamID, "team-a")
     }
 
-    func testNon404StopsChain() async throws {
+    /// Error only when no team has a week: a 404, a sign-in failure
+    /// and another 404 land the sign-in failure (first real failure).
+    func testErrorOnlyWhenEveryTeamFails() async throws {
         let log = ShiftsFetchLog()
-        // team-a 404s, team-b fails auth: chain stops at team-b.
         let store = ShiftsStore(week: { id in
             log.record(id)
             if id == "team-b" {
@@ -261,12 +264,113 @@ final class ShiftsTests: XCTestCase {
             if case .error = store.state { return true }
             return false
         }
-        XCTAssertEqual(log.all, ["team-a", "team-b"])
+        XCTAssertEqual(log.all.sorted(), ["team-a", "team-b", "team-c"])
         guard case .error(let message) = store.state else {
             return XCTFail("wrong state: \(store.state)")
         }
         XCTAssertTrue(message.contains("Sign in again"))
         XCTAssertFalse(message.contains("{"))
+        XCTAssertEqual(store.selectedTeamID, "team-b")
+        XCTAssertNil(store.loadProgress)
+    }
+
+    /// One team's failure no longer hides a later team that has Shifts.
+    func testFailingTeamDoesNotHideTeamWithShifts() async throws {
+        let resp = Self.weekJSON()
+        let store = ShiftsStore(week: { id in
+            if id == "team-b" { throw Self.coreFailed("schedule_week: HTTP 500 for https://graph.microsoft.com/x: {}") }
+            if id == "team-c" { return resp }
+            throw Self.notFound404(team: id)
+        })
+        store.setTeams([
+            ShiftTeam(id: "team-a", name: "Alpha"),
+            ShiftTeam(id: "team-b", name: "Beta"),
+            ShiftTeam(id: "team-c", name: "Gamma"),
+        ])
+        store.open(teamID: "team-a")
+        try await waitFor("loaded") { store.state == .loaded }
+        XCTAssertEqual(store.selectedTeamID, "team-c")
+    }
+
+    /// Live 2026-09-28: 8 of 9 teams answer the schedule header with
+    /// `enabled:false` (`NotStarted`). Those are skipped like a 404;
+    /// all of them disabled lands `.unavailable`.
+    func testDisabledScheduleSkipsToTeamWithShifts() async throws {
+        let resp = Self.weekJSON()
+        let off = ShiftWeekResponse(
+            ok: true, team_id: "x",
+            schedule: ShiftSchedule(enabled: false, provisionStatus: "NotStarted"),
+            shifts: [], timesOff: [], reasons: [])
+        let store = ShiftsStore(week: { id in id == "team-c" ? resp : off })
+        store.setTeams([
+            ShiftTeam(id: "team-a", name: "Alpha"),
+            ShiftTeam(id: "team-b", name: "Beta"),
+            ShiftTeam(id: "team-c", name: "Gamma"),
+        ])
+        store.open(teamID: "team-a")
+        try await waitFor("loaded") { store.state == .loaded }
+        XCTAssertEqual(store.selectedTeamID, "team-c")
+
+        let none = ShiftsStore(week: { _ in off })
+        none.setTeams([ShiftTeam(id: "team-a", name: "Alpha"), ShiftTeam(id: "team-b", name: "Beta")])
+        none.open(teamID: "team-a")
+        try await waitFor("unavailable") {
+            if case .unavailable = none.state { return true }
+            return false
+        }
+    }
+
+    /// The requested team still loading holds the pane (a later team's
+    /// week never flashes up first); progress counts answered teams;
+    /// when it turns out to have no Shifts the next team lands.
+    func testRequestedTeamFirstWithProgress() async throws {
+        let resp = Self.weekJSON()
+        let gate = DispatchSemaphore(value: 0)
+        let store = ShiftsStore(week: { id in
+            if id == "team-a" {
+                gate.wait()
+                throw Self.notFound404(team: id)
+            }
+            if id == "team-b" { return resp }
+            throw Self.notFound404(team: id)
+        })
+        store.setTeams([
+            ShiftTeam(id: "team-a", name: "Alpha"),
+            ShiftTeam(id: "team-b", name: "Beta"),
+            ShiftTeam(id: "team-c", name: "Gamma"),
+        ])
+        store.open(teamID: "team-a")
+        XCTAssertEqual(store.loadProgress, ShiftsLoadProgress(done: 0, total: 3))
+        try await waitFor("b and c answered") { store.loadProgress?.done == 2 }
+        XCTAssertEqual(store.loadProgress, ShiftsLoadProgress(done: 2, total: 3))
+        XCTAssertEqual(store.state, .loading)
+        XCTAssertNil(store.week)
+        gate.signal()
+        try await waitFor("loaded") { store.state == .loaded }
+        XCTAssertEqual(store.selectedTeamID, "team-b")
+        XCTAssertNil(store.loadProgress)
+    }
+
+    /// Picker teams are fetched together, never more than
+    /// `maxConcurrentTeams` at once, each once.
+    func testPickerFetchIsParallelAndBounded() async throws {
+        let meter = ShiftsInFlightMeter()
+        let store = ShiftsStore(week: { id in
+            meter.enter()
+            Thread.sleep(forTimeInterval: 0.05)
+            meter.leave()
+            throw Self.notFound404(team: id)
+        })
+        let teams = (1 ... 9).map { ShiftTeam(id: "team-\($0)", name: "T\($0)") }
+        store.setTeams(teams)
+        store.open(teamID: "team-1")
+        try await waitFor("unavailable") {
+            if case .unavailable = store.state { return true }
+            return false
+        }
+        XCTAssertEqual(meter.total, 9)
+        XCTAssertLessThanOrEqual(meter.peak, ShiftsStore.maxConcurrentTeams)
+        XCTAssertGreaterThan(meter.peak, 1)
     }
 
     func testSingleUnknownTeam404IsError() async throws {
@@ -329,6 +433,13 @@ final class ShiftsTests: XCTestCase {
             ("schedule_week: GET https://graph.microsoft.com/x failed: network connection timed out", nil,
              "Couldn't reach the service. Check your connection, then retry."),
             ("{\"ok\":false,\"error\":\"schedule_week\"}", nil, "Couldn't load shifts. Retry."),
+            // Status digits inside a team GUID are not a status.
+            ("schedule_week: HTTP 500 for https://graph.microsoft.com/v1.0/teams/1404f03a-4010-4c2e/schedule: {}", nil,
+             // NOLOAD: an unexpected 5xx reads as a service hiccup,
+             // never the raw core text.
+             "Teams is having trouble right now (500). Try again in a moment."),
+            ("shifts timed out after 15s", nil,
+             "Couldn't reach the service. Check your connection, then retry."),
             ("nope", nil, "nope"),
         ]
         for row in rows {
@@ -417,6 +528,31 @@ private final class ShiftsFetchLog: @unchecked Sendable {
         defer { lock.unlock() }
         return ids
     }
+}
+
+/// Peak concurrent fetcher calls (the store calls the fetcher off-main).
+private final class ShiftsInFlightMeter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var now = 0
+    private var calls = 0
+    private var high = 0
+
+    func enter() {
+        lock.lock()
+        defer { lock.unlock() }
+        now += 1
+        calls += 1
+        high = max(high, now)
+    }
+
+    func leave() {
+        lock.lock()
+        defer { lock.unlock() }
+        now -= 1
+    }
+
+    var peak: Int { lock.lock(); defer { lock.unlock() }; return high }
+    var total: Int { lock.lock(); defer { lock.unlock() }; return calls }
 }
 
 /// Non-core error probe (sanitize path for foreign errors).

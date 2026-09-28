@@ -21,7 +21,7 @@ import OstMacCore
 import WebKit
 
 public enum TeamsJSTokenResult: Sendable, Equatable {
-    case token(String, expiresIn: Int?)
+    case token(String, expiresIn: Int?, idToken: String? = nil)
     /// `transient`: offline/network; do not fall back to the Teams shell.
     case failure(String, transient: Bool)
 }
@@ -44,6 +44,8 @@ public struct TeamsJSEvent: Sendable, Equatable {
 @MainActor
 public final class TeamsJSHost: NSObject {
     public static let handlerName = "btTeamsJS"
+    /// Paint report of the app's page (text/element counts only).
+    public static let probeHandlerName = "btTeamsJSProbe"
     /// Host SDK level reported to the app.
     public static let clientSDKVersion = "2.56.0"
     /// Largest message accepted from a page (bytes of JSON).
@@ -62,6 +64,21 @@ public final class TeamsJSHost: NSObject {
     /// The app cannot work in the native host (auth failed for good):
     /// the frame should switch this app to its Teams-shell page.
     public var onFallback: ((String) -> Void)?
+    /// Automatic host mode (APPHOST-B3): app-reported failures also fall
+    /// back. Off when the user forced the native host.
+    public var watchesFailures = false
+    /// Last paint report from the app's own frame: nil = none yet.
+    public private(set) var paint: TeamsJSPaintReport?
+    /// getAuthToken needs the user's consent (AADSTS65001): show the
+    /// Microsoft consent page; true = the user finished it (retry).
+    public var onConsent: ((String) async -> Bool)?
+    /// `authentication.authenticate`: the app's auth page in a sheet;
+    /// resolves to (success, result or reason).
+    public var onAuthenticate: ((URL) async -> (Bool, String))?
+    /// Auth window host (frameContext "authentication"): the page
+    /// called notifySuccess / notifyFailure.
+    public var onAuthResult: ((Bool, String) -> Void)?
+    private var consentAsked = false
     /// A Teams deep link (`/l/...`) the app opened: true when the window
     /// routed it natively (APPHOST-B2). Nil or false → default browser.
     public var onDeepLink: ((URL) -> Bool)?
@@ -81,6 +98,9 @@ public final class TeamsJSHost: NSObject {
     /// Registers the message handler (and, frameless, the shim).
     public func install(into controller: WKUserContentController) {
         controller.add(WeakScriptHandler(self), name: Self.handlerName)
+        controller.add(WeakScriptHandler(self, probe: true), name: Self.probeHandlerName)
+        controller.addUserScript(WKUserScript(source: Self.paintProbe, injectionTime: .atDocumentEnd,
+                                              forMainFrameOnly: false))
         if transport == .frameless {
             controller.addUserScript(WKUserScript(source: Self.framelessShim, injectionTime: .atDocumentStart,
                                                   forMainFrameOnly: true))
@@ -89,6 +109,7 @@ public final class TeamsJSHost: NSObject {
 
     public static func uninstall(from controller: WKUserContentController) {
         controller.removeScriptMessageHandler(forName: handlerName)
+        controller.removeScriptMessageHandler(forName: probeHandlerName)
     }
 
     /// Binds the view; follows its appearance (themeChange events).
@@ -110,6 +131,29 @@ public final class TeamsJSHost: NSObject {
     }
 
     // MARK: page scripts
+
+    /// Every frame: 12 s after the DOM is ready, report visible text
+    /// length and sized content elements (counts only, never content);
+    /// a blank frame looks again 8 s later and reports either way.
+    static let paintProbe = """
+    (function () {
+      var m = window.webkit && window.webkit.messageHandlers;
+      var h = m && m.\(probeHandlerName);
+      if (!h) { return; }
+      function report(last) {
+        var b = document.body, text = b ? (b.innerText || '').trim().length : 0, items = 0;
+        var els = document.querySelectorAll('img,canvas,video,svg,embed,object,input,button,textarea,select');
+        for (var i = 0; i < els.length && items < 50; i++) {
+          var r = els[i].getBoundingClientRect();
+          if (r.width * r.height >= 256) { items++; }
+        }
+        if (text > 0 || items > 0 || last) { h.postMessage(JSON.stringify({text: text, items: items})); return true; }
+        return false;
+      }
+      function start() { setTimeout(function () { if (!report(false)) { setTimeout(function () { report(true); }, 8000); } }, 12000); }
+      if (document.readyState === 'loading') { document.addEventListener('DOMContentLoaded', start); } else { start(); }
+    })();
+    """
 
     /// Frameless: TeamsJS transport plus a native nested-app-auth bridge
     /// (TeamsJS does not polyfill `nestedAppAuthBridge` when frameless;
@@ -184,6 +228,7 @@ public final class TeamsJSHost: NSObject {
     func runtimeConfigJSON() -> String {
         let empty: [String: Any] = [:]
         var supports: [String: Any] = [
+            "authentication": empty,
             "pages": ["appButton": empty, "tabs": empty, "config": empty, "backStack": empty],
             "teamsCore": empty,
             "appInitialization": empty,
@@ -273,7 +318,26 @@ public final class TeamsJSHost: NSObject {
         case "appInitialization.failure", "appInitialization.expectedFailure":
             let reason = (args.first as? String) ?? ""
             emit(fn, "reason=\(reason.prefix(40))", false)
-            if reason == "AuthFailed" || reason == "Unauthorized" { fallBack("app reported \(reason)") }
+            if reason == "AuthFailed" || reason == "Unauthorized" {
+                fallBack("app reported \(reason)")
+            } else if TeamsJSPolicy.isFailure(fn, reason: reason) {
+                failed("app reported \(reason.isEmpty ? "a failure" : String(reason.prefix(24)))")
+            }
+        case "authentication.authenticate":
+            emit(fn, "", true)
+            authenticate(req, args)
+        case "authentication.authenticate.success", "authentication.notifySuccess":
+            emit(fn, "", false)
+            onAuthResult?(true, (args.first as? String) ?? "")
+        case "authentication.authenticate.failure", "authentication.notifyFailure":
+            emit(fn, "", false)
+            // Only an auth window may report; the content page doing so
+            // means its own sign-in failed.
+            if context.frameContext == "authentication" {
+                onAuthResult?(false, (args.first as? String) ?? "")
+            } else {
+                failed("app sign-in failed")
+            }
         case "appInitialization.appLoaded", "appInitialization.success":
             emit(fn, "", false)
         case "nestedAppAuth.execute":
@@ -314,9 +378,40 @@ public final class TeamsJSHost: NSObject {
             let result = await self.broker?.authToken(resource: resource)
                 ?? .failure("No token broker.", transient: false)
             switch result {
-            case .token(let t, _): self.respond(req, [true, t])
-            case .failure(let why, _): self.respond(req, [false, why])
+            case .token(let t, _, _): self.respond(req, [true, t])
+            case .failure(let why, _):
+                // Teams shows a consent prompt here; once, then retry.
+                if TeamsJSPolicy.needsConsent(why), !self.consentAsked, let ask = self.onConsent {
+                    self.consentAsked = true
+                    self.emit("consent", "asked", true)
+                    if await ask(resource),
+                       case .token(let t, _, _)? = await self.broker?.authToken(resource: resource) {
+                        self.respond(req, [true, t])
+                        return
+                    }
+                    self.respond(req, [false, "resourceRequiresConsent"])
+                    return
+                }
+                self.respond(req, [false, why])
             }
+        }
+    }
+
+    /// `authentication.authenticate([url, width, height, isExternal])`:
+    /// only the app's own https pages (or Microsoft sign-in) open.
+    private func authenticate(_ req: [String: Any], _ args: [Any]) {
+        guard let raw = args.first as? String,
+              let url = URL(string: raw, relativeTo: web?.url)?.absoluteURL,
+              url.scheme?.lowercased() == "https", let host = url.host?.lowercased(),
+              TeamsJSPolicy.isAppOrigin(url, launch: launch) || FramePolicy.hostMatches(host, TeamsJSPolicy.authHosts),
+              let open = onAuthenticate
+        else {
+            respond(req, [false, "Authentication is limited to the app's own pages."])
+            return
+        }
+        Task { @MainActor [weak self] in
+            let (ok, result) = await open(url)
+            self?.respond(req, [ok, result])
         }
     }
 
@@ -420,9 +515,10 @@ public final class TeamsJSHost: NSObject {
             let result = await self.broker?.naaToken(clientID: client, scopes: scope, origin: origin)
                 ?? .failure("No token broker.", transient: false)
             switch result {
-            case .token(let t, let expires):
+            case .token(let t, let expires, let idToken):
+                // MSAL.js rejects a reply without an id token (nullOrEmptyToken).
                 self.naaReply(requestID, ["success": true, "account": self.naaAccount(), "token": [
-                    "access_token": t, "expires_in": expires ?? 3600, "id_token": "", "scope": scope,
+                    "access_token": t, "expires_in": expires ?? 3600, "id_token": idToken ?? "", "scope": scope,
                     "token_type": "Bearer", "properties": NSNull(),
                 ] as [String: Any]])
             case .failure(let why, let transient):
@@ -452,6 +548,22 @@ public final class TeamsJSHost: NSObject {
         guard !fellBack else { return }
         fellBack = true
         onFallback?(why)
+    }
+
+    /// A failure the app or page reported: falls back in Automatic mode.
+    func failed(_ why: String) {
+        guard watchesFailures else { return }
+        fallBack(why)
+    }
+
+    /// A paint report from a frame: only the app's own frame counts
+    /// (frameless: the main frame; iframe: the embedded app frame).
+    func receiveProbe(_ body: Any, isMainFrame: Bool, origin: URL?) {
+        guard let s = body as? String, s.utf8.count < 256, let d = s.data(using: .utf8),
+              let o = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any] else { return }
+        let appFrame = transport == .frameless ? isMainFrame : !isMainFrame
+        guard appFrame, pageIsApp(origin) else { return }
+        paint = TeamsJSPaintReport(text: o["text"] as? Int ?? 0, items: o["items"] as? Int ?? 0)
     }
 
     // MARK: delivery
@@ -511,15 +623,30 @@ public final class TeamsJSHost: NSObject {
 
 /// Breaks the WKUserContentController → handler retain cycle.
 @MainActor
+/// What the app's frame painted (counts only).
+public struct TeamsJSPaintReport: Sendable, Equatable {
+    public let text: Int
+    public let items: Int
+    public var isBlank: Bool { text == 0 && items == 0 }
+}
+
 private final class WeakScriptHandler: NSObject, WKScriptMessageHandler {
     weak var host: TeamsJSHost?
-    init(_ host: TeamsJSHost) { self.host = host }
+    let probe: Bool
+    init(_ host: TeamsJSHost, probe: Bool = false) {
+        self.host = host
+        self.probe = probe
+    }
 
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
         let o = message.frameInfo.securityOrigin
         let origin = o.host.isEmpty
             ? URL(string: "about:blank")
             : URL(string: o.port > 0 ? "\(o.`protocol`)://\(o.host):\(o.port)" : "\(o.`protocol`)://\(o.host)")
-        host?.receive(message.body, isMainFrame: message.frameInfo.isMainFrame, origin: origin)
+        if probe {
+            host?.receiveProbe(message.body, isMainFrame: message.frameInfo.isMainFrame, origin: origin)
+        } else {
+            host?.receive(message.body, isMainFrame: message.frameInfo.isMainFrame, origin: origin)
+        }
     }
 }

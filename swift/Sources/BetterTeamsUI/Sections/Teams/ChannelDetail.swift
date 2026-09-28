@@ -73,6 +73,7 @@ struct ChannelDetail: View {
     /// (APPHOST-B2); unmatched tabs keep their Teams-shell page.
     private func webTab(_ id: String, _ m: WindowModel) -> some View {
         if let t = tabs.first(where: { $0.id == id }), case .web(let url) = t.target {
+            m.frameHost.library.store.ensureTeamApps(teamID: team.teamId, tabAppIDs: tabs.compactMap(\.appID))
             if let l = m.frameHost.library.store.launch(forTab: t, team: team, channel: channel) {
                 m.frameHost.registerHostedTab(.tab(id), launch: l, title: t.name)
             } else {
@@ -117,6 +118,7 @@ struct ChannelDetail: View {
                     TimelineRepresentable(conv: conv, scope: .posts, selectedID: sel.threadID)
                         .refreshStatus(conv.refreshing, failure: conv.refreshError,
                                        label: "Updating Posts", retry: { conv.refresh() })
+                        .refreshStatus(conv.loadingMore, label: "Loading Earlier Posts", alignment: .top)
                 }
                 Divider()
                 Composer(chatID: channel.channelId, chatName: channel.name,

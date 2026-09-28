@@ -3,7 +3,7 @@ import Foundation
 
 /// One merged row: a Shared-tab file tagged with its leg + origin name
 /// ("Design Sync", "Platform > #general", "OneDrive").
-public struct UnifiedFileRow: Identifiable, Equatable, Sendable {
+public struct UnifiedFileRow: Identifiable, Equatable, Sendable, Codable {
     public let file: SharedFile
     public let source: UnifiedFileSource
     public let sourceName: String

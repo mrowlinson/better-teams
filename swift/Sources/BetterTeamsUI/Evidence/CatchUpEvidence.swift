@@ -91,10 +91,13 @@ enum CatchUpEvidence {
         - Megan asked you to share the sunset photo
         """
 
+    /// Re-checks `ok` once per main-queue turn (the harness's settle idiom,
+    /// no sleeps, R7) until it holds or 3 s pass.
     private static func waitFor(_ ok: @MainActor () -> Bool) async -> Bool {
-        for _ in 0..<60 {
+        let deadline = Date().addingTimeInterval(3)
+        while Date() < deadline {
             if ok() { return true }
-            try? await Task.sleep(for: .milliseconds(50))
+            await withCheckedContinuation { c in DispatchQueue.main.async { c.resume() } }
         }
         return ok()
     }

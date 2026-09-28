@@ -14,7 +14,9 @@ struct ShiftsWeekPane: View {
                                                 forced: model.forced(.native(.shifts)),
                                                 offline: model.connection == .offline)
             switch state {
-            case .loading: LoadingPane("Loading Shifts\u{2026}")
+            case .loading:
+                LoadingPane(ShiftsPaneState.loadingLabel(store.loadProgress),
+                            progress: ShiftsPaneState.loadingFraction(store.loadProgress))
             case .notSetUp:
                 EmptyPane(ShiftsPaneState.notSetUpTitle, systemImage: NativeAppID.shifts.symbol,
                           message: ShiftsPaneState.notSetUpMessage)
