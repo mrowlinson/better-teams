@@ -278,6 +278,8 @@ public final class MeetingVideoModel: ObservableObject {
     /// Someone else's shared screen while a share is up (live only): the
     /// stage shows it large with the people in a strip.
     @Published public private(set) var shareVideo: LiveVideoModel?
+    /// Demo: someone presents (`startDemoPresentation`).
+    @Published public private(set) var demoPresenting = false
     /// Age of the newest share frame (nil: none this call).
     private var shareAgeMs: UInt64?
     public let demo: Bool
@@ -362,6 +364,18 @@ public final class MeetingVideoModel: ObservableObject {
         guard !talkers.isEmpty else { return }
         demoTurn = (demoTurn + 1) % talkers.count
         dominantID = talkers[demoTurn].id
+    }
+
+    /// Demo: the first person presents their screen (the stage shows a
+    /// demo slide with the people in the strip), everyone camera-off.
+    public func startDemoPresentation() {
+        guard demo, running else { return }
+        roster = Self.demoRoster.enumerated().map { i, p in
+            CallRosterParticipant(id: p.id, name: p.name, audioMsi: p.audioMsi, videoMsi: p.videoMsi,
+                                  videoOn: false, screenMsi: i == 0 ? 13 : nil, screenOn: i == 0, muted: p.muted)
+        }
+        dominantID = roster.first?.id
+        demoPresenting = true
     }
 
     /// One poll's results (live; internal for tests).

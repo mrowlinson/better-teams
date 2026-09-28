@@ -64,7 +64,7 @@ struct CallsSettingsPane: View {
         }
         .formStyle(.grouped)
         .scrollDisabled(true)
-        .frame(width: 500)
+        .frame(width: SettingsWindowController.paneWidth)
         .fixedSize(horizontal: false, vertical: true)
         .onAppear { devices.setLevelWanted(true, by: .settings) }
         .onDisappear {

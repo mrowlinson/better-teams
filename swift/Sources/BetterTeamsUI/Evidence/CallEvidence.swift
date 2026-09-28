@@ -9,9 +9,11 @@
 //       an incoming ring (no system banner in demo: the geometry line
 //       reports the CALL notification it would carry); accept=1 accepts
 //       through the core slot and the DL1 host shows the call
-//   call?state=prejoin|active|muted|sharing|ended|meetingvideo&presentation=main|window
+//   call?state=prejoin|active|muted|sharing|ended|meetingvideo|presenting&presentation=main|window
 //       [&inspector=1|people|chat][&popover=devices]
-//       (meetingvideo: the meeting joined with video, the tile grid)
+//       (meetingvideo: the meeting joined with video, the tile grid;
+//       presenting: the same meeting with a colleague sharing a slide,
+//       everyone camera-off)
 //   <any route>?call=prejoin|active&presentation=main|window
 //       a demo call behind the route (rail + toolbar call items)
 //
@@ -107,8 +109,11 @@ enum CallEvidence {
         app.meetingChat.showDemo(threadID: "19:demo_standup@thread.v2", chatName: standup.subject,
                                  messages: MeetingDemo.messages)
         let s = m.beginCall(kind, presentation: p, show: show)
-        s?.joinForDemo(video: state == "meetingvideo")
+        s?.joinForDemo(video: state == "meetingvideo" || state == "presenting")
         switch state {
+        case "presenting":
+            s?.meetingVideo?.startDemoPresentation()
+            app.call.setCameraOn(false)
         case "muted": app.call.setMuted(true)
         case "sharing": s?.toggleShare()
         case "ended": app.call.seedDemo(state: "ended")

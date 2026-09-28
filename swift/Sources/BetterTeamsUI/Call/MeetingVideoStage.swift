@@ -23,12 +23,13 @@ struct MeetingVideoStage: View {
     private enum Item: Identifiable {
         case remote(MeetingVideoPlan.Tile)
         case remoteShare(LiveVideoModel)
+        case demoShare
         case local(CallTile)
 
         var id: String {
             switch self {
             case .remote(let t): "remote:" + t.id
-            case .remoteShare: "remote-share"
+            case .remoteShare, .demoShare: "remote-share"
             case .local(let t): "local:" + t.id
             }
         }
@@ -54,6 +55,8 @@ struct MeetingVideoStage: View {
                                         onPin: { video.pin(video.pinnedID == t.id ? nil : t.id) })
                     case .remoteShare(let m):
                         RemoteShareView(model: m, presenter: video.presenter?.name)
+                    case .demoShare:
+                        DemoShareView(presenter: video.presenter?.name)
                     case .local(let t):
                         CallTileView(tile: t, camera: session.camera)
                     }
@@ -66,7 +69,7 @@ struct MeetingVideoStage: View {
     }
 
     private var layout: AnyLayout {
-        video.pinnedID == nil && video.shareVideo == nil
+        video.pinnedID == nil && video.shareVideo == nil && !video.demoPresenting
             ? AnyLayout(TileGridLayout(spacing: 8)) : AnyLayout(SpotlightLayout(spacing: 8))
     }
 
@@ -76,6 +79,7 @@ struct MeetingVideoStage: View {
         let c = session.controls
         var out = video.tiles.map { Item.remote($0) }
         if let share = video.shareVideo { out.insert(.remoteShare(share), at: 0) }
+        else if video.demoPresenting { out.insert(.demoShare, at: 0) }
         out.append(.local(CallTile(id: "self", name: own, kind: .selfView,
                                    speaking: me != nil && me?.id == video.dominantID && !c.muted,
                                    muted: c.muted, cameraOn: c.cameraOn)))
@@ -208,12 +212,18 @@ private struct RemoteShareView: View {
         }
         .animation(VideoFade.animation, value: model.remoteImage == nil)
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay(alignment: .bottomLeading) { chip.padding(8) }
+        .overlay(alignment: .bottomLeading) { PresentingChip(title: title).padding(8) }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(model.remoteImage == nil ? waiting : title)
     }
+}
 
-    private var chip: some View {
+/// "<Name> is presenting" chip on a shared screen.
+private struct PresentingChip: View {
+    let title: String
+    @Environment(\.contentTextScale) private var scale
+
+    var body: some View {
         HStack(spacing: 4) {
             Image(systemName: "rectangle.on.rectangle").foregroundStyle(.secondary)
             Text(title)
@@ -225,6 +235,108 @@ private struct RemoteShareView: View {
         .padding(.vertical, 3)
         .background(Color(nsColor: .windowBackgroundColor).opacity(0.85),
                     in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+    }
+}
+
+/// Demo: the presenter's shared screen, a slide drawn by the app (demo
+/// never receives share frames). Fitted 16:9, like a real share.
+private struct DemoShareView: View {
+    let presenter: String?
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.fill.tertiary)
+            DemoSlide()
+                .aspectRatio(16.0 / 9.0, contentMode: .fit)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(alignment: .bottomLeading) {
+            PresentingChip(title: presenter.map { "\($0) is presenting" } ?? "Screen share").padding(8)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(presenter.map { "\($0) is presenting" } ?? "Screen share")
+    }
+}
+
+/// A sprint-review slide, laid out in slide units (1 = 1/100 of the
+/// slide width) so it scales with the stage.
+private struct DemoSlide: View {
+    private static let accent = Color(red: 0.36, green: 0.35, blue: 0.80)
+    private static let ink = Color(red: 0.14, green: 0.15, blue: 0.19)
+    private static let muted = Color(red: 0.42, green: 0.44, blue: 0.50)
+    private static let bars: [(String, Double)] = [
+        ("W1", 0.42), ("W2", 0.48), ("W3", 0.55), ("W4", 0.61), ("W5", 0.74), ("W6", 0.86),
+    ]
+    private static let points = [
+        ("Time to first message", "4 min \u{2192} 85 s"),
+        ("Setup steps", "6 \u{2192} 3 screens"),
+        ("Rollout", "10% from Oct 14"),
+    ]
+
+    var body: some View {
+        GeometryReader { g in
+            let u = g.size.width / 100
+            ZStack(alignment: .topLeading) {
+                Color.white
+                Rectangle().fill(Self.accent).frame(width: g.size.width, height: u * 0.8)
+                VStack(alignment: .leading, spacing: u * 1.2) {
+                    Text("SPRINT 14 REVIEW")
+                        .font(.system(size: u * 1.5, weight: .semibold))
+                        .kerning(u * 0.15)
+                        .foregroundStyle(Self.accent)
+                    Text("Onboarding refresh")
+                        .font(.system(size: u * 4.2, weight: .bold))
+                        .foregroundStyle(Self.ink)
+                    Text("Shorter setup, faster first message")
+                        .font(.system(size: u * 2, weight: .regular))
+                        .foregroundStyle(Self.muted)
+                    HStack(alignment: .top, spacing: u * 5) {
+                        VStack(alignment: .leading, spacing: u * 2.6) {
+                            ForEach(Self.points, id: \.0) { p in
+                                VStack(alignment: .leading, spacing: u * 0.5) {
+                                    Text(p.0)
+                                        .font(.system(size: u * 1.6))
+                                        .foregroundStyle(Self.muted)
+                                    Text(p.1)
+                                        .font(.system(size: u * 2.8, weight: .semibold))
+                                        .foregroundStyle(Self.ink)
+                                }
+                            }
+                        }
+                        .frame(width: u * 34, alignment: .leading)
+                        chart(u)
+                    }
+                    .padding(.top, u * 3)
+                }
+                .padding(.horizontal, u * 6)
+                .padding(.top, u * 5.5)
+                Text("Product Team \u{00B7} Engineering standup")
+                    .font(.system(size: u * 1.3))
+                    .foregroundStyle(Self.muted)
+                    .position(x: u * 12, y: g.size.height - u * 3)
+            }
+        }
+    }
+
+    private func chart(_ u: CGFloat) -> some View {
+        VStack(alignment: .leading, spacing: u * 1.2) {
+            Text("Weekly sign-ups completed")
+                .font(.system(size: u * 1.6, weight: .medium))
+                .foregroundStyle(Self.ink)
+            HStack(alignment: .bottom, spacing: u * 2) {
+                ForEach(Self.bars, id: \.0) { b in
+                    VStack(spacing: u * 0.8) {
+                        RoundedRectangle(cornerRadius: u * 0.4, style: .continuous)
+                            .fill(b.0 == "W6" ? Self.accent : Self.accent.opacity(0.35))
+                            .frame(width: u * 4.4, height: u * 22 * b.1)
+                        Text(b.0)
+                            .font(.system(size: u * 1.3))
+                            .foregroundStyle(Self.muted)
+                    }
+                }
+            }
+            .frame(height: u * 24, alignment: .bottom)
+        }
     }
 }
 

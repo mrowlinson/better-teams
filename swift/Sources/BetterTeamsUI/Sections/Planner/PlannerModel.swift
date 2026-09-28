@@ -151,6 +151,6 @@ enum PlannerFormat {
 
     static func progress(_ task: PlannerTask) -> String {
         if task.completed || task.percent >= 100 { return "Completed" }
-        return task.percent > 0 ? "In Progress" : "Not Started"
+        return task.percent > 0 ? "In progress" : "Not started"
     }
 }

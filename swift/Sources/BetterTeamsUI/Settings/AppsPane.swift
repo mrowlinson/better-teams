@@ -134,7 +134,7 @@ struct AppsPane: View {
         }
         .formStyle(.grouped)
         .scrollDisabled(true)
-        .frame(width: 500)
+        .frame(width: SettingsWindowController.paneWidth)
         .fixedSize(horizontal: false, vertical: true)
         .onChange(of: keep) { _, n in
             host.keepInMemory = n

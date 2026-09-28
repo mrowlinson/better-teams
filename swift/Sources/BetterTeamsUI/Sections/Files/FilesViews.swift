@@ -44,7 +44,17 @@ struct FilesSourceList: View {
                                     .tag(FilesSource.channel(c.channelId).key)
                             }
                         } label: {
-                            Label(team.name, systemImage: "person.3").lineLimit(1)
+                            // The wide team glyph gets its own slot so it
+                            // clears the disclosure chevron and the name.
+                            HStack(spacing: 7) {
+                                Image(systemName: "person.3")
+                                    .imageScale(.small)
+                                    .frame(width: 24)
+                                    .accessibilityHidden(true)
+                                Text(team.name)
+                            }
+                            .padding(.leading, 3)
+                            .lineLimit(1)
                         }
                     }
                 }
@@ -126,7 +136,7 @@ struct FilesDetailPane: View {
 
 /// The one file table (§6.6): Name (icon, middle truncation), Modified,
 /// Modified By, Size, Location; header click sorts, again reverses;
-/// resizable columns, alternating rows, multi-select. Empty, loading
+/// resizable columns, plain rows, multi-select. Empty, loading
 /// and error states sit inside the table area under the header. Space =
 /// Quick Look; Return / double-click = Open; drops upload.
 struct FileTableView: View {
@@ -162,26 +172,28 @@ struct FileTableView: View {
                     Text(f.name).lineLimit(1).truncationMode(.middle)
                 }
             }
-            .width(min: 160, ideal: 260)
+            .width(min: 180, ideal: 290)
             TableColumn("Modified", value: \.modifiedKey) { f in
                 Text(FilesFormat.date(f.modified)).foregroundStyle(.secondary).monospacedDigit().lineLimit(1)
             }
             // Fits "Sep 25, 2026 at 10:58 AM" without truncating.
-            .width(min: 170, ideal: 190)
+            .width(min: 165, ideal: 170)
             TableColumn("Modified By", value: \.modifiedBy) { f in
                 Text(f.modifiedBy).foregroundStyle(.secondary).lineLimit(1)
             }
-            .width(min: 80, ideal: 120)
+            .width(min: 80, ideal: 105)
             TableColumn("Size", value: \.size) { f in
                 Text(f.isFolder ? "--" : FilesFormat.size(f.size)).foregroundStyle(.secondary).monospacedDigit()
             }
-            .width(min: 60, ideal: 80)
+            .width(min: 52, ideal: 62)
             TableColumn("Location", value: \.location) { f in
                 location(f, m)
             }
-            .width(min: 90, ideal: 170)
+            .width(min: 90, ideal: 150)
         }
-        .alternatingRowBackgrounds()
+        // Plain rows: alternating stripes also paint empty filler rows
+        // below the last file.
+        .alternatingRowBackgrounds(.disabled)
         .contextMenu(forSelectionType: String.self) { ids in
             // The clicked row, or the whole selection when it holds that
             // row: Delete / Move / Copy act on every item (Finder).
@@ -213,13 +225,15 @@ struct FileTableView: View {
     @ViewBuilder
     private func location(_ f: FileItem, _ m: WindowModel) -> some View {
         if linksLocation, let id = f.locationID {
-            Button(f.location) { FilesSection.openSource(id, name: f.location, m) }
+            // One line, tail-truncated: a wrapped location made rows uneven.
+            Button { FilesSection.openSource(id, name: f.location, m) } label: {
+                Text(f.location).lineLimit(1).truncationMode(.tail)
+            }
                 .buttonStyle(.link)
-                .lineLimit(1)
                 .help("Open \(f.location)")
                 .accessibilityLabel("in \(f.location)")
         } else {
-            Text(f.location).foregroundStyle(.secondary).lineLimit(1)
+            Text(f.location).foregroundStyle(.secondary).lineLimit(1).truncationMode(.tail)
         }
     }
 

@@ -98,7 +98,7 @@ struct NotificationsPane: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 500, height: 640)
+        .frame(width: SettingsWindowController.paneWidth, height: 640)
     }
 
     /// Schedule 1's start or end as a time of day.

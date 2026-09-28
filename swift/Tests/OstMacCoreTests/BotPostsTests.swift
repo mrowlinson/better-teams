@@ -191,7 +191,7 @@ final class BotPostsTests: XCTestCase {
         XCTAssertEqual(MessageRender.bubbleText(for: msgs[0]), "Tech news digest — 2 new stories:")
         XCTAssertEqual(
             MessageRender.botPosts(fromRaw: msgs[0].raw).map(\.title),
-            ["Swift 6.2 released", "Rust 1.89 ships"])
+            ["Accessible color palettes, explained", "Faster builds with smarter caching"])
         XCTAssertFalse(MessageRender.showsPlaceholder(for: msgs[0]))
         // Card: row only, JSON suppressed.
         XCTAssertEqual(MessageRender.bubbleText(for: msgs[1]), "")
