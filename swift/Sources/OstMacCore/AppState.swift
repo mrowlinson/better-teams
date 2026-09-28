@@ -487,6 +487,11 @@ public final class AppState: ObservableObject {
         }
         wireChats()
         wireSearchIndex() // gap-g6g7: history + delete → offline index
+        // histload: per-account chat snapshots (reopen paints instantly).
+        if !isDemo { conv.historyCache = .disk(for: searchIndexAccountID) }
+        popouts.historyCache = conv.historyCache // pop-outs open from the same snapshots
+        // NOLOAD: per-account last-good section snapshots.
+        if !isDemo { attachSectionCache(accountID: searchIndexAccountID) }
         wireCatchUpDigest() // AICATCH: arrivals → mentions + summaries
         // core-b: file search hits name their conversation from the
         // Files index (Graph drive search reports none).
@@ -797,8 +802,13 @@ public final class AppState: ObservableObject {
         wireHistory()
         meetingChat = makeMeetingChat(accountID: id)
         switchSearchIndex(to: id) // gap-g6g7: per-account offline index
+        if !isDemo { conv.historyCache = .disk(for: id) } // histload
+        popouts.historyCache = conv.historyCache
+        if !isDemo { attachSectionCache(accountID: id) } // NOLOAD
         messageSearch.clear() // gap-g6g7: stale hits never cross accounts
         teams.resetForAccount()
+        chats.restoreSnapshot() // new account's last-good chat list
+        teams.restoreSnapshot() // NOLOAD: new account's last-good list
         presence.clear()
         presenceSchedule.clearApplied() // e2-attention: drop applied state
         presenceTruth.clearSession() // top10-presence: drop lock/log/devices
@@ -922,6 +932,7 @@ public final class AppState: ObservableObject {
         started = true
         coreVersion = RustCore.version()
         initCode = RustCore.initialize()
+        Log.installCoreObserver() // NOLOAD: per-request network log
         if isDemo {
             signedIn = true // demo bypasses the gate (offline canned data)
         } else {
@@ -966,29 +977,55 @@ public final class AppState: ObservableObject {
     private func openContentIfAllowed() async {
         guard !contentOpened, isDemo || auth.state.allowsContent else { return }
         contentOpened = true
+        let launchStart = DispatchTime.now().uptimeNanoseconds
+        // NOLOAD: every section paints its last good snapshot first
+        // (per-account disk cache), then revalidates behind the rows.
+        restoreSectionCaches()
+        // NOLOAD: section loads run concurrently — none waits on
+        // another. Critical first (chats awaited: restore needs the
+        // list); teams → Shifts seed → Files specs chain on their own;
+        // To Do + Planner in parallel; recordings + transcripts (41.8s
+        // / 58.1s live) go to a utility-QoS idle pass below.
+        let teamsLoad = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.teams.load()
+            Log.content("teams", ms: Log.ms(since: launchStart), cached: false)
+            // Shifts needs only the teams list (team picker + grid).
+            self.seedShifts()
+        }
         await chats.load()
-        await teams.load()
-        await reminders.load()
-        await planner.load()
-        await recordings.load()
-        await transcripts.load()
+        Log.content("chats", ms: Log.ms(since: launchStart), cached: false)
+        // Second wave (after the chat list claims the core): To Do +
+        // Planner in parallel, never blocking the restore below.
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            async let todo: Void = self.reminders.load()
+            async let plans: Void = self.planner.load()
+            _ = await (todo, plans)
+            Log.content("todo+planner", ms: Log.ms(since: launchStart), cached: false)
+        }
         // top10-files: unified Files surface. Demo seeds canned rows
         // offline; live fans out over recent chats + channels + drive
-        // recents (specs capped in UnifiedFilesStore.specsFor).
+        // recents (specs capped in UnifiedFilesStore.specsFor) once the
+        // teams list lands.
         if isDemo {
             unifiedFiles.showDemo(
                 specs: DemoData.unifiedDemoSpecs, rows: DemoData.unifiedDemoRows())
             transfers.seedDemo(DemoData.transferDemoItems())
         } else {
-            let fileSpecs = UnifiedFilesStore.specsFor(chats: chats.chats, teams: teams.teams)
-            unifiedFiles.load(
-                chats: fileSpecs.filter { $0.kind == .chat }.map { ($0.id, $0.name) },
-                channels: fileSpecs.filter { $0.kind == .channel }.map { ($0.id, $0.name) })
+            Task { @MainActor [weak self] in
+                await teamsLoad.value
+                guard let self else { return }
+                let fileSpecs = UnifiedFilesStore.specsFor(chats: self.chats.chats, teams: self.teams.teams)
+                self.unifiedFiles.load(
+                    chats: fileSpecs.filter { $0.kind == .chat }.map { ($0.id, $0.name) },
+                    channels: fileSpecs.filter { $0.kind == .channel }.map { ($0.id, $0.name) })
+            }
         }
+        scheduleIdleLoads(launchStart: launchStart)
         // top10-menubar: the meeting list loads on first Meetings-window
         // open (that scene already refresh()es on appear) — never on the
         // launch path.
-        seedShifts() // team picker + first-week grid (demo + live)
         if chats.state == .loaded {
             // Core's signed_in is aad-centric; a loaded list proves
             // working auth regardless.
@@ -1065,6 +1102,75 @@ public final class AppState: ObservableObject {
             Task { @MainActor [weak self] in self?.tick() }
         }
         ColdStart.mark("content.open") // top10-menubar: launch timeline
+    }
+
+    /// NOLOAD: point every list section at one account's snapshots.
+    private func attachSectionCache(accountID: String) {
+        let cache = SectionCache.disk(for: accountID)
+        chats.snapshots = cache
+        teams.snapshots = cache
+        reminders.snapshots = cache
+        planner.snapshots = cache
+        recordings.snapshots = cache
+        transcripts.snapshots = cache
+        unifiedFiles.snapshots = cache
+        calWeek.snapshots = cache
+        shifts.snapshots = cache
+    }
+
+    /// NOLOAD: paint every section's last good snapshot (launch). Demo
+    /// stores carry no cache (no-ops). Shifts opens its cached week so
+    /// the grid is up before the live teams list lands.
+    private func restoreSectionCaches() {
+        let start = DispatchTime.now().uptimeNanoseconds
+        var restored: [String] = []
+        if chats.restoreSnapshot() { restored.append("chats") }
+        if teams.restoreSnapshot() { restored.append("teams") }
+        if reminders.restoreSnapshot() { restored.append("todo") }
+        if planner.restoreSnapshot() { restored.append("planner") }
+        if recordings.restoreSnapshot() { restored.append("recordings") }
+        if transcripts.restoreSnapshot() { restored.append("transcripts") }
+        if unifiedFiles.restoreSnapshot() { restored.append("files") }
+        if calWeek.restoreSnapshot() { restored.append("calendar") }
+        if shifts.restoreSnapshot() {
+            restored.append("shifts")
+            if let id = shifts.selectedTeamID, shifts.hasCachedWeek {
+                shifts.open(teamID: id)
+            }
+        }
+        let ms = Log.ms(since: start)
+        for section in restored {
+            Log.content(section, ms: ms, cached: true)
+        }
+        ColdStart.mark("content.cached")
+    }
+
+    /// NOLOAD: rare/slow sections (recordings 41.8s, transcripts 58.1s
+    /// live) + the launch prefetch run at utility QoS once the critical
+    /// loads have claimed the core. Their panes show the snapshot (or a
+    /// skeleton on the first-ever run) meanwhile.
+    private func scheduleIdleLoads(launchStart: UInt64) {
+        let delay: UInt64 = isDemo ? 0 : 2_000_000_000
+        Task(priority: .utility) { @MainActor [weak self] in
+            if delay > 0 { try? await Task.sleep(nanoseconds: delay) }
+            guard let self else { return }
+            async let rec: Void = self.recordings.load()
+            async let tr: Void = self.transcripts.load()
+            async let warm: Void = self.prefetchAtIdle()
+            _ = await (rec, tr, warm)
+            Log.content("idle-pass", ms: Log.ms(since: launchStart), cached: false)
+        }
+    }
+
+    /// Launch/idle prefetch (bounded: three calendar weeks, sequential).
+    /// Shifts this week ± 1 prefetches itself once its grid lands; To
+    /// Do, Planner, Files and activity load in the launch waves; the
+    /// apps catalog refreshes from its own cache at library init.
+    private func prefetchAtIdle() async {
+        guard !isDemo else { return }
+        for offset in [0, 1, -1] {
+            await calWeek.prefetchWeek(offset: offset)
+        }
     }
 
     public func shutdown() {
@@ -1769,10 +1875,12 @@ public final class AppState: ObservableObject {
     }
 
     /// Settings ▸ Advanced ▸ Reset Caches: the media cache (memory and
-    /// this account's files). No-op in demo.
+    /// this account's files) plus chat + section snapshots. No-op in demo.
     public func resetCaches() async {
         guard !isDemo else { return }
         await RichMediaCache.shared.removeAll()
+        conv.historyCache?.removeAll() // histload chat snapshots
+        chats.snapshots?.removeAll() // NOLOAD section snapshots (chat list included)
     }
 
     /// Debounced OMIX persist (2s quiet window; cancels superseded).
@@ -2550,6 +2658,11 @@ public final class AppState: ObservableObject {
             refreshFeedStatus()
         case .signedOut, .signingOut, .expired, .refreshFailed, .error:
             signedIn = false
+            if s == .signingOut {
+                // Explicit sign-out: this account's list snapshots go
+                // (expiry / refresh failures keep them for re-sign-in).
+                chats.snapshots?.removeAll()
+            }
             switchingAccount = false
             feed.stop()
             presence.clear()

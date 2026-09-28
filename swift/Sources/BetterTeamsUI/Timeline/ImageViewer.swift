@@ -34,8 +34,7 @@ final class ImageViewerController: NSWindowController, NSWindowDelegate {
     /// Which image the doc frame shows (thumb vs full) — swap detection.
     private var shownFull = false
     private var userZoomed = false
-    private var gifTimer: Timer?
-    private var gifFrame = 0
+    private let gif = GifFrameTicker()
 
     private let scroll = NSScrollView()
     private let imageView = ViewerImageView()
@@ -48,10 +47,7 @@ final class ImageViewerController: NSWindowController, NSWindowDelegate {
     private var actionButtons: [NSButton] = []
 
     private init() {
-        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 640),
-                         styleMask: [.titled, .closable, .resizable, .miniaturizable, .fullSizeContentView],
-                         backing: .buffered, defer: true)
-        w.titlebarAppearsTransparent = true
+        let w = ImageViewerChrome.makeWindow()
         w.appearance = NSAppearance(named: .darkAqua)
         w.backgroundColor = NSColor(white: 0.08, alpha: 1)
         w.minSize = NSSize(width: 480, height: 360)
@@ -201,25 +197,11 @@ final class ImageViewerController: NSWindowController, NSWindowDelegate {
 
     private func startGif(_ clip: GifClip?, still: NSImage?) {
         guard let clip, clip.frames.count > 1 else {
-            gifTimer?.invalidate()
-            gifTimer = nil
+            gif.stop()
             return
         }
-        guard gifTimer == nil else { return }
-        gifFrame = 0
-        scheduleGif(clip)
-    }
-
-    private func scheduleGif(_ clip: GifClip) {
-        let d = max(clip.durations[gifFrame % clip.durations.count], GifProbe.minFrameDuration)
-        gifTimer = Timer.scheduledTimer(withTimeInterval: d, repeats: false) { [weak self] _ in
-            MainActor.assumeIsolated {
-                guard let self, self.gifTimer != nil else { return }
-                self.gifFrame = (self.gifFrame + 1) % clip.frames.count
-                self.imageView.image = clip.frames[self.gifFrame]
-                self.scheduleGif(clip)
-            }
-        }
+        guard !gif.isRunning else { return }
+        gif.start(clip) { [weak self] i in self?.imageView.image = clip.frames[i] }
     }
 
     // MARK: - Actions
@@ -230,8 +212,7 @@ final class ImageViewerController: NSWindowController, NSWindowDelegate {
     private func step(_ d: Int) {
         guard var n = nav, n.move(by: d) else { return }
         nav = n
-        gifTimer?.invalidate()
-        gifTimer = nil
+        gif.stop()
         present(resetZoom: true)
     }
 
@@ -301,8 +282,7 @@ final class ImageViewerController: NSWindowController, NSWindowDelegate {
     // MARK: - Window
 
     func windowWillClose(_ notification: Notification) {
-        gifTimer?.invalidate()
-        gifTimer = nil
+        gif.stop()
         watch = nil
         models = [:]
         nav = nil
@@ -347,13 +327,7 @@ final class ImageViewerController: NSWindowController, NSWindowDelegate {
         NotificationCenter.default.addObserver(self, selector: #selector(didEndPinch(_:)),
                                                name: NSScrollView.didEndLiveMagnifyNotification, object: scroll)
 
-        let bar = NSVisualEffectView()
-        bar.material = .hudWindow
-        bar.blendingMode = .withinWindow
-        bar.state = .active
-        bar.wantsLayer = true
-        bar.layer?.cornerRadius = 10
-        bar.translatesAutoresizingMaskIntoConstraints = false
+        let bar = ImageViewerChrome.makeBar()
 
         func button(_ symbol: String, _ label: String, _ action: Selector) -> NSButton {
             let b = NSButton(image: NSImage(systemSymbolName: symbol, accessibilityDescription: label) ?? NSImage(),

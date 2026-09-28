@@ -27,7 +27,7 @@ final class CoreTokenBroker: TeamsJSTokenBroker {
     private static func map(_ result: Result<TeamsAppToken, any Error>) -> TeamsJSTokenResult {
         switch result {
         case .success(let t):
-            return .token(t.token, expiresIn: t.expiresIn)
+            return .token(t.token, expiresIn: t.expiresIn, idToken: t.idToken)
         case .failure(let e):
             let msg: String
             if case CoreCallError.failed(let m) = e { msg = m } else { msg = e.localizedDescription }

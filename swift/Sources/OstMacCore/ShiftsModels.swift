@@ -7,7 +7,7 @@
 import Foundation
 
 /// One team's schedule header from core.
-public struct ShiftSchedule: Decodable, Sendable, Equatable {
+public struct ShiftSchedule: Codable, Sendable, Equatable {
     public let enabled: Bool
     public let timeZone: String?
     public let provisionStatus: String?
@@ -26,7 +26,7 @@ public struct ShiftSchedule: Decodable, Sendable, Equatable {
 }
 
 /// One shift row. `start`/`end` are Graph ISO-8601 local datetimes.
-public struct ShiftItem: Decodable, Sendable, Identifiable, Equatable {
+public struct ShiftItem: Codable, Sendable, Identifiable, Equatable {
     public let id: String
     public let userId: String?
     public let displayName: String
@@ -83,7 +83,7 @@ public struct ShiftItem: Decodable, Sendable, Identifiable, Equatable {
 }
 
 /// One time-off instance.
-public struct TimeOffItem: Decodable, Sendable, Identifiable, Equatable {
+public struct TimeOffItem: Codable, Sendable, Identifiable, Equatable {
     public let id: String
     public let userId: String?
     public let reasonId: String?
@@ -113,7 +113,7 @@ public struct TimeOffItem: Decodable, Sendable, Identifiable, Equatable {
 }
 
 /// One time-off reason code.
-public struct TimeOffReason: Decodable, Sendable, Identifiable, Equatable {
+public struct TimeOffReason: Codable, Sendable, Identifiable, Equatable {
     public let id: String
     public let name: String
     public let code: String?
@@ -126,7 +126,7 @@ public struct TimeOffReason: Decodable, Sendable, Identifiable, Equatable {
 }
 
 /// Whole week grid in one response (single FFI round-trip).
-public struct ShiftWeekResponse: Decodable, Sendable {
+public struct ShiftWeekResponse: Codable, Sendable {
     public let ok: Bool
     public let team_id: String?
     public let schedule: ShiftSchedule
@@ -155,7 +155,7 @@ public struct ShiftWeekResponse: Decodable, Sendable {
 }
 
 /// One team in the Shifts team picker.
-public struct ShiftTeam: Sendable, Identifiable, Equatable {
+public struct ShiftTeam: Codable, Sendable, Identifiable, Equatable {
     public let id: String
     public let name: String
 

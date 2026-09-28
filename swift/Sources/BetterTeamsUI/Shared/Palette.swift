@@ -63,6 +63,11 @@ public enum Palette {
     public static let ownMentionBackgroundNS = dynamic("ownMentionBackground", light: 0x5B5FC7, dark: 0x7F85F5,
                                                        lightAlpha: 0.18, darkAlpha: 0.30)
     public static let ownMentionBackground = Color(nsColor: ownMentionBackgroundNS)
+    /// Text of a mention naming you, on that wash: #33358A light (≥ 7:1
+    /// on the wash over either bubble), #D0D2FF dark (≥ 5.6:1). The brand
+    /// #5B5FC7 on its own 18% wash over the own bubble was 3.6:1.
+    public static let ownMentionTextNS = dynamic("ownMentionText", light: 0x33358A, dark: 0xD0D2FF)
+    public static let ownMentionText = Color(nsColor: ownMentionTextNS)
     /// Own-message bubble (Teams): lavender #E8EBFA in light, muted
     /// indigo #2F3148 in dark (white text ≥ 12:1). Opaque, so it reads
     /// the same whatever sits behind it; Increase Contrast adds the
@@ -94,7 +99,21 @@ public enum Palette {
     }
     /// AppKit twins for attributed runs (selectable text renders through
     /// AppKit attributes): `mentionNS`, `ownMentionBackgroundNS` above.
-    public static let inlineCodeBackgroundNS = NSColor.quaternarySystemFill
+    /// Code (inline + block) and reply-quote fill: tertiary, so it still
+    /// separates from the others' gray bubble (quaternary on that gray
+    /// all but vanished) and from the own lavender bubble.
+    public static let inlineCodeBackgroundNS = NSColor.tertiarySystemFill
+    public static let blockFill = Color(nsColor: inlineCodeBackgroundNS)
+    /// Reply-quote preview text: secondary label on the gray bubble was
+    /// under 4.5:1; 75% label reads ≥ 7:1 on the quote fill in both
+    /// appearances (Increase Contrast uses full label in the view).
+    public static let quoteText = Color.primary.opacity(0.75)
+
+    /// Demo meeting slide (MeetingVideoStage): a fixed light slide, so
+    /// fixed colors in any appearance.
+    static let slideAccent = Color(red: 0.36, green: 0.35, blue: 0.80)
+    static let slideInk = Color(red: 0.14, green: 0.15, blue: 0.19)
+    static let slideMuted = Color(red: 0.42, green: 0.44, blue: 0.50)
 
     /// Rail divider (§5.2). `separatorColor` (what `Divider()` draws)
     /// nearly vanishes on the dark sidebar; tertiary label reads in both

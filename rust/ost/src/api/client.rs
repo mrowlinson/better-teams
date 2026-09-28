@@ -5,6 +5,7 @@
 use anyhow::{bail, Context, Result};
 
 use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
 use crate::auth::TokenStore;
 use crate::config::Config;
@@ -18,13 +19,80 @@ const DEFAULT_MIDDLE_TIER: &str = "https://teams.microsoft.com/api/mt/amer";
 pub struct TeamsClient {
     http: reqwest::Client,
     config: Config,
+    /// Whole-request deadline for API calls (§77; None = connect only).
+    timeout: Option<Duration>,
 }
 
 /// Process-wide shared HTTP client: one connection pool for all calls.
-/// `Client::clone` is cheap — clones share the pool.
+/// `Client::clone` is cheap — clones share the pool. OstMac §77: TCP/TLS
+/// connect is capped at [`CONNECT_TIMEOUT`] (a dead network fails fast
+/// instead of hanging a section load forever).
 pub fn shared_http() -> reqwest::Client {
     static HTTP: OnceLock<reqwest::Client> = OnceLock::new();
-    HTTP.get_or_init(reqwest::Client::new).clone()
+    HTTP.get_or_init(|| {
+        reqwest::Client::builder()
+            .connect_timeout(CONNECT_TIMEOUT)
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new())
+    })
+    .clone()
+}
+
+/// Connect deadline for every request on the shared client (§77).
+pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// Default whole-request deadline for API calls (§77). Uploads and
+/// content downloads opt out ([`TeamsClient::graph_get_download`],
+/// `graph_put_bytes`, `drive_session_put`); media gets
+/// [`MEDIA_TIMEOUT`].
+pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// Inline media (images, GIFs) deadline (§77).
+pub const MEDIA_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Request observer (§77): `(method, url, status, elapsed_ms)`, status 0
+/// = transport failure / timeout. Called once per `TeamsClient` request
+/// after the response head (or the failure) arrives. The host must not
+/// log the raw URL (ids, query); OstMac reduces it to a path template.
+pub type RequestObserver = fn(&str, &str, u16, u64);
+static OBSERVER: OnceLock<RequestObserver> = OnceLock::new();
+
+/// Install the process-wide request observer (first call wins).
+pub fn set_request_observer(f: RequestObserver) {
+    let _ = OBSERVER.set(f);
+}
+
+/// Send with an optional whole-request deadline, reporting to the
+/// observer (§77).
+trait SendObserved {
+    fn send_observed(
+        self,
+        method: &'static str,
+        url: &str,
+        timeout: Option<Duration>,
+    ) -> impl std::future::Future<Output = reqwest::Result<reqwest::Response>> + Send;
+}
+
+impl SendObserved for reqwest::RequestBuilder {
+    fn send_observed(
+        self,
+        method: &'static str,
+        url: &str,
+        timeout: Option<Duration>,
+    ) -> impl std::future::Future<Output = reqwest::Result<reqwest::Response>> + Send {
+        let rb = match timeout {
+            Some(t) => self.timeout(t),
+            None => self,
+        };
+        let url = url.to_string();
+        async move {
+            let t0 = Instant::now();
+            let r = rb.send().await;
+            if let Some(f) = OBSERVER.get() {
+                let status = r.as_ref().map(|x| x.status().as_u16()).unwrap_or(0);
+                f(method, &url, status, t0.elapsed().as_millis() as u64);
+            }
+            r
+        }
+    }
 }
 
 impl TeamsClient {
@@ -64,7 +132,30 @@ impl TeamsClient {
         Ok(Self {
             http: shared_http(),
             config,
+            timeout: Some(DEFAULT_REQUEST_TIMEOUT),
         })
+    }
+
+    /// Per-client deadline override (§77): `None` = connect timeout only
+    /// (long transfers), `Some(d)` = whole-request deadline `d`.
+    pub fn with_timeout(mut self, timeout: Option<Duration>) -> Self {
+        self.timeout = timeout;
+        self
+    }
+
+    /// [`graph_get`](Self::graph_get) without the whole-request deadline
+    /// (§77): content downloads stream for as long as they need.
+    pub async fn graph_get_download(&self, path: &str) -> Result<reqwest::Response> {
+        let token = self.graph_token()?;
+        let url = format!("{}{}", GRAPH_BASE, path);
+        let resp = self
+            .http
+            .get(&url)
+            .bearer_auth(&token)
+            .send_observed("GET", &url, None)
+            .await
+            .with_context(|| format!("Graph GET {} failed", url))?;
+        check_response(resp, &url).await
     }
 
     fn graph_token(&self) -> Result<String> {
@@ -99,7 +190,7 @@ impl TeamsClient {
             .http
             .get(&url)
             .bearer_auth(&token)
-            .send()
+            .send_observed("GET", &url, self.timeout)
             .await
             .with_context(|| format!("Graph GET {} failed", url))?;
 
@@ -120,7 +211,7 @@ impl TeamsClient {
             .get(&url)
             .bearer_auth(&token)
             .header("ConsistencyLevel", "eventual")
-            .send()
+            .send_observed("GET", &url, self.timeout)
             .await
             .with_context(|| format!("Graph GET {} failed", url))?;
 
@@ -138,7 +229,7 @@ impl TeamsClient {
             .http
             .get(url)
             .bearer_auth(&token)
-            .send()
+            .send_observed("GET", url, self.timeout)
             .await
             .with_context(|| format!("Graph GET {} failed", url))?;
 
@@ -159,7 +250,7 @@ impl TeamsClient {
             .post(&url)
             .bearer_auth(&token)
             .json(body)
-            .send()
+            .send_observed("POST", &url, self.timeout)
             .await
             .with_context(|| format!("Graph POST {} failed", url))?;
 
@@ -177,7 +268,7 @@ impl TeamsClient {
             .http
             .delete(&url)
             .bearer_auth(&token)
-            .send()
+            .send_observed("DELETE", &url, self.timeout)
             .await
             .with_context(|| format!("Graph DELETE {} failed", url))?;
 
@@ -202,7 +293,7 @@ impl TeamsClient {
             .bearer_auth(&token)
             .header(reqwest::header::CONTENT_TYPE, content_type.to_string())
             .body(bytes)
-            .send()
+            .send_observed("PUT", &url, None)
             .await
             .with_context(|| format!("Graph PUT {} failed", url))?;
 
@@ -237,7 +328,7 @@ impl TeamsClient {
             )
             .header(reqwest::header::CONTENT_LENGTH, chunk.len())
             .body(chunk.to_vec())
-            .send()
+            .send_observed("PUT", upload_url, None)
             .await
             .with_context(|| format!("Session PUT bytes {}-{}/{} failed", start, end, total))?;
         check_response(resp, upload_url).await
@@ -259,7 +350,7 @@ impl TeamsClient {
             .patch(&url)
             .bearer_auth(&token)
             .json(body)
-            .send()
+            .send_observed("PATCH", &url, self.timeout)
             .await
             .with_context(|| format!("Graph PATCH {} failed", url))?;
 
@@ -284,7 +375,7 @@ impl TeamsClient {
             .bearer_auth(&token)
             .header("Content-Type", content_type)
             .body(body)
-            .send()
+            .send_observed("PATCH", &url, self.timeout)
             .await
             .with_context(|| format!("Graph PATCH {} failed", url))?;
 
@@ -300,7 +391,7 @@ impl TeamsClient {
             .http
             .get(url)
             .header("X-SkypeToken", &token)
-            .send()
+            .send_observed("GET", url, self.timeout)
             .await
             .with_context(|| format!("Teams GET {} failed", url))?;
 
@@ -321,7 +412,7 @@ impl TeamsClient {
             .post(url)
             .header("X-SkypeToken", &token)
             .json(body)
-            .send()
+            .send_observed("POST", url, self.timeout)
             .await
             .with_context(|| format!("Teams POST {} failed", url))?;
 
@@ -358,7 +449,7 @@ impl TeamsClient {
         tracing::debug!("MT GET {}", url);
         let resp = self
             .mt_request(self.http.get(url))?
-            .send()
+            .send_observed("GET", url, self.timeout)
             .await
             .with_context(|| format!("MT GET {} failed", url))?;
         check_response(resp, url).await
@@ -371,7 +462,7 @@ impl TeamsClient {
         let resp = self
             .mt_request(self.http.post(url))?
             .json(body)
-            .send()
+            .send_observed("POST", url, self.timeout)
             .await
             .with_context(|| format!("MT POST {} failed", url))?;
         check_response(resp, url).await
@@ -411,7 +502,7 @@ impl TeamsClient {
             .get(url)
             .bearer_auth(&token)
             .header("x-ms-client-version", "1416/1.0.0.2024050301")
-            .send()
+            .send_observed("GET", url, self.timeout)
             .await
             .with_context(|| format!("CSA GET {} failed", url))?;
 
@@ -427,7 +518,7 @@ impl TeamsClient {
             .http
             .get(url)
             .header("Authentication", format!("skypetoken={}", token))
-            .send()
+            .send_observed("GET", url, self.timeout)
             .await
             .with_context(|| format!("Chat GET {} failed", url))?;
 
@@ -463,7 +554,7 @@ impl TeamsClient {
         }
         tracing::debug!("Media GET {}", url);
         let resp = req
-            .send()
+            .send_observed("GET", url, Some(MEDIA_TIMEOUT))
             .await
             .with_context(|| format!("Media GET {} failed", url))?;
         let resp = check_response(resp, url).await?;
@@ -503,7 +594,7 @@ impl TeamsClient {
             .post(url)
             .header("Authentication", format!("skypetoken={}", token))
             .json(body)
-            .send()
+            .send_observed("POST", url, self.timeout)
             .await
             .with_context(|| format!("Chat POST {} failed", url))?;
 
@@ -525,7 +616,7 @@ impl TeamsClient {
             .put(url)
             .header("Authentication", format!("skypetoken={}", token))
             .json(body)
-            .send()
+            .send_observed("PUT", url, self.timeout)
             .await
             .with_context(|| format!("Chat PUT {} failed", url))?;
 
@@ -551,7 +642,7 @@ impl TeamsClient {
             req = req.json(b);
         }
         let resp = req
-            .send()
+            .send_observed("DELETE", url, self.timeout)
             .await
             .with_context(|| format!("Chat DELETE {} failed", url))?;
 

@@ -16,7 +16,7 @@ final class ChannelHistoryTests: XCTestCase {
         // Initial open covers the last few days, bounded page fetches;
         // older history pages back on scroll (day-chunks unchanged).
         XCTAssertEqual(ConversationStore.historyWindowHours, 72)
-        XCTAssertEqual(ConversationStore.openMaxPages, 3)
+        XCTAssertEqual(ConversationStore.openMaxPages, 2)
         XCTAssertEqual(ConversationStore.dayLoadMaxPages, 4)
     }
 

@@ -76,6 +76,15 @@ public enum TeamsDeepLink: Equatable, Sendable {
     }
 }
 
+extension TeamsDeepLink {
+    /// The tab a channel link names (`tab::<id>` path segment), else nil.
+    static func tabRef(_ name: String) -> String? {
+        guard name.lowercased().hasPrefix("tab::") else { return nil }
+        let ref = String(name.dropFirst(5)).trimmingCharacters(in: .whitespaces)
+        return ref.isEmpty ? nil : ref
+    }
+}
+
 /// Routes a parsed deep link to a native screen of one window.
 @MainActor
 enum DeepLinkRouter {
@@ -136,10 +145,20 @@ enum DeepLinkRouter {
             m.navigator?.select(section: .teams)
             m.navigator?.select(TeamsSelection(teamID: team).selection, in: .teams)
             return true
-        case .channel(let thread, _, _):
+        case .channel(let thread, let name, _):
             guard let team = teamID(containing: thread, m) else { return false }
             m.navigator?.select(section: .teams)
-            m.navigator?.select(TeamsSelection(teamID: team, channelID: thread).selection, in: .teams)
+            // `/l/channel/<thread>/tab::<tab id or entity id>`: that tab
+            // when the channel's tabs are known, else the channel.
+            var sel = TeamsSelection(teamID: team, channelID: thread)
+            if let ref = TeamsDeepLink.tabRef(name),
+               let tab = (m.provider(.teams) as? TeamsSection)?.tabs(thread, m).first(where: {
+                   $0.id.caseInsensitiveCompare(ref) == .orderedSame
+                       || $0.entityID?.caseInsensitiveCompare(ref) == .orderedSame
+               }) {
+                sel = TeamsSelection(teamID: team, channelID: thread, tab: .web(tab.id))
+            }
+            m.navigator?.select(sel.selection, in: .teams)
             return true
         }
     }

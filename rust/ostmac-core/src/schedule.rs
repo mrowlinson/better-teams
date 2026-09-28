@@ -63,47 +63,97 @@ pub fn schedule_range_json(team_id: &str, start: &str, end: &str) -> String {
     schedule_json(team_id, Some((start, end)))
 }
 
+/// Longest one schedule read (sign-in check, header, shifts, time off,
+/// reasons) may take before the week fails as "timed out" (the Shifts
+/// pane then offers Retry). The shared reqwest client sets no timeout
+/// of its own, so a stalled read would otherwise never return.
+pub(crate) const SCHEDULE_CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Run one schedule read under [`SCHEDULE_CALL_TIMEOUT`]; errors keep
+/// their full chain (`{:#}`), a timeout names the read.
+async fn timed<T, E: std::fmt::Display>(
+    what: &str,
+    limit: std::time::Duration,
+    fut: impl std::future::Future<Output = Result<T, E>>,
+) -> Result<T, String> {
+    match tokio::time::timeout(limit, fut).await {
+        Ok(Ok(v)) => Ok(v),
+        Ok(Err(e)) => Err(format!("{:#}", e)),
+        Err(_) => Err(format!("{} timed out after {}s", what, limit.as_secs())),
+    }
+}
+
+/// The week payload. A team whose schedule is not enabled (Shifts never
+/// set up: `enabled: false`, `provisionStatus: NotStarted`) answers
+/// with empty rows; the host skips it as "no Shifts".
+fn week_json(
+    team_id: &str,
+    schedule: &ost::api::ScheduleInfo,
+    shifts: &[ost::api::ShiftInfo],
+    offs: &[ost::api::TimeOffInfo],
+    reasons: &[ost::api::TimeOffReason],
+) -> String {
+    json!({
+        "ok": true,
+        "team_id": team_id.trim(),
+        "schedule": {
+            "enabled": schedule.enabled,
+            "time_zone": schedule.time_zone,
+            "provision_status": schedule.provision_status,
+        },
+        "shifts": shifts.iter().map(shift_to_json).collect::<Vec<_>>(),
+        "times_off": offs.iter().map(time_off_to_json).collect::<Vec<_>>(),
+        "reasons": reasons.iter().map(reason_to_json).collect::<Vec<_>>(),
+    })
+    .to_string()
+}
+
 fn schedule_json(team_id: &str, range: Option<(&str, &str)>) -> String {
     if team_id.trim().is_empty() {
         return err_json("arg", "empty team_id");
     }
+    let limit = SCHEDULE_CALL_TIMEOUT;
     let run = || -> Result<String, String> {
         let rt = rt()?;
         rt.block_on(async {
-            let client = ost::api::client::TeamsClient::new()
-                .await
-                .map_err(|e| format!("{:#}", e))?;
-            let schedule = ost::api::list_schedule_data(&client, team_id)
-                .await
-                .map_err(|e| format!("{:#}", e))?;
-            let (shifts, offs) = match range {
-                Some((start, end)) => (
-                    ost::api::list_shifts_range_data(&client, team_id, start, end).await,
-                    ost::api::list_timesoffs_range_data(&client, team_id, start, end).await,
+            let client = timed("sign-in", limit, ost::api::client::TeamsClient::new()).await?;
+            let schedule =
+                timed("schedule", limit, ost::api::list_schedule_data(&client, team_id)).await?;
+            // Shifts not set up for this team: the collections 404, so
+            // skip them (live 2026-09-28: 8 of 9 teams).
+            if !schedule.enabled {
+                return Ok(week_json(team_id, &schedule, &[], &[], &[]));
+            }
+            // Shifts, time off and reasons are independent reads.
+            let (shifts, offs, reasons) = match range {
+                Some((start, end)) => tokio::join!(
+                    timed(
+                        "shifts",
+                        limit,
+                        ost::api::list_shifts_range_data(&client, team_id, start, end)
+                    ),
+                    timed(
+                        "time off",
+                        limit,
+                        ost::api::list_timesoffs_range_data(&client, team_id, start, end)
+                    ),
+                    timed(
+                        "time-off reasons",
+                        limit,
+                        ost::api::list_timeoff_reasons_data(&client, team_id)
+                    ),
                 ),
-                None => (
-                    ost::api::list_shifts_data(&client, team_id).await,
-                    ost::api::list_timesoffs_data(&client, team_id).await,
+                None => tokio::join!(
+                    timed("shifts", limit, ost::api::list_shifts_data(&client, team_id)),
+                    timed("time off", limit, ost::api::list_timesoffs_data(&client, team_id)),
+                    timed(
+                        "time-off reasons",
+                        limit,
+                        ost::api::list_timeoff_reasons_data(&client, team_id)
+                    ),
                 ),
             };
-            let shifts = shifts.map_err(|e| format!("{:#}", e))?;
-            let offs = offs.map_err(|e| format!("{:#}", e))?;
-            let reasons = ost::api::list_timeoff_reasons_data(&client, team_id)
-                .await
-                .map_err(|e| format!("{:#}", e))?;
-            Ok(json!({
-                "ok": true,
-                "team_id": team_id.trim(),
-                "schedule": {
-                    "enabled": schedule.enabled,
-                    "time_zone": schedule.time_zone,
-                    "provision_status": schedule.provision_status,
-                },
-                "shifts": shifts.iter().map(shift_to_json).collect::<Vec<_>>(),
-                "times_off": offs.iter().map(time_off_to_json).collect::<Vec<_>>(),
-                "reasons": reasons.iter().map(reason_to_json).collect::<Vec<_>>(),
-            })
-            .to_string())
+            Ok(week_json(team_id, &schedule, &shifts?, &offs?, &reasons?))
         })
     };
     match run() {
@@ -112,7 +162,6 @@ fn schedule_json(team_id: &str, range: Option<(&str, &str)>) -> String {
     }
 }
 
-/// One team's schedule week JSON (read-only). See [`schedule_week_json`].
 #[no_mangle]
 pub extern "C" fn ostmac_schedule_week(team_id: *const c_char) -> *mut c_char {
     match cstr_to_string(team_id) {
@@ -158,6 +207,47 @@ mod tests {
                 serde_json::from_str(&schedule_range_json(team, start, end)).unwrap();
             assert_eq!(v["error"], "arg", "{:?}", (team, start, end));
         }
+    }
+
+    /// A read slower than the limit fails with a named "timed out"
+    /// (the Swift side maps it to the connection hint + Retry); a fast
+    /// read and a failed read pass through unchanged.
+    #[test]
+    fn timed_read_fails_named_instead_of_hanging() {
+        let rt = rt().unwrap();
+        let limit = std::time::Duration::from_millis(50);
+        let slow = rt.block_on(timed("shifts", limit, async {
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            Ok::<u32, String>(1)
+        }));
+        let msg = slow.unwrap_err();
+        assert!(msg.contains("shifts timed out"), "{}", msg);
+        let fast = rt.block_on(timed("shifts", limit, async { Ok::<u32, String>(7) }));
+        assert_eq!(fast.unwrap(), 7);
+        let failed = rt.block_on(timed("shifts", limit, async {
+            Err::<u32, String>("HTTP 404 for x".into())
+        }));
+        assert_eq!(failed.unwrap_err(), "HTTP 404 for x");
+        assert_eq!(SCHEDULE_CALL_TIMEOUT.as_secs(), 15);
+    }
+
+    /// Shifts not set up (live 2026-09-28: `enabled:false`,
+    /// `NotStarted`): an ok week with no rows, `enabled` false.
+    #[test]
+    fn disabled_schedule_is_ok_week_without_rows() {
+        let schedule = ost::api::ScheduleInfo {
+            enabled: false,
+            time_zone: None,
+            provision_status: Some("NotStarted".into()),
+        };
+        let v: serde_json::Value =
+            serde_json::from_str(&week_json(" t1 ", &schedule, &[], &[], &[])).unwrap();
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["team_id"], "t1");
+        assert_eq!(v["schedule"]["enabled"], false);
+        assert_eq!(v["schedule"]["provision_status"], "NotStarted");
+        assert_eq!(v["shifts"].as_array().unwrap().len(), 0);
+        assert_eq!(v["times_off"].as_array().unwrap().len(), 0);
     }
 
     #[test]

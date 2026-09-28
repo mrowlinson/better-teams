@@ -102,6 +102,60 @@ public final class PlannerViewModel: ObservableObject {
         self.localEdits = localEdits
     }
 
+    /// NOLOAD: last-good snapshot store (nil = memory only / demo).
+    public var snapshots: SectionCache?
+    static let snapshotKey = "planner"
+    /// Boards kept in the snapshot (most recently loaded first).
+    static let snapshotBoards = 8
+
+    struct Board: Codable {
+        let buckets: [PlannerBucket]
+        let tasks: [PlannerTask]
+    }
+
+    struct Snapshot: Codable {
+        let teams: [TeamItem]
+        let plansByTeam: [String: [PlannerPlan]]
+        let selectedTeamID: String?
+        let selectedPlanID: String?
+        let boards: [String: Board]
+        let boardOrder: [String]
+    }
+
+    /// Boards seen (session + snapshot): reopening one paints at once.
+    private var boardCache: [String: Board] = [:]
+    private var boardOrder: [String] = []
+
+    /// Paint the last good plans list + boards before any fetch.
+    @discardableResult
+    public func restoreSnapshot() -> Bool {
+        guard let snap = snapshots?.load(Snapshot.self, key: Self.snapshotKey),
+              !snap.teams.isEmpty else { return false }
+        teams = snap.teams
+        plansByTeam = snap.plansByTeam
+        boardCache = snap.boards
+        boardOrder = snap.boardOrder
+        selectedTeamID = snap.selectedTeamID ?? snap.teams.first?.teamId
+        plans = selectedTeamID.flatMap { snap.plansByTeam[$0] } ?? []
+        selectedPlanID = snap.selectedPlanID
+        if let id = snap.selectedPlanID, let board = snap.boards[id] {
+            buckets = board.buckets
+            tasks = board.tasks
+        }
+        state = .loaded
+        return true
+    }
+
+    private func saveSnapshot() {
+        guard let snapshots, !teams.isEmpty else { return }
+        let keep = Array(boardOrder.prefix(Self.snapshotBoards))
+        snapshots.save(Snapshot(
+            teams: teams, plansByTeam: plansByTeam, selectedTeamID: selectedTeamID,
+            selectedPlanID: selectedPlanID,
+            boards: boardCache.filter { keep.contains($0.key) }, boardOrder: keep),
+            key: Self.snapshotKey)
+    }
+
     /// Fetch teams, select the first, fetch its plans + first board.
     public func load() async {
         state = .loading
@@ -156,8 +210,10 @@ public final class PlannerViewModel: ObservableObject {
         requestedPlanID = planID
         guard let planID, planID != selectedPlanID else { return }
         adopt(planID: planID)
-        buckets = []
-        tasks = []
+        // NOLOAD: a board seen before paints at once; refresh behind.
+        let cached = boardCache[planID]
+        buckets = cached?.buckets ?? []
+        tasks = cached?.tasks ?? []
         Task { await loadBoard(planID: planID) }
     }
 
@@ -196,6 +252,7 @@ public final class PlannerViewModel: ObservableObject {
         }
         plansByTeam = out
         plansError = !teams.isEmpty && out.isEmpty ? lastError : nil
+        if !out.isEmpty { saveSnapshot() }
     }
 
     /// Refresh the selected plan's board.
@@ -402,6 +459,10 @@ public final class PlannerViewModel: ObservableObject {
                 self.buckets = buckets.buckets
                 self.tasks = tasks.tasks
             }
+            boardCache[planID] = Board(buckets: buckets.buckets, tasks: tasks.tasks)
+            boardOrder.removeAll { $0 == planID }
+            boardOrder.insert(planID, at: 0)
+            saveSnapshot()
         } catch {
             if planID == selectedPlanID {
                 boardError = Self.message(for: error)
@@ -423,7 +484,6 @@ public final class PlannerViewModel: ObservableObject {
     }
 
     static func message(for error: Error) -> String {
-        if case CoreCallError.failed(let m) = error { return m }
-        return String(describing: error)
+        FriendlyError.message(for: error)
     }
 }

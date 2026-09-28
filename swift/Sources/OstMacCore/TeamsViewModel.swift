@@ -83,6 +83,21 @@ public final class TeamsViewModel: ObservableObject {
         self.publicSearcher = publicSearcher
     }
 
+    /// NOLOAD: last-good snapshot store (nil = memory only / demo).
+    public var snapshots: SectionCache?
+    static let snapshotKey = "teams"
+
+    /// Paint the last good list (launch / account switch) before any
+    /// fetch; the next load revalidates behind the rows.
+    @discardableResult
+    public func restoreSnapshot() -> Bool {
+        guard let cached = snapshots?.load([TeamItem].self, key: Self.snapshotKey),
+              !cached.isEmpty else { return false }
+        teams = cached
+        state = .loaded
+        return true
+    }
+
     /// Fetch the list.
     public func load() async {
         state = .loading
@@ -93,6 +108,7 @@ public final class TeamsViewModel: ObservableObject {
             }.value
             teams = response.teams
             state = response.teams.isEmpty ? .empty : .loaded
+            snapshots?.save(response.teams, key: Self.snapshotKey)
         } catch {
             state = .error(Self.message(for: error))
         }
@@ -127,6 +143,7 @@ public final class TeamsViewModel: ObservableObject {
             }.value
             teams = response.teams
             state = response.teams.isEmpty ? .empty : .loaded
+            snapshots?.save(response.teams, key: Self.snapshotKey)
         } catch {
             state = .error(Self.message(for: error))
         }
@@ -268,8 +285,7 @@ public final class TeamsViewModel: ObservableObject {
     }
 
     static func message(for error: Error) -> String {
-        if case CoreCallError.failed(let m) = error { return m }
-        return String(describing: error)
+        FriendlyError.message(for: error)
     }
 
     // MARK: - Pure browser helpers (moved verbatim from

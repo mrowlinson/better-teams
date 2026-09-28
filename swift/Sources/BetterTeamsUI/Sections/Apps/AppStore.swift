@@ -79,7 +79,7 @@ final class AppStoreModel {
 
     /// Store listing, else the installed definition (richer), by id.
     func manifest(_ id: String) -> TeamsAppManifest? {
-        let installedDef = catalog.first { $0.id.caseInsensitiveCompare(id) == .orderedSame }
+        let installedDef = (catalog + teamApps).first { $0.id.caseInsensitiveCompare(id) == .orderedSame }
         let listed = (searchResults ?? []).first { $0.id.caseInsensitiveCompare(id) == .orderedSame }
             ?? apps.first { $0.id.caseInsensitiveCompare(id) == .orderedSame }
         return installedDef ?? listed
@@ -88,7 +88,31 @@ final class AppStoreModel {
     /// Every app the window knows about (store + installed), for tab matching.
     var allManifests: [TeamsAppManifest] {
         var seen = Set<String>()
-        return (catalog + apps).filter { seen.insert($0.id.lowercased()).inserted }
+        return (catalog + apps + teamApps).filter { seen.insert($0.id.lowercased()).inserted }
+    }
+
+    /// Apps installed in a team but not for the user (APPHOST-B3): their
+    /// channel tabs need the manifest to be matched.
+    private(set) var teamApps: [TeamsAppManifest] = []
+    @ObservationIgnored private var teamAppsAsked: Set<String> = []
+
+    /// Loads (once per team) the manifests of the team's installed apps
+    /// and of `tabAppIDs` the catalog doesn't know. Read-only; idempotent.
+    func ensureTeamApps(teamID: String, tabAppIDs: [String]) {
+        guard !demo else { return }
+        let known = Set(allManifests.map { $0.id.lowercased() })
+        let missing = tabAppIDs.filter { !known.contains($0.lowercased()) }
+        let key = teamID.lowercased()
+        guard !teamAppsAsked.contains(key), !missing.isEmpty else { return }
+        teamAppsAsked.insert(key)
+        let profile = accountKey
+        Task { @MainActor [weak self] in
+            let result = await TeamsAppService.teamApps(profile: profile, teamID: teamID, ids: missing)
+            guard let self, case .success(let found) = result else { return }
+            let have = Set(self.allManifests.map { $0.id.lowercased() })
+            let add = found.filter { !have.contains($0.id.lowercased()) }
+            if !add.isEmpty { self.teamApps += add }
+        }
     }
 
     /// Categories present in the listing, sorted.
@@ -120,8 +144,13 @@ final class AppStoreModel {
 
     // MARK: refresh (background, diffed; failures keep the cached rows)
 
+    /// `GET beta/users/apps/store` and `/search` answer 405 live
+    /// (APPLIVE 2026-09-28; method/body unknown): the store lists the
+    /// organization's catalog locally and search filters it locally.
+    static let serverStore = false
+
     func refresh() {
-        guard !demo, !loading else { return }
+        guard !demo, !loading, Self.serverStore else { return }
         loading = true
         let profile = accountKey
         Task { @MainActor [weak self] in
@@ -153,7 +182,7 @@ final class AppStoreModel {
             return
         }
         let local = allManifests.filter { Self.matches($0, q) }
-        if demo {
+        if demo || !Self.serverStore {
             searchResults = local
             return
         }
@@ -261,17 +290,20 @@ extension AppStoreModel {
             resource: m.webApplicationInfo?.resource, webAppID: m.webApplicationInfo?.id, validDomains: domains,
             demoHTML: demo ? DemoTeamsJSApp.html(title: t.name) : nil,
             channel: TeamsAppChannelContext(teamID: team.teamId, channelID: channel.id,
+                                            groupID: UUID(uuidString: team.teamId) != nil ? team.teamId : nil,
                                             teamName: team.name, channelName: channel.name))
     }
 }
 
-// MARK: - Host mode (frameless vs iframe), per app
+// MARK: - Host mode (Teams web page vs native), per app
 
-/// How the native host talks to an app. Automatic starts frameless
-/// (every TeamsJS app in the spike worked frameless) and remembers the
-/// outcome: a frameless page that never initializes gets one try in the
-/// iframe transport (apps that check `window.parent` before talking to
-/// Teams), and whichever transport initializes first is kept.
+/// How an app is hosted. Automatic keeps every app on its Teams web page
+/// (the Teams-shell app frame) unless it is on the verified native list
+/// (`TeamsJSNativeAllowlist`); a verified app runs natively, starts
+/// frameless, and gets one try in the iframe transport if it never
+/// initializes. A native page that fails (sign-in page, AADSTS error,
+/// app-reported failure, blank page) switches to the Teams web page and
+/// Automatic remembers that. Direct / In a Frame force the native host.
 enum TeamsJSHostMode: String, CaseIterable, Identifiable {
     case automatic, frameless, iframe
     var id: String { rawValue }
@@ -284,6 +316,21 @@ enum TeamsJSHostMode: String, CaseIterable, Identifiable {
     }
 }
 
+/// Apps proven to work end to end in the native host (APPLIVE live
+/// read-only check, 2026-09-28): getAuthToken + nested-app-auth 1P apps.
+/// Everything else stays on its Teams web page in Automatic mode.
+enum TeamsJSNativeAllowlist {
+    /// Catalog app ids, lowercased.
+    static let verified: Set<String> = [
+        "7c316234-ded0-4f95-8a83-8453d0876592", // Approvals
+    ]
+
+    /// Demo apps are local sample pages (no network): always native.
+    static func contains(_ l: TeamsAppLaunch) -> Bool {
+        l.demoHTML != nil || verified.contains(l.appID.lowercased())
+    }
+}
+
 @MainActor
 enum TeamsJSTransportChoice {
     /// Demo: in memory only (evidence runs never write defaults).
@@ -291,6 +338,7 @@ enum TeamsJSTransportChoice {
 
     private static func modeKey(_ app: String) -> String { "bt.apphost.mode.\(app.lowercased())" }
     private static func learnedKey(_ app: String) -> String { "bt.apphost.learned.\(app.lowercased())" }
+    private static func failedKey(_ app: String) -> String { "bt.apphost.failed.\(app.lowercased())" }
 
     private static func get(_ key: String, demo: Bool) -> String? {
         demo ? memory[key] : UserDefaults.standard.string(forKey: key)
@@ -304,8 +352,13 @@ enum TeamsJSTransportChoice {
         get(modeKey(app), demo: demo).flatMap(TeamsJSHostMode.init(rawValue:)) ?? .automatic
     }
 
+    /// A changed mode starts over: the learned transport and any
+    /// remembered native failure are forgotten.
     static func setMode(_ m: TeamsJSHostMode, app: String, demo: Bool) {
+        guard m != mode(app, demo: demo) else { return }
         set(m == .automatic ? nil : m.rawValue, modeKey(app), demo: demo)
+        learn(nil, app: app, demo: demo)
+        forgetFailure(app: app, demo: demo)
     }
 
     static func learned(_ app: String, demo: Bool) -> TeamsJSTransport? {
@@ -325,13 +378,26 @@ enum TeamsJSTransportChoice {
         set(v, learnedKey(app), demo: demo)
     }
 
-    /// The transport to host `l` with: user choice, else the remembered
-    /// outcome, else the launch's own default.
-    static func resolve(_ l: TeamsAppLaunch, demo: Bool) -> TeamsJSTransport {
+    /// Why the native host failed this app (Automatic then keeps it on
+    /// its Teams web page). A short reason, never page content.
+    static func failure(_ app: String, demo: Bool) -> String? { get(failedKey(app), demo: demo) }
+
+    static func rememberFailure(_ why: String, app: String, demo: Bool) {
+        set(String(why.prefix(80)), failedKey(app), demo: demo)
+    }
+
+    static func forgetFailure(app: String, demo: Bool) { set(nil, failedKey(app), demo: demo) }
+
+    /// The transport to host `l` with, nil = its Teams web page: the
+    /// user's choice, else (Automatic) native only for a verified app
+    /// with no remembered failure, on the remembered or default transport.
+    static func resolve(_ l: TeamsAppLaunch, demo: Bool) -> TeamsJSTransport? {
         switch mode(l.appID, demo: demo) {
         case .frameless: .frameless
         case .iframe: .iframe
-        case .automatic: learned(l.appID, demo: demo) ?? l.transport
+        case .automatic:
+            TeamsJSNativeAllowlist.contains(l) && failure(l.appID, demo: demo) == nil
+                ? learned(l.appID, demo: demo) ?? l.transport : nil
         }
     }
 }

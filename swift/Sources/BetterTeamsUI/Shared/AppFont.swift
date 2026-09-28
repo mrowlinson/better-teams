@@ -21,6 +21,8 @@ public enum AppFont {
     public static let deviceCode: Font = .system(size: 34, weight: .semibold, design: .monospaced)
     /// Glyph inside a 15 pt avatar corner badge (a symbol, not text).
     public static let avatarBadgeGlyph: Font = .system(size: 9, weight: .bold)
+    /// Demo meeting slide (MeetingVideoStage): sizes in slide units on its fixed canvas.
+    static func slide(_ size: CGFloat, _ weight: Font.Weight = .regular) -> Font { .system(size: size, weight: weight) }
     /// App store icon glyph at a tile size (APPHOST-B2).
     public static func appTileGlyph(_ tile: CGFloat) -> Font {
         .system(size: tile * 0.46, weight: .medium)

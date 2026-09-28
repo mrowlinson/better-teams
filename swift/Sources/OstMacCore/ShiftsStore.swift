@@ -25,6 +25,18 @@ public enum ShiftsState: Equatable, Sendable {
     case unavailable(String)
 }
 
+/// Teams answered while the picker is probed for a team with Shifts
+/// ("Loading Shifts… 3 of 9 teams").
+public struct ShiftsLoadProgress: Equatable, Sendable {
+    public let done: Int
+    public let total: Int
+
+    public init(done: Int, total: Int) {
+        self.done = done
+        self.total = total
+    }
+}
+
 extension RustCore {
     /// One team's schedule week (blocking FFI + network: call off the
     /// main thread).
@@ -72,6 +84,11 @@ public final class ShiftsStore: ObservableObject {
     /// Last background week fetch failure; the grid on screen stays.
     /// Nil when clear.
     @Published public private(set) var weekError: String?
+    /// Picker probe progress while no grid is on screen (nil when not
+    /// probing: a single-team fetch, a refresh behind a grid, settled).
+    @Published public private(set) var loadProgress: ShiftsLoadProgress?
+    /// Picker teams fetched at once while looking for a team with Shifts.
+    public static let maxConcurrentTeams = 4
 
     private let weekFetcher: RangeFetcher
     /// Fetch the weeks either side of the one on screen after it lands
@@ -93,6 +110,63 @@ public final class ShiftsStore: ObservableObject {
     /// schedule for `week:` fetchers). The grid is built from it.
     private var lastResponse: ShiftWeekResponse?
     private var openGeneration = 0
+
+    /// NOLOAD: last-good snapshot store (nil = memory only / demo).
+    /// Holds the team picker, cached weeks (this week ± 4, every team
+    /// seen) and member names — the signed-in user's own tenant data,
+    /// on this Mac only.
+    public var snapshots: SectionCache?
+    static let snapshotKey = "shifts"
+    static let snapshotSpan: TimeInterval = 5 * 7 * 86_400
+    private var memberNamesCache: [String: [String: String]] = [:]
+
+    struct CachedWeek: Codable {
+        let response: ShiftWeekResponse
+        let at: Date
+    }
+
+    struct Snapshot: Codable {
+        let teams: [ShiftTeam]
+        let selectedTeamID: String?
+        let weeks: [String: CachedWeek]
+        let names: [String: [String: String]]
+    }
+
+    /// Load the last good picker + weeks into the session cache (no
+    /// state change: the host's seed/open then hits the cache and paints
+    /// the grid at once, refreshing behind).
+    @discardableResult
+    public func restoreSnapshot() -> Bool {
+        guard let snap = snapshots?.load(Snapshot.self, key: Self.snapshotKey),
+              !snap.teams.isEmpty else { return false }
+        for (k, w) in snap.weeks where weekCache[k] == nil {
+            weekCache[k] = (w.response, w.at)
+        }
+        memberNamesCache.merge(snap.names) { cur, _ in cur }
+        if teams.isEmpty { teams = snap.teams }
+        if selectedTeamID == nil { selectedTeamID = snap.selectedTeamID }
+        return true
+    }
+
+    /// True when the selected team's shown week is in the cache (the
+    /// host can open it before the live teams list lands).
+    public var hasCachedWeek: Bool {
+        guard let id = selectedTeamID else { return false }
+        return weekCache[Self.cacheKey(id, weekStart)] != nil
+    }
+
+    private func saveSnapshot() {
+        guard let snapshots, !teams.isEmpty else { return }
+        let now = Self.currentWeekStart().timeIntervalSince1970
+        var weeks: [String: CachedWeek] = [:]
+        for (k, w) in weekCache {
+            guard let t = k.split(separator: "|").last.flatMap({ TimeInterval(String($0)) }),
+                  abs(t - now) <= Self.snapshotSpan else { continue }
+            weeks[k] = CachedWeek(response: w.response, at: w.at)
+        }
+        snapshots.save(Snapshot(teams: teams, selectedTeamID: selectedTeamID, weeks: weeks,
+                                names: memberNamesCache), key: Self.snapshotKey)
+    }
 
     /// Host reload for Retry-without-teams (F6): the app sets this to
     /// reload the teams list and re-seed shifts (same hook shape as
@@ -179,6 +253,7 @@ public final class ShiftsStore: ObservableObject {
         if gridTeamID == nil {
             weekStart = start
             week = nil
+            loadProgress = nil
             state = .loading
         } else {
             pendingWeekStart = start
@@ -199,6 +274,7 @@ public final class ShiftsStore: ObservableObject {
             do {
                 let resp = try await Task.detached { try fetcher(id, start) }.value
                 weekCache[Self.cacheKey(id, start)] = (resp, Date())
+                saveSnapshot()
                 guard gen == openGeneration else { return }
                 pendingWeekStart = nil
                 isLoadingWeek = false
@@ -235,6 +311,7 @@ public final class ShiftsStore: ObservableObject {
             Task {
                 if let resp = try? await Task.detached(operation: { try fetcher(team, s) }).value {
                     weekCache[key] = (resp, Date())
+                    saveSnapshot()
                 }
                 prefetching.remove(key)
             }
@@ -285,6 +362,8 @@ public final class ShiftsStore: ObservableObject {
                 names[m.id] = m.displayName
             }
             memberNames = names
+            memberNamesCache[teamID] = names
+            saveSnapshot()
         }
     }
 
@@ -310,13 +389,57 @@ public final class ShiftsStore: ObservableObject {
         open(teamID: teamID)
     }
 
+    /// One picker team's answer while probing for a week.
+    private enum TeamOutcome {
+        case week(ShiftWeekResponse)
+        /// Shifts not set up / not reachable for this team: a 404 /
+        /// TeamNotFound, or a schedule that is not enabled.
+        case noShifts
+        case failed(Error)
+    }
+
+    private static func outcome(_ result: Result<ShiftWeekResponse, Error>) -> TeamOutcome {
+        switch result {
+        case .success(let resp):
+            return resp.schedule.enabled ? .week(resp) : .noShifts
+        case .failure(let error):
+            return isNotFound(rawMessage(for: error)) ? .noShifts : .failed(error)
+        }
+    }
+
+    /// Candidate to show: the first (requested first, then picker
+    /// order) with a week, once every candidate before it has answered
+    /// without one. Nil while an earlier candidate is still loading, so
+    /// a later team never flashes up ahead of the requested one.
+    private static func firstLanded(_ outcomes: [TeamOutcome?]) -> Int? {
+        for (i, outcome) in outcomes.enumerated() {
+            guard let outcome else { return nil }
+            if case .week = outcome { return i }
+        }
+        return nil
+    }
+
+    /// Blocking core fetch off the main thread (never throws: the
+    /// failure travels in the result).
+    private nonisolated static func fetchResult(
+        _ fetcher: @escaping RangeFetcher, _ team: String, _ start: Date
+    ) async -> Result<ShiftWeekResponse, Error> {
+        await Task.detached { Result { try fetcher(team, start) } }.value
+    }
+
     /// Open a team: fetch its week via core, replace the grid. Stale
-    /// completions are dropped (fast team-switching lands newest). A
-    /// TeamNotFound/404 falls through to the next picker team (one
-    /// bounded pass over the picker, each hop logged); any other
-    /// error stops the chain. All-404 lands `.unavailable`, never raw
-    /// JSON. A valid-but-empty week stops the chain (the team has
-    /// Shifts access, just no rows).
+    /// completions are dropped (fast team-switching lands newest).
+    /// Without a grid of this team on screen the requested team and
+    /// the rest of the picker are fetched together (at most
+    /// `maxConcurrentTeams` at once, `loadProgress` counting answers):
+    /// teams without Shifts (404 / TeamNotFound / schedule not enabled)
+    /// are skipped, and the first team in order with a week lands as
+    /// soon as every team before it has answered. Only when no team
+    /// has a week does the pane fail: `.error` for the first real
+    /// failure, else `.unavailable` (never raw JSON). A valid-but-empty
+    /// week lands (the team has Shifts, just no rows). With the team's
+    /// grid on screen only that team is refetched; a failure keeps the
+    /// grid (`weekError`).
     public func open(teamID: String) {
         openGeneration += 1
         let gen = openGeneration
@@ -326,6 +449,7 @@ public final class ShiftsStore: ObservableObject {
             week = nil
             gridTeamID = nil
             isLoadingWeek = false
+            loadProgress = nil
             state = .idle
             return
         }
@@ -335,7 +459,7 @@ public final class ShiftsStore: ObservableObject {
         let start = weekStart
         if let hit = weekCache[Self.cacheKey(id, start)] {
             // Seen this session: show it now, refresh behind.
-            if id != gridTeamID { memberNames = [:] }
+            if id != gridTeamID { memberNames = memberNamesCache[id] ?? [:] }
             lastResponse = hit.response
             gridTeamID = id
             rebuild()
@@ -347,60 +471,93 @@ public final class ShiftsStore: ObservableObject {
         let hasGrid = gridTeamID == id
         isLoadingWeek = hasGrid
         // Requested first, then the rest of the picker in order
-        // (unknown ids still try once).
+        // (unknown ids still try once); a grid refresh asks its team only.
         var candidates = [id]
-        for team in teams where team.id != id {
-            candidates.append(team.id)
+        if !hasGrid {
+            for team in teams where team.id != id {
+                candidates.append(team.id)
+            }
         }
         let names = Dictionary(uniqueKeysWithValues: teams.map { ($0.id, $0.name) })
+        loadProgress = hasGrid ? nil : ShiftsLoadProgress(done: 0, total: candidates.count)
+        let fetcher = weekFetcher
+        let limit = Self.maxConcurrentTeams
         Task {
-            let fetcher = weekFetcher
-            var lastRaw = ""
-            for candidate in candidates {
-                do {
-                    let resp = try await Task.detached { try fetcher(candidate, start) }.value
-                    weekCache[Self.cacheKey(candidate, start)] = (resp, Date())
-                    guard gen == openGeneration else { return }
-                    if candidate != lastResponse?.team_id { memberNames = [:] }
-                    lastResponse = resp
-                    selectedTeamID = candidate
-                    gridTeamID = candidate
-                    isLoadingWeek = false
-                    rebuild()
-                    loadMembers(teamID: candidate, generation: gen)
-                    prefetch(around: start, team: candidate, calendar: .current)
-                    return
-                } catch {
-                    guard gen == openGeneration else { return }
-                    lastRaw = Self.rawMessage(for: error)
-                    if hasGrid {
-                        // A refresh failed: the grid on screen stays.
-                        isLoadingWeek = false
-                        weekError = Self.message(for: error, teamName: names[candidate])
-                        return
-                    }
-                    if Self.isNotFound(lastRaw) {
-                        print("ShiftsStore: no Shifts access for \(candidate); trying next team")
-                        continue
-                    }
-                    week = nil
-                    lastResponse = nil
-                    gridTeamID = nil
-                    isLoadingWeek = false
-                    selectedTeamID = candidate
-                    state = .error(Self.message(for: error, teamName: names[candidate]))
-                    return
+            var outcomes = [TeamOutcome?](repeating: nil, count: candidates.count)
+            // True once settled inside the group (landed, refresh
+            // failure, or superseded by a newer open).
+            let settled: Bool = await withTaskGroup(
+                of: (Int, Result<ShiftWeekResponse, Error>).self
+            ) { group in
+                var next = 0
+                while next < min(limit, candidates.count) {
+                    let (i, team) = (next, candidates[next])
+                    group.addTask { (i, await Self.fetchResult(fetcher, team, start)) }
+                    next += 1
                 }
+                var done = 0
+                for await (i, result) in group {
+                    guard gen == openGeneration else { return true }
+                    done += 1
+                    let outcome = Self.outcome(result)
+                    outcomes[i] = outcome
+                    if case .week(let resp) = outcome {
+                        weekCache[Self.cacheKey(candidates[i], start)] = (resp, Date())
+                        saveSnapshot()
+                    }
+                    if hasGrid {
+                        switch outcome {
+                        case .week: break
+                        case .failed(let error):
+                            // A refresh failed: the grid on screen stays.
+                            isLoadingWeek = false
+                            weekError = Self.message(for: error, teamName: names[id])
+                            return true
+                        case .noShifts:
+                            isLoadingWeek = false
+                            weekError = Self.notUsingShiftsMessage(teamName: names[id])
+                            return true
+                        }
+                    }
+                    if let w = Self.firstLanded(outcomes), case .week(let resp)? = outcomes[w] {
+                        let candidate = candidates[w]
+                        if candidate != lastResponse?.team_id { memberNames = [:] }
+                        lastResponse = resp
+                        selectedTeamID = candidate
+                        gridTeamID = candidate
+                        isLoadingWeek = false
+                        loadProgress = nil
+                        rebuild()
+                        loadMembers(teamID: candidate, generation: gen)
+                        prefetch(around: start, team: candidate, calendar: .current)
+                        return true
+                    }
+                    loadProgress = ShiftsLoadProgress(done: done, total: candidates.count)
+                    if next < candidates.count {
+                        let (j, team) = (next, candidates[next])
+                        group.addTask { (j, await Self.fetchResult(fetcher, team, start)) }
+                        next += 1
+                    }
+                }
+                return false
             }
-            guard gen == openGeneration else { return }
+            guard !settled, gen == openGeneration else { return }
             week = nil
             lastResponse = nil
             gridTeamID = nil
             isLoadingWeek = false
+            loadProgress = nil
+            // The first real failure (picker order) outranks "no Shifts".
+            for (i, outcome) in outcomes.enumerated() {
+                if case .failed(let error)? = outcome {
+                    selectedTeamID = candidates[i]
+                    state = .error(Self.message(for: error, teamName: names[candidates[i]]))
+                    return
+                }
+            }
             selectedTeamID = id
             if teams.isEmpty {
-                state = .error(Self.message(
-                    for: CoreCallError.failed(lastRaw), teamName: nil))
+                state = .error(Self.notUsingShiftsMessage(teamName: nil))
             } else {
                 state = .unavailable(Self.allUnavailableMessage())
             }
@@ -427,6 +584,7 @@ public final class ShiftsStore: ObservableObject {
         selectedTeamID = nil
         week = nil
         gridTeamID = nil
+        loadProgress = nil
         state = .empty
     }
 
@@ -438,6 +596,7 @@ public final class ShiftsStore: ObservableObject {
         selectedTeamID = nil
         week = nil
         gridTeamID = nil
+        loadProgress = nil
         state = .error(Self.sanitize(message))
     }
 
@@ -449,15 +608,19 @@ public final class ShiftsStore: ObservableObject {
 
     /// True for a missing-schedule 404 (`TeamNotFound` Graph code or
     /// an HTTP 404 status in the core chain).
+    /// The status is matched as `HTTP 404`, never a bare "404": every
+    /// core error embeds the Graph URL, whose team GUID can hold those
+    /// digits.
     static func isNotFound(_ message: String) -> Bool {
         let lower = message.lowercased()
-        return lower.contains("teamnotfound") || lower.contains("404")
+        return lower.contains("teamnotfound") || lower.contains("http 404")
     }
 
-    /// True for sign-in failures (401/403 statuses).
+    /// True for sign-in failures (401/403 statuses; `HTTP 40x` or the
+    /// status words, never bare digits: see `isNotFound`).
     static func isAuthFailure(_ message: String) -> Bool {
         let lower = message.lowercased()
-        return lower.contains("401") || lower.contains("403")
+        return lower.contains("http 401") || lower.contains("http 403")
             || lower.contains("unauthorized") || lower.contains("forbidden")
     }
 
@@ -477,13 +640,7 @@ public final class ShiftsStore: ObservableObject {
     static func message(for error: Error, teamName: String? = nil) -> String {
         let raw = rawMessage(for: error)
         if isNotFound(raw) {
-            var who = (teamName ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            if let brace = who.firstIndex(of: "{") {
-                who = String(who[..<brace]).trimmingCharacters(in: .whitespacesAndNewlines)
-            }
-            return who.isEmpty
-                ? "This team does not use Shifts or you cannot access it."
-                : "\(who) does not use Shifts or you cannot access it."
+            return notUsingShiftsMessage(teamName: teamName)
         }
         if isAuthFailure(raw) {
             return "Your sign-in may have expired. Sign in again, then retry."
@@ -491,7 +648,20 @@ public final class ShiftsStore: ObservableObject {
         if isNetworkFailure(raw) {
             return "Couldn't reach the service. Check your connection, then retry."
         }
-        return sanitize(raw)
+        let friendly = FriendlyError.message(raw)
+        return friendly != raw ? friendly : sanitize(raw)
+    }
+
+    /// One team without Shifts (404 / schedule not enabled), naming
+    /// the team when known.
+    static func notUsingShiftsMessage(teamName: String?) -> String {
+        var who = (teamName ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if let brace = who.firstIndex(of: "{") {
+            who = String(who[..<brace]).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return who.isEmpty
+            ? "This team does not use Shifts or you cannot access it."
+            : "\(who) does not use Shifts or you cannot access it."
     }
 
     /// All-picker-teams-404'd body (title lives in the browser).

@@ -74,6 +74,40 @@ public final class RemindersViewModel: ObservableObject {
         self.localEdits = localEdits
     }
 
+    /// NOLOAD: last-good snapshot store (nil = memory only / demo).
+    public var snapshots: SectionCache?
+    static let snapshotKey = "todo"
+
+    struct Snapshot: Codable {
+        let lists: [ReminderList]
+        let tasks: [String: [ReminderTask]]
+        let selected: String?
+    }
+
+    /// Paint the last good lists + per-list tasks before any fetch.
+    @discardableResult
+    public func restoreSnapshot() -> Bool {
+        guard let snap = snapshots?.load(Snapshot.self, key: Self.snapshotKey),
+              !snap.lists.isEmpty else { return false }
+        lists = snap.lists
+        taskCache = snap.tasks
+        selectedListID = snap.lists.first { $0.id == (requestedListID ?? snap.selected) }?.id
+            ?? snap.lists.first?.id
+        if let id = selectedListID, let rows = snap.tasks[id] {
+            tasksListID = id
+            tasks = rows
+        }
+        state = .loaded
+        return true
+    }
+
+    private func saveSnapshot() {
+        guard let snapshots, !lists.isEmpty else { return }
+        let known = Set(lists.map(\.id))
+        snapshots.save(Snapshot(lists: lists, tasks: taskCache.filter { known.contains($0.key) },
+                                selected: selectedListID), key: Self.snapshotKey)
+    }
+
     /// Fetch lists, select the first, fetch its tasks.
     public func load() async {
         state = .loading
@@ -93,6 +127,7 @@ public final class RemindersViewModel: ObservableObject {
                 tasksListID = nil
                 tasks = []
             }
+            saveSnapshot()
         } catch {
             state = .error(Self.message(for: error))
         }
@@ -219,6 +254,7 @@ public final class RemindersViewModel: ObservableObject {
             } else {
                 taskCache[listID] = response.tasks
             }
+            saveSnapshot()
         } catch {
             if listID == selectedListID {
                 tasksError = Self.message(for: error)
@@ -230,7 +266,6 @@ public final class RemindersViewModel: ObservableObject {
     }
 
     static func message(for error: Error) -> String {
-        if case CoreCallError.failed(let m) = error { return m }
-        return String(describing: error)
+        FriendlyError.message(for: error)
     }
 }

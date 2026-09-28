@@ -339,7 +339,7 @@ struct CatchUpPane: View {
             if let text = store.partial ?? store.previousText {
                 summary(text, updating: true)
             } else {
-                LoadingPane("Summarizing\u{2026}")
+                LoadingPane("Summarizing\u{2026}", rows: false)
             }
         case .failed(let message):
             EmptyPane(store.lastError == .off ? "Catch Up Is Off" : "Couldn\u{2019}t Catch Up",

@@ -2,11 +2,16 @@
 //! entitlements and app definitions (manifests), so a host can open a
 //! personal app's static tab without the Teams web shell.
 //!
-//! Endpoints (from the public Teams web shell bundles; response shapes
-//! are INFERRED and parsed leniently, not verified against a tenant):
-//! - `GET  {mt}/beta/users/apps/entitlements`
+//! Endpoints (from the public Teams web shell bundles; the catalog pair
+//! was verified live 2026-09-28, APPLIVE):
 //! - `POST {mt}/beta/users/apps/aggregatedEntitlements?appbarview=userpinned`
-//! - `POST {mt}/beta/users/apps/batchedDefinitions`
+//!   → `{type, value: {userEntitlements: {<id>: [{id, state,
+//!   isAppBarPinned, appBarOrder, …}]}, definitions: {<appId>: manifest},
+//!   userEntitlementsHash}}`: installed apps, app bar order AND manifests.
+//! - `POST {mt}/beta/users/apps/batchedDefinitions` with a bare JSON
+//!   array of app ids → array of manifests (`{"appIds": […]}` → `[]`).
+//! - `GET  {mt}/beta/users/apps/entitlements` is NOT the installed list
+//!   (live: a few copilot/extension definitions); not used for the catalog.
 //!
 //! `{mt}` is `region_gtms.middleTier`. Auth is the Teams AAD token
 //! (Bearer) plus `X-Skypetoken` (see `TeamsClient::mt_get`).
@@ -127,9 +132,10 @@ pub fn pinned_body() -> Value {
     json!([{ "userEntitlementsHash": "", "teamEntitlementsHash": "" }])
 }
 
-/// batchedDefinitions body (INFERRED shape): the app ids to resolve.
+/// batchedDefinitions body: a bare array of the app ids to resolve
+/// (live: an `{"appIds": […]}` object is accepted but resolves nothing).
 pub fn definitions_body(ids: &[String]) -> Value {
-    json!({ "appIds": ids })
+    json!(ids)
 }
 
 /// Store home (INFERRED shape: shelves of apps, lenient parser).
@@ -197,18 +203,43 @@ fn collect<'a>(v: &'a Value, accept: &dyn Fn(&Value) -> bool, out: &mut Vec<&'a 
     }
 }
 
-/// Entitlements (installed apps) from any MT entitlements response.
-/// Deduplicated by app id, first occurrence wins; a `pinned`/`isPinned`
-/// flag on any duplicate marks the app pinned.
-pub fn parse_entitlements(v: &Value) -> Vec<AppEntitlement> {
+/// Entitlement objects: the items of a `userEntitlements` container
+/// when there is one (live aggregated view: items keyed `id`; the
+/// manifests beside it under `definitions` are not entitlements), else
+/// any object with an `appId` (other wrappers).
+fn entitlement_objects(v: &Value) -> Vec<&Value> {
     let mut found = Vec::new();
-    collect(v, &|o| str_field(o, &["appId"]).is_some(), &mut found);
+    match find_key(v, "userEntitlements") {
+        Some(ue) => collect(ue, &|o| str_field(o, &["appId", "id"]).is_some(), &mut found),
+        None => collect(v, &|o| str_field(o, &["appId"]).is_some(), &mut found),
+    }
+    found
+}
+
+/// First value under `key`, depth-first (objects and arrays).
+fn find_key<'a>(v: &'a Value, key: &str) -> Option<&'a Value> {
+    match v {
+        Value::Object(m) => m.get(key).or_else(|| m.values().find_map(|x| find_key(x, key))),
+        Value::Array(a) => a.iter().find_map(|x| find_key(x, key)),
+        _ => None,
+    }
+}
+
+const PIN_FLAGS: [&str; 5] = ["pinned", "isPinned", "isAppBarPinned", "isUserPinned", "isAdminPinned"];
+
+fn is_pinned(o: &Value) -> bool {
+    PIN_FLAGS.iter().any(|k| o.get(*k).and_then(Value::as_bool).unwrap_or(false))
+}
+
+/// Entitlements (installed apps) from any MT entitlements response.
+/// Deduplicated by app id, first occurrence wins; a pin flag
+/// (`isAppBarPinned`, `isUserPinned`, `isAdminPinned`, `pinned`,
+/// `isPinned`) on any duplicate marks the app pinned.
+pub fn parse_entitlements(v: &Value) -> Vec<AppEntitlement> {
     let mut out: Vec<AppEntitlement> = Vec::new();
-    for o in found {
-        let Some(app_id) = str_field(o, &["appId"]) else { continue };
-        let pinned = ["pinned", "isPinned", "isAppBarPinned"]
-            .iter()
-            .any(|k| o.get(*k).and_then(Value::as_bool).unwrap_or(false));
+    for o in entitlement_objects(v) {
+        let Some(app_id) = str_field(o, &["appId", "id"]) else { continue };
+        let pinned = is_pinned(o);
         if let Some(e) = out.iter_mut().find(|e| e.app_id.eq_ignore_ascii_case(&app_id)) {
             e.pinned |= pinned;
             continue;
@@ -222,12 +253,28 @@ pub fn parse_entitlements(v: &Value) -> Vec<AppEntitlement> {
     out
 }
 
-/// Pinned app ids in app bar order from the userpinned view.
+/// Pinned app ids in app bar order from the userpinned view. The live
+/// view lists every entitlement with pin flags and `appBarOrder`: only
+/// pinned ones are kept, sorted by that order (then response order). A
+/// view whose items carry no pin flags at all is taken as the pinned
+/// list itself, in response order.
 pub fn parse_pinned(v: &Value) -> Vec<String> {
+    let found = entitlement_objects(v);
+    let flagged = found.iter().any(|o| PIN_FLAGS.iter().any(|k| o.get(*k).is_some()));
+    let mut ranked: Vec<(f64, usize, String)> = Vec::new();
+    for (i, o) in found.iter().enumerate() {
+        let Some(id) = str_field(o, &["appId", "id"]) else { continue };
+        if flagged && !is_pinned(o) {
+            continue;
+        }
+        let order = o.get("appBarOrder").and_then(Value::as_f64).unwrap_or(f64::MAX);
+        ranked.push((order, i, id));
+    }
+    ranked.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
     let mut out: Vec<String> = Vec::new();
-    for e in parse_entitlements(v) {
-        if !out.iter().any(|x| x.eq_ignore_ascii_case(&e.app_id)) {
-            out.push(e.app_id);
+    for (_, _, id) in ranked {
+        if !out.iter().any(|x| x.eq_ignore_ascii_case(&id)) {
+            out.push(id);
         }
     }
     out
@@ -435,44 +482,135 @@ pub fn parse_store_sections(v: &Value) -> Vec<StoreSection> {
 
 // MARK: - Network
 
-/// Installed apps, pinned order, and their manifests (read-only).
-/// The pinned view is best effort: a failure there leaves `pinned` to
-/// the entitlement flags.
+/// Installed apps, pinned order, and their manifests (read-only). One
+/// aggregated-entitlements query carries all three; batchedDefinitions
+/// only fills manifests the aggregated view left out (best effort).
 pub async fn app_catalog_data(client: &TeamsClient) -> Result<AppCatalog> {
     let mt = client.middle_tier_url();
-    let ent: Value = client.mt_get(&entitlements_url(&mt)).await?.json().await?;
-    let entitlements = parse_entitlements(&ent);
-    let pinned = match client.mt_post(&pinned_url(&mt), &pinned_body()).await {
-        Ok(r) => match r.json::<Value>().await {
-            Ok(v) => parse_pinned(&v),
-            Err(_) => Vec::new(),
-        },
-        Err(e) => {
-            tracing::warn!("apps: pinned view failed: {:#}", e);
-            Vec::new()
+    let agg: Value = client.mt_post(&pinned_url(&mt), &pinned_body()).await?.json().await?;
+    let entitlements = parse_entitlements(&agg);
+    let pinned = parse_pinned(&agg);
+    let mut apps = parse_definitions(&agg);
+    let missing: Vec<String> = entitlements
+        .iter()
+        .map(|e| e.app_id.clone())
+        .filter(|id| !apps.iter().any(|m| m.id.eq_ignore_ascii_case(id)))
+        .collect();
+    for chunk in missing.chunks(DEFINITIONS_BATCH) {
+        match client.mt_post(&definitions_url(&mt), &definitions_body(chunk)).await {
+            Ok(r) => match r.json::<Value>().await {
+                Ok(v) => apps.extend(parse_definitions(&v)),
+                Err(e) => tracing::warn!("apps: definitions unreadable: {:#}", e),
+            },
+            Err(e) => tracing::warn!("apps: definitions failed: {:#}", e),
         }
-    };
-    let pinned = if pinned.is_empty() {
-        entitlements.iter().filter(|e| e.pinned).map(|e| e.app_id.clone()).collect()
-    } else {
-        pinned
-    };
-    let mut ids: Vec<String> = entitlements.iter().map(|e| e.app_id.clone()).collect();
-    for p in &pinned {
-        if !ids.iter().any(|i| i.eq_ignore_ascii_case(p)) {
-            ids.push(p.clone());
-        }
-    }
-    let mut apps = Vec::new();
-    for chunk in ids.chunks(DEFINITIONS_BATCH) {
-        let v: Value = client
-            .mt_post(&definitions_url(&mt), &definitions_body(chunk))
-            .await?
-            .json()
-            .await?;
-        apps.extend(parse_definitions(&v));
     }
     Ok(AppCatalog { entitlements, pinned, apps })
+}
+
+/// Graph path for a team's installed apps (APPHOST-B3, read-only).
+pub fn installed_apps_path(team_id: &str) -> String {
+    format!(
+        "/teams/{}/installedApps?$expand=teamsAppDefinition",
+        url::form_urlencoded::byte_serialize(team_id.as_bytes()).collect::<String>()
+    )
+}
+
+/// Catalog app ids of `GET /teams/{id}/installedApps` items
+/// (`teamsAppDefinition.teamsAppId`, else `teamsApp.id`).
+pub fn parse_installed_app_ids(v: &Value) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for item in v["value"].as_array().into_iter().flatten() {
+        let id = item["teamsAppDefinition"]["teamsAppId"]
+            .as_str()
+            .or_else(|| item["teamsApp"]["id"].as_str());
+        if let Some(id) = id.filter(|s| !s.is_empty()) {
+            if !out.iter().any(|o| o.eq_ignore_ascii_case(id)) {
+                out.push(id.to_string());
+            }
+        }
+    }
+    out
+}
+
+/// Manifests of a team's installed apps plus `extra` ids (channel-tab
+/// apps missing from the user's entitlements), via batchedDefinitions.
+/// The installedApps read is best effort; read-only throughout.
+pub async fn team_app_definitions_data(
+    client: &TeamsClient,
+    team_id: Option<&str>,
+    extra: &[String],
+) -> Result<Vec<AppManifest>> {
+    let mut ids: Vec<String> = Vec::new();
+    for id in extra {
+        if !id.is_empty() && !ids.iter().any(|o| o.eq_ignore_ascii_case(id)) {
+            ids.push(id.clone());
+        }
+    }
+    if let Some(t) = team_id.filter(|t| !t.is_empty()) {
+        match client.graph_get(&installed_apps_path(t)).await {
+            Ok(r) => match r.json::<Value>().await {
+                Ok(v) => {
+                    for id in parse_installed_app_ids(&v) {
+                        if !ids.iter().any(|o| o.eq_ignore_ascii_case(&id)) {
+                            ids.push(id);
+                        }
+                    }
+                }
+                Err(e) => tracing::warn!("apps: installedApps unreadable: {:#}", e),
+            },
+            Err(e) => tracing::warn!("apps: installedApps failed: {:#}", e),
+        }
+    }
+    let mt = client.middle_tier_url();
+    let mut apps = Vec::new();
+    for chunk in ids.chunks(DEFINITIONS_BATCH) {
+        let v: Value = client.mt_post(&definitions_url(&mt), &definitions_body(chunk)).await?.json().await?;
+        apps.extend(parse_definitions(&v));
+    }
+    Ok(apps)
+}
+
+/// SharePoint URLs the Teams tab placeholders are built from:
+/// `{teamSiteDomain}` (tenant root site host, or the team's),
+/// `{teamSitePath}`/`{teamSiteUrl}` (the team's site) and
+/// `{mySiteDomain}`/`{mySitePath}` (the user's OneDrive).
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct SharePointSites {
+    pub root: Option<String>,
+    pub my_site: Option<String>,
+    pub team_site: Option<String>,
+}
+
+fn web_url(v: &Value) -> Option<String> {
+    v["webUrl"].as_str().filter(|s| s.starts_with("https://")).map(str::to_string)
+}
+
+/// Graph GETs (read-only), each best effort: `/sites/root`,
+/// `/me/drive` and, for a team, `/groups/{id}/sites/root`.
+pub async fn sharepoint_sites_data(client: &TeamsClient, group_id: Option<&str>) -> Result<SharePointSites> {
+    async fn get(client: &TeamsClient, path: &str) -> Option<Value> {
+        match client.graph_get(path).await {
+            Ok(r) => r.json::<Value>().await.ok(),
+            Err(e) => {
+                tracing::warn!("apps: site lookup failed: {:#}", e);
+                None
+            }
+        }
+    }
+    let root = get(client, "/sites/root?$select=webUrl").await.as_ref().and_then(web_url);
+    let my_site = get(client, "/me/drive?$select=webUrl").await.as_ref().and_then(web_url);
+    let team_site = match group_id.filter(|g| !g.is_empty()) {
+        Some(g) => {
+            let enc: String = url::form_urlencoded::byte_serialize(g.as_bytes()).collect();
+            get(client, &format!("/groups/{}/sites/root?$select=webUrl", enc)).await.as_ref().and_then(web_url)
+        }
+        None => None,
+    };
+    if root.is_none() && my_site.is_none() && team_site.is_none() {
+        anyhow::bail!("no SharePoint site found");
+    }
+    Ok(SharePointSites { root, my_site, team_site })
 }
 
 /// Store home: shelves + listed apps (read-only).
@@ -597,13 +735,58 @@ mod tests {
         assert!(parse_entitlements(&json!({"value": []})).is_empty());
     }
 
+    /// Live aggregatedEntitlements shape (APPLIVE 2026-09-28; ids and
+    /// names are public first-party/sample values).
+    #[test]
+    fn aggregated_view_yields_entitlements_pinned_order_and_manifests() {
+        let v = json!({
+            "type": "Microsoft.Teams.MiddleTier.Apps.Contracts.Models.AggregatedApps",
+            "value": {
+                "userEntitlements": { "00000000-0000-0000-0000-000000000001": [
+                    { "id": "com.microsoft.teamspace.tab.planner", "state": "Installed",
+                      "isAppBarPinned": false, "inputExtensions": [{ "isFavorited": true }] },
+                    { "id": "cal", "state": "InstalledAndPermanent", "isAppBarPinned": true, "appBarOrder": 6.0 },
+                    { "id": "activity", "state": "InstalledAndPermanent", "isAppBarPinned": true, "appBarOrder": 1.0 },
+                    { "id": "shifts", "state": "Installed", "isUserPinned": true, "appBarOrder": 11 }
+                ] },
+                "definitions": {
+                    "com.microsoft.teamspace.tab.planner": {
+                        "id": "com.microsoft.teamspace.tab.planner", "name": "Planner",
+                        "manifestVersion": "1.17", "isAppBarPinned": true, "appBarOrder": 2,
+                        "staticTabs": [{ "entityId": "mytasks", "name": "Tasks",
+                            "contentUrl": "https://tasks.teams.microsoft.com/teamsui/{tid}/Home/PlannerFrame",
+                            "scopes": ["Personal"] }],
+                        "validDomains": ["tasks.teams.microsoft.com"],
+                        "webApplicationInfo": { "id": "75efb5bc-18a1-4e7b-8a66-2ad2503d79c6" }
+                    },
+                    "cal": { "id": "cal", "name": "Calendar", "manifestVersion": "1.17" }
+                },
+                "userEntitlementsHash": "abc"
+            }
+        });
+        let e = parse_entitlements(&v);
+        assert_eq!(e.len(), 4, "definitions beside userEntitlements are not entitlements");
+        assert_eq!(e[0].app_id, "com.microsoft.teamspace.tab.planner");
+        assert!(!e[0].pinned && e[1].pinned && e[3].pinned);
+        assert_eq!(e[1].state.as_deref(), Some("InstalledAndPermanent"));
+        assert_eq!(parse_pinned(&v), vec!["activity", "cal", "shifts"]);
+        let apps = parse_definitions(&v);
+        assert_eq!(apps.len(), 2);
+        let planner = apps.iter().find(|a| a.name == "Planner").unwrap();
+        assert_eq!(planner.static_tabs[0].entity_id, "mytasks");
+        assert_eq!(planner.web_application_info.as_ref().unwrap().id, "75efb5bc-18a1-4e7b-8a66-2ad2503d79c6");
+        // batchedDefinitions answers a bare array of manifests.
+        let batched = json!([{ "id": "x", "name": "X", "manifestVersion": "1.16", "staticTabs": [] }]);
+        assert_eq!(parse_definitions(&batched).len(), 1);
+    }
+
     #[test]
     fn urls_and_bodies() {
         let mt = "https://teams.microsoft.com/api/mt/emea/";
         assert_eq!(entitlements_url(mt), "https://teams.microsoft.com/api/mt/emea/beta/users/apps/entitlements");
         assert!(pinned_url(mt).ends_with("/beta/users/apps/aggregatedEntitlements?appbarview=userpinned"));
         assert!(definitions_url(mt).contains("/beta/users/apps/batchedDefinitions?"));
-        assert_eq!(definitions_body(&["x".into()]), json!({"appIds": ["x"]}));
+        assert_eq!(definitions_body(&["x".into()]), json!(["x"]));
         assert!(pinned_body().is_array());
     }
 
@@ -655,5 +838,23 @@ mod tests {
             install_body("app-a")["teamsApp@odata.bind"],
             "https://graph.microsoft.com/v1.0/appCatalogs/teamsApps/app-a"
         );
+    }
+
+    #[test]
+    fn installed_apps_parse_ids_and_path() {
+        let v = json!({"value": [
+            {"id": "x1", "teamsAppDefinition": {"teamsAppId": "app-A", "displayName": "A"}},
+            {"id": "x2", "teamsApp": {"id": "app-b"}},
+            {"id": "x3", "teamsAppDefinition": {"teamsAppId": "APP-a"}},
+            {"id": "x4"}
+        ]});
+        assert_eq!(parse_installed_app_ids(&v), vec!["app-A".to_string(), "app-b".to_string()]);
+        assert_eq!(
+            installed_apps_path("a b"),
+            "/teams/a+b/installedApps?$expand=teamsAppDefinition"
+        );
+        assert_eq!(web_url(&json!({"webUrl": "https://contoso.sharepoint.com/"})).as_deref(),
+                   Some("https://contoso.sharepoint.com/"));
+        assert_eq!(web_url(&json!({"webUrl": "http://x"})), None);
     }
 }

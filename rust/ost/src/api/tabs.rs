@@ -28,7 +28,16 @@ struct WireTab {
     web_url: Option<String>,
     #[serde(rename = "teamsAppId")]
     teams_app_id: Option<String>,
+    /// v1.0 has no `teamsAppId`; `$expand=teamsApp` carries the app id
+    /// (APPHOST-B3: live tabs came back with no app id at all).
+    #[serde(rename = "teamsApp")]
+    teams_app: Option<WireTeamsApp>,
     configuration: Option<WireTabConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WireTeamsApp {
+    id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -65,7 +74,7 @@ fn tab_from_wire(tab: WireTab) -> TabInfo {
     TabInfo {
         id: tab.id,
         name,
-        app_id: tab.teams_app_id,
+        app_id: tab.teams_app_id.or_else(|| tab.teams_app.and_then(|a| a.id)).filter(|s| !s.is_empty()),
         content_url,
         website_url,
         entity_id,
@@ -82,7 +91,7 @@ pub async fn list_tabs_data(client: &TeamsClient, channel_id: &str) -> Result<Ve
         bail!("empty channel_id");
     }
     let team_id = find_team_for_channel(client, channel_id).await?;
-    let path = format!("/teams/{}/channels/{}/tabs", team_id, channel_id);
+    let path = format!("/teams/{}/channels/{}/tabs?$expand=teamsApp", team_id, channel_id);
     let resp = client.graph_get(&path).await?;
     let parsed: TabsResponse = resp.json().await.context("Failed to parse tabs response")?;
     Ok(parsed.value.into_iter().map(tab_from_wire).collect())
@@ -144,7 +153,7 @@ pub async fn list_tabs_all() -> Result<()> {
                 "{}",
                 tabs_all_section_header(&team.name, &channel.name, &channel.id)
             );
-            let path = format!("/teams/{}/channels/{}/tabs", team.id, channel.id);
+            let path = format!("/teams/{}/channels/{}/tabs?$expand=teamsApp", team.id, channel.id);
             let resp = client.graph_get(&path).await?;
             let parsed: TabsResponse =
                 resp.json().await.context("Failed to parse tabs response")?;
@@ -220,5 +229,18 @@ mod tests {
             tabs[0].website_url.as_deref(),
             Some("https://example.com/wiki")
         );
+    }
+
+    #[test]
+    fn app_id_from_expanded_teams_app() {
+        let parsed: TabsResponse = serde_json::from_str(
+            r#"{"value":[{"id":"t1","displayName":"Plan","teamsApp":{"id":"com.microsoft.teamspace.tab.planner"},
+               "configuration":{"contentUrl":"https://tasks.office.com/x","entityId":"e1"}},
+              {"id":"t2","displayName":"Old","teamsAppId":"app-2","teamsApp":{"id":"ignored"}}]}"#,
+        )
+        .unwrap();
+        let tabs: Vec<TabInfo> = parsed.value.into_iter().map(tab_from_wire).collect();
+        assert_eq!(tabs[0].app_id.as_deref(), Some("com.microsoft.teamspace.tab.planner"));
+        assert_eq!(tabs[1].app_id.as_deref(), Some("app-2"));
     }
 }

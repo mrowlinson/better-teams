@@ -113,4 +113,91 @@ final class AppHostTests: XCTestCase {
             host.unload(key)
         }
     }
+
+    /// APPHOST-B3 safety default: Automatic keeps unverified apps on
+    /// their Teams web page; a verified or demo app runs natively until a
+    /// failure is remembered; a forced mode runs natively and starts over.
+    func testUnverifiedAppsStayOnTheTeamsPageAndFailuresAreRemembered() async throws {
+        var unverified = launch()
+        unverified.appID = "b3-unverified"
+        XCTAssertNil(TeamsJSTransportChoice.resolve(unverified, demo: true), "unverified → Teams web page")
+        var approvals = launch()
+        approvals.appID = "7C316234-DED0-4F95-8A83-8453D0876592"
+        XCTAssertEqual(TeamsJSTransportChoice.resolve(approvals, demo: true), .frameless, "control: verified runs natively")
+        TeamsJSTransportChoice.rememberFailure("blank page", app: approvals.appID, demo: true)
+        XCTAssertNil(TeamsJSTransportChoice.resolve(approvals, demo: true))
+        TeamsJSTransportChoice.setMode(.iframe, app: approvals.appID, demo: true)
+        XCTAssertEqual(TeamsJSTransportChoice.resolve(approvals, demo: true), .iframe)
+        XCTAssertNil(TeamsJSTransportChoice.failure(approvals.appID, demo: true), "a mode change starts over")
+        TeamsJSTransportChoice.setMode(.automatic, app: approvals.appID, demo: true)
+
+        let host = FrameHost(accountKey: "demo")
+        let key = FrameKey.app("b3-unverified")
+        host.registerApp(FrameApp(id: "b3-unverified", label: "U", symbol: "app", source: .personal,
+                                  launch: .teamsApp(unverified)))
+        XCTAssertFalse(host.isNativelyHosted(key))
+        XCTAssertEqual(host.page(key)?.url, unverified.fallback)
+
+        XCTAssertEqual(TeamsJSPolicy.signInFailure(URL(string: "https://a.example.com/cb#error=consent_required&error_description=AADSTS65001%3a+The+user")!),
+                       "sign-in error AADSTS65001")
+        XCTAssertNil(TeamsJSPolicy.signInFailure(URL(string: "https://a.example.com/cb?code=abc")!), "control")
+        XCTAssertFalse(TeamsJSPolicy.isFailure("appInitialization.expectedFailure", reason: "Offline"))
+
+        // A native (demo) page that reports a failure switches in place.
+        var failing = launch()
+        failing.appID = "b3-failing"
+        failing.demoHTML = "<html><body>x<script>window.nativeInterface.framelessPostMessage(JSON.stringify({id: 1, func: 'appInitialization.failure', args: ['Other', 'x']}));</script></body></html>"
+        let fkey = FrameKey.app("b3-failing")
+        host.registerApp(FrameApp(id: "b3-failing", label: "F", symbol: "app", source: .personal, launch: .teamsApp(failing)))
+        XCTAssertTrue(host.isNativelyHosted(fkey), "control: demo app starts natively")
+        host.attach(fkey, to: NSView(frame: NSRect(x: 0, y: 0, width: 400, height: 300)))
+        let deadline = Date().addingTimeInterval(10)
+        while host.isNativelyHosted(fkey), Date() < deadline { try await Task.sleep(nanoseconds: 100_000_000) }
+        XCTAssertFalse(host.isNativelyHosted(fkey))
+        XCTAssertEqual(host.page(fkey)?.url, failing.fallback)
+        XCTAssertEqual(TeamsJSTransportChoice.failure("b3-failing", demo: true), "app reported Other")
+        host.unload(fkey)
+    }
+
+    /// APPHOST-B3 B/C/D/F: SharePoint placeholders fill host/path raw
+    /// before the query and encoded after; resources and validDomains
+    /// resolve; consent page; realm discovery; channel-tab link refs.
+    func testSitePlaceholdersConsentRealmAndTabLinks() throws {
+        var c = TeamsJSAppContext()
+        c.teamSiteDomain = "contoso.sharepoint.com"
+        c.teamSitePath = "/sites/Team A"
+        c.teamSiteUrl = "https://contoso.sharepoint.com/sites/Team A"
+        c.channelName = "General"
+        c.locale = "en-us"
+        let url = TeamsJSPolicy.expand("https://{teamSiteDomain}{teamSitePath}/_layouts/15/x.aspx?u={teamSiteUrl}&c={channelName}&l={locale}", c)
+        XCTAssertEqual(url, "https://contoso.sharepoint.com/sites/Team%20A/_layouts/15/x.aspx?u=https:%2F%2Fcontoso.sharepoint.com%2Fsites%2FTeam%20A&c=General&l=en-us")
+        var l = launch(resource: "https://{teamSiteDomain}\u{200B}", domains: ["{teamSiteDomain}", "*.example.com"])
+        l.contentTemplate = "https://{teamSiteDomain}/_layouts/15/teamslogon.aspx"
+        XCTAssertTrue(TeamsJSPolicy.needsSite(l))
+        XCTAssertFalse(TeamsJSPolicy.needsSite(launch()), "control")
+        let r = TeamsJSPolicy.resolved(l, c)
+        XCTAssertEqual(r.resource, "https://contoso.sharepoint.com")
+        XCTAssertEqual(r.validDomains, ["contoso.sharepoint.com", "*.example.com"])
+        XCTAssertEqual(TeamsJSPolicy.mySitePath("https://contoso-my.sharepoint.com/personal/a_b_com/Documents"), "/personal/a_b_com")
+        XCTAssertEqual(TeamsJSPolicy.siteParts("https://contoso.sharepoint.com/sites/X/").path, "/sites/X")
+
+        let consent = try XCTUnwrap(TeamsJSPolicy.consentURL(resource: "api://cal.example.com/abc", tenant: "t1", loginHint: "a@b.example"))
+        let q = URLComponents(url: consent, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        XCTAssertEqual(consent.host, "login.microsoftonline.com")
+        XCTAssertEqual(consent.path, "/t1/oauth2/v2.0/authorize")
+        XCTAssertEqual(q.first { $0.name == "scope" }?.value, "api://cal.example.com/abc/.default")
+        XCTAssertEqual(q.first { $0.name == "prompt" }?.value, "consent")
+        XCTAssertTrue(TeamsJSPolicy.needsConsent("token grant failed (HTTP 400): invalid_grant AADSTS65001: The user"))
+        XCTAssertFalse(TeamsJSPolicy.needsConsent("AADSTS50076"), "control")
+
+        let fed = Data(#"{"NameSpaceType":"Federated","AuthURL":"https://sts.contoso.example/adfs/ls/?username=x"}"#.utf8)
+        XCTAssertEqual(TeamsJSPolicy.federatedHost(realmJSON: fed), "sts.contoso.example")
+        XCTAssertNil(TeamsJSPolicy.federatedHost(realmJSON: Data(#"{"NameSpaceType":"Managed"}"#.utf8)), "control")
+        let sts = URL(string: "https://sts.contoso.example/adfs/ls/")!
+        XCTAssertTrue(TeamsJSPolicy.allowsNavigation(sts, launch: launch(), signInHosts: ["sts.contoso.example"]))
+        XCTAssertFalse(TeamsJSPolicy.allowsNavigation(sts, launch: launch()), "control: not without the realm")
+
+        XCTAssertEqual(TeamsDeepLink.tabRef("tab::1a2b-3c"), "1a2b-3c")
+        XCTAssertNil(TeamsDeepLink.tabRef("General"), "control")
+    }
 }

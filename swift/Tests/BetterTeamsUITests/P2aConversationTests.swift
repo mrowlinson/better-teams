@@ -118,7 +118,8 @@ final class P2aConversationTests: XCTestCase {
                                   content: "Nice. @Me please check",
                                   raw: "<p>Nice. <at id=\"8:me\">@Me</at> please check</p>")
         let body = MessageRowView.segments(MessageRender.attributedBody(for: mention, highlighting: "Me"), scale: 1)
-        let tinted = body.flatMap { $0.text.runs.filter { $0.swiftUI.foregroundColor == Palette.mention } }
+        // A mention naming you takes the darker own-mention ink on its wash (contrast).
+        let tinted = body.flatMap { $0.text.runs.filter { $0.swiftUI.foregroundColor == Palette.ownMentionText } }
         XCTAssertFalse(tinted.isEmpty, "mention runs carry the palette tint")
         XCTAssertTrue(body.flatMap { $0.text.runs }.contains { $0.swiftUI.backgroundColor == Palette.ownMentionBackground })
     }

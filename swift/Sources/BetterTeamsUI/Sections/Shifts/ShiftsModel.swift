@@ -109,6 +109,19 @@ enum ShiftsPaneState: Equatable {
     static let offlineTitle = "You\u{2019}re Offline"
     static let offlineMessage = "The schedule appears when you\u{2019}re back online."
 
+    /// "Loading Shifts… 3 of 9 teams" while the picker is probed for a
+    /// team with Shifts; plain "Loading Shifts…" for one team.
+    static func loadingLabel(_ progress: ShiftsLoadProgress?) -> String {
+        guard let progress, progress.total > 1 else { return "Loading Shifts\u{2026}" }
+        return "Loading Shifts\u{2026} \(min(progress.done, progress.total)) of \(progress.total) teams"
+    }
+
+    /// Determinate bar fraction for the same probe (nil = spinner).
+    static func loadingFraction(_ progress: ShiftsLoadProgress?) -> Double? {
+        guard let progress, progress.total > 1 else { return nil }
+        return Double(min(progress.done, progress.total)) / Double(progress.total)
+    }
+
     static func resolve(_ state: ShiftsState, hasTeams: Bool, forced: ForcedPaneState?,
                         offline: Bool) -> ShiftsPaneState {
         func failed(_ m: String) -> ShiftsPaneState {

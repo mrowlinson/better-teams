@@ -90,6 +90,11 @@ public final class ConversationStore: ObservableObject {
     /// Profile-aware core-call wrapper (gap-g2). Default runs direct.
     public var coreRunner: any AccountCoreRunner = DirectAccountCoreRunner()
     private var openGeneration = 0
+    /// Bumped when an open's fresh page replaces a stale snapshot (and
+    /// its cursor): an older page requested from the snapshot cursor
+    /// before that would land in front of the fresh page with a gap, so
+    /// `loadMore` drops it.
+    private var historyEpoch = 0
 
     /// Sendable hop for detached core calls: the runner + account
     /// travel as values (self is MainActor-bound, the calls run
@@ -108,6 +113,12 @@ public final class ConversationStore: ObservableObject {
 
     /// Opaque cursor for the next older page; nil = end of history.
     public private(set) var pageToken: String?
+    /// Fresh-page cursor kept behind a cached snapshot cursor: a stale
+    /// snapshot cursor that fails once falls back to it (histload).
+    private var fallbackToken: String?
+    /// Per-chat snapshot store (histload): nil = no caching (tests,
+    /// pop-outs); AppState / account windows inject the account's.
+    public var historyCache: MessageHistoryCache?
 
     public init() {}
 
@@ -123,7 +134,7 @@ public final class ConversationStore: ObservableObject {
     /// than this, so long threads can't churn the view unboundedly.
     /// Open stays small (newest slice, fast land); older history pages
     /// back on scroll.
-    public nonisolated static let openMaxPages = 3
+    public nonisolated static let openMaxPages = 2
     public nonisolated static let dayLoadMaxPages = 4
     /// Seek bound (om-ja-search): a jump-to-message never pages back
     /// more than this looking for its bubble (open-chain extra +
@@ -185,23 +196,25 @@ public final class ConversationStore: ObservableObject {
         return MessageRender.dayKey(oldest.timestamp) != startDayKey
     }
 
-    /// Open a chat: fetch the last-few-days window via core (newest page,
-    /// published immediately, then older pages until the window is
-    /// covered), replace messages. Stale completions are dropped, so
-    /// fast chat-switching always lands on the newest selection. The
-    /// previous thread is cleared up front: a failed open shows the
-    /// error with retry, never stale bubbles under a new name.
-    /// `seekMessageID` (om-ja-search) pages back past the window until
-    /// that bubble loads (bounded by `seekMaxPages`), then arms
-    /// `jumpTargetID` so the timeline lands on it.
+    /// Open a chat (histload): a cached snapshot (`historyCache`) paints
+    /// instantly with no loading pane, then only the newest page is
+    /// fetched and merged in by id behind the bubbles (`refreshing`).
+    /// Without a snapshot: newest page (published immediately), then
+    /// older pages until the window is covered (bounded by
+    /// `openMaxPages`), replacing messages. Stale completions are
+    /// dropped, so fast chat-switching always lands on the newest
+    /// selection. An uncached open clears the previous thread up front:
+    /// a failed open shows the error with retry, never stale bubbles
+    /// under a new name. `seekMessageID` (om-ja-search) pages back past
+    /// the window until that bubble loads (bounded by `seekMaxPages`),
+    /// then arms `jumpTargetID` so the timeline lands on it.
     public func open(chatID: String, chatName: String? = nil, limit: Int32 = 50, seekMessageID: String? = nil) {
+        persistHistory() // the chat being left (keeps realtime rows)
         self.chatID = chatID
         if let n = chatName { self.chatName = n }
-        messages = []
         pageToken = nil
-        loading = true
+        fallbackToken = nil
         loadingMore = false
-        refreshing = false
         refreshError = nil
         error = nil
         replyTarget = nil
@@ -209,10 +222,31 @@ public final class ConversationStore: ObservableObject {
         jumpMissedID = nil
         openGeneration += 1
         let gen = openGeneration
-        let seek: String? = {
+        var seek: String? = {
             let t = (seekMessageID ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             return t.isEmpty ? nil : t
         }()
+        let cached = isDemo ? nil : historyCache?.load(chatID: chatID)
+        if let cached {
+            // Stored rows carry their own isOwn; restamp only with a
+            // known name (a nil name would flip every own bubble).
+            messages = ownDisplayName.map { Self.stampOwnership(cached.messages, ownName: $0) } ?? cached.messages
+            pageToken = cached.pageToken
+            loading = false
+            didLoad = true
+            refreshing = true
+            if let s = seek, messages.contains(where: { $0.id == s }) {
+                seekAttempts += 1
+                seekLanded += 1
+                jumpTargetID = s
+                seek = nil
+            }
+        } else {
+            messages = []
+            loading = true
+            refreshing = false
+        }
+        let seekID = seek
         let hop = coreHop
         Task {
             // Best-effort identity (core-cached after first call); a stale
@@ -228,13 +262,35 @@ public final class ConversationStore: ObservableObject {
                 }.value
                 guard gen == self.openGeneration else { return }
                 let stamped = Self.stampOwnership(resp.messages, ownName: self.ownDisplayName)
-                self.messages = stamped
+                var chainWindow = true
+                if let cached {
+                    let restamped = self.ownDisplayName == nil
+                        ? self.messages : Self.stampOwnership(self.messages, ownName: self.ownDisplayName)
+                    let fresh = Self.mergedFresh(stamped, into: restamped)
+                    if fresh.messages != self.messages { self.messages = fresh.messages }
+                    if fresh.contiguous {
+                        // Snapshot cursor stays (it continues before the
+                        // cached oldest); the fresh one is its fallback.
+                        chainWindow = false
+                        self.fallbackToken = resp.page_token
+                        if self.pageToken == nil, !cached.endOfHistory { self.pageToken = resp.page_token }
+                    } else {
+                        // Gap wider than one page: the snapshot is stale.
+                        self.pageToken = resp.page_token
+                        self.historyEpoch += 1 // drop older pages from the snapshot cursor
+                    }
+                    self.refreshing = false
+                    if chainWindow { self.loadingMore = true }
+                } else {
+                    self.messages = stamped
+                    self.pageToken = resp.page_token
+                }
                 self.onHistory?(chatID, stamped)
-                self.pageToken = resp.page_token
                 self.didLoad = true
                 // Chain older pages until the window is covered.
                 var pages = 1
-                while gen == self.openGeneration,
+                while chainWindow,
+                      gen == self.openGeneration,
                       self.pageToken != nil,
                       !Self.windowCovered(self.messages),
                       pages < Self.openMaxPages
@@ -263,7 +319,7 @@ public final class ConversationStore: ObservableObject {
                 // with no miss (network failure ≠ id mismatch).
                 var seekFound = false
                 var seekPageError = false
-                if let seek, gen == self.openGeneration {
+                if let seek = seekID, gen == self.openGeneration {
                     var extra = 0
                     while gen == self.openGeneration,
                           !self.messages.contains(where: { $0.id == seek }),
@@ -291,11 +347,14 @@ public final class ConversationStore: ObservableObject {
                     seekFound = gen == self.openGeneration
                         && self.messages.contains(where: { $0.id == seek })
                 }
-                if gen == self.openGeneration { self.loading = false }
+                guard gen == self.openGeneration else { return }
+                self.loading = false
+                self.loadingMore = false
+                self.persistHistory()
                 // Arm after the loading flip: the loading-change tail
                 // land runs first, then the jump owns the viewport (its
                 // onChange cancels the settle + scrolls to the bubble).
-                if let seek, gen == self.openGeneration {
+                if let seek = seekID {
                     self.seekAttempts += 1
                     if seekFound {
                         self.seekLanded += 1
@@ -308,11 +367,42 @@ public final class ConversationStore: ObservableObject {
                 }
             } catch {
                 guard gen == self.openGeneration else { return }
-                self.loading = false
-                self.didLoad = true
-                self.error = String(describing: error)
+                if cached != nil {
+                    // Snapshot stays on screen; quiet refresh notice.
+                    self.refreshing = false
+                    self.refreshError = String(describing: error)
+                } else {
+                    self.loading = false
+                    self.didLoad = true
+                    self.error = String(describing: error)
+                }
             }
         }
+    }
+
+    /// Pure open merge (histload): the fresh newest page over a cached
+    /// snapshot. Contiguous (the page's oldest id is cached, or the page
+    /// is empty) = `mergedNewest` (edits/deletes inside the page land,
+    /// older cached rows and the snapshot cursor stay). Otherwise the
+    /// gap is wider than one page: the page replaces the snapshot (plus
+    /// local pending rows) and paging restarts from the fresh cursor.
+    public static func mergedFresh(
+        _ page: [ChatMessage], into cached: [ChatMessage]
+    ) -> (messages: [ChatMessage], contiguous: Bool) {
+        guard let first = page.first else { return (cached, true) }
+        if cached.contains(where: { $0.id == first.id }) {
+            return (mergedNewest(page, into: cached), true)
+        }
+        let pageIDs = Set(page.map(\.id))
+        let pending = cached.filter { $0.id.hasPrefix("pending-") && !pageIDs.contains($0.id) }
+        return (page + pending, false)
+    }
+
+    /// Snapshot the open chat into `historyCache` (server rows only).
+    private func persistHistory() {
+        guard !isDemo, didLoad, let cache = historyCache, let id = chatID else { return }
+        let rows = messages.filter { !$0.id.hasPrefix("pending-") }
+        cache.store(chatID: id, messages: rows, pageToken: pageToken)
     }
 
     /// Re-fetch the open chat's newest page behind the bubbles on screen
@@ -342,6 +432,7 @@ public final class ConversationStore: ObservableObject {
                 if next != self.messages { self.messages = next }
                 self.onHistory?(id, stamped)
                 self.refreshError = nil
+                self.persistHistory()
             } catch {
                 guard gen == self.openGeneration, rgen == self.refreshGeneration else { return }
                 self.refreshError = String(describing: error)
@@ -378,6 +469,7 @@ public final class ConversationStore: ObservableObject {
     /// bubbles, and pending state. The generation bump cancels in-flight
     /// opens, so stale completions can't repopulate a dead thread.
     public func close() {
+        persistHistory()
         openGeneration += 1
         chatID = nil
         chatName = nil
@@ -448,6 +540,7 @@ public final class ConversationStore: ObservableObject {
             }
             guard gen == self.openGeneration else { return } // superseded
             self.loadingMore = false
+            self.persistHistory()
             self.seekAttempts += 1
             if let e = lastError {
                 self.error = String(describing: e)
@@ -498,6 +591,7 @@ public final class ConversationStore: ObservableObject {
     /// re-opens the conversation, which renders the new account's
     /// snapshot without spinners.
     public func resetForAccount(displayName: String?) {
+        persistHistory() // into the outgoing account's cache
         openGeneration += 1
         messages = []
         loading = false
@@ -546,32 +640,45 @@ public final class ConversationStore: ObservableObject {
         loadingMore = true
         error = nil
         let gen = openGeneration
+        let epoch = historyEpoch
         let hop = coreHop
         let startDay = MessageRender.dayKey(messages.first?.timestamp ?? "")
         Task {
             var pages = 0
             var lastError: Error?
+            // Superseded: another chat opened, or the open's fresh page
+            // replaced the snapshot this page continues (histload race).
+            var current: Bool { gen == self.openGeneration && epoch == self.historyEpoch }
             while pages < Self.dayLoadMaxPages, let tok = self.pageToken {
                 do {
                     let resp = try await Task.detached {
                         try hop.run { try RustCore.messagesPage(chatID: id, pageToken: tok, limit: limit) }
                     }.value
-                    guard gen == self.openGeneration else { return } // superseded
+                    guard current else { return } // superseded
                     let stamped = Self.stampOwnership(resp.messages, ownName: self.ownDisplayName)
                     self.messages = Self.prepend(stamped, to: self.messages)
                     self.onHistory?(id, stamped)
                     self.pageToken = resp.page_token
+                    self.fallbackToken = nil
                     pages += 1
                     if Self.dayChunkDone(startDayKey: startDay, messages: self.messages) { break }
                 } catch {
-                    guard gen == self.openGeneration else { return } // superseded
+                    guard current else { return } // superseded
+                    // A stale snapshot cursor retries once from the
+                    // fresh-page cursor (dedupe drops the overlap).
+                    if let fb = self.fallbackToken, fb != tok {
+                        self.fallbackToken = nil
+                        self.pageToken = fb
+                        continue
+                    }
                     lastError = error
                     break
                 }
             }
-            guard gen == self.openGeneration else { return } // superseded
+            guard current else { return } // superseded
             self.loadingMore = false
             if let e = lastError { self.error = String(describing: e) }
+            self.persistHistory()
         }
     }
 

@@ -176,6 +176,13 @@ final class P4bNativeAppsTests: XCTestCase {
         XCTAssertEqual(ShiftsPaneState.resolve(.empty, hasTeams: false, forced: nil, offline: false), .notSetUp)
         XCTAssertEqual(ShiftsPaneState.resolve(.loaded, hasTeams: true, forced: .empty, offline: false), .notSetUp)
         XCTAssertEqual(ShiftsPaneState.notSetUpTitle, "Shifts isn\u{2019}t set up for your teams")
+        // Picker probe: determinate "n of m teams"; one team = spinner.
+        XCTAssertEqual(ShiftsPaneState.loadingLabel(ShiftsLoadProgress(done: 3, total: 9)),
+                       "Loading Shifts\u{2026} 3 of 9 teams")
+        XCTAssertEqual(ShiftsPaneState.loadingFraction(ShiftsLoadProgress(done: 3, total: 9)) ?? -1,
+                       3.0 / 9.0, accuracy: 0.0001)
+        XCTAssertEqual(ShiftsPaneState.loadingLabel(nil), "Loading Shifts\u{2026}")
+        XCTAssertNil(ShiftsPaneState.loadingFraction(ShiftsLoadProgress(done: 0, total: 1)))
         XCTAssertEqual(PlannerListState.resolve(.loaded, planCount: 0, plansError: nil, forced: nil, offline: false),
                        .empty)
         XCTAssertEqual(PlannerListState.emptyTitle, "No Plans")

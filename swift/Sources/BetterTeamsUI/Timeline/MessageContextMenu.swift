@@ -60,6 +60,8 @@ final class TimelineActions {
     private let services: ConversationServices
     /// Asks the timeline to center + highlight a row.
     var jumpHandler: ((String) -> Void)?
+    /// Which row shows the hover toolbar (shared by all rows).
+    let hover = MessageHover()
 
     init(conv: ConversationStore, model: WindowModel?, services: ConversationServices) {
         self.conv = conv
@@ -209,10 +211,20 @@ final class TimelineActions {
     /// through a Save panel that opens there; the file is listed in
     /// Transfers and Files ▸ Downloads (TransferStore). Demo writes to
     /// the demo tmp dir only, never the chosen folder.
+    /// Saves the original bytes, fetched the way the viewer fetches them
+    /// (`FullResImageModel`), not the bubble's 520px decode; the decode is
+    /// re-encoded to PNG only when the original can't be fetched.
     func save(image media: RemoteImageModel, alt: String, choose: Bool) {
-        guard let m = model, let img = media.image, let png = ImageSave.png(img) else { return }
-        save(bytes: png, name: ImageSave.filename(alt: alt), type: .png, choose: choose,
-             window: FilesSection.window(m))
+        guard let m = model else { return }
+        let window = FilesSection.window(m)
+        let original = FullResImageModel(thumbURL: media.url, messageID: media.messageID)
+        let decoded = media.image
+        Task { [weak self] in
+            guard let (data, type) = await ImageSave.bytes(original: original, fallback: decoded) else { return }
+            let ext = type.preferredFilenameExtension ?? "png"
+            self?.save(bytes: data, name: ImageSave.filename(alt: alt, ext: ext), type: type, choose: choose,
+                       window: window)
+        }
     }
 
     /// Writes image bytes (a re-encoded decode, or the viewer's original)

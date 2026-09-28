@@ -3752,6 +3752,35 @@ pub extern "C" fn ostmac_call_record_inject() -> *mut c_char {
     string_to_c(calls::call_record_inject_json())
 }
 
+// ---------------------------------------------------------------------------
+// NOLOAD: per-request log hook (ost §77 observer → host unified log)
+// ---------------------------------------------------------------------------
+
+/// Host callback: `(method, url, status, elapsed_ms)`; status 0 =
+/// transport failure / timeout. Strings are borrowed for the call only.
+/// The host reduces `url` to a redacted path template before logging.
+pub type RequestLogCallback =
+    extern "C" fn(method: *const c_char, url: *const c_char, status: u16, ms: u64);
+
+static REQUEST_LOG: OnceLock<RequestLogCallback> = OnceLock::new();
+
+fn forward_request(method: &str, url: &str, status: u16, ms: u64) {
+    let Some(cb) = REQUEST_LOG.get() else { return };
+    if let (Ok(m), Ok(u)) = (CString::new(method), CString::new(url)) {
+        cb(m.as_ptr(), u.as_ptr(), status, ms);
+    }
+}
+
+/// Install the request log callback (first call wins; null ignored).
+#[no_mangle]
+pub extern "C" fn ostmac_set_request_log(cb: Option<RequestLogCallback>) {
+    if let Some(cb) = cb {
+        if REQUEST_LOG.set(cb).is_ok() {
+            ost::api::client::set_request_observer(forward_request);
+        }
+    }
+}
+
 /// Free a string returned by any `ostmac_*` call. Null-safe.
 #[no_mangle]
 pub extern "C" fn ostmac_free(s: *mut c_char) {

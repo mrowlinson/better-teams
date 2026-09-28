@@ -4,7 +4,8 @@
 # Usage: scripts/ui-lint.sh [dir]   (default: swift/Sources/BetterTeamsUI)
 # Prints one "[Rn] path:line: text" per hit; exits 1 on any hit, 0 clean.
 # Allowlists are the exact files the spec names (R7 Debounce + RelativeTime/CallSession for Timer, R8 RailView,
-# R14 Palette/AppFont, R16 FrameHost, R22 Hosting, R27 Call/). P1 adds R4+ R7+ R9+ R10+ R21-R28.
+# R14 Palette/AppFont, R16 FrameHost, R22 Hosting, R27 Call/, R1/R7+/R15 Timeline/ImageViewerChrome).
+# P1 adds R4+ R7+ R9+ R10+ R21-R28.
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DIR="${1:-$ROOT/swift/Sources/BetterTeamsUI}"
@@ -30,8 +31,8 @@ check() {
     fi
 }
 
-# R1 no custom window chrome
-check R1 'titlebarAppearsTransparent|standardWindowButton\(|titleVisibility *= *\.hidden|styleMask[^/]*\.borderless'
+# R1 no custom window chrome (the image viewer's media window is the one exception)
+check R1 'titlebarAppearsTransparent|standardWindowButton\(|titleVisibility *= *\.hidden|styleMask[^/]*\.borderless' '*.swift' '/Timeline/ImageViewerChrome\.swift'
 # R4 stable identity
 check R4 '\.id\(UUID|\.id\(Date'
 # R6 no scroll views inside rows
@@ -47,8 +48,8 @@ check R11 'RustCore\.|ReadCore\.'
 # R14 literal colors only in Palette.swift, literal sizes only in AppFont.swift
 check R14 'Color\(red:|NSColor\(red:|calibratedRed' '*.swift' '/Shared/Palette\.swift'
 check R14 '\.system\(size:' '*.swift' '/Shared/AppFont\.swift'
-# R15 no Liquid Glass / visual-effect views in the content layer
-check R15 '\.glassEffect|NSVisualEffectView'
+# R15 no Liquid Glass / visual-effect views in the content layer (image viewer HUD bar excepted)
+check R15 '\.glassEffect|NSVisualEffectView' '*.swift' '/Timeline/ImageViewerChrome\.swift'
 # R16 web views are created only by FrameHost
 check R16 'WKWebView\(' '*.swift' '/Frame/FrameHost\.swift'
 # R20 no deleted modules
@@ -59,8 +60,8 @@ check R20 'import +(BTDesign|OstMacChatList)([^A-Za-z0-9_]|$)'
 check R4 '\.id\('
 check R4 'id: *\\\.self'
 check R4 'ForEach\([^)]*\.(indices|enumerated\(\))'
-# R7+ Timer only in the shared relative-time ticker and CallSession
-check R7 '(^|[^A-Za-z0-9_])Timer *(\.|\()' '*.swift' '/Shared/RelativeTime\.swift|/Call/CallSession\.swift'
+# R7+ Timer only in the shared relative-time ticker, CallSession and the viewer's GIF frame stepper
+check R7 '(^|[^A-Za-z0-9_])Timer *(\.|\()' '*.swift' '/Shared/RelativeTime\.swift|/Call/CallSession\.swift|/Timeline/ImageViewerChrome\.swift'
 # R9+ .animation( always takes value:
 check R9 '\.animation\([^,)]*\)'
 # R10+ no .focusable( additions

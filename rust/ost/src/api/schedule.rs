@@ -396,6 +396,15 @@ where
     Ok(out)
 }
 
+/// True when a draft-slot query failed with HTTP 403: Graph lets only
+/// schedule managers filter on draft information ("Sorry, you don't
+/// have the permission to filter on draft information."), so for a
+/// team member the draft slot is simply empty, never a failed week.
+/// Shared-slot failures and every other status still fail the call.
+pub fn draft_slot_forbidden(slot: &str, err: &anyhow::Error) -> bool {
+    slot.starts_with("draft") && err.to_string().starts_with("HTTP 403 ")
+}
+
 /// Keep the first row per id (shared-slot query first, so a shift with
 /// both slots keeps its shared version).
 fn dedupe_by_id<T>(rows: Vec<T>, id: impl Fn(&T) -> &str) -> Vec<T> {
@@ -407,7 +416,8 @@ fn dedupe_by_id<T>(rows: Vec<T>, id: impl Fn(&T) -> &str) -> Vec<T> {
 
 /// List one team's shifts overlapping `[start, end]` (padded
 /// server-side containment filter, then the overlap test here; shared
-/// then draft slot, all pages). Bad bounds / empty
+/// then draft slot, all pages; a draft slot a member may not read
+/// is empty, [`draft_slot_forbidden`]). Bad bounds / empty
 /// `team_id` bail pre-network.
 pub async fn list_shifts_range_data(
     client: &TeamsClient,
@@ -418,10 +428,15 @@ pub async fn list_shifts_range_data(
     let mut rows = Vec::new();
     for slot in ["sharedShift", "draftShift"] {
         let path = schedule_range_path(team_id, "shifts", slot, start, end)?;
-        let wire = fetch_pages(client, &path, "shifts", |r: ShiftsResponse| {
+        let wire = match fetch_pages(client, &path, "shifts", |r: ShiftsResponse| {
             (r.value, r.next_link)
         })
-        .await?;
+        .await
+        {
+            Ok(wire) => wire,
+            Err(e) if draft_slot_forbidden(slot, &e) => Vec::new(),
+            Err(e) => return Err(e),
+        };
         rows.extend(wire.into_iter().map(shift_from_wire));
     }
     rows.retain(|s| overlaps_range(s.start.as_deref(), s.end.as_deref(), start, end));
@@ -430,7 +445,8 @@ pub async fn list_shifts_range_data(
 
 /// List one team's time-off instances overlapping `[start, end]`
 /// (padded server-side containment filter, then the overlap test here;
-/// shared then draft slot, all pages).
+/// shared then draft slot, all pages; a draft slot a member may not
+/// read is empty, [`draft_slot_forbidden`]).
 pub async fn list_timesoffs_range_data(
     client: &TeamsClient,
     team_id: &str,
@@ -440,10 +456,15 @@ pub async fn list_timesoffs_range_data(
     let mut rows = Vec::new();
     for slot in ["sharedTimeOff", "draftTimeOff"] {
         let path = schedule_range_path(team_id, "timesOff", slot, start, end)?;
-        let wire = fetch_pages(client, &path, "timesOff", |r: TimesOffResponse| {
+        let wire = match fetch_pages(client, &path, "timesOff", |r: TimesOffResponse| {
             (r.value, r.next_link)
         })
-        .await?;
+        .await
+        {
+            Ok(wire) => wire,
+            Err(e) if draft_slot_forbidden(slot, &e) => Vec::new(),
+            Err(e) => return Err(e),
+        };
         rows.extend(wire.into_iter().map(time_off_from_wire));
     }
     rows.retain(|t| overlaps_range(t.start.as_deref(), t.end.as_deref(), start, end));
@@ -524,6 +545,27 @@ mod tests {
         assert!(checked_team_id("").is_err());
         assert!(checked_team_id("   ").is_err());
         assert_eq!(checked_team_id("  t1 ").unwrap(), "t1");
+    }
+
+    /// Live 2026-09-28 (member account): the draft-slot filter answers
+    /// 403 Forbidden "permission to filter on draft information" while
+    /// the shared slot answers 200. Only that case is skipped.
+    #[test]
+    fn draft_slot_403_is_empty_not_fatal() {
+        let forbidden = anyhow::anyhow!(
+            "HTTP 403 for https://graph.microsoft.com/v1.0/teams/t1/schedule/shifts?$filter=draftShift/startDateTime%20ge%202026-09-27T04:00:00Z: {{\"error\":{{\"code\":\"Forbidden\",\"message\":\"Sorry, you don't have the permission to filter on draft information.\"}}}}"
+        );
+        assert!(draft_slot_forbidden("draftShift", &forbidden));
+        assert!(draft_slot_forbidden("draftTimeOff", &forbidden));
+        // Shared slot 403, other statuses, transport errors: still fatal.
+        assert!(!draft_slot_forbidden("sharedShift", &forbidden));
+        assert!(!draft_slot_forbidden("sharedTimeOff", &forbidden));
+        let not_found = anyhow::anyhow!("HTTP 404 for https://graph.microsoft.com/v1.0/teams/t1/schedule/shifts: {{}}");
+        assert!(!draft_slot_forbidden("draftShift", &not_found));
+        let throttled = anyhow::anyhow!("HTTP 429 for https://graph.microsoft.com/v1.0/teams/t1403/schedule/shifts: {{}}");
+        assert!(!draft_slot_forbidden("draftShift", &throttled));
+        let unauthorized = anyhow::anyhow!("401 Unauthorized for https://graph.microsoft.com/v1.0/x.");
+        assert!(!draft_slot_forbidden("draftShift", &unauthorized));
     }
 
     #[test]

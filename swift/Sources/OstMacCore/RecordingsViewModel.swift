@@ -110,6 +110,23 @@ public final class RecordingsViewModel: ObservableObject {
         self.openURLFn = openURL
     }
 
+    /// NOLOAD: last-good snapshot store (nil = memory only / demo).
+    public var snapshots: SectionCache?
+    static let snapshotKey = "recordings"
+
+    /// Paint the last good list before any fetch. Pre-authenticated
+    /// download URLs are never persisted (playback falls back to the
+    /// drive download until the list revalidates).
+    @discardableResult
+    public func restoreSnapshot() -> Bool {
+        guard let cached = snapshots?.load([RecordingItem].self, key: Self.snapshotKey),
+              !cached.isEmpty else { return false }
+        listed = cached
+        if !isSearchResults { items = cached }
+        state = .loaded
+        return true
+    }
+
     /// Fetch the list. Search hits showing stay until cleared.
     public func load() async {
         state = .loading
@@ -117,6 +134,7 @@ public final class RecordingsViewModel: ObservableObject {
         do {
             let response = try await Task.detached { try fetcher() }.value
             listed = response.recordings
+            snapshots?.save(response.recordings.map(\.withoutDownloadURL), key: Self.snapshotKey)
             if !isSearchResults {
                 items = listed
             }
@@ -347,7 +365,6 @@ public final class RecordingsViewModel: ObservableObject {
     }
 
     public nonisolated static func message(for error: Error) -> String {
-        if case CoreCallError.failed(let m) = error { return m }
-        return String(describing: error)
+        FriendlyError.message(for: error)
     }
 }

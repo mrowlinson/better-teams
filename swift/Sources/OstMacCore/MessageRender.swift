@@ -1162,6 +1162,8 @@ public enum TeamsTime {
         return f
     }()
 
+    private static let dayTimeFmt = DateFormatter()
+
     private static let dayKeyFmt: DateFormatter = {
         let f = DateFormatter()
         f.dateFormat = "yyyy-MM-dd"
@@ -1200,6 +1202,25 @@ public enum TeamsTime {
         defer { lock.unlock() }
         dayMonthFmt.timeZone = timeZone
         return dayMonthFmt.string(from: date)
+    }
+
+    /// Month-day + short clock, date first ("Sep 27, 4:02 PM" en_US,
+    /// "27. Sept., 16:02" de_DE); the year joins outside `now`'s year.
+    public static func dayTime(
+        _ date: Date, now: Date = Date(), timeZone: TimeZone = .current,
+        locale: Locale = .current
+    ) -> String {
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = timeZone
+        let sameYear = cal.component(.year, from: date) == cal.component(.year, from: now)
+        lock.lock()
+        dayTimeFmt.locale = locale
+        dayTimeFmt.timeZone = timeZone
+        dayTimeFmt.setLocalizedDateFormatFromTemplate(sameYear ? "MMMd" : "yMMMd")
+        let day = dayTimeFmt.string(from: date)
+        lock.unlock()
+        // Joined with a comma, not ICU's date-time " at " pattern.
+        return "\(day), \(clock(date, timeZone: timeZone, locale: locale))"
     }
 
     /// "yyyy-MM-dd" in `timeZone`.

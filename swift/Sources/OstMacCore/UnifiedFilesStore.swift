@@ -238,8 +238,7 @@ public final class UnifiedFilesStore: ObservableObject {
     /// Core-call failure message (nonisolated: TaskGroup legs call it
     /// off the main actor). Same shape as SharedFilesStore.message.
     nonisolated static func message(for error: Error) -> String {
-        if case CoreCallError.failed(let m) = error { return m }
-        return String(describing: error)
+        FriendlyError.message(for: error)
     }
 
     // MARK: - Load
@@ -345,6 +344,14 @@ public final class UnifiedFilesStore: ObservableObject {
                 !($0.sourceName.isEmpty && $0.files.isEmpty)
             })
             rows = merged
+            if landed > 0, !merged.isEmpty {
+                snapshots?.save(Snapshot(
+                    specs: next,
+                    rows: merged.prefix(Self.snapshotRows).map {
+                        UnifiedFileRow(file: $0.file.withoutDownloadURL, source: $0.source,
+                                       sourceName: $0.sourceName)
+                    }), key: Self.snapshotKey)
+            }
             if landed == 0, let err = firstError {
                 // Every source failed: rows kept above stay on screen
                 // (R12), the error only shows as the quiet refresh notice.
@@ -355,6 +362,29 @@ public final class UnifiedFilesStore: ObservableObject {
                 state = .empty
             }
         }
+    }
+
+    /// NOLOAD: last-good snapshot store (nil = memory only / demo).
+    public var snapshots: SectionCache?
+    static let snapshotKey = "files"
+    /// Rows kept on disk (newest first after merge).
+    static let snapshotRows = 300
+
+    struct Snapshot: Codable {
+        let specs: [UnifiedSourceSpec]
+        let rows: [UnifiedFileRow]
+    }
+
+    /// Paint the last good merged list before any fetch (Retry /
+    /// refresh reuse the cached specs until the live ones land).
+    @discardableResult
+    public func restoreSnapshot() -> Bool {
+        guard rows.isEmpty, let snap = snapshots?.load(Snapshot.self, key: Self.snapshotKey),
+              !snap.rows.isEmpty else { return false }
+        if specs.isEmpty { specs = snap.specs }
+        rows = snap.rows
+        state = .loaded
+        return true
     }
 
     /// Demo mode: canned rows offline (no core). Resets specs to the

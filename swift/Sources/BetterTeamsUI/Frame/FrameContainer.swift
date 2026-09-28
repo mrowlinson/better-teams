@@ -37,7 +37,7 @@ public struct FrameContainer: View {
         } else {
             // Registered by its owner in the same pass (channel tabs load
             // their list first).
-            LoadingPane("Loading\u{2026}")
+            LoadingPane("Loading\u{2026}", rows: false)
         }
     }
 }
@@ -88,7 +88,7 @@ private struct FrameContent: View {
             }
         } else if forced == .loading || !page.committed {
             // First load: labelled, determinate once WebKit reports progress.
-            LoadingPane("Loading \(page.title)\u{2026}", progress: page.progress > 0 ? page.progress : nil)
+            LoadingPane("Loading \(page.title)\u{2026}", progress: page.progress > 0 ? page.progress : nil, rows: false)
                 .background(.background)
         } else if page.state == .loading {
             progressLine

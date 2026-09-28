@@ -5,7 +5,7 @@
 
 /// One Planner board from core `ostmac_planner_plans`:
 /// `{"id","title"}`.
-public struct PlannerPlan: Decodable, Sendable, Identifiable, Equatable {
+public struct PlannerPlan: Codable, Sendable, Identifiable, Equatable {
     public var id: String { planId }
     public let planId: String
     public let title: String
@@ -30,7 +30,7 @@ public struct PlannerPlansResponse: Decodable, Sendable {
 
 /// One board column from core `ostmac_planner_buckets`:
 /// `{"id","plan_id","name"}`.
-public struct PlannerBucket: Decodable, Sendable, Identifiable, Equatable {
+public struct PlannerBucket: Codable, Sendable, Identifiable, Equatable {
     public var id: String { bucketId }
     public let bucketId: String
     public let planId: String
@@ -59,7 +59,7 @@ public struct PlannerBucketsResponse: Decodable, Sendable {
 /// One Planner task from core `ostmac_planner_tasks`: `{"id","plan_id",
 /// "bucket_id","title","percent","completed","priority?","due?","etag",
 /// "assignees"}` (assignees = user ids; absent reads as none).
-public struct PlannerTask: Decodable, Sendable, Identifiable, Equatable {
+public struct PlannerTask: Codable, Sendable, Identifiable, Equatable {
     public var id: String { taskId }
     public let taskId: String
     public let planId: String

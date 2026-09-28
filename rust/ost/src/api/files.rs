@@ -602,7 +602,7 @@ pub async fn download_file_data(
     dest_path: &str,
 ) -> Result<u64> {
     let path = format!("/drives/{}/items/{}/content", drive_id, item_id);
-    let resp = client.graph_get(&path).await?;
+    let resp = client.graph_get_download(&path).await?;
     let bytes = resp.bytes().await.context("Failed to read file content")?;
     std::fs::write(dest_path, &bytes)
         .with_context(|| format!("Failed to write {}", dest_path))?;
@@ -698,7 +698,7 @@ pub async fn download_file_version_data(
         "/drives/{}/items/{}/versions/{}/content",
         drive_id, item_id, version_id
     );
-    let resp = client.graph_get(&path).await?;
+    let resp = client.graph_get_download(&path).await?;
     let bytes = resp.bytes().await.context("Failed to read version content")?;
     std::fs::write(dest_path, &bytes)
         .with_context(|| format!("Failed to write {}", dest_path))?;

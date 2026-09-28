@@ -246,8 +246,11 @@ private struct DemoShareView: View {
     var body: some View {
         ZStack {
             RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.fill.tertiary)
-            DemoSlide()
-                .aspectRatio(16.0 / 9.0, contentMode: .fit)
+            if let slide = DemoSlide.image {
+                Image(nsImage: slide)
+                    .resizable()
+                    .aspectRatio(16.0 / 9.0, contentMode: .fit)
+            }
         }
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay(alignment: .bottomLeading) {
@@ -259,11 +262,13 @@ private struct DemoShareView: View {
 }
 
 /// A sprint-review slide, laid out in slide units (1 = 1/100 of the
-/// slide width) so it scales with the stage.
+/// slide width) on a fixed 16:9 canvas, rendered once to an image that
+/// scales with the stage (no geometry reader, R8).
 private struct DemoSlide: View {
-    private static let accent = Color(red: 0.36, green: 0.35, blue: 0.80)
-    private static let ink = Color(red: 0.14, green: 0.15, blue: 0.19)
-    private static let muted = Color(red: 0.42, green: 0.44, blue: 0.50)
+    /// Canvas width in points; `u` = 1 slide unit.
+    static let width: CGFloat = 1000
+    static let height: CGFloat = width * 9 / 16
+    private let u = DemoSlide.width / 100
     private static let bars: [(String, Double)] = [
         ("W1", 0.42), ("W2", 0.48), ("W3", 0.55), ("W4", 0.61), ("W5", 0.74), ("W6", 0.86),
     ]
@@ -273,65 +278,71 @@ private struct DemoSlide: View {
         ("Rollout", "10% from Oct 14"),
     ]
 
+    /// The slide as a 2x image (rendered once; the demo slide never changes).
+    @MainActor static let image: NSImage? = {
+        let r = ImageRenderer(content: DemoSlide())
+        r.scale = 2
+        return r.nsImage
+    }()
+
     var body: some View {
-        GeometryReader { g in
-            let u = g.size.width / 100
-            ZStack(alignment: .topLeading) {
-                Color.white
-                Rectangle().fill(Self.accent).frame(width: g.size.width, height: u * 0.8)
-                VStack(alignment: .leading, spacing: u * 1.2) {
-                    Text("SPRINT 14 REVIEW")
-                        .font(.system(size: u * 1.5, weight: .semibold))
-                        .kerning(u * 0.15)
-                        .foregroundStyle(Self.accent)
-                    Text("Onboarding refresh")
-                        .font(.system(size: u * 4.2, weight: .bold))
-                        .foregroundStyle(Self.ink)
-                    Text("Shorter setup, faster first message")
-                        .font(.system(size: u * 2, weight: .regular))
-                        .foregroundStyle(Self.muted)
-                    HStack(alignment: .top, spacing: u * 5) {
-                        VStack(alignment: .leading, spacing: u * 2.6) {
-                            ForEach(Self.points, id: \.0) { p in
-                                VStack(alignment: .leading, spacing: u * 0.5) {
-                                    Text(p.0)
-                                        .font(.system(size: u * 1.6))
-                                        .foregroundStyle(Self.muted)
-                                    Text(p.1)
-                                        .font(.system(size: u * 2.8, weight: .semibold))
-                                        .foregroundStyle(Self.ink)
-                                }
+        ZStack(alignment: .topLeading) {
+            Color.white
+            Rectangle().fill(Palette.slideAccent).frame(width: Self.width, height: u * 0.8)
+            VStack(alignment: .leading, spacing: u * 1.2) {
+                Text("SPRINT 14 REVIEW")
+                    .font(AppFont.slide(u * 1.5, .semibold))
+                    .kerning(u * 0.15)
+                    .foregroundStyle(Palette.slideAccent)
+                Text("Onboarding refresh")
+                    .font(AppFont.slide(u * 4.2, .bold))
+                    .foregroundStyle(Palette.slideInk)
+                Text("Shorter setup, faster first message")
+                    .font(AppFont.slide(u * 2))
+                    .foregroundStyle(Palette.slideMuted)
+                HStack(alignment: .top, spacing: u * 5) {
+                    VStack(alignment: .leading, spacing: u * 2.6) {
+                        ForEach(Self.points, id: \.0) { p in
+                            VStack(alignment: .leading, spacing: u * 0.5) {
+                                Text(p.0)
+                                    .font(AppFont.slide(u * 1.6))
+                                    .foregroundStyle(Palette.slideMuted)
+                                Text(p.1)
+                                    .font(AppFont.slide(u * 2.8, .semibold))
+                                    .foregroundStyle(Palette.slideInk)
                             }
                         }
-                        .frame(width: u * 34, alignment: .leading)
-                        chart(u)
                     }
-                    .padding(.top, u * 3)
+                    .frame(width: u * 34, alignment: .leading)
+                    chart(u)
                 }
-                .padding(.horizontal, u * 6)
-                .padding(.top, u * 5.5)
-                Text("Product Team \u{00B7} Engineering standup")
-                    .font(.system(size: u * 1.3))
-                    .foregroundStyle(Self.muted)
-                    .position(x: u * 12, y: g.size.height - u * 3)
+                .padding(.top, u * 3)
             }
+            .padding(.horizontal, u * 6)
+            .padding(.top, u * 5.5)
+            Text("Product Team \u{00B7} Engineering standup")
+                .font(AppFont.slide(u * 1.3))
+                .foregroundStyle(Palette.slideMuted)
+                .position(x: u * 12, y: Self.height - u * 3)
         }
+        .frame(width: Self.width, height: Self.height)
+        .environment(\.colorScheme, .light)
     }
 
     private func chart(_ u: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: u * 1.2) {
             Text("Weekly sign-ups completed")
-                .font(.system(size: u * 1.6, weight: .medium))
-                .foregroundStyle(Self.ink)
+                .font(AppFont.slide(u * 1.6, .medium))
+                .foregroundStyle(Palette.slideInk)
             HStack(alignment: .bottom, spacing: u * 2) {
                 ForEach(Self.bars, id: \.0) { b in
                     VStack(spacing: u * 0.8) {
                         RoundedRectangle(cornerRadius: u * 0.4, style: .continuous)
-                            .fill(b.0 == "W6" ? Self.accent : Self.accent.opacity(0.35))
+                            .fill(b.0 == "W6" ? Palette.slideAccent : Palette.slideAccent.opacity(0.35))
                             .frame(width: u * 4.4, height: u * 22 * b.1)
                         Text(b.0)
-                            .font(.system(size: u * 1.3))
-                            .foregroundStyle(Self.muted)
+                            .font(AppFont.slide(u * 1.3))
+                            .foregroundStyle(Palette.slideMuted)
                     }
                 }
             }
