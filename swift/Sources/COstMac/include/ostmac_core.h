@@ -67,6 +67,18 @@ char *ostmac_team_create(const char *name, const char *description);
 
 // One channel's pinned tabs JSON, read-only: {ok, channel_id, tabs}. Caller frees.
 char *ostmac_tabs(const char *channel_id);
+/* APPHOST: app catalog + token broker. NULL profile = active. Tokens only
+   inside the returned JSON; never log it. */
+char *ostmac_app_catalog_for(const char *profile);
+char *ostmac_app_identity_for(const char *profile);
+char *ostmac_token_for_scope_for(const char *profile, const char *scopes);
+char *ostmac_naa_token_for(const char *profile, const char *client_id,
+                           const char *scopes, const char *origin);
+/* APPHOST-B2: app store (read-only) + personal install (REMOTE WRITE,
+   confirm in the UI first). {ok, sections, apps} / {ok, apps} / {ok}. */
+char *ostmac_app_store_for(const char *profile);
+char *ostmac_app_search_for(const char *profile, const char *query);
+char *ostmac_app_install_for(const char *profile, const char *app_id);
 
 // One team's roster JSON: {ok, team_id, members:[{id, display_name,
 // user_id?, email?, roles, is_owner}]} (requires sign-in). Caller frees.

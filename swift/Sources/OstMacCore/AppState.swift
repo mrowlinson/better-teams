@@ -172,6 +172,12 @@ public final class AppState: ObservableObject {
     public let loginItems = LoginItemStore()
     public let notes = NotesStore()
     public let catchUp: CatchUpStore
+    /// Cross-conversation catch-up behind the Catch Up window (AICATCH):
+    /// mentions flagged on arrival, summaries per `catchUp.mode`.
+    public let catchUpDigest: CatchUpDigestStore
+    /// Demo only: the canned Catch Up transport (evidence holds it to
+    /// show the streaming / updating states). Nil in live builds.
+    public let demoCatchUpTransport: CatchUpDemoTransport?
     /// On-device action-items extraction (f1-actions).
     public let actionItems: ActionItemsStore
     @Published public var openChatID: String?
@@ -309,12 +315,18 @@ public final class AppState: ObservableObject {
             // keychain (re-signed demo builds must not prompt); memory
             // config (never the real provider/legacy key, which the load
             // path deletes); canned transports (no network, no CLI).
-            let canned = CatchUpCannedTransport(stub: DemoData.catchUpSummary)
-            catchUp = CatchUpStore(
+            let canned = CatchUpDemoTransport()
+            demoCatchUpTransport = canned
+            let cu = CatchUpStore(
                 transport: canned, cliTransport: canned, onDeviceTransport: canned,
                 defaults: store, keyStore: CatchUpMemoryKeyStore())
+            catchUp = cu
+            catchUpDigest = CatchUpDigestStore(transport: canned, mode: { [weak cu] in cu?.mode ?? .off })
         } else {
-            catchUp = CatchUpStore()
+            demoCatchUpTransport = nil
+            let cu = CatchUpStore()
+            catchUp = cu
+            catchUpDigest = CatchUpDigestStore(transport: OnDeviceCatchUpTransport(), mode: { [weak cu] in cu?.mode ?? .off })
         }
         if let i = args.firstIndex(of: "--chat"), i + 1 < args.count {
             preselectID = args[i + 1]
@@ -475,6 +487,7 @@ public final class AppState: ObservableObject {
         }
         wireChats()
         wireSearchIndex() // gap-g6g7: history + delete → offline index
+        wireCatchUpDigest() // AICATCH: arrivals → mentions + summaries
         // core-b: file search hits name their conversation from the
         // Files index (Graph drive search reports none).
         filePeople.sourceResolver = { [weak files = unifiedFiles] file in
@@ -674,12 +687,54 @@ public final class AppState: ObservableObject {
         conv.onHistory = { [weak self] chatID, msgs in
             Task { @MainActor [weak self] in
                 self?.indexHistory(chatID: chatID, messages: msgs)
+                guard let self else { return }
+                self.catchUpDigest.ingest(chatID: chatID, chatName: self.displayName(for: chatID), messages: msgs)
             }
         }
         conv.onDelete = { [weak self] chatID, id in
             Task { @MainActor [weak self] in
                 self?.dropIndexed(chatID: chatID, messageID: id)
             }
+        }
+    }
+
+    /// Catch Up digest wiring (AICATCH): identity for mention flags,
+    /// the seed source, and the mode switch (Off stops all work).
+    private func wireCatchUpDigest() {
+        catchUpDigest.ownerMRI = { [weak self] in self?.resolvedOwnerMRI }
+        catchUpDigest.ownerDisplayName = { [weak self] in
+            guard let self else { return "" }
+            if self.isDemo { return DemoData.ownerDisplayName }
+            let own = self.conv.ownDisplayName ?? ""
+            return own.isEmpty ? self.rules.config.owner.displayName : own
+        }
+        catchUpDigest.seed = { [weak self] in self?.catchUpSeed() ?? [] }
+        catchUp.$config
+            .map(\.mode)
+            .removeDuplicates()
+            .sink { [weak self] mode in
+                Task { @MainActor [weak self] in self?.catchUpDigest.modeChanged(mode) }
+            }
+            .store(in: &cancellables)
+    }
+
+    /// What the digest reads when it starts empty: conversations with
+    /// unread messages, from messages already on this Mac (the offline
+    /// index) — never a fetch, so no conversation is opened or marked
+    /// read. Demo: the unread / mention-flagged demo threads.
+    private func catchUpSeed() -> [(chatID: String, chatName: String, messages: [ChatMessage])] {
+        let cap = 10
+        if isDemo {
+            let picks = DemoData.chats.filter {
+                unread.count(for: $0.id) > 0 || DemoData.catchUpChatIDs.contains($0.id)
+            }
+            return (picks.isEmpty ? Array(DemoData.chats.prefix(4)) : Array(picks.prefix(cap))).map {
+                ($0.id, $0.name, DemoData.messages(for: $0.id))
+            }
+        }
+        let wanted = Set(chats.chats.filter { unread.count(for: $0.id) > 0 }.prefix(cap).map(\.id))
+        return localSearch.cachedThreads().filter { wanted.contains($0.chatID) }.map {
+            ($0.chatID, displayName(for: $0.chatID), Array($0.messages.suffix(60)))
         }
     }
 
@@ -1779,6 +1834,9 @@ public final class AppState: ObservableObject {
         // an empty body over real content).
         if !msg.text.isEmpty {
             indexHistory(chatID: msg.chatID, messages: [msg.asChatMessage])
+            // AICATCH: mentions flag now; the summary follows per mode.
+            catchUpDigest.ingest(chatID: msg.chatID, chatName: displayName(for: msg.chatID),
+                                 messages: [msg.asChatMessage])
         }
         // om-nc-delivery: the rules decision below owns the single banner
         // (maybeNotify); no second post here — one event, one banner max.

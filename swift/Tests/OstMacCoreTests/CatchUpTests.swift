@@ -44,9 +44,11 @@ final class CatchUpTests: XCTestCase {
     func testDefaultsOff() {
         let (store, _) = store()
         XCTAssertFalse(store.config.enabled)
-        XCTAssertEqual(store.config.provider, .openCodeCLI)
-        XCTAssertEqual(store.config.baseURL, "https://opencode.ai/zen/v1")
-        XCTAssertEqual(store.config.model, "opencode/muse-spark-1.3-contributor-free")
+        XCTAssertEqual(store.mode, .off)
+        // AICATCH: on-device is the default (no endpoint, no model id).
+        XCTAssertEqual(store.config.provider, .onDevice)
+        XCTAssertEqual(store.config.baseURL, "")
+        XCTAssertEqual(store.config.model, "")
         XCTAssertEqual(store.config.apiKey, "")
         XCTAssertEqual(store.state, .idle)
     }
@@ -187,6 +189,8 @@ final class CatchUpTests: XCTestCase {
         a.adopt(CatchUpConfig(
             provider: .openAICompatible, enabled: true,
             baseURL: "http://x/v1", model: "mm", apiKey: "kk"))
+        // Deprecated providers load only behind the hidden key (AICATCH).
+        defaults.set(true, forKey: CatchUp.deprecatedProvidersKey)
         let b = CatchUpStore(defaults: defaults, keyStore: keys)
         // Lazy key: non-secret config restores at init, the key only
         // after the first load trigger.
@@ -226,6 +230,8 @@ final class CatchUpTests: XCTestCase {
         let keys = CatchUpMemoryKeyStore()
         let a = CatchUpStore(defaults: defaults, keyStore: keys)
         a.selectProvider(.openCodeCLI)
+        // Deprecated providers load only behind the hidden key (AICATCH).
+        defaults.set(true, forKey: CatchUp.deprecatedProvidersKey)
         let b = CatchUpStore(defaults: defaults, keyStore: keys)
         XCTAssertEqual(b.config.provider, .openCodeCLI)
         XCTAssertEqual(b.config.baseURL, "https://opencode.ai/zen/v1")

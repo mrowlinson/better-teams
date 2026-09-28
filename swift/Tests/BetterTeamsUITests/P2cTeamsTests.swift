@@ -36,7 +36,7 @@ final class P2cTeamsTests: XCTestCase {
         let tabs = DemoTeams.tabs(for: DemoTeams.threadedChannelID) + [ChannelTab(id: "x", name: "Legacy")]
         let l = ChannelTabLayout(tabs)
         XCTAssertEqual(l.visibleWeb.map(\.name), ["Roadmap", "Release Board"])
-        XCTAssertEqual(l.overflow.map(\.name), ["Wiki", "Status Page", "Legacy"])
+        XCTAssertEqual(l.overflow.map(\.name), ["Wiki", "Status Page", "Sprint Board", "Legacy"])
         let plain = ChannelTabLayout(DemoTeams.tabs(for: "demo-chan-general"))
         XCTAssertTrue(plain.visibleWeb.isEmpty)
         XCTAssertTrue(plain.overflow.isEmpty)

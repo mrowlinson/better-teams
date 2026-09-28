@@ -4,8 +4,10 @@
 // with mentions tinted and code monospaced on `.fill.quaternary`; reply
 // quote; images in reserved slots (R13); file chips; adaptive/bot cards with native
 // buttons; link preview; reaction chips; edited marker; translation;
-// "Seen by …" on the last own message. Own messages sit on a
-// `.tint.quaternary` card, no tails. Send state is one cue on its own
+// "Seen by …" on the last own message. In chats every message sits on
+// a bubble, no tails: own trailing on the accent wash, others leading on
+// a neutral fill under avatar + name/time (first of a run only);
+// reactions hang under the bubble. Channel posts stay unbubbled. Send state is one cue on its own
 // line under the card (symbol + words), so it never shifts the text.
 // Rows are values: everything that changes height is in
 // `MessageRowData`, whose `extraRevision` feeds the height cache.
@@ -43,10 +45,12 @@ struct MessageRowData {
     let isSaved: Bool
     let ownName: String?
     let chatID: String?
-    /// Own message in a chat: trailing, accent-tinted card, no avatar or
-    /// name (Teams chats). Channel posts and threads keep every post
-    /// leading, own included.
-    var ownTrailing = false
+    /// Chat bubble style (Teams chats): own messages trailing on an
+    /// accent-tinted bubble, no avatar or name; everyone else leading on
+    /// a neutral bubble with avatar + name/time on the first of a run.
+    /// Channel posts and threads keep every post leading, unbubbled.
+    var bubble: RowBubble = .none
+    var ownTrailing: Bool { bubble == .own }
     /// Shared files the message's `<attachment id>` refs resolve to
     /// (file chips); empty until the conversation's files load.
     var docs: [InlineDoc] = []
@@ -73,6 +77,21 @@ struct MessageRowData {
     }
 }
 
+/// Bubble a timeline row sits on.
+enum RowBubble: Equatable {
+    /// Channel posts and thread replies: plain leading rows.
+    case none
+    /// Own chat message: trailing, accent-tinted.
+    case own
+    /// Someone else's chat message: leading, neutral fill.
+    case other
+
+    static func of(_ m: ChatMessage, scope: TimelineScope) -> RowBubble {
+        guard scope == .conversation else { return .none }
+        return m.isOwn ? .own : .other
+    }
+}
+
 /// One body segment: prose (inline code stays inline) or a code block.
 struct BodySegment: Identifiable {
     let id: Int
@@ -87,6 +106,7 @@ struct MessageRowView: View {
     let actions: TimelineActions?
     @Environment(\.contentTextScale) private var scale
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorSchemeContrast) private var contrast
     @Environment(\.windowModel) private var model
 
     private var message: ChatMessage { row.message }
@@ -98,6 +118,7 @@ struct MessageRowView: View {
                 VStack(alignment: .trailing, spacing: 4) {
                     if row.showsHeader { ownHeader }
                     card
+                    bubbleReactions
                     sendStatus
                     if row.receipt.isVisible { receipt }
                 }
@@ -112,6 +133,7 @@ struct MessageRowView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     if row.showsHeader { header }
                     card
+                    bubbleReactions
                     sendStatus
                     if row.receipt.isVisible { receipt }
                 }
@@ -165,7 +187,9 @@ struct MessageRowView: View {
         }
     }
 
-    /// The message content; own chat messages sit on a tinted card.
+    /// The message content. Chat messages sit on a bubble — own on the
+    /// accent tint, others on a neutral fill — with one set of metrics
+    /// (padding, radius, max width) so both read as one design.
     private var card: some View {
         VStack(alignment: .leading, spacing: 6) {
             if let q = row.quote { QuoteBlock(quote: q, jump: { actions?.jump(to: $0) }) }
@@ -174,16 +198,36 @@ struct MessageRowView: View {
             if !row.showsHeader && message.edited && !message.deleted {
                 Text("Edited").font(AppFont.caption(scale)).foregroundStyle(.secondary)
             }
-            if !message.reactions.isEmpty && !message.deleted {
-                ReactionChips(reactions: message.reactions) { actions?.toggleReaction(message, $0) }
-            }
+            if row.bubble == .none { reactions }
         }
-        .padding(row.ownTrailing ? 8 : 0)
+        .padding(.horizontal, row.bubble == .none ? 0 : 12)
+        .padding(.vertical, row.bubble == .none ? 0 : 8)
         .background {
-            if row.ownTrailing {
-                RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Palette.ownCard)
+            switch row.bubble {
+            case .none: EmptyView()
+            case .own: RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Palette.ownCard)
+            case .other: RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Palette.otherCard)
             }
         }
+        .overlay {
+            // Increased contrast: an edge, so the bubble never rests on fill alone.
+            if row.bubble != .none && contrast == .increased {
+                RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(.separator)
+            }
+        }
+    }
+
+    /// Reaction chips: under a chat bubble (Teams), inside a plain post.
+    @ViewBuilder
+    private var reactions: some View {
+        if !message.reactions.isEmpty && !message.deleted {
+            ReactionChips(reactions: message.reactions) { actions?.toggleReaction(message, $0) }
+        }
+    }
+
+    @ViewBuilder
+    private var bubbleReactions: some View {
+        if row.bubble != .none { reactions }
     }
 
     @ViewBuilder

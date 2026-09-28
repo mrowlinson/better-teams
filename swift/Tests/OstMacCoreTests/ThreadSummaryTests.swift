@@ -225,14 +225,15 @@ final class ThreadSummaryTests: XCTestCase {
         await store.summarize(messages: msgs, chatID: "chat-a")
         XCTAssertEqual(runner.calls.count, 1)
         let prompt = runner.calls[0]
-        XCTAssertEqual(prompt, CatchUp.prompt(transcript: CatchUp.transcript(from: msgs)))
+        // AICATCH: on-device reads the chunked transcript (one chunk here).
+        XCTAssertEqual(prompt, CatchUpPrompts.final(transcript: CatchUpChunker.lines(msgs).joined(separator: "\n")))
         XCTAssertTrue(prompt.contains("Megan: ship the picker"))
         XCTAssertTrue(prompt.contains("Tom: on it second line"))
     }
 
     func testPrivacyNoteVariant() {
         let onDevice = CatchUp.privacyNote(for: .onDevice)
-        XCTAssertTrue(onDevice.contains("never leaves this device"))
+        XCTAssertTrue(onDevice.contains("never leave"))
         for provider: CatchUpProvider in [.openAICompatible, .openCodeCLI] {
             XCTAssertEqual(CatchUp.privacyNote(for: provider), CatchUp.privacyNote)
         }

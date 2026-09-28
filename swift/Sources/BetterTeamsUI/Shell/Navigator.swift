@@ -314,11 +314,14 @@ public final class Navigator {
         // The conversation view is shared (Chat, Activity, Search): when
         // it is on screen its items (Call, Catch Up) come with it (§6.2).
         let conv = ConversationToolbar.chatID(model) != nil ? ConversationToolbar.items : []
+        // Catch Up Off (Settings ▸ AI) hides the AI button everywhere.
+        let catchUpOff = (model.app?.catchUp.mode ?? .off) == .off
+        let items = (p.toolbarItems(sel) + (searching ? [] : conv)).filter { !(catchUpOff && $0 == ChatCommands.catchUp) }
         return ToolbarModel.visible(
-            items: p.toolbarItems(sel) + (searching ? [] : conv), layout: searching ? .listDetail : p.layout(sel),
+            items: items, layout: searching ? .listDetail : p.layout(sel),
             hasInspector: hasInspector(s), searching: searching,
             call: model.call?.showsToolbarItem(in: s) ?? false, connection: model.connection,
-            searchItems: searching ? conv : [])
+            searchItems: searching ? conv.filter { !(catchUpOff && $0 == ChatCommands.catchUp) } : [])
     }
 
     /// Pushes the model to AppKit. Public for evidence and the shell's

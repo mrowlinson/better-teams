@@ -76,6 +76,9 @@ final class SettingsOrgTests: XCTestCase {
     func testLegacyOpenCodeMigratesToCLI() {
         let defaults = isolatedDefaults()
         defaults.set("opencode", forKey: "catchup.provider")
+        // AICATCH: without the hidden key a legacy provider loads on-device.
+        XCTAssertEqual(CatchUpStore(defaults: defaults, keyStore: CatchUpMemoryKeyStore()).config.provider, .onDevice)
+        defaults.set(true, forKey: CatchUp.deprecatedProvidersKey)
         let store = CatchUpStore(
             defaults: defaults, keyStore: CatchUpMemoryKeyStore())
         XCTAssertEqual(store.config.provider, .openCodeCLI)

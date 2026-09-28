@@ -50,7 +50,7 @@ struct ConversationInspector: View {
                         case .catchup:
                             if let app = model.app {
                                 CatchUpPane(store: app.catchUp, items: app.actionItems, conv: model.graph.conv,
-                                            chatID: ref)
+                                            digest: app.catchUpDigest, chatID: ref)
                             } else {
                                 EmptyPane("Catch Up Unavailable", systemImage: "sparkles",
                                           message: "Catch Up runs in the active account's window.")
@@ -315,55 +315,101 @@ extension PresenceStatus {
 }
 
 /// Catch Up: runs on request (toolbar Catch Up or the button), never on
-/// appear (R24). Every failure shows its reason and Try Again.
+/// appear (R24). Every failure shows its reason and Try Again. Mentions
+/// of the user / everyone lead every summary (deterministic, from the
+/// messages' mention entities); a re-run keeps the old summary on screen
+/// with a small progress indicator while the new one streams in.
 struct CatchUpPane: View {
     @ObservedObject var store: CatchUpStore
     @ObservedObject var items: ActionItemsStore
     let conv: ConversationStore
+    let digest: CatchUpDigestStore
     let chatID: String
 
     var body: some View {
-        switch store.state {
+        // State for another conversation reads idle here (no stale text).
+        switch store.stateChatID == chatID ? store.state : .idle {
         case .idle:
-            // Idle names what will run (§6.2 provider state); nothing to
-            // summarize = nothing to run.
             EmptyPane("Catch Up", systemImage: "sparkles", message: idleMessage) {
                 Button("Catch Up") { run() }
                     .buttonStyle(.borderedProminent)
-                    .disabled(!hasMessages)
+                    .disabled(!hasMessages || store.mode == .off)
             }
         case .loading:
-            ProgressView("Summarizing…").frame(maxWidth: .infinity, maxHeight: .infinity)
+            if let text = store.partial ?? store.previousText {
+                summary(text, updating: true)
+            } else {
+                LoadingPane("Summarizing\u{2026}")
+            }
         case .failed(let message):
-            EmptyPane(store.lastError == .off ? "Catch Up Is Off" : "Couldn't Catch Up",
+            EmptyPane(store.lastError == .off ? "Catch Up Is Off" : "Couldn\u{2019}t Catch Up",
                       systemImage: store.lastError == .off ? "sparkles" : "exclamationmark.triangle",
-                      message: store.lastError == .off
-                          ? "Turn on Catch Up and choose a provider in Settings ▸ AI." : message) {
-                Button("Try Again") { run() }
+                      message: store.lastError == .off ? CatchUpError.off.message : message) {
+                if store.lastError != .off { Button("Try Again") { run() } }
             }
-        case .loaded(let summary):
-            Form {
-                Section("Summary") {
-                    Text(summary).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
-                }
-                Section("Action Items") { actionItems }
-                Section {
-                    Text("Provider: \(store.config.provider.title)").foregroundStyle(.secondary)
-                    Button("Summarize Again") { run() }
-                }
-            }
-            .formStyle(.grouped)
+        case .loaded(let text):
+            summary(text, updating: false)
         }
     }
 
+    private func summary(_ text: String, updating: Bool) -> some View {
+        let parsed = CatchUpSummaryParser.parse(text)
+        let flagged = mentions
+        return Form {
+            if !flagged.isEmpty {
+                Section("Mentions You") {
+                    ForEach(flagged) { m in
+                        CatchUpMentionRow(mention: m, chatName: nil) { jump(m) }
+                    }
+                }
+            }
+            Section("Summary") {
+                if parsed.isEmpty {
+                    Text(text).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                } else {
+                    CatchUpSummaryBody(parsed: parsed, includeActions: false)
+                }
+            }
+            Section("Action Items") {
+                if parsed.actions.isEmpty {
+                    actionItems(updating: updating)
+                } else {
+                    ForEach(parsed.actionLines) { a in
+                        Text(a.text).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+            Section {
+                Button("Summarize Again") { run() }
+                    .disabled(updating)
+            }
+        }
+        .formStyle(.grouped)
+        .refreshStatus(updating, label: "Updating summary")
+    }
+
+    /// Mentions in the loaded conversation, newest first.
+    private var mentions: [CatchUpMention] {
+        guard conv.chatID == chatID else { return [] }
+        return CatchUpMentions.flag(conv.messages, chatID: chatID, chatName: "",
+                                    ownerMRI: digest.ownerMRI(), ownerDisplayName: digest.ownerDisplayName())
+            .reversed()
+    }
+
+    private func jump(_ m: CatchUpMention) {
+        conv.seek(messageID: m.messageID)
+    }
+
+    /// Mid-summary the button waits: the summary may still bring its own.
     @ViewBuilder
-    private var actionItems: some View {
+    private func actionItems(updating: Bool) -> some View {
         switch items.state {
         case .idle:
             Button("Find Action Items") {
                 let msgs = conv.messages
                 Task { await items.extractFromMessages(msgs, chatID: chatID) }
             }
+            .disabled(updating)
         case .loading:
             ProgressView().controlSize(.small)
         case .loaded(let list):
@@ -389,9 +435,84 @@ struct CatchUpPane: View {
     }
 
     private var idleMessage: String {
+        guard store.mode != .off else { return CatchUpError.off.message }
         guard hasMessages else { return "There are no messages to summarize yet." }
-        guard store.config.enabled else { return "Catch Up is off. Turn it on and choose a provider in Settings ▸ AI." }
-        return "Summarize this conversation and list its action items with \(store.config.provider.title)."
+        return "Summarize this conversation and list its action items."
+    }
+}
+
+/// Parsed catch-up text: the summary sentence, then its points (and,
+/// when asked, its action items). Shared by the inspector and window.
+struct CatchUpSummaryBody: View {
+    let parsed: ParsedCatchUp
+    let includeActions: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if !parsed.summary.isEmpty {
+                Text(parsed.summary)
+            }
+            ForEach(parsed.pointLines) { p in
+                bullet(p.text)
+            }
+            if includeActions, !parsed.actions.isEmpty {
+                Text("Action Items").font(.subheadline.weight(.semibold)).padding(.top, 2)
+                ForEach(parsed.actionLines) { a in
+                    bullet(a.text)
+                }
+            }
+        }
+        .textSelection(.enabled)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func bullet(_ s: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Text("\u{2022}").foregroundStyle(.secondary)
+            Text(s)
+        }
+    }
+}
+
+/// One flagged mention: who, where (optional), when, what; click jumps.
+struct CatchUpMentionRow: View {
+    let mention: CatchUpMention
+    /// The conversation's name under the sender (the window); nil hides it
+    /// (the inspector, already in that conversation).
+    let chatName: String?
+    let open: () -> Void
+
+    var body: some View {
+        Button(action: open) {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(mention.sender).fontWeight(.semibold)
+                    if mention.kind == .everyone {
+                        Text("@everyone").font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 8)
+                    Text(ChatMessage.shortTime(mention.timestamp)).font(.caption).foregroundStyle(.secondary)
+                }
+                if let chatName, !chatName.isEmpty {
+                    Text(chatName).font(.caption).foregroundStyle(.secondary)
+                }
+                Text(mention.preview).lineLimit(2).foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("Show this message")
+        .accessibilityLabel(accessibilityText)
+        .accessibilityHint("Shows this message in its conversation")
+    }
+
+    /// VoiceOver: who mentioned whom, where, when, then the message.
+    private var accessibilityText: String {
+        var parts = ["\(mention.sender) mentioned \(mention.kind == .everyone ? "everyone" : "you")"]
+        if let chatName, !chatName.isEmpty { parts.append("in \(chatName)") }
+        parts.append(ChatMessage.shortTime(mention.timestamp))
+        return parts.joined(separator: ", ") + ": " + mention.preview
     }
 }
 

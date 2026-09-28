@@ -296,6 +296,14 @@ public final class ShellWindowController: NSWindowController, NSWindowDelegate, 
         app.$feedState
             .sink { [weak self] feed in self?.feedChanged(feed) }
             .store(in: &cancellables)
+        // Settings ▸ AI: Catch Up Off hides the AI button (AICATCH).
+        app.catchUp.$config
+            .map(\.mode)
+            .removeDuplicates()
+            .dropFirst()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.navigator.refreshToolbar() }
+            .store(in: &cancellables)
         app.$signedIn
             .sink { [weak self] signed in self?.signedInChanged(signed) }
             .store(in: &cancellables)

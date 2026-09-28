@@ -37,6 +37,8 @@ struct WireTabConfig {
     content_url: Option<String>,
     #[serde(rename = "websiteUrl")]
     website_url: Option<String>,
+    #[serde(rename = "entityId")]
+    entity_id: Option<String>,
 }
 
 // -- Public model --
@@ -50,13 +52,15 @@ pub struct TabInfo {
     pub app_id: Option<String>,
     pub content_url: Option<String>,
     pub website_url: Option<String>,
+    /// Tab configuration `entityId` (native TeamsJS hosting context).
+    pub entity_id: Option<String>,
 }
 
 fn tab_from_wire(tab: WireTab) -> TabInfo {
     let name = tab.display_name.unwrap_or_else(|| tab.id.clone());
-    let (content_url, website_url) = match tab.configuration {
-        Some(c) => (c.content_url, c.website_url.or(tab.web_url)),
-        None => (None, tab.web_url),
+    let (content_url, website_url, entity_id) = match tab.configuration {
+        Some(c) => (c.content_url, c.website_url.or(tab.web_url), c.entity_id),
+        None => (None, tab.web_url, None),
     };
     TabInfo {
         id: tab.id,
@@ -64,6 +68,7 @@ fn tab_from_wire(tab: WireTab) -> TabInfo {
         app_id: tab.teams_app_id,
         content_url,
         website_url,
+        entity_id,
     }
 }
 

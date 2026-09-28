@@ -1,5 +1,14 @@
 // CatchUp.swift — om-catchup lane: opt-in AI thread catch-up.
 //
+// AICATCH (2026-09-28): Apple's on-device model is the default and the
+// ONLY engine the UI shows. One setting, `CatchUpMode` (Off / When I
+// click the AI button / Always up to date). The OpenCode CLI and
+// OpenAI-compatible providers are DEPRECATED — kept compiled and
+// tested for a possible return, reachable only when the hidden
+// defaults key `BetterTeams.deprecatedOpencodeCatchUp` is true (see
+// `CatchUp.deprecatedProvidersKey`). With the key off, a stored legacy
+// provider loads as on-device and Settings shows no provider choice.
+//
 // IDEA-only inspiration from Teamsly (AGPL): a summarize / TL;DR /
 // action-items entry point on long threads. No Teamsly code is used here.
 //
@@ -55,6 +64,13 @@ import Combine
 // MARK: - Pure helpers
 
 public enum CatchUp {
+    /// Hidden defaults key (Bool): true re-enables the deprecated
+    /// provider picker (OpenCode CLI, OpenAI-compatible) in Settings ▸
+    /// AI and honors a stored legacy provider. Deprecated: kept for
+    /// possible return. `defaults write <bundle-id>
+    /// BetterTeams.deprecatedOpencodeCatchUp -bool YES`.
+    public static let deprecatedProvidersKey = "BetterTeams.deprecatedOpencodeCatchUp"
+
     /// Threads this long (or longer) get the Catch-up entry point.
     public static let threshold = 20
     /// Max transcript chars sent to the model; overflow drops the head.
@@ -64,7 +80,7 @@ public enum CatchUp {
         "Catch-up sends this thread's text to your configured AI endpoint. It leaves this machine."
 
     public static let onDevicePrivacyNote =
-        "On-device catch-up summarizes on this Mac with Apple Intelligence. Your thread never leaves this device."
+        "Catch Up summarizes on this Mac. Your conversations never leave it."
 
     /// Sheet + Settings privacy line for the active provider.
     public static func privacyNote(for provider: CatchUpProvider) -> String {
@@ -154,6 +170,9 @@ public enum CatchUp {
 
 /// AI endpoint provider. Switching preloads that provider's base URL
 /// + model (see `CatchUpStore.selectProvider`).
+/// `.onDevice` is the product. `.openCodeCLI` and `.openAICompatible`
+/// are Deprecated: kept for possible return — hidden unless
+/// `CatchUp.deprecatedProvidersKey` is set.
 public enum CatchUpProvider: String, Sendable, Equatable, CaseIterable, Identifiable {
     case openAICompatible = "openai-compatible"
     case openCodeCLI = "opencode-cli"
@@ -200,27 +219,38 @@ public enum CatchUpProvider: String, Sendable, Equatable, CaseIterable, Identifi
     }
 }
 
-/// BYO credentials. `enabled` defaults false (OFF); key starts empty.
-/// The key is in-memory only here — persisted in the keychain, never
-/// in UserDefaults (see `CatchUpStore.save`).
+/// Catch Up config. `mode` defaults `.off`; the provider defaults to
+/// on-device (no URL, model, or key). BYO credentials only matter to
+/// the deprecated providers. The key is in-memory only here —
+/// persisted in the keychain, never in UserDefaults (see
+/// `CatchUpStore.save`).
 public struct CatchUpConfig: Sendable, Equatable {
     public var provider: CatchUpProvider
-    public var enabled: Bool
+    public var mode: CatchUpMode
     public var baseURL: String
     public var model: String
     public var apiKey: String
 
+    /// Catch Up on at all (any mode but `.off`). Setting true from
+    /// `.off` picks on-click; setting false turns it off.
+    public var enabled: Bool {
+        get { mode != .off }
+        set { mode = newValue ? (mode == .off ? .onClick : mode) : .off }
+    }
+
     public init(
-        provider: CatchUpProvider = .openCodeCLI,
+        provider: CatchUpProvider = .onDevice,
         enabled: Bool = false,
-        baseURL: String = "https://opencode.ai/zen/v1",
-        model: String = "opencode/muse-spark-1.3-contributor-free",
+        mode: CatchUpMode? = nil,
+        baseURL: String? = nil,
+        model: String? = nil,
         apiKey: String = ""
     ) {
         self.provider = provider
-        self.enabled = enabled
-        self.baseURL = baseURL
-        self.model = model
+        self.mode = mode ?? (enabled ? .onClick : .off)
+        // Unset endpoint fields follow the provider (on-device: none).
+        self.baseURL = baseURL ?? provider.defaultBaseURL
+        self.model = model ?? provider.defaultModel
         self.apiKey = apiKey
     }
 
@@ -259,7 +289,7 @@ public enum CatchUpError: Error, Sendable, Equatable {
 
     public var message: String {
         switch self {
-        case .off: "Catch-up is off. Enable it in Settings first."
+        case .off: "Catch Up is off. Turn it on in Settings ▸ AI."
         case .missingKey: "No API key. Add your key in Settings first."
         case .badURL: "Bad base URL. Check it in Settings."
         case .empty: "The endpoint returned an empty summary."
@@ -269,7 +299,7 @@ public enum CatchUpError: Error, Sendable, Equatable {
         case .cliAuthExpired: "OpenCode CLI login expired. Run `opencode auth login` and retry."
         case .cliTimeout: "OpenCode CLI timed out. Retry."
         case .cliBadOutput: "OpenCode CLI returned unreadable output. Retry."
-        case .onDeviceUnsupported: "On-device summaries need macOS 26 or later on an Apple Silicon Mac with Apple Intelligence. This Mac can't run the on-device model — pick a cloud provider instead."
+        case .onDeviceUnsupported: "Catch Up needs an Apple silicon Mac with Apple Intelligence. This Mac can't run it."
         case let .onDeviceUnavailable(guidance): guidance
         case let .onDeviceFailed(detail): "On-device summary failed: \(detail)"
         }
@@ -370,6 +400,8 @@ public protocol CatchUpTransport: Sendable {
     func complete(baseURL: String, apiKey: String, model: String, prompt: String) async throws -> String
 }
 
+/// Deprecated: kept for possible return (OpenAI-compatible provider,
+/// hidden behind `CatchUp.deprecatedProvidersKey`).
 /// Live transport: POST {baseURL}/chat/completions, Bearer key.
 public struct URLSessionCatchUpTransport: CatchUpTransport {
     public init() {}
@@ -430,8 +462,34 @@ public final class CatchUpCannedTransport: CatchUpTransport, @unchecked Sendable
     }
 }
 
+/// Demo transport (`--demo`): a canned summary per demo conversation
+/// (`DemoData.catchUpSummaries`, matched on the prompt's transcript).
+/// Evidence seam: while `holding`, a run streams `holdPartial` (when
+/// set) and never finishes, so captures show the streaming and
+/// updating states. Never a model, network or CLI.
+public final class CatchUpDemoTransport: CatchUpStreamingTransport, @unchecked Sendable {
+    public var holding = false
+    public var holdPartial: String?
+
+    public init() {}
+
+    public func complete(baseURL _: String, apiKey _: String, model _: String, prompt: String) async throws -> String {
+        try await stream(prompt: prompt, maxTokens: nil) { _ in }
+    }
+
+    public func stream(prompt: String, maxTokens _: Int?, onPartial: @escaping @Sendable (String) -> Void) async throws -> String {
+        if holding {
+            if let holdPartial { onPartial(holdPartial) }
+            try await Task.sleep(for: .seconds(3600))
+        }
+        return DemoData.catchUpSummaries.first { prompt.contains($0.marker) }?.text ?? DemoData.catchUpSummary
+    }
+}
+
 // MARK: - OpenCode CLI path
 
+/// Deprecated: kept for possible return (OpenCode CLI provider, hidden
+/// behind `CatchUp.deprecatedProvidersKey`).
 /// Pure CLI helpers: argv shape, auth-failure sniffing, JSON output
 /// parsing. `opencode run --format json` emits JSON (one object per
 /// line for streaming events); the summary is the last assistant
@@ -680,6 +738,8 @@ public final class CatchUpMockCLIRunner: CatchUpCLIRunner, @unchecked Sendable {
     }
 }
 
+/// Deprecated: kept for possible return (hidden behind
+/// `CatchUp.deprecatedProvidersKey`; on-device is the product).
 /// CLI transport: shells out via the injected runner, maps the four
 /// CLI modes (missing / auth-expiry / timeout / bad output) to
 /// CatchUpError, surfaces everything — never silent.
@@ -760,7 +820,10 @@ public final class CatchUpStore: ObservableObject {
 
     enum Keys {
         static let provider = "catchup.provider"
+        /// Pre-AICATCH on/off flag: still written (older builds read
+        /// it); read only when `mode` is absent (true → on-click).
         static let enabled = "catchup.enabled"
+        static let mode = "catchup.mode"
         static let baseURL = "catchup.baseURL"
         static let model = "catchup.model"
         /// Legacy: the pre-keychain lane kept the key here. Read
@@ -774,6 +837,26 @@ public final class CatchUpStore: ObservableObject {
     }
 
     @Published public private(set) var state: State = .idle
+
+    /// Conversation the current `state` belongs to (views show idle for
+    /// any other chat, so a chat switch never shows a stale summary).
+    @Published public private(set) var stateChatID: String?
+
+    /// Streaming text of the summary being written (cumulative), nil
+    /// when nothing streams. The previous summary for the same chat
+    /// stays in `previousText` while a new one runs (no blank pane).
+    @Published public private(set) var partial: String?
+    @Published public private(set) var previousText: String?
+
+    /// True when the hidden deprecated-provider key is set (Settings
+    /// shows the legacy picker; a stored legacy provider is honored).
+    public let deprecatedProvidersEnabled: Bool
+
+    /// The one Catch Up setting.
+    public var mode: CatchUpMode {
+        get { config.mode }
+        set { config.mode = newValue }
+    }
 
     /// Structured form of the current `.failed` detail (nil unless the
     /// last summarize ended in a known `CatchUpError`). The sheet uses
@@ -817,14 +900,24 @@ public final class CatchUpStore: ObservableObject {
         let keys = keyStore ?? CatchUpSystemKeychain()
         self.keys = keys
         var cfg = CatchUpConfig()
-        if let p = defaults.string(forKey: Keys.provider),
-           let provider = CatchUpProvider.stored(rawValue: p)
-        {
-            cfg.provider = provider
+        let legacy = defaults.bool(forKey: CatchUp.deprecatedProvidersKey)
+        deprecatedProvidersEnabled = legacy
+        // Deprecated providers load only behind the hidden key; without
+        // it every install runs on-device (no URL/model/key in play).
+        if legacy {
+            if let p = defaults.string(forKey: Keys.provider),
+               let provider = CatchUpProvider.stored(rawValue: p)
+            {
+                cfg.provider = provider
+            }
+            if let b = defaults.string(forKey: Keys.baseURL), !b.isEmpty { cfg.baseURL = b }
+            if let m = defaults.string(forKey: Keys.model), !m.isEmpty { cfg.model = m }
         }
-        if defaults.bool(forKey: Keys.enabled) { cfg.enabled = true }
-        if let b = defaults.string(forKey: Keys.baseURL), !b.isEmpty { cfg.baseURL = b }
-        if let m = defaults.string(forKey: Keys.model), !m.isEmpty { cfg.model = m }
+        if let raw = defaults.string(forKey: Keys.mode), let mode = CatchUpMode(rawValue: raw) {
+            cfg.mode = mode
+        } else if defaults.bool(forKey: Keys.enabled) {
+            cfg.mode = .onClick
+        }
         // No key-store touch here: the key loads lazily via
         // ensureKeyLoaded (first key-needing run, or Settings open).
         _config = Published(initialValue: cfg)
@@ -843,6 +936,14 @@ public final class CatchUpStore: ObservableObject {
     /// per-thread cache first. Every failure lands in `.failed` with
     /// a Retry path — never stuck in `.loading`.
     public func summarize(messages: [ChatMessage], chatID: String? = nil) async {
+        if stateChatID != chatID {
+            previousText = nil
+        } else if case let .loaded(text) = state {
+            previousText = text
+        }
+        stateChatID = chatID
+        partial = nil
+        defer { partial = nil }
         guard config.enabled else {
             lastError = .off
             state = .failed(CatchUpError.off.message)
@@ -876,15 +977,24 @@ public final class CatchUpStore: ObservableObject {
             return
         }
         state = .loading
+        generation += 1
+        let gen = generation
         do {
             // Exclusive routing: CLI-selected => CLI ONLY, on-device
             // => local model ONLY (never HTTP, never a cloud fallback).
-            let active: any CatchUpTransport =
-                config.provider == .openCodeCLI ? cliTransport
-                    : config.provider == .onDevice ? onDeviceTransport : transport
-            let text = try await active.complete(
-                baseURL: config.baseURL, apiKey: config.apiKey,
-                model: config.model, prompt: CatchUp.prompt(transcript: transcript))
+            let text: String
+            if config.provider == .onDevice {
+                // 4096-token window: chunked map-reduce, streamed.
+                let engine = OnDeviceCatchUpEngine(transport: onDeviceTransport)
+                text = try await engine.summarize(messages: messages) { [weak self] snapshot in
+                    Task { @MainActor [weak self] in self?.applyPartial(snapshot, gen: gen) }
+                }
+            } else {
+                let active: any CatchUpTransport = config.provider == .openCodeCLI ? cliTransport : transport
+                text = try await active.complete(
+                    baseURL: config.baseURL, apiKey: config.apiKey,
+                    model: config.model, prompt: CatchUp.prompt(transcript: transcript))
+            }
             if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 lastError = .empty
                 state = .failed(CatchUpError.empty.message)
@@ -908,6 +1018,19 @@ public final class CatchUpStore: ObservableObject {
     public func reset() {
         state = .idle
         lastError = nil
+        stateChatID = nil
+        partial = nil
+        previousText = nil
+    }
+
+    private var generation = 0
+
+    /// Streamed snapshot → `partial`, only for the run still in flight
+    /// and never shorter than what is shown (hops can reorder).
+    private func applyPartial(_ text: String, gen: Int) {
+        guard gen == generation, state == .loading else { return }
+        if let p = partial, text.count < p.count { return }
+        partial = text
     }
 
     /// Re-check whether the `opencode` binary resolves (Settings
@@ -949,6 +1072,7 @@ public final class CatchUpStore: ObservableObject {
     private func save() {
         defaults.set(config.provider.rawValue, forKey: Keys.provider)
         defaults.set(config.enabled, forKey: Keys.enabled)
+        defaults.set(config.mode.rawValue, forKey: Keys.mode)
         defaults.set(config.baseURL, forKey: Keys.baseURL)
         defaults.set(config.model, forKey: Keys.model)
         // Key → key store only. Never UserDefaults (see the legacy

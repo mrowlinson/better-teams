@@ -177,7 +177,7 @@ enum CallEvidence {
         return found.sorted { $0.1.minX < $1.1.minX }.map { "\($0.0)@\(Int($0.1.minX))+\(Int($0.1.width))" }
     }
 
-    private static func focus(_ w: NSWindow?, over wc: ShellWindowController) {
+    static func focus(_ w: NSWindow?, over wc: ShellWindowController) {
         guard let w, wc.model.options.evidence else { return }
         wc.window?.orderOut(nil)
         EvidenceHarness.primaryWindow = w

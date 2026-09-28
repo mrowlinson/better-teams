@@ -29,6 +29,7 @@ use ost::auth::TokenStore;
 use ost::config::Config;
 use serde_json::json;
 
+pub mod apphost;
 pub mod av;
 pub mod browser_auth;
 pub mod call_roster;
@@ -191,6 +192,7 @@ pub fn sign_out_json_for(profile: &str) -> String {
     // Swift signOut drops them (RustCore.signOut defer).
     browser_auth::clear_browser_sessions_for(&target);
     whoami_cache_clear_for(&target);
+    ost::auth::oauth::clear_grants_for(&target);
     let run = || -> Result<(), String> {
         let mut cfg =
             Config::load_cached_for(&target).map_err(|e| e.to_string())?;
@@ -530,6 +532,7 @@ fn tab_to_json(t: &ost::api::TabInfo) -> serde_json::Value {
         "app_id": t.app_id,
         "content_url": t.content_url,
         "website_url": t.website_url,
+        "entity_id": t.entity_id,
     })
 }
 
@@ -4526,6 +4529,7 @@ mod tests {
             app_id: Some("com.example.dashboard".to_string()),
             content_url: Some("https://example.com/app".to_string()),
             website_url: None,
+            entity_id: None,
         };
         let v = tab_to_json(&t);
         assert_eq!(v["id"], "tab-1");

@@ -576,7 +576,7 @@ final class TimelineViewController: NSViewController, NSTableViewDataSource, NST
                 isPinned: pins?.isPinned(chatID: chat, messageID: id) ?? false,
                 isSaved: saves?.isSaved(chatID: chat, messageID: id) ?? false,
                 ownName: ownName, chatID: chat,
-                ownTrailing: scope == .conversation && m.isOwn,
+                bubble: RowBubble.of(m, scope: scope),
                 docs: chips)
             data[id] = row
             return .message(id: id, revision: TimelineRowState.combine(rev, row.extraRevision), showsHeader: header)
@@ -898,6 +898,31 @@ final class TimelineViewController: NSViewController, NSTableViewDataSource, NST
     }
 
     func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool { false }
+
+    /// Evidence captures only (demo): a bottom-pinned timeline that
+    /// overflows usually cuts through its top row, leaving a sender name
+    /// half under the pane header. Scroll up to the start of that run
+    /// (its header row or day separator) so the top shows a whole header.
+    func evidenceRevealTopHeader() {
+        let b = scroll.contentView.bounds
+        guard !items.isEmpty, table.frame.height > b.height else { return }
+        let top = b.minY + scroll.contentInsets.top
+        let cut = table.row(at: NSPoint(x: 1, y: top))
+        guard cut >= 0, table.rect(ofRow: cut).minY < top - 0.5 else { return }
+        let start = (0...cut).reversed().first { i in
+            switch items[i] {
+            case .message(_, _, let header): header
+            case .daySeparator: true
+            default: false
+            }
+        } ?? cut
+        let y = table.rect(ofRow: start).minY - scroll.contentInsets.top
+        // A deliberate scroll, not a resize: no re-pin to the bottom.
+        lastClipSize = b.size
+        pinnedToBottom = false
+        scroll.contentView.scroll(to: NSPoint(x: 0, y: y))
+        scroll.reflectScrolledClipView(scroll.contentView)
+    }
 
     /// Evidence geometry (§11.4): rows whose laid-out height differs
     /// from a fresh measure at the current width (stale = clip/overlap),

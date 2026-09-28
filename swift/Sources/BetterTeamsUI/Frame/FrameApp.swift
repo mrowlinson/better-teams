@@ -13,16 +13,90 @@ public enum FrameLaunch: Equatable, Sendable {
     case direct(URL)
     /// Opens in the default browser (the only "not otherwise possible" case).
     case external(URL)
+    /// A Teams app with a manifest, hosted natively over TeamsJS (no
+    /// Teams web shell); `fallback` is its Teams-shell page.
+    case teamsApp(TeamsAppLaunch)
 
     public var url: URL {
         switch self {
         case .teamsHosted(let u), .direct(let u), .external(let u): u
+        case .teamsApp(let l): l.fallback
         }
     }
 
     public var runsInApp: Bool {
         if case .external = self { return false }
         return true
+    }
+}
+
+/// How a manifest app opens in the native TeamsJS host (APPHOST).
+public struct TeamsAppLaunch: Equatable, Sendable {
+    public var appID: String
+    public var entityID: String
+    /// Manifest contentUrl, placeholders unexpanded (`{tid}`, `{locale}`…).
+    public var contentTemplate: String
+    /// Teams-shell page for the same tab (per-app fallback).
+    public var fallback: URL
+    /// `webApplicationInfo`: SSO token audience for getAuthToken.
+    public var resource: String?
+    public var webAppID: String?
+    public var validDomains: [String]
+    public var transport: TeamsJSTransport
+    /// Demo: local sample page, no network.
+    public var demoHTML: String?
+    /// Channel tab context (APPHOST-B2): nil for personal apps.
+    public var channel: TeamsAppChannelContext?
+
+    public init(appID: String, entityID: String, contentTemplate: String, fallback: URL,
+                resource: String? = nil, webAppID: String? = nil, validDomains: [String] = [],
+                transport: TeamsJSTransport = .frameless, demoHTML: String? = nil,
+                channel: TeamsAppChannelContext? = nil) {
+        self.channel = channel
+        self.appID = appID
+        self.entityID = entityID
+        self.contentTemplate = contentTemplate
+        self.fallback = fallback
+        self.resource = resource
+        self.webAppID = webAppID
+        self.validDomains = validDomains
+        self.transport = transport
+        self.demoHTML = demoHTML
+    }
+
+    /// From a catalog manifest: its first personal static tab. Nil when
+    /// the app has no hostable personal page.
+    public init?(manifest m: TeamsAppManifest) {
+        guard let tab = m.personalTab, let content = tab.contentUrl else { return nil }
+        self.init(appID: m.id, entityID: tab.entityId, contentTemplate: content,
+                  fallback: Self.teamsEntityURL(appID: m.id, entityID: tab.entityId),
+                  resource: m.webApplicationInfo?.resource, webAppID: m.webApplicationInfo?.id,
+                  validDomains: m.validDomains)
+    }
+
+    /// `https://teams.microsoft.com/_#/l/entity/<app>/<entity>`: the
+    /// app's personal tab inside Teams on the web.
+    public static func teamsEntityURL(appID: String, entityID: String) -> URL {
+        let enc = { (s: String) in s.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed.subtracting(["/"])) ?? s }
+        return FramePolicy.hashRoute(URL(string: "https://teams.microsoft.com/l/entity/\(enc(appID))/\(enc(entityID))")!)
+    }
+}
+
+/// Team/channel a configurable tab runs in (TeamsJS context
+/// `teamId`/`channelId`/`groupId`, placeholders `{teamId}`/`{channelId}`).
+public struct TeamsAppChannelContext: Equatable, Sendable {
+    public var teamID: String
+    public var channelID: String
+    public var groupID: String?
+    public var teamName: String
+    public var channelName: String
+
+    public init(teamID: String, channelID: String, groupID: String? = nil, teamName: String, channelName: String) {
+        self.teamID = teamID
+        self.channelID = channelID
+        self.groupID = groupID
+        self.teamName = teamName
+        self.channelName = channelName
     }
 }
 

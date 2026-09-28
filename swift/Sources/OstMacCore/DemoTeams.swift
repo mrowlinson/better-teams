@@ -108,6 +108,10 @@ public enum DemoTeams {
         return TeamCreateResponse(ok: true, team: team)
     }
 
+    /// The demo channel tab served by a catalog app (native TeamsJS host).
+    public static let demoAppTabID = "demo-tab-sprint"
+    public static let demoAppTabAppID = "demo-app-sprintboard"
+
     /// Channel tabs (Posts, Files, Notes, then web tabs).
     public static func tabs(for channelID: String) -> [ChannelTab] {
         var out = [
@@ -121,6 +125,10 @@ public enum DemoTeams {
             ChannelTab(id: "demo-tab-board", name: "Release Board", contentURL: "https://example.com/board"),
             ChannelTab(id: "demo-tab-wiki", name: "Wiki", websiteURL: "https://example.com/wiki"),
             ChannelTab(id: "demo-tab-status", name: "Status Page", websiteURL: "https://example.com/status"),
+            // A catalog app's configurable tab: hosted natively (APPHOST-B2).
+            ChannelTab(id: demoAppTabID, name: "Sprint Board", appID: demoAppTabAppID,
+                       contentURL: "https://sprintboard.northwind.example/tab?team={teamId}&channel={channelId}",
+                       entityID: "sprint-board-shipping"),
         ]
         return out
     }

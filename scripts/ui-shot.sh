@@ -38,6 +38,8 @@
 #   apps?state=loading|error|empty     channel scan: scanning / failed / none
 #   apps?sheet=customizeTabBar&pins=6  Customize Tab Bar sheet
 #   apps?sheet=addWebLink              Add Web Link sheet
+#   apps/detail?id=<appID>             Apps store detail (APPHOST-B2)
+#   apps/store?category=<name>         Apps store category
 #   app/web-demo                       web app in-window (transient rail item)
 #   app/web-demo-1?pins=6              pinned web app in-window
 #   app/web-demo?pins=8                pins overflow into More (min height)
@@ -141,6 +143,14 @@
 #   app/recaps/demo-rec-1?inspector=1            player + transcript turns + Action Items
 #   app/recaps?state=empty|loading|error         No Recaps / loading / You're Offline
 #   chat/demo-rich?tab=notes                     conversation Notes tab (page list, page, Append)
+#
+# Demo routes, Catch Up (CATCHQA; canned summaries, never the live model):
+#   <any route>?catchup=off|onclick|always       the Catch Up setting (off hides the AI button)
+#   settings/ai?catchup=onclick&ai=ready|unsupported|disabled|downloading   Catch Up pane + status row
+#   chat/demo-3?inspector=catchup&catchup=onclick&summary=loaded|streaming|updating
+#                                                inspector: mentions first, then summary states
+#   chat/demo-3?catchup=always&window=catchup[&digest=updating]
+#                                                Catch Up window: mentions + several chats
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 [ $# -ge 3 ] || { echo "usage: $0 <route> <light|dark> <out.png> [flags…]" >&2; exit 2; }

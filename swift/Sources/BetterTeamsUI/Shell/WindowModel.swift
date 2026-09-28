@@ -46,6 +46,18 @@ public final class WindowModel {
         self.frameHost = FrameHost(accountKey: accountKey)
         search.window = self
         frameHost.window = self
+        if !options.evidence {
+            frameHost.library.onCatalogPinned = { [weak self] ids in self?.seedCatalogPins(ids) }
+        }
+    }
+
+    /// First catalog for this account: pin the apps Teams has on its app
+    /// bar, once (later rail edits are the user's). APPHOST.
+    func seedCatalogPins(_ ids: [FrameAppID]) {
+        let key = "bt.rail.catalogSeeded.\(accountKey)"
+        guard !ids.isEmpty, !UserDefaults.standard.bool(forKey: key) else { return }
+        UserDefaults.standard.set(true, forKey: key)
+        for id in ids { rail.pin(.web(id)) }
     }
 
     /// The composition root when this window shows the active account.

@@ -1,6 +1,6 @@
 // AttachmentViews.swift — rich content inside a timeline row (UI-SPEC
 // §6.2.1): reply quote, code block, images (reserved 240×160 aspect-fit
-// slots, R13; click → Quick Look), adaptive/bot cards with native
+// slots, R13; click → full-resolution ImageViewer), adaptive/bot cards with native
 // buttons, file chips, link preview (fixed height whatever its phase), reaction
 // chips. Every view here keeps its final size before data arrives, so a
 // load never changes a row's height.
@@ -392,48 +392,17 @@ enum CardLinks {
     }
 }
 
-/// Quick Look for a timeline image (§6.2.1 "click → QLPreviewPanel").
-@MainActor
-final class ImageQuickLook: NSObject, QLPreviewPanelDataSource {
-    static let shared = ImageQuickLook()
-    private var url: URL?
-
-    func show(_ image: NSImage, name: String) {
-        guard let tiff = image.tiffRepresentation,
-              let rep = NSBitmapImageRep(data: tiff),
-              let png = rep.representation(using: .png, properties: [:])
-        else { return }
-        let file = FileManager.default.temporaryDirectory
-            .appendingPathComponent("BetterTeams-QuickLook", isDirectory: true)
-        try? FileManager.default.createDirectory(at: file, withIntermediateDirectories: true)
-        let dest = file.appendingPathComponent(CardLinks.safeName(name) + ".png")
-        guard (try? png.write(to: dest)) != nil else { return }
-        url = dest
-        guard let panel = QLPreviewPanel.shared() else { return }
-        panel.dataSource = self
-        panel.reloadData()
-        panel.makeKeyAndOrderFront(nil)
-    }
-
-    nonisolated func numberOfPreviewItems(in panel: QLPreviewPanel!) -> Int {
-        MainActor.assumeIsolated { url == nil ? 0 : 1 }
-    }
-
-    nonisolated func previewPanel(_ panel: QLPreviewPanel!, previewItemAt index: Int) -> (any QLPreviewItem)! {
-        MainActor.assumeIsolated { url as NSURL? }
-    }
-}
-
 /// Timeline image saves (chat attachments): ~/Downloads by default,
 /// never overwriting (Finder-style " 2" suffix), listed in Transfers
 /// and Files ▸ Downloads like every other download.
 enum ImageSave {
     /// Saved file name: the alt text when it names the image, else
-    /// "Image"; always .png (the bytes are re-encoded from the decode).
-    static func filename(alt: String) -> String {
+    /// "Image"; `.png` for re-encoded decodes, the original's extension
+    /// for viewer saves of original bytes.
+    static func filename(alt: String, ext: String = "png") -> String {
         let a = alt.trimmingCharacters(in: .whitespacesAndNewlines)
         let stem = (TeamsFrameDownloads.sanitizedFilename(a) as NSString).deletingPathExtension
-        return (a.isEmpty || stem.isEmpty || stem.lowercased() == "image" ? "Image" : stem) + ".png"
+        return (a.isEmpty || stem.isEmpty || stem.lowercased() == "image" ? "Image" : stem) + "." + ext
     }
 
     /// First free path for `name` in `dir`: "name.png", "name 2.png", …
