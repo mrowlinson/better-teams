@@ -259,8 +259,64 @@ enum NotesRender {
             if link == nil { body.addAttribute(.foregroundColor, value: NSColor.labelColor, range: range) }
         }
         while body.string.hasSuffix("\n") { body.deleteCharacters(in: NSRange(location: body.length - 1, length: 1)) }
+        space(body, size: size, scale: scale)
         out.append(body)
         return out
+    }
+
+    /// The HTML importer drops heading margins and gives `<p>` a full
+    /// line after: set the rhythm here. Headings get room above and a
+    /// little below; paragraphs, list items and to-dos share one gap;
+    /// list bullets sit close to the margin; table cells get padding, a
+    /// quiet grid and a filled header row.
+    private static func space(_ body: NSMutableAttributedString, size: CGFloat, scale: Double) {
+        let text = body.string as NSString
+        let gap = 4 * scale
+        text.enumerateSubstrings(in: NSRange(location: 0, length: text.length),
+                                 options: [.byParagraphs, .substringNotRequired]) { _, _, range, _ in
+            guard range.length > 0,
+                  let style = body.attribute(.paragraphStyle, at: range.location, effectiveRange: nil)
+                      as? NSParagraphStyle,
+                  let p = style.mutableCopy() as? NSMutableParagraphStyle
+            else { return }
+            let font = body.attribute(.font, at: range.location, effectiveRange: nil) as? NSFont
+            let bold = font?.fontDescriptor.symbolicTraits.contains(.bold) ?? false
+            let cells = p.textBlocks.compactMap { $0 as? NSTextTableBlock }
+            let first = text.substring(with: NSRange(location: range.location, length: 1))
+            let todo = first == "\u{2610}" || first == "\u{2611}"
+            if !cells.isEmpty {
+                for cell in cells {
+                    cell.table.collapsesBorders = true
+                    cell.setBorderColor(.tertiaryLabelColor)
+                    cell.setWidth(1, type: .absoluteValueType, for: .border)
+                    for edge: NSRectEdge in [.minY, .maxY] {
+                        cell.setWidth(5 * scale, type: .absoluteValueType, for: .padding, edge: edge)
+                    }
+                    for edge: NSRectEdge in [.minX, .maxX] {
+                        cell.setWidth(10 * scale, type: .absoluteValueType, for: .padding, edge: edge)
+                    }
+                    cell.backgroundColor = cell.startingRow == 0 ? .quaternaryLabelColor : nil
+                }
+                p.paragraphSpacingBefore = 0
+                p.paragraphSpacing = 0
+            } else if !p.textLists.isEmpty {
+                // Bullet near the margin, text one short tab after it.
+                let lead = CGFloat(p.textLists.count - 1) * 18 * scale
+                p.tabStops = [NSTextTab(textAlignment: .natural, location: lead + 6 * scale),
+                              NSTextTab(textAlignment: .natural, location: lead + 20 * scale)]
+                p.firstLineHeadIndent = 0
+                p.headIndent = lead + 20 * scale
+                p.paragraphSpacingBefore = 0
+                p.paragraphSpacing = gap
+            } else if !todo, (font?.pointSize ?? 0) > size * 1.05 || bold {
+                p.paragraphSpacingBefore = range.location == 0 ? 4 * scale : 14 * scale
+                p.paragraphSpacing = 6 * scale
+            } else {
+                p.paragraphSpacingBefore = 0
+                p.paragraphSpacing = gap
+            }
+            body.addAttribute(.paragraphStyle, value: p, range: range)
+        }
     }
 
 }

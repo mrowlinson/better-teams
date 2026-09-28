@@ -26,6 +26,14 @@ Demo mode (`--demo`, canned offline data). More detail in
   </tr>
   <tr>
     <td><img src="docs/screenshots/activity.png" alt="Activity"><br>Activity feed</td>
+    <td><img src="docs/screenshots/call-video.png" alt="Meeting with a shared slide"><br>Meeting with a shared slide</td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/files.png" alt="Files"><br>Files with the inspector open</td>
+    <td><img src="docs/screenshots/app-pinned.png" alt="Pinned OneNote app"><br>Pinned app (OneNote) in the window</td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/settings.png" alt="Settings, General pane"><br>Settings, General pane</td>
     <td></td>
   </tr>
 </table>

@@ -77,7 +77,7 @@ struct AccountsPane: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 500)
+        .frame(width: SettingsWindowController.paneWidth)
         .fixedSize(horizontal: false, vertical: true)
     }
 
@@ -128,7 +128,7 @@ struct SettingsUnavailable: View {
             Text(text).foregroundStyle(.secondary)
         }
         .formStyle(.grouped)
-        .frame(width: 500)
+        .frame(width: SettingsWindowController.paneWidth)
         .fixedSize(horizontal: false, vertical: true)
     }
 }

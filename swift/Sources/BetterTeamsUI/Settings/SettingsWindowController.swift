@@ -24,6 +24,10 @@ public final class SettingsWindowController: NSWindowController, NSWindowDelegat
         let make: @MainActor () -> NSViewController
     }
 
+    /// Every pane's width: wide enough for the whole toolbar, so no tab
+    /// hides behind the overflow chevron.
+    static let paneWidth: CGFloat = 640
+
     /// The main window whose account the panes edit (weak; set at launch).
     static weak var model: WindowModel?
 

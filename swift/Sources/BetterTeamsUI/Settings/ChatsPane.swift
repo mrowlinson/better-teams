@@ -159,7 +159,7 @@ struct ChatsPane: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 500, height: 560)
+        .frame(width: SettingsWindowController.paneWidth, height: 560)
     }
 
     private var languageCodes: [String] {

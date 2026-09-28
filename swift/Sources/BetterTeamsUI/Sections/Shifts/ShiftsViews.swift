@@ -73,6 +73,9 @@ struct ShiftsWeekPane: View {
                     .width(min: 96, ideal: 130)
             }
         }
+        // Plain rows: alternating stripes also paint empty filler rows
+        // below the last member.
+        .alternatingRowBackgrounds(.disabled)
         .contextMenu(forSelectionType: String.self) { _ in
             EmptyView()
         } primaryAction: { ids in

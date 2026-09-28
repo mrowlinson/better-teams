@@ -909,13 +909,13 @@ public enum DemoData {
                 id: "bot-1", sender: "Tech News RSS",
                 timestamp: iso(at(h: 8, m: 2)),
                 content: "Tech news digest — 2 new stories:"
-                    + "Swift 6.2 releasedConcurrency notes and migration guide."
-                    + "Rust 1.89 shipsConst generics progress.",
+                    + "Accessible color palettes, explainedA practical guide to contrast in product design."
+                    + "Faster builds with smarter cachingLessons from teams that cut CI time in half.",
                 raw: "<p>Tech news digest — 2 new stories:</p>"
-                    + #"<attachment><p><a href="https://example.com/swift-62">Swift 6.2 released</a></p>"#
-                    + "<p>Concurrency notes and migration guide.</p></attachment>"
-                    + #"<attachment><p><a href="https://example.com/rust-189">Rust 1.89 ships</a></p>"#
-                    + "<p>Const generics progress.</p></attachment>"),
+                    + #"<attachment><p><a href="https://example.com/accessible-color">Accessible color palettes, explained</a></p>"#
+                    + "<p>A practical guide to contrast in product design.</p></attachment>"
+                    + #"<attachment><p><a href="https://example.com/build-caching">Faster builds with smarter caching</a></p>"#
+                    + "<p>Lessons from teams that cut CI time in half.</p></attachment>"),
             ChatMessage(
                 id: "bot-2", sender: "Build Bot",
                 timestamp: iso(at(h: 8, m: 5)),
@@ -1015,13 +1015,13 @@ public enum DemoData {
                 id: "sc-4", sender: "Tech News RSS",
                 timestamp: iso(at(dayOffset: 0, h: 8, m: 2)),
                 content: "Morning digest — 2 new stories:"
-                    + "Swift 6.2 releasedConcurrency notes and migration guide."
-                    + "Rust 1.89 shipsConst generics progress.",
+                    + "Accessible color palettes, explainedA practical guide to contrast in product design."
+                    + "Faster builds with smarter cachingLessons from teams that cut CI time in half.",
                 raw: "<p>Morning digest — 2 new stories:</p>"
-                    + #"<attachment><p><a href="https://example.com/swift-62">Swift 6.2 released</a></p>"#
-                    + "<p>Concurrency notes and migration guide.</p></attachment>"
-                    + #"<attachment><p><a href="https://example.com/rust-189">Rust 1.89 ships</a></p>"#
-                    + "<p>Const generics progress.</p></attachment>"),
+                    + #"<attachment><p><a href="https://example.com/accessible-color">Accessible color palettes, explained</a></p>"#
+                    + "<p>A practical guide to contrast in product design.</p></attachment>"
+                    + #"<attachment><p><a href="https://example.com/build-caching">Faster builds with smarter caching</a></p>"#
+                    + "<p>Lessons from teams that cut CI time in half.</p></attachment>"),
             ChatMessage(
                 id: "sc-5", sender: "Build Bot",
                 timestamp: iso(at(dayOffset: 0, h: 8, m: 5)),
