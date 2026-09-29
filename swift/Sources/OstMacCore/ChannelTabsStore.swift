@@ -55,7 +55,7 @@ public final class ChannelTabsStore: ObservableObject {
         Task {
             let fetcher = listFetcher
             do {
-                let resp = try await Task.detached { try fetcher(channelID) }.value
+                let resp = try await Task.blocking { try fetcher(channelID) }.value
                 guard gen == openGeneration else { return }
                 tabs = resp.tabs
                 state = resp.tabs.isEmpty ? .empty : .loaded

@@ -48,7 +48,7 @@ final class PerfSwiftMediaTests: XCTestCase {
     // MARK: - Decoded memo
 
     func testMemoSharesIdenticalBytes() async throws {
-        let memo = DecodedImageCache()
+        let memo = DecodedImageCache(memory: .pinned)
         let bytes = try DemoMedia.data(for: DemoMedia.gif1)
         let first = await memo.decoded(data: bytes, maxPixels: 520)
         let second = await memo.decoded(data: bytes, maxPixels: 520)
@@ -59,7 +59,7 @@ final class PerfSwiftMediaTests: XCTestCase {
     }
 
     func testMemoKeysOnSize() async throws {
-        let memo = DecodedImageCache()
+        let memo = DecodedImageCache(memory: .pinned)
         let bytes = try DemoMedia.data(for: DemoMedia.photo1)
         _ = await memo.decoded(data: bytes, maxPixels: 520)
         _ = await memo.decoded(data: bytes, maxPixels: 2048)
@@ -69,7 +69,7 @@ final class PerfSwiftMediaTests: XCTestCase {
     }
 
     func testMemoSkipsFailures() async {
-        let memo = DecodedImageCache()
+        let memo = DecodedImageCache(memory: .pinned)
         let junk = Data("not an image".utf8)
         let first = await memo.decoded(data: junk, maxPixels: 520)
         let second = await memo.decoded(data: junk, maxPixels: 520)
@@ -81,12 +81,12 @@ final class PerfSwiftMediaTests: XCTestCase {
 
     @MainActor
     func testModelsShareDecodedImage() async throws {
-        let memo = DecodedImageCache()
+        let memo = DecodedImageCache(memory: .pinned)
         let bytes = try DemoMedia.data(for: DemoMedia.photo1)
         let makeModel = { (i: Int) in
             RemoteImageModel(
                 url: "demo://shared-\(i)", messageID: "m\(i)",
-                cache: RichMediaCache(diskDir: nil),
+                cache: RichMediaCache(diskDir: nil, memory: .pinned),
                 fetcher: { _ in bytes }, decodedCache: memo)
         }
         let a = makeModel(1)
@@ -122,7 +122,7 @@ final class PerfSwiftMediaTests: XCTestCase {
             .appendingPathComponent("perfmedia-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: dir) }
-        let cache = RichMediaCache(diskDir: dir, diskCapFiles: 100)
+        let cache = RichMediaCache(diskDir: dir, diskCapFiles: 100, memory: .pinned)
         for i in 0 ..< 10 {
             _ = try await cache.data(
                 url: "https://h/\(i).png", messageID: "m",
@@ -138,7 +138,7 @@ final class PerfSwiftMediaTests: XCTestCase {
             .appendingPathComponent("perfmedia-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: dir) }
-        let cache = RichMediaCache(diskDir: dir, diskCapFiles: 3)
+        let cache = RichMediaCache(diskDir: dir, diskCapFiles: 3, memory: .pinned)
         for i in 0 ..< 6 {
             _ = try await cache.data(
                 url: "https://h/\(i).png", messageID: "m",

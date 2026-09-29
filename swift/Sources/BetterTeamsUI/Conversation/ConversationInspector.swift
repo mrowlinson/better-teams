@@ -50,7 +50,7 @@ struct ConversationInspector: View {
                         case .catchup:
                             if let app = model.app {
                                 CatchUpPane(store: app.catchUp, items: app.actionItems, conv: model.graph.conv,
-                                            digest: app.catchUpDigest, chatID: ref)
+                                            digest: app.catchUpDigest, feedback: app.catchUpFeedback, chatID: ref)
                             } else {
                                 EmptyPane("Catch Up Unavailable", systemImage: "sparkles",
                                           message: "Catch Up runs in the active account's window.")
@@ -84,7 +84,7 @@ struct InfoPane: View {
 
     var body: some View {
         let row = chats.chat(id: ref)
-        let name = row?.name ?? DemoData.name(for: ref) ?? conv.headerTitle
+        let name = row?.name ?? DemoFixture.name(for: ref, demo: model?.options.demo == true) ?? conv.headerTitle
         let isGroup = row?.is_group ?? false
         let messages = conv.chatID == ref ? conv.messages : []
         Form {
@@ -126,9 +126,6 @@ struct InfoPane: View {
             Section {
                 Toggle("Pin to Top of List", isOn: Binding(get: { chats.isPinned(ref) },
                                                           set: { $0 ? chats.pin(ref) : chats.unpin(ref) }))
-                Button(unread.isUnread(chatID: ref) ? "Mark as Read" : "Mark as Unread") {
-                    if unread.isUnread(chatID: ref) { unread.markRead(chatID: ref) } else { unread.markUnread(chatID: ref) }
-                }
             }
             Section("People in This Conversation") {
                 if let app = model?.app {
@@ -284,6 +281,7 @@ private struct MemberRow: View {
                 .overlay(alignment: .bottomTrailing) {
                     if let status { PresenceBadge(status: status, size: 9).offset(x: 2, y: 2) }
                 }
+                .contactHover(name: name, arrowEdge: .leading)
             VStack(alignment: .leading, spacing: 0) {
                 Text(isYou ? "You" : name).lineLimit(1)
                 if isOwner {
@@ -323,12 +321,28 @@ struct CatchUpPane: View {
     @ObservedObject var store: CatchUpStore
     @ObservedObject var items: ActionItemsStore
     let conv: ConversationStore
-    let digest: CatchUpDigestStore
+    @ObservedObject var digest: CatchUpDigestStore
+    @ObservedObject var feedback: CatchUpFeedbackStore
     let chatID: String
 
     var body: some View {
-        // State for another conversation reads idle here (no stale text).
-        switch store.stateChatID == chatID ? store.state : .idle {
+        VStack(spacing: 0) {
+            CatchUpPeriodBar(digest: digest)
+            content
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        // CATCHTABS: a tab switch re-reads this conversation for the new
+        // period (instant from cache; the period's last text stays up
+        // while it refreshes). Nothing runs before the first click.
+        .onChange(of: digest.period) { _, _ in
+            if store.stateChatID == chatID, store.state != .idle { run() }
+        }
+    }
+
+    @ViewBuilder private var content: some View {
+        // State for another conversation or period reads idle here (no
+        // stale text).
+        switch store.stateChatID == chatID && store.statePeriod == digest.period ? store.state : .idle {
         case .idle:
             EmptyPane("Catch Up", systemImage: "sparkles", message: idleMessage) {
                 Button("Catch Up") { run() }
@@ -355,27 +369,29 @@ struct CatchUpPane: View {
     private func summary(_ text: String, updating: Bool) -> some View {
         let parsed = CatchUpSummaryParser.parse(text)
         let flagged = mentions
+        let actions = parsed.actionLines.filter { !feedback.isHidden($0.text, chatID: chatID) }
         return Form {
             if !flagged.isEmpty {
-                Section("Mentions You") {
-                    ForEach(flagged) { m in
-                        CatchUpMentionRow(mention: m, chatName: nil) { jump(m) }
-                    }
-                }
+                CatchUpMentionsSection(mentions: flagged, collapsed: $digest.mentionsCollapsed,
+                                       chatName: { _ in nil }, open: jump)
             }
             Section("Summary") {
                 if parsed.isEmpty {
                     Text(text).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
                 } else {
-                    CatchUpSummaryBody(parsed: parsed, includeActions: false)
+                    CatchUpSummaryBody(parsed: parsed, includeActions: false,
+                                       isHidden: { feedback.isHidden($0, chatID: chatID) },
+                                       dismiss: { feedback.dismiss($0, chatID: chatID) })
                 }
             }
             Section("Action Items") {
                 if parsed.actions.isEmpty {
                     actionItems(updating: updating)
+                } else if actions.isEmpty {
+                    Text("None").foregroundStyle(.secondary)
                 } else {
-                    ForEach(parsed.actionLines) { a in
-                        Text(a.text).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                    ForEach(actions) { a in
+                        CatchUpBulletRow(text: a.text, bullet: false) { feedback.dismiss(a.text, chatID: chatID) }
                     }
                 }
             }
@@ -388,11 +404,14 @@ struct CatchUpPane: View {
         .refreshStatus(updating, label: "Updating summary")
     }
 
-    /// Mentions in the loaded conversation, newest first.
+    /// Mentions in the loaded conversation inside the selected period,
+    /// newest first.
     private var mentions: [CatchUpMention] {
         guard conv.chatID == chatID else { return [] }
-        return CatchUpMentions.flag(conv.messages, chatID: chatID, chatName: "",
-                                    ownerMRI: digest.ownerMRI(), ownerDisplayName: digest.ownerDisplayName())
+        let inPeriod = CatchUpBound.messages(conv.messages, period: digest.period, now: digest.now())
+        return CatchUpMentions.flag(inPeriod, chatID: chatID, chatName: "",
+                                    ownerMRI: digest.ownerMRI(), ownerDisplayName: digest.ownerDisplayName(),
+                                    ownerTags: digest.ownerTags())
             .reversed()
     }
 
@@ -427,7 +446,7 @@ struct CatchUpPane: View {
     }
 
     private func run() {
-        CatchUpRunner.run(store: store, items: items, conv: conv, chatID: chatID)
+        CatchUpRunner.run(store: store, items: items, conv: conv, digest: digest, chatID: chatID)
     }
 
     private var hasMessages: Bool {
@@ -437,7 +456,7 @@ struct CatchUpPane: View {
     private var idleMessage: String {
         guard store.mode != .off else { return CatchUpError.off.message }
         guard hasMessages else { return "There are no messages to summarize yet." }
-        return "Summarize this conversation and list its action items."
+        return "Summarize the last \(digest.period.title.lowercased()) of this conversation and list its action items."
     }
 }
 
@@ -446,30 +465,133 @@ struct CatchUpPane: View {
 struct CatchUpSummaryBody: View {
     let parsed: ParsedCatchUp
     let includeActions: Bool
+    /// "Not important" (CATCHTABS): hidden bullets drop; `dismiss` adds
+    /// the per-bullet action (nil = none).
+    var isHidden: (String) -> Bool = { _ in false }
+    var dismiss: ((String) -> Void)?
 
     var body: some View {
+        let points = parsed.pointLines.filter { !isHidden($0.text) }
+        let actions = parsed.actionLines.filter { !isHidden($0.text) }
         VStack(alignment: .leading, spacing: 6) {
             if !parsed.summary.isEmpty {
-                Text(parsed.summary)
+                Text(parsed.summary).textSelection(.enabled)
             }
-            ForEach(parsed.pointLines) { p in
-                bullet(p.text)
+            ForEach(points) { p in
+                CatchUpBulletRow(text: p.text, dismiss: dismiss.map { d in { d(p.text) } })
             }
-            if includeActions, !parsed.actions.isEmpty {
+            if includeActions, !actions.isEmpty {
                 Text("Action Items").font(.subheadline.weight(.semibold)).padding(.top, 2)
-                ForEach(parsed.actionLines) { a in
-                    bullet(a.text)
+                ForEach(actions) { a in
+                    CatchUpBulletRow(text: a.text, dismiss: dismiss.map { d in { d(a.text) } })
                 }
             }
         }
-        .textSelection(.enabled)
         .fixedSize(horizontal: false, vertical: true)
     }
+}
 
-    private func bullet(_ s: String) -> some View {
+/// One summary line. Hovering shows a "Not important" button (also in
+/// the context menu and as a VoiceOver action) that hides the line and
+/// shows fewer like it.
+struct CatchUpBulletRow: View {
+    let text: String
+    var bullet = true
+    let dismiss: (() -> Void)?
+    @State private var hovering = false
+
+    var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
-            Text("\u{2022}").foregroundStyle(.secondary)
-            Text(s)
+            if bullet { Text("\u{2022}").foregroundStyle(.secondary) }
+            Text(text)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            if let dismiss {
+                Button(action: dismiss) {
+                    Image(systemName: "xmark.circle")
+                }
+                .buttonStyle(.borderless)
+                .foregroundStyle(.secondary)
+                .opacity(hovering ? 1 : 0)
+                .allowsHitTesting(hovering)
+                .help("Not Important")
+                .accessibilityHidden(true)
+            }
+        }
+        .contentShape(Rectangle())
+        .onHover { hovering = $0 }
+        .contextMenu {
+            if let dismiss { Button("Not Important", action: dismiss) }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityAction(named: "Not Important") { dismiss?() }
+    }
+}
+
+/// Period tabs (CATCHTABS) at the top of the inspector and the window.
+struct CatchUpPeriodBar: View {
+    @ObservedObject var digest: CatchUpDigestStore
+
+    var body: some View {
+        Picker("Catch Up Period", selection: Binding(get: { digest.period }, set: { digest.select($0) })) {
+            ForEach(CatchUpPeriod.allCases) { Text($0.title).tag($0) }
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 12)
+        .padding(.top, 10)
+        .padding(.bottom, 4)
+        .accessibilityLabel("Catch Up period")
+    }
+}
+
+/// "Mentions You", pinned first: the header is a disclosure button
+/// (collapsed state persisted); collapsed shows the count.
+struct CatchUpMentionsSection: View {
+    let mentions: [CatchUpMention]
+    @Binding var collapsed: Bool
+    let chatName: (CatchUpMention) -> String?
+    var emptyText: String?
+    let open: (CatchUpMention) -> Void
+
+    var body: some View {
+        Section {
+            if !collapsed {
+                if mentions.isEmpty {
+                    if let emptyText { Text(emptyText).foregroundStyle(.secondary) }
+                } else {
+                    ForEach(mentions) { m in
+                        CatchUpMentionRow(mention: m, chatName: chatName(m)) { open(m) }
+                    }
+                }
+            }
+        } header: {
+            Button {
+                withAnimation(.snappy(duration: 0.2)) { collapsed.toggle() }
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .rotationEffect(.degrees(collapsed ? 0 : 90))
+                    Text("Mentions You")
+                    if collapsed, !mentions.isEmpty {
+                        Text("\(mentions.count)")
+                            .monospacedDigit()
+                            .font(.caption.weight(.semibold))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 1)
+                            .background(Capsule().fill(.quaternary))
+                    }
+                    Spacer()
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(collapsed ? "Show mentions" : "Hide mentions")
+            .accessibilityLabel("Mentions You, \(mentions.count)")
+            .accessibilityValue(collapsed ? "Collapsed" : "Expanded")
         }
     }
 }
@@ -489,6 +611,8 @@ struct CatchUpMentionRow: View {
                     Text(mention.sender).fontWeight(.semibold)
                     if mention.kind == .everyone {
                         Text("@everyone").font(.caption).foregroundStyle(.secondary)
+                    } else if mention.kind == .tag {
+                        Text("@tag").font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer(minLength: 8)
                     Text(ChatMessage.shortTime(mention.timestamp)).font(.caption).foregroundStyle(.secondary)
@@ -509,7 +633,12 @@ struct CatchUpMentionRow: View {
 
     /// VoiceOver: who mentioned whom, where, when, then the message.
     private var accessibilityText: String {
-        var parts = ["\(mention.sender) mentioned \(mention.kind == .everyone ? "everyone" : "you")"]
+        let whom = switch mention.kind {
+        case .everyone: "everyone"
+        case .tag: "a tag you are in"
+        case .you: "you"
+        }
+        var parts = ["\(mention.sender) mentioned \(whom)"]
         if let chatName, !chatName.isEmpty { parts.append("in \(chatName)") }
         parts.append(ChatMessage.shortTime(mention.timestamp))
         return parts.joined(separator: ", ") + ": " + mention.preview
@@ -519,16 +648,21 @@ struct CatchUpMentionRow: View {
 @MainActor
 enum CatchUpRunner {
     /// Starts a summary of the open conversation (toolbar Catch Up).
-    static func run(store: CatchUpStore, items: ActionItemsStore, conv: ConversationStore, chatID: String) {
+    /// CATCHTABS: bounded to the selected period, noise-filtered and
+    /// rated (`CatchUpStore.summarize(period:filter:)`).
+    static func run(store: CatchUpStore, items: ActionItemsStore, conv: ConversationStore,
+                    digest: CatchUpDigestStore, chatID: String) {
         guard conv.chatID == chatID else { return }
         let msgs = conv.messages
+        let period = digest.period
+        let filter = digest.filterContext(chatID: chatID)
         items.reset()
-        Task { await store.summarize(messages: msgs, chatID: chatID) }
+        Task { await store.summarize(messages: msgs, chatID: chatID, period: period, filter: filter) }
     }
 
     static func run(_ m: WindowModel, chatID: String) {
         guard let app = m.app else { return }
-        run(store: app.catchUp, items: app.actionItems, conv: m.graph.conv, chatID: chatID)
+        run(store: app.catchUp, items: app.actionItems, conv: m.graph.conv, digest: app.catchUpDigest, chatID: chatID)
     }
 }
 
@@ -541,7 +675,13 @@ struct PinnedPane: View {
 
     var body: some View {
         let rows = store.rows(for: chatID, messages: conv.chatID == chatID ? conv.messages : [])
-        if rows.isEmpty {
+        if rows.isEmpty, let why = store.loadFailure(for: chatID) {
+            // A failed read is an error, never "nothing pinned".
+            ErrorPane(title: "Couldn\u{2019}t Load Pinned Messages", message: why) {
+                let s = store, id = chatID
+                Task { await s.refreshFromServer(chatID: id) }
+            }
+        } else if rows.isEmpty {
             EmptyPane("No Pinned Messages", systemImage: "pin",
                       message: "Pin a message from its context menu to keep it here.")
         } else {

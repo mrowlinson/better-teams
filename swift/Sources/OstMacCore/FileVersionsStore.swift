@@ -52,7 +52,7 @@ public final class FileVersionsStore: ObservableObject {
         Task {
             let fetcher = listFetcher
             do {
-                let resp = try await Task.detached { try fetcher(driveID, itemID) }.value
+                let resp = try await Task.blocking { try fetcher(driveID, itemID) }.value
                 guard gen == openGeneration else { return }
                 versions = resp.versions
                 state = resp.versions.isEmpty ? .empty : .loaded
@@ -93,7 +93,7 @@ public final class FileVersionsStore: ObservableObject {
         Task {
             defer { restoringIDs.remove(versionID) }
             do {
-                let resp = try await Task.detached {
+                let resp = try await Task.blocking {
                     try fetcher(d, i, versionID)
                 }.value
                 restoredID = resp.version_id ?? versionID
@@ -120,7 +120,7 @@ public final class FileVersionsStore: ObservableObject {
         Task {
             defer { savingIDs.remove(versionID) }
             do {
-                let resp = try await Task.detached {
+                let resp = try await Task.blocking {
                     try fetcher(d, i, versionID, dest)
                 }.value
                 savedPath = resp.path
@@ -138,8 +138,7 @@ public final class FileVersionsStore: ObservableObject {
         let ext = ns.pathExtension
         let base = ext.isEmpty ? filename : ns.deletingPathExtension
         let name = ext.isEmpty ? "\(base)-v\(safe)" : "\(base)-v\(safe).\(ext)"
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        return (home as NSString).appendingPathComponent("Downloads/\(name)")
+        return UserFolders.downloads().appendingPathComponent(name).path
     }
 
     static func message(for error: Error) -> String {

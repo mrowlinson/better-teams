@@ -74,7 +74,8 @@ struct CallsListPane: View {
                 Section("Speed Dial") {
                     ForEach(dial) { c in
                         HStack(spacing: 8) {
-                            Avatar(name: c.displayName)
+                            Avatar(name: c.displayName, person: ContactRef(c))
+                                .contactHover(ContactRef(c))
                                 .overlay(alignment: .bottomTrailing) {
                                     if let s = PeerPresence.status(presence, chatID: nil, userID: c.userId ?? c.id) {
                                         // 4 pt: at 2 the ring clipped the monogram (ACTSEARCH, Search People).
@@ -210,6 +211,7 @@ struct CallsDetailPane: View {
                         .overlay(alignment: .bottomTrailing) {
                             if let status { PresenceBadge(status: status, size: 16) }
                         }
+                        .contactHover(name: p.name, arrowEdge: .bottom)
                     VStack(spacing: 4) {
                         Text(p.name).font(AppFont.title3(scale))
                         if let status {

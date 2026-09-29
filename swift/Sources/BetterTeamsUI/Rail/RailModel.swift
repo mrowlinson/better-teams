@@ -64,7 +64,10 @@ public final class RailModel {
         if persist, let data = UserDefaults.standard.data(forKey: Self.key(accountKey)),
            let list = try? JSONDecoder().decode([RailEntry].self, from: data)
         {
-            pinned = list
+            // Pins saved from the retired Apps-list channel tabs: kept
+            // when they open natively, else dropped (ChannelTabPins).
+            pinned = ChannelTabPins.apply(list, account: accountKey, defaults: .standard)
+            if pinned != list { save() }
         }
     }
 

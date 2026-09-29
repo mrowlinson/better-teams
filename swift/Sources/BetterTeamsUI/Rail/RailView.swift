@@ -65,7 +65,7 @@ struct RailView: View {
         return Button {
             navigator.select(section: s)
         } label: {
-            RailButtonLabel(title: title, symbol: symbol, badge: badge)
+            RailButtonLabel(title: title, symbol: symbol, badge: badge, icon: AppIconCache.shared.url(for: s))
         }
         .buttonStyle(RailButtonStyle(selected: selected, height: height))
         .help(title)
@@ -100,7 +100,11 @@ struct RailView: View {
             ForEach(overflow, id: \.key) { e in
                 Toggle(isOn: Binding(get: { current == e.section },
                                      set: { _ in navigator.select(section: e.section) })) {
-                    Label(e.title, systemImage: e.symbol)
+                    if let icon = AppIconCache.shared.menuImage(AppIconCache.shared.url(for: e.section)) {
+                        Label { Text(e.title) } icon: { Image(nsImage: icon) }
+                    } else {
+                        Label(e.title, systemImage: e.symbol)
+                    }
                 }
             }
         } label: {

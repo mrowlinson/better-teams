@@ -229,7 +229,11 @@ struct TeamInspector: View {
         let you = model?.isOwnID(m.userId) == true || model?.isOwnID(m.id) == true
         let shown = you ? "You" : name
         return HStack(spacing: 8) {
-            Avatar(name: you ? (model?.ownDisplayName ?? name) : name, diameter: 22)
+            Avatar(name: you ? (model?.ownDisplayName ?? name) : name, diameter: 22,
+                   person: ContactRef(name: you ? (model?.ownDisplayName ?? name) : name,
+                                      userID: m.userId, email: m.email))
+                .contactHover(ContactRef(name: you ? (model?.ownDisplayName ?? name) : name,
+                                         userID: m.userId, email: m.email), arrowEdge: .leading)
             VStack(alignment: .leading, spacing: 0) {
                 Text(shown).lineLimit(1)
                 if let email = m.email, !email.isEmpty {

@@ -297,7 +297,7 @@ public final class UnifiedFilesStore: ObservableObject {
                 for (i, spec) in next.enumerated() {
                     group.addTask {
                         do {
-                            let resp = try await Task.detached {
+                            let resp = try await Task.blocking {
                                 try list(spec.id, limitPerSource)
                             }.value
                             return (i, resp.files, nil)
@@ -308,7 +308,7 @@ public final class UnifiedFilesStore: ObservableObject {
                 }
                 group.addTask {
                     do {
-                        let resp = try await Task.detached {
+                        let resp = try await Task.blocking {
                             try recents(recentsLimit)
                         }.value
                         return (next.count, resp.files, nil)
@@ -472,7 +472,7 @@ public final class UnifiedFilesStore: ObservableObject {
         Task {
             defer { savingIDs.remove(row.id) }
             do {
-                let resp = try await Task.detached {
+                let resp = try await Task.blocking {
                     try fetcher(drive, file.id, dest)
                 }.value
                 savedPaths[row.id] = resp.path
@@ -550,7 +550,7 @@ public final class UnifiedFilesStore: ObservableObject {
         Task {
             defer { linkingIDs.remove(row.id) }
             do {
-                let resp = try await Task.detached {
+                let resp = try await Task.blocking {
                     try fetcher(drive, file.id, scope)
                 }.value
                 links[row.id] = resp.link
@@ -600,7 +600,7 @@ public final class UnifiedFilesStore: ObservableObject {
                 let file = row.file
                 guard let drive = file.drive_id else { continue }
                 do {
-                    let resp = try await Task.detached { try fetcher(drive, file.id, scope) }.value
+                    let resp = try await Task.blocking { try fetcher(drive, file.id, scope) }.value
                     links[row.id] = resp.link
                     out[row.id] = resp.link
                 } catch {
@@ -665,7 +665,7 @@ public final class UnifiedFilesStore: ObservableObject {
             }
             for path in ok {
                 do {
-                    let resp = try await Task.detached {
+                    let resp = try await Task.blocking {
                         try fetcher(target.id, path)
                     }.value
                     rows = Self.upsert(
@@ -761,7 +761,7 @@ public final class UnifiedFilesStore: ObservableObject {
         Task {
             defer { managingIDs.remove(row.id) }
             do {
-                _ = try await Task.detached { try fetcher(drive, row.file.id) }.value
+                _ = try await Task.blocking { try fetcher(drive, row.file.id) }.value
                 rows.removeAll { $0.id == row.id }
                 if rows.isEmpty { state = .empty }
             } catch {
@@ -777,7 +777,7 @@ public final class UnifiedFilesStore: ObservableObject {
         Task {
             defer { managingIDs.remove(row.id) }
             do {
-                if let f = try await Task.detached(operation: call).value {
+                if let f = try await Task.blocking(operation: call).value {
                     rows = Self.replacing(row, with: f, in: rows)
                 }
             } catch {

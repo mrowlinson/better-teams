@@ -136,8 +136,9 @@ final class MeetingsTests: XCTestCase {
         XCTAssertEqual(
             MeetJoin.hint(for: nil), "Paste a Teams meeting link or thread id")
         XCTAssertNil(MeetJoin.hint(for: JoinTarget(kind: "thread", threadID: "t", url: "t")))
+        // FIXPACK F12: personal Teams links are joined in this app, never a browser.
         XCTAssertTrue(
-            MeetJoin.hint(for: JoinTarget(kind: "meeting-id", url: "u"))?.contains("browser") ?? false)
+            MeetJoin.hint(for: JoinTarget(kind: "meeting-id", url: "u"))?.contains("in this app") ?? false)
         XCTAssertTrue(
             MeetJoin.hint(for: JoinTarget(kind: "url", url: "u"))?.contains("browser") ?? false)
         XCTAssertTrue(

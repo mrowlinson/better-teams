@@ -11,11 +11,52 @@ use crate::auth::TokenStore;
 use crate::config::Config;
 
 const GRAPH_BASE: &str = "https://graph.microsoft.com/v1.0";
+const CSA_BASE: &str = "https://teams.microsoft.com/api/csa/api/v1";
 const DEFAULT_CHAT_SERVICE: &str = "https://amer.ng.msg.teams.microsoft.com";
 const CHATSVCAGG: &str = "https://chatsvcagg.teams.microsoft.com";
 const DEFAULT_MIDDLE_TIER: &str = "https://teams.microsoft.com/api/mt/amer";
 
 /// Authenticated client that handles both Graph (AAD) and Teams (Skype) APIs.
+/// OstMac §GRAPHSWEEP: Graph routes the Teams web client token can never
+/// use — their least-privileged delegated permission is not among the
+/// scopes Microsoft grants that client (decoded `scp`, 09-28). Refused
+/// before any network with a plain reason instead of a raw 403. Since
+/// §GRAPHSWEEP3 the app sends team create, channel edit/delete, personal
+/// app install and chat hide through Teams services instead; the table
+/// keeps those Graph routes shut. Find-by-meeting-ID has no Teams REST
+/// equivalent: the app refuses the lookup and shows an error (§GRAPH2),
+/// it never opens the Teams `/meet/` link. `(what, missing
+/// permission)`.
+/// Query strings are ignored. Pure so tests pin it.
+pub fn graph_denied(method: &str, path: &str) -> Option<(&'static str, &'static str)> {
+    let p = path.split('?').next().unwrap_or("").trim_end_matches('/');
+    let seg: Vec<&str> = p.split('/').filter(|s| !s.is_empty()).collect();
+    match (method.to_ascii_uppercase().as_str(), seg.as_slice()) {
+        ("POST", ["teams"]) => Some(("Creating a team", "Team.Create")),
+        ("PATCH", ["teams", _, "channels", _]) => Some(("Editing a channel", "ChannelSettings.ReadWrite.All")),
+        ("DELETE", ["teams", _, "channels", _]) => Some(("Deleting a channel", "Channel.Delete.All")),
+        ("POST", ["me", "teamwork", "installedApps"]) | ("POST", ["users", _, "teamwork", "installedApps"]) => {
+            Some(("Adding an app for yourself", "TeamsAppInstallation.ReadWriteSelfForUser"))
+        }
+        ("POST", ["chats", _, "hideForUser"]) | ("POST", ["chats", _, "unhideForUser"]) => {
+            Some(("Hiding a chat", "Chat.ReadWrite"))
+        }
+        ("GET", ["me", "onlineMeetings"]) => Some(("Finding a meeting by its ID", "OnlineMeetings.Read")),
+        _ => None,
+    }
+}
+
+fn check_graph_allowed(method: &str, path: &str) -> Result<()> {
+    if let Some((what, scope)) = graph_denied(method, path) {
+        bail!(
+            "{} isn't available with the Teams sign-in (Microsoft Graph permission {} isn't granted to the Teams web client)",
+            what,
+            scope
+        );
+    }
+    Ok(())
+}
+
 pub struct TeamsClient {
     http: reqwest::Client,
     config: Config,
@@ -136,6 +177,40 @@ impl TeamsClient {
         })
     }
 
+    /// Graph root. Production is always [`GRAPH_BASE`]; unit tests may
+    /// point it at a local fake through the config's `graphBase` key.
+    fn graph_base(&self) -> String {
+        #[cfg(test)]
+        if let Some(b) = self
+            .config
+            .get_region_gtms()
+            .and_then(|v| v.get("graphBase").and_then(|s| s.as_str()).map(String::from))
+        {
+            return b;
+        }
+        GRAPH_BASE.to_string()
+    }
+
+    /// CSA root (`…/api/csa/api/v1`). Production is always the Teams
+    /// host; unit tests may point it at a local fake (`csaBase` key).
+    pub(crate) fn csa_base(&self) -> String {
+        #[cfg(test)]
+        if let Some(b) = self
+            .config
+            .get_region_gtms()
+            .and_then(|v| v.get("csaBase").and_then(|s| s.as_str()).map(String::from))
+        {
+            return b;
+        }
+        CSA_BASE.to_string()
+    }
+
+    /// Client over an in-memory config (unit tests against a local fake).
+    #[cfg(test)]
+    pub(crate) fn for_test(config: Config) -> Self {
+        Self { http: shared_http(), config, timeout: Some(Duration::from_secs(10)) }
+    }
+
     /// Per-client deadline override (§77): `None` = connect timeout only
     /// (long transfers), `Some(d)` = whole-request deadline `d`.
     pub fn with_timeout(mut self, timeout: Option<Duration>) -> Self {
@@ -147,7 +222,7 @@ impl TeamsClient {
     /// (§77): content downloads stream for as long as they need.
     pub async fn graph_get_download(&self, path: &str) -> Result<reqwest::Response> {
         let token = self.graph_token()?;
-        let url = format!("{}{}", GRAPH_BASE, path);
+        let url = format!("{}{}", self.graph_base(), path);
         let resp = self
             .http
             .get(&url)
@@ -169,7 +244,7 @@ impl TeamsClient {
         Ok(token.token)
     }
 
-    fn skype_token(&self) -> Result<String> {
+    pub(crate) fn skype_token(&self) -> Result<String> {
         let token = self
             .config
             .get_skype_token()
@@ -182,8 +257,9 @@ impl TeamsClient {
 
     /// GET request to Microsoft Graph API (bearer auth with Graph token).
     pub async fn graph_get(&self, path: &str) -> Result<reqwest::Response> {
+        check_graph_allowed("GET", path)?;
         let token = self.graph_token()?;
-        let url = format!("{}{}", GRAPH_BASE, path);
+        let url = format!("{}{}", self.graph_base(), path);
         tracing::debug!("Graph GET {}", url);
 
         let resp = self
@@ -203,7 +279,7 @@ impl TeamsClient {
     /// search.
     pub async fn graph_get_consistent(&self, path: &str) -> Result<reqwest::Response> {
         let token = self.graph_token()?;
-        let url = format!("{}{}", GRAPH_BASE, path);
+        let url = format!("{}{}", self.graph_base(), path);
         tracing::debug!("Graph GET {}", url);
 
         let resp = self
@@ -241,8 +317,9 @@ impl TeamsClient {
         path: &str,
         body: &serde_json::Value,
     ) -> Result<reqwest::Response> {
+        check_graph_allowed("POST", path)?;
         let token = self.graph_token()?;
-        let url = format!("{}{}", GRAPH_BASE, path);
+        let url = format!("{}{}", self.graph_base(), path);
         tracing::debug!("Graph POST {}", url);
 
         let resp = self
@@ -260,8 +337,9 @@ impl TeamsClient {
     /// DELETE request to Microsoft Graph API (Bearer [REDACTED] with Graph token).
     /// OstMac (om-h5-members): team member removal.
     pub async fn graph_delete(&self, path: &str) -> Result<reqwest::Response> {
+        check_graph_allowed("DELETE", path)?;
         let token = self.graph_token()?;
-        let url = format!("{}{}", GRAPH_BASE, path);
+        let url = format!("{}{}", self.graph_base(), path);
         tracing::debug!("Graph DELETE {}", url);
 
         let resp = self
@@ -284,7 +362,7 @@ impl TeamsClient {
         content_type: &str,
     ) -> Result<reqwest::Response> {
         let token = self.graph_token()?;
-        let url = format!("{}{}", GRAPH_BASE, path);
+        let url = format!("{}{}", self.graph_base(), path);
         tracing::debug!("Graph PUT {} ({} bytes)", url, bytes.len());
 
         let resp = self
@@ -341,8 +419,9 @@ impl TeamsClient {
         path: &str,
         body: &serde_json::Value,
     ) -> Result<reqwest::Response> {
+        check_graph_allowed("PATCH", path)?;
         let token = self.graph_token()?;
-        let url = format!("{}{}", GRAPH_BASE, path);
+        let url = format!("{}{}", self.graph_base(), path);
         tracing::debug!("Graph PATCH {}", url);
 
         let resp = self
@@ -366,7 +445,7 @@ impl TeamsClient {
         body: Vec<u8>,
     ) -> Result<reqwest::Response> {
         let token = self.graph_token()?;
-        let url = format!("{}{}", GRAPH_BASE, path);
+        let url = format!("{}{}", self.graph_base(), path);
         tracing::debug!("Graph PATCH {}", url);
 
         let resp = self
@@ -468,6 +547,32 @@ impl TeamsClient {
         check_response(resp, url).await
     }
 
+    /// OstMac §GRAPHSWEEP3: JSON write against the Teams middle tier with
+    /// the Teams web client's own request shape (method, JSON body,
+    /// optional `x-ms-client-caller`). Used for the writes whose Graph
+    /// permission the Teams token lacks (team create, channel edit and
+    /// delete, personal app install).
+    pub async fn mt_send_json(
+        &self,
+        verb: &'static str,
+        url: &str,
+        body: &serde_json::Value,
+        caller: Option<&str>,
+    ) -> Result<reqwest::Response> {
+        let method = reqwest::Method::from_bytes(verb.as_bytes())
+            .with_context(|| format!("bad method {}", verb))?;
+        tracing::debug!("MT {} {}", verb, url);
+        let mut req = self.mt_request(self.http.request(method, url))?.json(body);
+        if let Some(c) = caller {
+            req = req.header("x-ms-client-caller", c);
+        }
+        let resp = req
+            .send_observed(verb, url, self.timeout)
+            .await
+            .with_context(|| format!("MT {} {} failed", verb, url))?;
+        check_response(resp, url).await
+    }
+
     /// Chat service base URL from region_gtms, falling back to default.
     pub fn chat_service_url(&self) -> String {
         self.config
@@ -538,6 +643,51 @@ impl TeamsClient {
             Vec::new()
         };
         Self::media_fetch(&self.http, url, &headers).await
+    }
+
+    /// OstMac FIXPACK F7: the first `max_bytes` of a media URL (HTTP
+    /// `Range: bytes=0-N`), enough for an image header. Same auth as
+    /// [`Self::media_get`]; whole-request deadline `timeout`. 200 or 206
+    /// both fine (a server that ignores Range is read only up to
+    /// `max_bytes`). The result is a PREFIX: callers must not cache it as
+    /// the full file.
+    pub async fn media_get_head(
+        &self,
+        url: &str,
+        max_bytes: usize,
+        timeout: Duration,
+    ) -> Result<super::media::MediaBytes> {
+        let mut headers = if super::media::needs_auth(url) {
+            let token = self.skype_token()?;
+            super::media::auth_headers(url, &token)
+        } else {
+            Vec::new()
+        };
+        headers.push(("Range", format!("bytes=0-{}", max_bytes.saturating_sub(1))));
+        let mut req = self.http.get(url);
+        for (name, value) in &headers {
+            req = req.header(*name, value.as_str());
+        }
+        tracing::debug!("Media head GET {}", url);
+        let resp = req
+            .send_observed("GET", url, Some(timeout))
+            .await
+            .with_context(|| format!("Media head GET {} failed", url))?;
+        let mut resp = check_response(resp, url).await?;
+        let content_type = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .map(String::from);
+        let mut data: Vec<u8> = Vec::new();
+        while data.len() < max_bytes {
+            match resp.chunk().await.with_context(|| format!("Media head GET {} body failed", url))? {
+                Some(c) => data.extend_from_slice(&c),
+                None => break,
+            }
+        }
+        data.truncate(max_bytes);
+        Ok(super::media::MediaBytes { data, content_type })
     }
 
     /// Transport core behind [`Self::media_get`]: GET with exactly the
@@ -735,6 +885,40 @@ mod tests {
             }
         });
         (base, hits, task)
+    }
+
+    /// §GRAPHSWEEP: routes the Teams token can't use are refused locally;
+    /// working neighbours (channel create/list, chat tabs, file-card send)
+    /// pass.
+    #[test]
+    fn graph_denied_table() {
+        assert_eq!(graph_denied("POST", "/teams").map(|d| d.1), Some("Team.Create"));
+        assert_eq!(graph_denied("patch", "/teams/t/channels/c").map(|d| d.1), Some("ChannelSettings.ReadWrite.All"));
+        assert_eq!(graph_denied("DELETE", "/teams/t/channels/c").map(|d| d.1), Some("Channel.Delete.All"));
+        assert!(graph_denied("POST", "/me/teamwork/installedApps").is_some());
+        assert!(graph_denied("POST", "/users/u/teamwork/installedApps").is_some());
+        assert!(graph_denied("POST", "/chats/19:x@thread.v2/hideForUser").is_some());
+        assert!(graph_denied("GET", "/me/onlineMeetings?$filter=x").is_some());
+        for (m, p) in [
+            ("GET", "/teams/t/channels"),
+            ("POST", "/teams/t/channels"),
+            ("DELETE", "/teams/t/members/m"),
+            ("GET", "/teams"),
+            ("GET", "/chats/c/tabs?$expand=teamsApp"),
+            ("POST", "/chats/c/messages"),
+            ("GET", "/me/calendarView"),
+        ] {
+            assert!(graph_denied(m, p).is_none(), "{} {}", m, p);
+        }
+    }
+
+    #[tokio::test]
+    async fn denied_route_fails_before_network() {
+        let e = check_graph_allowed("POST", "/teams").unwrap_err();
+        let msg = format!("{:#}", e);
+        assert!(msg.contains("Creating a team isn't available with the Teams sign-in"), "{}", msg);
+        assert!(msg.contains("Team.Create"), "{}", msg);
+        assert!(check_graph_allowed("GET", "/me").is_ok());
     }
 
     fn plain(status: &str, content_type: &str, body: &[u8]) -> Vec<u8> {

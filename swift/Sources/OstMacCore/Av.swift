@@ -1,6 +1,6 @@
 // Av.swift — om-av: A/V models + RustCore wrappers (mic/tone/camera/display/dry-run).
 // Blocking calls (micTest, tonePlay) must run off the main thread; the panel
-// ViewModel dispatches them with Task.detached.
+// ViewModel dispatches them with Task.blocking.
 import COstMac
 import Foundation
 

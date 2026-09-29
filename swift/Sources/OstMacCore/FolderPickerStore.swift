@@ -68,7 +68,7 @@ public final class FolderPickerStore: ObservableObject {
         let fetch = fetcher
         Task {
             do {
-                let resp = try await Task.detached { try fetch(drive, parent, 200) }.value
+                let resp = try await Task.blocking { try fetch(drive, parent, 200) }.value
                 guard gen == generation else { return }
                 finish(resp.files.filter(\.isFolder).map {
                     SharedFolderCrumb(driveID: drive, itemID: $0.id, name: $0.name)

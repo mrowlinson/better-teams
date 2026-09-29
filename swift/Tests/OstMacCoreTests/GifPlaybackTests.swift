@@ -154,7 +154,7 @@ final class GifPlaybackTests: XCTestCase {
         let bytes = try DemoMedia.data(for: DemoMedia.gif1)
         let model = RemoteImageModel(
             url: DemoMedia.gif1, messageID: "m1",
-            cache: RichMediaCache(diskDir: nil),
+            cache: RichMediaCache(diskDir: nil, memory: .pinned),
             fetcher: { _ in bytes })
         await model.reload()
         XCTAssertEqual(model.phase, .loaded)
@@ -168,7 +168,7 @@ final class GifPlaybackTests: XCTestCase {
         let bytes = try DemoMedia.data(for: DemoMedia.photo1)
         let model = RemoteImageModel(
             url: DemoMedia.photo1, messageID: "m1",
-            cache: RichMediaCache(diskDir: nil),
+            cache: RichMediaCache(diskDir: nil, memory: .pinned),
             fetcher: { _ in bytes })
         await model.reload()
         XCTAssertEqual(model.phase, .loaded)

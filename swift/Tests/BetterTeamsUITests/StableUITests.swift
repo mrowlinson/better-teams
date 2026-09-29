@@ -6,6 +6,14 @@ import OstMacCore
 
 @MainActor
 final class StableUITests: XCTestCase {
+    /// R22.4: the corner refresh spinner carries a visible caption (built
+    /// from its label), delayed by the same 0.3 s as the loading pane.
+    func testRefreshStatusCaptionIsVisibleText() {
+        XCTAssertEqual(RefreshStatus.caption("Updating Chats"), "Updating Chats\u{2026}")
+        XCTAssertEqual(RefreshStatus.caption("Loading Earlier Messages\u{2026}"), "Loading Earlier Messages\u{2026}")
+        XCTAssertEqual(LoadingPane.delayMilliseconds, 300)
+    }
+
     /// First-load pane: hidden for the first 0.3 s (a fast load shows
     /// nothing), labelled per section, spoken without the ellipsis.
     func testLoadingPaneDelayAndSpokenLabel() {

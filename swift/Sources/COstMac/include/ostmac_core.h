@@ -7,6 +7,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdbool.h>
 
 // NOTE (R12 ffi-move-now B0): version/init/status/status_for/
 // profile_active moved to Swift (CoreLocal); decls deleted.
@@ -52,6 +53,17 @@ char *ostmac_chat_create_one_to_one(const char *user);
 char *ostmac_channel_create(
     const char *team_id, const char *name, const char *description);
 
+// Rename / re-describe one channel (Teams middle tier PATCH, requires sign-in):
+// {ok}. name and description may be NULL (unchanged); a blank
+// description clears it. Caller frees.
+char *ostmac_channel_update(
+    const char *team_id, const char *channel_id,
+    const char *name, const char *description);
+
+// Delete one channel (Teams middle tier DELETE, requires sign-in): {ok}.
+// Caller frees.
+char *ostmac_channel_delete(const char *team_id, const char *channel_id);
+
 // Join one team by id (self-enroll): {ok, team_id}. Caller frees.
 char *ostmac_team_join(const char *team_id);
 
@@ -60,13 +72,15 @@ char *ostmac_team_join(const char *team_id);
 // join a hit with ostmac_team_join(id). limit clamped 1..25. Caller frees.
 char *ostmac_team_search(const char *query, int limit);
 
-// Create one standard team (async Graph POST, requires sign-in):
+// Create one standard team (Teams middle tier POST, requires sign-in):
 // {ok,team:{id,name,channels},polls,elapsed_ms}. description may be
 // NULL (no description). Caller frees.
 char *ostmac_team_create(const char *name, const char *description);
 
 // One channel's pinned tabs JSON, read-only: {ok, channel_id, tabs}. Caller frees.
 char *ostmac_tabs(const char *channel_id);
+// One chat's pinned tabs JSON, read-only: {ok, chat_id, tabs}. Caller frees.
+char *ostmac_chat_tabs(const char *chat_id);
 /* APPHOST: app catalog + token broker. NULL profile = active. Tokens only
    inside the returned JSON; never log it. */
 char *ostmac_app_catalog_for(const char *profile);
@@ -89,6 +103,11 @@ char *ostmac_app_sites_for(const char *profile, const char *group_id);
 // One team's roster JSON: {ok, team_id, members:[{id, display_name,
 // user_id?, email?, roles, is_owner}]} (requires sign-in). Caller frees.
 char *ostmac_team_members(const char *team_id);
+
+// One team's member permissions + General channel id (read-only):
+// {ok, team_id, allow_delete_channels|null, allow_create_update_channels|null,
+// primary_channel_id|null}. Caller frees.
+char *ostmac_team_settings(const char *team_id);
 
 // Add one user (id or UPN) to a team; owner nonzero grants the owner
 // role. Returns {ok, member}. Caller frees.
@@ -115,6 +134,17 @@ char *ostmac_search(const char *query, int from, int size);
 
 // Post one message to a chat. Caller frees.
 char *ostmac_send(const char *chat_id, const char *text);
+// §106 (SENDFIX): idempotent posts. `client_message_id` is the caller's
+// idempotency key (blank = fresh); retries reuse it. Success adds `id`
+// (server id when the answer named it) and `client_message_id`. Caller frees.
+char *ostmac_send_idem(const char *chat_id, const char *text, const char *client_message_id);
+char *ostmac_reply_idem(const char *chat_id, const char *parent_id, const char *parent_sender,
+                        const char *parent_text, const char *text, const char *client_message_id);
+char *ostmac_thread_reply_idem(const char *channel_id, const char *root_id, const char *text,
+                               const char *client_message_id);
+// §106 verify: {ok, found, message?} — newest page searched by client
+// message id (a timed-out send checks before Failed/re-post). Caller frees.
+char *ostmac_find_client_message(const char *chat_id, const char *client_message_id);
 
 // Add one emoji reaction to a message. Caller frees.
 char *ostmac_react(const char *chat_id, const char *message_id, const char *emoji);
@@ -158,6 +188,22 @@ char *ostmac_delete(const char *chat_id, const char *message_id);
 // {ok, chat_id}. Caller frees.
 char *ostmac_leave(const char *chat_id);
 
+// Mute (alerts "false") or unmute one chat: {ok, chat_id, muted}. Caller frees.
+char *ostmac_set_chat_muted(const char *chat_id, bool muted);
+
+// Hide or unhide one chat (chat service properties): {ok, chat_id, hidden}.
+// Caller frees.
+char *ostmac_set_chat_hidden(const char *chat_id, bool hidden);
+
+// Read-only chat folders (Favorites + user folders):
+// {ok, folders:[{id, name, folder_type, item_ids}]}. Caller frees.
+char *ostmac_chat_folders(void);
+
+// Move one chat into a Teams chat folder (folder_id "" = out of every
+// folder), verified: the folders after the move, same shape as
+// ostmac_chat_folders, or {ok:false}. Caller frees.
+char *ostmac_chat_folder_move(const char *chat_id, const char *folder_id);
+
 // Mark one conversation read up to a message (consumption horizon PUT):
 // {ok, chat_id, message_id}. Caller frees.
 char *ostmac_mark_read(const char *chat_id, const char *message_id);
@@ -172,6 +218,12 @@ char *ostmac_receipts(const char *thread_id);
 // Caller frees.
 char *ostmac_media_fetch(const char *url);
 
+// FIXPACK F7: the first `max_bytes` of an https image URL within
+// `timeout_ms` (HTTP Range; an image-header probe for the viewer's open
+// size), same envelope as ostmac_media_fetch. Never cached: the bytes are
+// a prefix. Caller frees.
+char *ostmac_media_head(const char *url, uint32_t max_bytes, uint32_t timeout_ms);
+
 // Shared files JSON for one chat/channel (requires sign-in). Caller frees.
 char *ostmac_files(const char *chat_id, int limit);
 
@@ -184,6 +236,16 @@ char *ostmac_files_opts(const char *chat_id, int limit, int include_folders);
 // attachment_id = the body's <attachment id>). Same {ok, chat_id, files}
 // envelope. Caller frees.
 char *ostmac_message_files(const char *chat_id, const char *message_id);
+
+// A chat's server-side pinned messages (OstMac §84): {ok, chat_id,
+// source:"chatsvc"|"graph", pins:[{message_id, sender?, preview?, time?,
+// pinned_by?, pinned_at?, graph_pin_id?}]}. Chat-service thread first,
+// Graph fallback. GETs only. Caller frees.
+char *ostmac_chat_pinned_messages(const char *chat_id);
+
+// Unpin one Graph-sourced pin (Graph DELETE
+// /chats/{id}/pinnedMessages/{pin_id}): {ok, chat_id, pin_id}. Caller frees.
+char *ostmac_chat_unpin_message(const char *chat_id, const char *pin_id);
 
 // One folder's children by drive+item id (requires sign-in): files AND
 // subfolders, unfiltered. Returns {ok, drive_id, item_id, files}.
@@ -199,6 +261,10 @@ char *ostmac_files_recents(int limit);
 // (<=4 MB one PUT, larger via a resumable upload session).
 // Returns {ok, file}. Caller frees.
 char *ostmac_files_upload(const char *chat_id, const char *path);
+// §106: chat file send with a caller-owned client message id; a Retry passes
+// the same id with verify_first=1 (a landed file message is not re-posted).
+char *ostmac_files_upload_idem(const char *chat_id, const char *path,
+                               const char *client_message_id, int verify_first);
 
 // Meeting recordings, newest first (OneDrive + channel Recordings
 // folders, requires sign-in). limit<=0 means 50. Returns
@@ -350,6 +416,12 @@ char *ostmac_cal_cancel(const char *event_id);
 // may be NULL. Caller frees.
 char *ostmac_meeting_resolve_id(const char *meeting_id, const char *passcode);
 
+// The signed-in user's Teams tag names for Catch Up @tag mentions (CSA
+// service read, requires sign-in): {ok:true,tags:[lowercased names]} |
+// {ok:false,error:"tags",detail}. An empty list means the service said
+// "none"; any failure is ok:false. Caller frees.
+char *ostmac_catchup_tags(void);
+
 // One team's schedule week JSON (Graph schedule API, read-only,
 // requires sign-in): {ok,team_id,schedule:{enabled,time_zone,
 // provision_status},shifts:[{id,user_id?,display_name,start?,end?,
@@ -407,15 +479,6 @@ char *ostmac_sign_out_for(const char *profile);
 // Refresh one account profile's tokens (no active switch). Same
 // envelope as ostmac_refresh. Caller frees.
 char *ostmac_refresh_for(const char *profile);
-
-// Set own preferred presence. status is one of (case-insensitive):
-// available, busy, dnd (donotdisturb), away, offline.
-// Returns the applied {ok,availability,activity}. Caller frees.
-char *ostmac_presence_set(const char *status);
-
-// One other user's presence JSON (Entra ID or UPN):
-// {ok,id,availability,activity}. Caller frees. Hits network.
-char *ostmac_presence_user(const char *user_id);
 
 // Resolve a Teams MRI (8:orgid:<aad-oid>) to a Graph user:
 // {ok,id,email?,display_name}. {ok:false,error:"not_found"} for unknown

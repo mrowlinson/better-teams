@@ -28,6 +28,8 @@ public final class ChatListViewModel: ObservableObject, ChatSelection {
     public typealias Fetcher = @Sendable (Int32) throws -> ChatsResponse
     /// Sync leave call (runs off-main). Throws `CoreCallError` on failure.
     public typealias Leaver = @Sendable (String) throws -> LeaveResponse
+    /// Sync next-page fetch by the previous page's `next_link` (off-main).
+    public typealias PageFetcher = @Sendable (String) throws -> ChatsResponse
 
     /// Latest rows (only meaningful in `.loaded`; stale otherwise).
     /// Every write rebuilds `chatByID` (first id wins, `.first` parity).
@@ -61,10 +63,36 @@ public final class ChatListViewModel: ObservableObject, ChatSelection {
     @Published public private(set) var leavingIDs: Set<String> = []
     /// Last leave failure (sidebar error alert; nil when clear).
     @Published public private(set) var leaveError: String?
+    /// CHATSYNC S1: chats being deleted (menu disables Delete) and the
+    /// last delete failure (quiet note under the list; row kept).
+    @Published public private(set) var deletingIDs: Set<String> = []
+    @Published public private(set) var deleteError: String?
+    /// Last refused Mark as read/unread (AppState sets it).
+    @Published public var readStateError: String?
+    /// Delete chat for the owner (chat id, newest message ms); nil = no
+    /// server delete (demo removes locally).
+    public var deleter: (@MainActor (String, Int64?) async throws -> Void)?
+    /// When the newest list fetch started (read-state seeds use it to
+    /// ignore answers older than a local change).
+    public private(set) var lastFetchStartedAt: Date = .distantPast
     /// Successful leaves this session (Diagnostics only).
     @Published public private(set) var leavesCompleted = 0
     /// Failed leave calls this session (Diagnostics only).
     @Published public private(set) var leaveFailures = 0
+    /// An older page is being fetched (the sidebar's bottom spinner).
+    @Published public private(set) var isLoadingMore = false
+    /// FIXPACK F9: the last older-page read timed out or failed. The footer
+    /// shows a Try Again button instead of a spinner; nothing pages again
+    /// until the user retries (or a reload resets it).
+    @Published public private(set) var loadMoreFailed = false
+    /// Deadline for one older-page read (seconds). Tests shorten it.
+    public var pageTimeout: TimeInterval = 10
+    /// Link to the next older page; nil = the whole list is loaded.
+    @Published public private(set) var nextPageLink: String?
+    /// Pages fetched so far; a refresh re-reads this many (min 1).
+    public private(set) var loadedPages = 0
+    /// More (older) chats exist on the server.
+    public var hasMore: Bool { nextPageLink != nil }
 
     public var selectedChat: ChatItem? {
         selectedChatID.flatMap { chatByID[$0] }
@@ -102,11 +130,16 @@ public final class ChatListViewModel: ObservableObject, ChatSelection {
     public var onLocalRemove: ((String) -> Void)?
 
     private let fetcher: Fetcher
+    private let pageFetcher: PageFetcher
     private let leaver: Leaver
+    /// Bumped by each full load, so a page landing after a reload or an
+    /// account switch is dropped instead of mixing into the new list.
+    private var generation = 0
     private var cancellables = Set<AnyCancellable>()
 
     public init(
         fetcher: @escaping Fetcher = { try RustCore.chats(limit: $0) },
+        pageFetcher: @escaping PageFetcher = { try RustCore.chats(limit: 50, pageLink: $0) },
         pins: UserPinStore? = nil,
         leaver: @escaping Leaver = { try RustCore.leaveChat(chatID: $0) },
         blocked: BlockedStore? = nil,
@@ -115,6 +148,7 @@ public final class ChatListViewModel: ObservableObject, ChatSelection {
         // Store defaults built here: default arguments are nonisolated
         // and cannot call the stores' main-actor inits.
         self.fetcher = fetcher
+        self.pageFetcher = pageFetcher
         self.leaver = leaver
         self.blocked = blocked ?? BlockedStore(defaults: nil)
         self.pins = pins ?? UserPinStore()
@@ -170,29 +204,209 @@ public final class ChatListViewModel: ObservableObject, ChatSelection {
     /// Publish a fetched list: rows only when they changed (a cached
     /// paint that matches the server republishes nothing), then save
     /// the snapshot. Drops the selection when its chat is gone.
-    private func apply(_ response: ChatsResponse) {
-        let visible = Self.recencyOrdered(blocked.filtered(response.chats))
+    private func apply(_ response: ChatsResponse, complete: Bool = true) {
+        let visible = Self.merged(
+            existing: chats, fetched: blocked.filtered(response.chats), complete: complete)
         if visible != chats { chats = visible }
         state = visible.isEmpty ? .empty : .loaded
         if let sel = selectedChatID, chatByID[sel] == nil {
             selectedChatID = nil
         }
         snapshots?.save(visible, key: Self.snapshotKey)
+        onFetched?(response.chats)
+    }
+
+    /// Every fetched list (the app adopts the Teams mute state).
+    public var onFetched: (([ChatItem]) -> Void)?
+    /// Teams folders read, run after each fetch; nil = none (demo seeds
+    /// FolderStore directly). A failed read keeps the last folders.
+    public var folderReader: (@Sendable () throws -> ChatFoldersResponse)?
+
+    /// Activity-feed chat mentions, read after each fetch (Mentions
+    /// filter seed); nil = none (demo). A failed read changes nothing.
+    public var mentionReader: (@Sendable () throws -> [MentionActivity])?
+    /// Every successful mention read (the app seeds MentionStore).
+    public var onMentionActivity: (([MentionActivity]) -> Void)?
+
+    private func readMentions(generation gen: Int) async {
+        guard let reader = mentionReader,
+              let list = try? await Self.offPool({ try reader() }),
+              gen == generation
+        else { return }
+        onMentionActivity?(list)
+    }
+
+    private func readFolders() async {
+        guard let reader = folderReader else { return }
+        if let resp = try? await Task.blocking(operation: { try reader() }).value, resp.ok {
+            folders.applyServer(resp.folders)
+        }
     }
 
     /// Fetch the list. Drops the selection when its chat is gone.
     /// Blocked threads are filtered before publish (they never render).
     public func load(limit: Int32 = 50) async {
         state = .loading
+        await fetchWindow(limit: limit)
+    }
+
+    /// Once-only gate: the first of the read and the timer resumes.
+    private final class OnceGate: @unchecked Sendable {
+        private let lock = NSLock()
+        private var done = false
+        func claim() -> Bool { lock.lock(); defer { lock.unlock() }; if done { return false }; done = true; return true }
+    }
+
+    /// Thrown when an older-page read outlives its deadline.
+    struct PageTimeout: Error {}
+
+    /// [`offPool`] with a deadline: the read keeps running on the blocking
+    /// executor (a blocking core call cannot be cancelled) but its late
+    /// answer is dropped. The timer only sleeps, so it holds no thread.
+    nonisolated static func offPool<T: Sendable>(
+        timeout: TimeInterval, _ op: @escaping @Sendable () throws -> T
+    ) async throws -> T {
+        try await withCheckedThrowingContinuation { cont in
+            let gate = OnceGate()
+            Task.blocking(priority: .userInitiated) {
+                let r = Result { try op() }
+                if gate.claim() { cont.resume(with: r) }
+            }
+            Task(priority: .utility) {
+                try? await Task.sleep(nanoseconds: UInt64(max(0, timeout) * 1_000_000_000))
+                if gate.claim() { cont.resume(throwing: PageTimeout()) }
+            }
+        }
+    }
+
+    /// Run a blocking core call on the shared blocking executor, not the
+    /// cooperative pool: at launch many stores park threads in blocking
+    /// calls, and a list fetch queued behind them could not even start.
+    nonisolated static func offPool<T: Sendable>(
+        _ op: @escaping @Sendable () throws -> T
+    ) async throws -> T {
+        try await BlockingExecutor.run(priority: .userInitiated, op)
+    }
+
+    /// Re-read every page loaded so far (first page alone on the first
+    /// load) and publish once, merged into the rows on screen: a reload
+    /// never shrinks a scrolled-out list back to one page.
+    private func fetchWindow(limit: Int32) async {
+        lastFetchStartedAt = Date()
+        generation += 1
+        loadMoreFailed = false
+        let gen = generation
         let fetcher = fetcher
+        let pageFetcher = pageFetcher
+        let pages = max(1, loadedPages)
         do {
-            let response = try await Task.detached {
-                try fetcher(limit)
-            }.value
-            apply(response)
+            let result = try await Self.offPool { () -> (ChatsResponse, Int) in
+                var page = try fetcher(limit)
+                var rows = page.chats
+                var read = 1
+                while read < pages, let link = page.next_link {
+                    page = try pageFetcher(link)
+                    rows += page.chats
+                    read += 1
+                }
+                return (ChatsResponse(ok: true, chats: rows, next_link: page.next_link), read)
+            }
+            guard gen == generation else { return }
+            let (response, read) = result
+            loadedPages = read
+            nextPageLink = response.next_link
+            apply(response, complete: response.next_link == nil)
+            await readFolders()
+            await readMentions(generation: gen)
         } catch {
+            guard gen == generation else { return }
             state = .error(Self.message(for: error))
         }
+    }
+
+    /// Fetch the next older page and merge it in (sidebar scroll or the
+    /// viewport not yet full). No-op while one is in flight or when the
+    /// list is complete. A failure keeps the link for the next try.
+    public func loadMore() async {
+        guard let link = nextPageLink, !isLoadingMore, !loadMoreFailed else { return }
+        isLoadingMore = true
+        defer { isLoadingMore = false }
+        let gen = generation
+        let pageFetcher = pageFetcher
+        let start = DispatchTime.now().uptimeNanoseconds
+        let page: ChatsResponse
+        do {
+            page = try await Self.offPool(timeout: pageTimeout) { try pageFetcher(link) }
+        } catch {
+            guard gen == generation else { return }
+            // FIXPACK F9: a timeout/failure is shown (Try Again), never an
+            // endless spinner, and does not auto-retry in a loop.
+            let why = error is PageTimeout ? "timed out" : "failed"
+            Log.store.error("chat list page \(self.loadedPages + 1, privacy: .public) \(why, privacy: .public) after \(Log.ms(since: start), privacy: .public)ms")
+            loadMoreFailed = true
+            return
+        }
+        guard gen == generation else {
+            Log.store.info("chat list page \(self.loadedPages + 1, privacy: .public) dropped \(Log.ms(since: start), privacy: .public)ms")
+            return
+        }
+        loadMoreFailed = false
+        loadedPages += 1
+        Log.store.info("chat list page \(self.loadedPages, privacy: .public) rows=\(page.chats.count, privacy: .public) more=\(page.next_link != nil, privacy: .public) \(Log.ms(since: start), privacy: .public)ms")
+        nextPageLink = page.next_link
+        let visible = Self.merged(
+            existing: chats, fetched: blocked.filtered(page.chats), complete: false,
+            dropNewerAbsent: false)
+        if visible != chats { chats = visible }
+        state = visible.isEmpty ? .empty : .loaded
+        snapshots?.save(visible, key: Self.snapshotKey)
+        onFetched?(page.chats)
+    }
+
+    /// The footer's Try Again: clear the failed state and page again.
+    public func retryLoadMore() async {
+        guard loadMoreFailed else { return }
+        loadMoreFailed = false
+        await loadMore()
+    }
+
+    /// Row-appear hook: prefetch the next page once the row is within
+    /// `buffer` rows of the end of `rows` (the order the sidebar shows).
+    public func loadMoreIfNeeded(currentID: String, in rows: [ChatItem], buffer: Int = 12) {
+        guard hasMore, !isLoadingMore, !loadMoreFailed else { return }
+        guard let i = rows.lastIndex(where: { $0.id == currentID }),
+              i >= rows.count - buffer
+        else { return }
+        Task { await loadMore() }
+    }
+
+    /// Pure list merge, recency-ordered. `complete` (the fetch reached the
+    /// last page) replaces the rows outright. Otherwise fetched rows are
+    /// upserted; an absent row is kept when it is older than the oldest
+    /// fetched row (it lives on a page not re-read), and dropped when
+    /// newer (it would have been in the window: left, hidden, or now
+    /// filtered) unless `dropNewerAbsent` is false (a single older page).
+    public nonisolated static func merged(
+        existing: [ChatItem], fetched: [ChatItem], complete: Bool,
+        dropNewerAbsent: Bool = true
+    ) -> [ChatItem] {
+        if complete { return recencyOrdered(fetched) }
+        var seen = Set<String>()
+        var out: [ChatItem] = []
+        out.reserveCapacity(existing.count + fetched.count)
+        for c in fetched where seen.insert(c.id).inserted { out.append(c) }
+        let oldest = fetched.compactMap { $0.last_message_time.flatMap(ChatListFormat.parse) }.min()
+        for c in existing where !seen.contains(c.id) {
+            if dropNewerAbsent {
+                guard let oldest,
+                      let t = c.last_message_time.flatMap(ChatListFormat.parse),
+                      t < oldest
+                else { continue }
+            }
+            seen.insert(c.id)
+            out.append(c)
+        }
+        return recencyOrdered(out)
     }
 
     /// Leave one group chat: call core, then drop the row locally and
@@ -209,7 +423,7 @@ public final class ChatListViewModel: ObservableObject, ChatSelection {
         leaveError = nil
         let leaver = leaver
         do {
-            _ = try await Task.detached { try leaver(id) }.value
+            _ = try await Task.blocking { try leaver(id) }.value
             leavingIDs.remove(id)
             leavesCompleted += 1
             removeLocally(chatID: id)
@@ -236,6 +450,27 @@ public final class ChatListViewModel: ObservableObject, ChatSelection {
     /// Dismiss the leave error (sidebar alert Cancel).
     public func clearLeaveError() {
         leaveError = nil
+        deleteError = nil
+        readStateError = nil
+    }
+
+    /// Delete a chat for the owner (Teams "Delete chat"): the row leaves
+    /// the list (a diff) only once Teams accepted it; a failure keeps
+    /// the row and says so.
+    public func delete(chatID: String) async {
+        let id = chatID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let row = chatByID[id], !deletingIDs.contains(id) else { return }
+        deletingIDs.insert(id)
+        deleteError = nil
+        defer { deletingIDs.remove(id) }
+        do {
+            if let deleter {
+                try await deleter(id, CoreReads.arrivalMs(id: nil, time: row.last_message_time))
+            }
+            removeLocally(chatID: id)
+        } catch {
+            deleteError = Self.message(for: error)
+        }
     }
 
     /// Drop one row without refetching; migrate a stranded selection to
@@ -273,6 +508,11 @@ public final class ChatListViewModel: ObservableObject, ChatSelection {
     /// rows visible) + selection + transient state. Lands on `.empty`
     /// (static, no spinner); the caller follows with `loadQuietly`.
     public func resetForAccount() {
+        generation += 1
+        nextPageLink = nil
+        loadedPages = 0
+        isLoadingMore = false
+        loadMoreFailed = false
         chats = []
         selectedChatID = nil
         leavingIDs = []
@@ -283,15 +523,7 @@ public final class ChatListViewModel: ObservableObject, ChatSelection {
     /// Fetch without the `.loading` spinner (account-switch follow-up
     /// to `resetForAccount`): state only moves when results land.
     public func loadQuietly(limit: Int32 = 50) async {
-        let fetcher = fetcher
-        do {
-            let response = try await Task.detached {
-                try fetcher(limit)
-            }.value
-            apply(response)
-        } catch {
-            state = .error(Self.message(for: error))
-        }
+        await fetchWindow(limit: limit)
     }
 
     /// Realtime feed: only user text bubbles a row to the top. Beacons,

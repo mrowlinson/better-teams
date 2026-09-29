@@ -196,7 +196,7 @@ public final class HealthStore: ObservableObject {
     ) async throws -> T {
         try await withCheckedThrowingContinuation { cont in
             let once = RaceOnce()
-            Task.detached {
+            Task.blocking {
                 let result = Result { try work() }
                 if once.claim() {
                     switch result {
@@ -205,7 +205,7 @@ public final class HealthStore: ObservableObject {
                     }
                 }
             }
-            Task.detached {
+            Task.blocking {
                 try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
                 if once.claim() {
                     cont.resume(throwing: HealthTimeout.timeout(seconds))

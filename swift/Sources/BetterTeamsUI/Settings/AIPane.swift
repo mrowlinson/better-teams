@@ -11,6 +11,7 @@ import SwiftUI
 
 struct AIPane: View {
     @ObservedObject var catchUp: CatchUpStore
+    @ObservedObject var feedback: CatchUpFeedbackStore
     @State private var availability = Self.currentAvailability()
 
     /// Demo evidence (`settings/ai?ai=…`): the status row to show instead
@@ -30,7 +31,7 @@ struct AIPane: View {
         // Deprecated providers only: the key loads when Settings opens,
         // never at launch (core rule).
         if app.catchUp.deprecatedProvidersEnabled { app.catchUp.ensureKeyLoaded() }
-        return AnyView(AIPane(catchUp: app.catchUp))
+        return AnyView(AIPane(catchUp: app.catchUp, feedback: app.catchUpFeedback))
     }
 
     var body: some View {
@@ -59,6 +60,21 @@ struct AIPane: View {
                             Button("Check Again") { availability = Self.currentAvailability() }
                         }
                     }
+                }
+                // CATCHTABS: "Not important" dismissals, stored on this Mac.
+                Section {
+                    LabeledContent("Items marked Not Important") {
+                        HStack(spacing: 8) {
+                            Text("\(feedback.count)").monospacedDigit().foregroundStyle(.secondary)
+                            Button("Reset") { feedback.reset() }
+                                .disabled(feedback.count == 0)
+                        }
+                    }
+                } footer: {
+                    Text("Catch Up hides items you mark Not Important and shows fewer like them. Reset brings them back.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
             if catchUp.deprecatedProvidersEnabled {

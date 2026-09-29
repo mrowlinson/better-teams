@@ -10,7 +10,7 @@
 //   receipts.isOwnRead(chatID: id, messageID: m.id, messages: msgs)
 //
 // Threading: @MainActor (ObservableObject for timeline + Diagnostics).
-// Core calls hop off-main via Task.detached; transports are injectable
+// Core calls hop off-main via Task.blocking; transports are injectable
 // for tests (throwing closures, no network).
 import Foundation
 
@@ -102,7 +102,7 @@ public final class ReceiptStore: ObservableObject {
         let send = sender
         Task {
             do {
-                try await Task.detached { try send(chat, latest) }.value
+                try await Task.blocking { try send(chat, latest) }.value
                 self.sent[chat] = latest
             } catch {
                 self.lastError = "read position failed: \(error)"
@@ -134,7 +134,7 @@ public final class ReceiptStore: ObservableObject {
         let fetch = fetcher
         Task {
             do {
-                let list = try await Task.detached { try fetch(thread) }.value
+                let list = try await Task.blocking { try fetch(thread) }.value
                 self.apply(threadID: thread, receipts: list)
             } catch {
                 self.lastError = "receipts failed: \(error)"

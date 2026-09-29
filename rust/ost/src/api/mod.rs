@@ -5,6 +5,8 @@ mod calendar;
 mod calweek;
 mod chat;
 pub mod client;
+#[cfg(test)]
+pub(crate) mod fake_transport;
 mod files;
 mod filesearch;
 mod graph;
@@ -16,10 +18,14 @@ mod presence;
 mod recordings;
 mod schedule;
 mod search;
+pub mod tags;
 mod tabs;
+mod team_settings;
 mod teams;
 mod todo;
 mod transcripts;
+#[cfg(test)]
+mod write_fakes;
 
 use anyhow::Result;
 
@@ -36,6 +42,7 @@ pub use me::UserInfo;
 pub use notes::{NotePage, NotebookInfo, PageInfo, SectionInfo};
 pub use planner::{BucketInfo, PlanInfo, PlannerTaskInfo};
 pub use presence::PresenceInfo;
+pub use team_settings::{team_settings_data, TeamMemberSettings};
 pub use recordings::{
     clamp_limit as recordings_clamp_limit, is_video as is_recording_video,
     list_recordings_data, parse_recordings_response, recordings_children_path,
@@ -84,10 +91,29 @@ pub use chat::{
 };
 // OstMac core-a: channel thread replies, chat roster, group create, reactors.
 pub use chat::{
-    chat_members_path, create_group_chat_data, group_chat_create_body, group_chat_create_path,
+    chat_members_path, create_group_chat_data, group_chat_create_body, created_thread_id, thread_create_url,
     group_chat_members, is_channel_conversation_id, list_chat_members_data,
     parse_graph_chat_members, parse_thread_members, reaction_counts_from_values,
     thread_reply_conversation, thread_reply_url, thread_reply_with_client,
+};
+// OstMac §106 (SENDFIX): idempotent sends + verify-by-clientmessageid.
+pub use chat::{
+    find_by_client_id, find_message_by_client_id, new_client_message_id,
+    one_to_one_thread_body, one_to_one_thread_id,
+    reply_message_with_client_id, send_message_with_client_id, sent_id_from_response,
+    thread_reply_with_client_id, SentMessage,
+};
+// OstMac §84: server-side pinned chat messages.
+pub use chat::{
+    chat_pinned_messages_data, chat_unpin_message_with_client, fill_pin_from_message,
+    graph_pins_path, graph_unpin_path, parse_graph_pins, parse_thread_pins, pick_pins,
+    thread_pins_url, PinSource, PinnedRef,
+};
+pub use chat::{
+    alerts_body, alerts_muted, alerts_url, conversation_folder_move_with_client,
+    conversation_folders_data, conversation_folders_url, folder_move_actions, folder_move_body,
+    conversation_property_url, hide_chat_properties, parse_conversation_folders, set_chat_hidden_with_client,
+    set_chat_muted_with_client, ConversationFolder, CHATSVCAGG_SCOPE, SYSTEM_FOLDER_TYPES,
 };
 pub use calendar::{
     calendar_view_path, list_upcoming_meetings_data, lobby_next, normalize_join_meeting_id,
@@ -110,7 +136,8 @@ pub use files::{
     list_drive_recents_data, list_file_versions_data, list_folder_children_data,
     list_message_files_data, message_path, move_body,
     move_file_data, rename_body, rename_file_data, restore_file_version_data, upload_chunk_ranges,
-    upload_file_data, upload_file_data_with_progress, upload_session_body, UploadProgress,
+    upload_file_data, upload_file_data_idem, upload_file_data_with_progress, upload_session_body,
+    UploadProgress,
 };
 pub use media::{fetch_media_data, MediaBytes, MAX_BYTES};
 pub use me::whoami_data;
@@ -125,18 +152,20 @@ pub use planner::{
     task_path, tasks_path,
 };
 pub use presence::get_presence_data;
-pub use tabs::list_tabs_data;
+pub use tabs::{list_chat_tabs_data, list_tabs_data};
 pub use teams::{
     add_member_body, add_team_member_data, channel_react_body,
     channel_reply_set_reaction_path, channel_reply_unset_reaction_path,
-    channel_set_reaction_path, channel_unset_reaction_path, create_channel_body,
-    create_channel_data, create_channel_path, create_team_body, create_team_data,
-    create_team_path, join_team_data, list_team_members_data, list_teams_data,
+    channel_path, channel_set_reaction_path, channel_unset_reaction_path,
+    create_channel_body, create_channel_data, delete_channel_data, update_channel_body,
+    update_channel_data, create_channel_path, create_team_body, create_team_data,
+    mt_create_team_url, created_team_ids, team_thread_id, mt_channel_url, delete_channel_body,
+    is_thread_id, team_internal_id, TEAM_ACCESS_PRIVATE, join_team_data, list_team_members_data, list_teams_data,
     parse_public_teams, public_teams_groups_path, public_teams_list_path,
     search_public_teams_data, PublicTeamInfo, PublicTeamsSource, PUBLIC_TEAMS_MAX,
     member_path, members_path, operation_failed, operation_succeeded,
     operation_team_id, operation_url, remove_team_member_data,
-    set_channel_reaction_data, standard_team_template, TeamCreateResult,
+    set_channel_reaction_data, TeamCreateResult,
     TeamsAsyncOperation, TEAM_CREATE_POLL_SECS, TEAM_CREATE_TIMEOUT_SECS,
     unset_channel_reaction_data,
 };

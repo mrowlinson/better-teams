@@ -81,7 +81,7 @@ public struct GifClip: Sendable {
 
     /// Downsampled per-frame decode off the caller's actor.
     public static func decodeOffMain(data: Data, maxPixels: CGFloat) async -> GifClip? {
-        await Task.detached(priority: .userInitiated) {
+        await Task.blocking(priority: .userInitiated) {
             decode(data: data, maxPixels: maxPixels)
         }.value
     }

@@ -313,13 +313,17 @@ public final class MessageNotifications: ObservableObject {
         didSet { defaults.set(sound, forKey: Self.soundKey) }
     }
 
+    /// Live default backend. Tests that build a live AppState swap it
+    /// (the system center needs an app bundle).
+    static var systemBackend: () -> any NotificationPosting = { SystemNotificationCenter() }
+
     /// Main-actor init (Swift 6): View inits are main-actor, so views
     /// can still take a default; the stored state is main-actor-isolated.
     public init(
         backend: (any NotificationPosting)? = nil,
         defaults: UserDefaults = .standard
     ) {
-        self.backend = backend ?? SystemNotificationCenter()
+        self.backend = backend ?? Self.systemBackend()
         self.defaults = defaults
         var enabled = true
         if defaults.object(forKey: Self.enabledKey) != nil {

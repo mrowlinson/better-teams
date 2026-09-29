@@ -75,12 +75,12 @@ enum DemoAppStore {
             "Snap a receipt, file the claim and route it for approval. Finance sees it the moment it's signed off.",
             categories: ["Finance", "Workflow"], permissions: ["identity"],
             domains: ["expenses.woodgrove.example"], accent: "#986F0B"),
-        app(DemoTeamsJSApp.appID, "Sample Tab App", "Contoso Samples", "A TeamsJS sample running natively.",
+        app(DemoTeamsJSApp.appID, "Team Pulse", "Contoso", "Team check-ins, running natively.",
             "Shows the host handshake, context and sign-in token paths of the native Teams app host.",
             categories: ["Developer Tools"], domains: ["sample.contoso.example"], accent: "#0078D4"),
     ]
 
-    /// Installed in the demo tenant (Sample Tab App is hosted by its own launch).
+    /// Installed in the demo tenant (Team Pulse is hosted by its own launch).
     static let installedIDs: [String] = [plannerID, "demo-app-onenote", sprintBoardID]
 
     static let sections: [TeamsAppStoreSection] = [

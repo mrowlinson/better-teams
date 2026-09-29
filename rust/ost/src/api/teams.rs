@@ -368,6 +368,144 @@ pub async fn create_channel_data(
 }
 
 // ---------------------------------------------------------------------------
+// Channel edit + delete (teamsync)
+// ---------------------------------------------------------------------------
+
+/// Graph path for one channel in one team (pure so tests pin it).
+pub fn channel_path(team_id: &str, channel_id: &str) -> String {
+    format!("/teams/{}/channels/{}", team_id.trim(), channel_id.trim())
+}
+
+/// PATCH body for a channel edit: only the fields that change. A blank
+/// description clears it (Graph takes `""`); `None` leaves it alone.
+pub fn update_channel_body(name: Option<&str>, description: Option<&str>) -> serde_json::Value {
+    let mut body = serde_json::json!({});
+    if let Some(n) = name.map(str::trim).filter(|n| !n.is_empty()) {
+        body["displayName"] = serde_json::Value::String(n.to_string());
+    }
+    if let Some(d) = description {
+        body["description"] = serde_json::Value::String(d.trim().to_string());
+    }
+    body
+}
+
+// OstMac §GRAPHSWEEP3: channel edit/delete go to the Teams middle tier,
+// shaped like the Teams web client's own `editChannel` / `deleteChannel`
+// requests (services-teams-and-channels chunk + CDL worker resolvers):
+// `PATCH|DELETE {mt}/beta/teams/{teamThreadId}/channels/{channelId}`,
+// JSON body, AAD bearer + X-Skypetoken. The Graph routes need
+// ChannelSettings.ReadWrite.All / Channel.Delete.All, which the Teams
+// token lacks (still refused by `graph_denied`).
+
+/// True for a Teams thread id (`19:…@thread…`), the form the middle tier
+/// keys teams and channels by.
+pub fn is_thread_id(id: &str) -> bool {
+    let t = id.trim();
+    t.starts_with("19:") && t.contains("@thread")
+}
+
+/// The team thread id from a Graph `team` answer (`internalId`). Pure.
+pub fn team_internal_id(v: &serde_json::Value) -> Option<String> {
+    v.get("internalId")
+        .and_then(|s| s.as_str())
+        .map(str::trim)
+        .filter(|s| is_thread_id(s))
+        .map(String::from)
+}
+
+/// Resolve the middle tier's team id (team thread id) from the Graph
+/// group id the app lists teams by. Thread ids pass through; group ids
+/// read Graph `GET /teams/{id}?$select=internalId` (Team.ReadBasic.All,
+/// granted).
+pub async fn team_thread_id(client: &TeamsClient, team_id: &str) -> Result<String> {
+    if is_thread_id(team_id) {
+        return Ok(team_id.trim().to_string());
+    }
+    check_id("team_id", team_id)?;
+    let v: serde_json::Value = client
+        .graph_get(&format!("/teams/{}?$select=internalId", team_id.trim()))
+        .await?
+        .json()
+        .await
+        .context("Failed to parse team response")?;
+    team_internal_id(&v).context("the team's Teams id (internalId) is missing")
+}
+
+/// Middle-tier URL for one channel of one team (ids percent-encoded like
+/// the web client's `encodeURIComponent`). Pure.
+pub fn mt_channel_url(mt: &str, team_thread: &str, channel_id: &str) -> String {
+    format!(
+        "{}/beta/teams/{}/channels/{}",
+        mt.trim_end_matches('/'),
+        encode_component(team_thread.trim()),
+        encode_component(channel_id.trim())
+    )
+}
+
+/// DELETE body: the web client sends the channel's descriptor; this is
+/// the subset the app knows (channel id, host team thread + group id).
+/// INFERRED minimal: the middle tier keys the delete on the URL.
+pub fn delete_channel_body(channel_id: &str, team_thread: &str, group_id: &str) -> serde_json::Value {
+    let mut body = serde_json::json!({
+        "id": channel_id.trim(),
+        "hostTeamId": team_thread.trim(),
+        "isGeneral": false,
+    });
+    if !group_id.trim().is_empty() && !is_thread_id(group_id) {
+        body["hostTeamGroupId"] = serde_json::Value::String(group_id.trim().to_string());
+    }
+    body
+}
+
+/// Rename a channel and/or change its description through the Teams
+/// middle tier (`PATCH …/beta/teams/{team}/channels/{channel}`, body
+/// `displayName`/`description`, the fields the web client sends). The
+/// General channel cannot be renamed; the service's refusal surfaces to
+/// the caller. An empty change is rejected before any network.
+pub async fn update_channel_data(
+    client: &TeamsClient,
+    team_id: &str,
+    channel_id: &str,
+    name: Option<&str>,
+    description: Option<&str>,
+) -> Result<()> {
+    check_id("team_id", team_id)?;
+    check_id("channel_id", channel_id)?;
+    let body = update_channel_body(name, description);
+    if body.as_object().map(|o| o.is_empty()).unwrap_or(true) {
+        bail!("nothing to update");
+    }
+    let team = team_thread_id(client, team_id).await?;
+    let url = mt_channel_url(&client.middle_tier_url(), &team, channel_id);
+    client.mt_send_json("PATCH", &url, &body, None).await?;
+    Ok(())
+}
+
+/// Delete one standard channel through the Teams middle tier (`DELETE
+/// …/beta/teams/{team}/channels/{channel}`). Teams keeps deleted
+/// channels restorable for 30 days. The General channel (its id is the
+/// team's thread id) is refused before any network, as are empty or
+/// path-breaking ids. Private/shared channels go through a separate
+/// Teams provisioning service in the web client (not wired); the middle
+/// tier's answer surfaces as-is.
+pub async fn delete_channel_data(
+    client: &TeamsClient,
+    team_id: &str,
+    channel_id: &str,
+) -> Result<()> {
+    check_id("team_id", team_id)?;
+    check_id("channel_id", channel_id)?;
+    let team = team_thread_id(client, team_id).await?;
+    if channel_id.trim() == team {
+        bail!("The General channel can't be deleted");
+    }
+    let url = mt_channel_url(&client.middle_tier_url(), &team, channel_id);
+    let body = delete_channel_body(channel_id, &team, team_id);
+    client.mt_send_json("DELETE", &url, &body, None).await?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Team members + owners (om-h5-members)
 // ---------------------------------------------------------------------------
 
@@ -685,42 +823,45 @@ pub const TEAM_CREATE_POLL_SECS: u64 = 3;
 /// Give up polling after this many seconds (40 polls at 3s).
 pub const TEAM_CREATE_TIMEOUT_SECS: u64 = 120;
 
-/// POST path for template-based team creation.
-pub fn create_team_path() -> &'static str {
-    "/teams"
+/// OstMac §GRAPHSWEEP3: team create goes to the Teams middle tier
+/// (`POST {mt}/beta/teams/create`, the web client's `createTeam`); Graph
+/// `POST /teams` needs Team.Create, which the Teams token lacks.
+pub fn mt_create_team_url(mt: &str) -> String {
+    format!("{}/beta/teams/create", mt.trim_end_matches('/'))
 }
 
-/// `teamsTemplates` binding for a plain standard team.
-pub fn standard_team_template() -> &'static str {
-    "https://graph.microsoft.com/v1.0/teamsTemplates('standard')"
+/// Middle-tier team `accessType` (web client enum: None 0, Private 1,
+/// Secret 2, Public 3). New teams are Private, the web client's default.
+pub const TEAM_ACCESS_PRIVATE: u8 = 1;
+
+/// Create body as the web client builds it for a team from scratch:
+/// `displayName`, `description` ("" when blank), `accessType` Private,
+/// `isTenantWide` and `validationRequired` false. Pure so tests pin it.
+pub fn create_team_body(name: &str, description: Option<&str>) -> serde_json::Value {
+    let desc = description.map(str::trim).filter(|d| !d.is_empty()).unwrap_or("");
+    serde_json::json!({
+        "displayName": name.trim(),
+        "description": desc,
+        "accessType": TEAM_ACCESS_PRIVATE,
+        "isTenantWide": false,
+        "validationRequired": false,
+    })
 }
 
-/// POST body for team creation: template bind + `displayName`,
-/// `description` only when non-blank, caller (`owner` user id) as the
-/// owning member. Pure so tests pin it.
-pub fn create_team_body(
-    name: &str,
-    description: Option<&str>,
-    owner: &str,
-) -> serde_json::Value {
-    let mut body = serde_json::json!({
-        "template@odata.bind": standard_team_template(),
-        "displayName": name,
-        "members": [{
-            "@odata.type": "#microsoft.graph.aadUserConversationMember",
-            "roles": ["owner"],
-            "user@odata.bind": format!(
-                "https://graph.microsoft.com/v1.0/users('{}')",
-                owner.trim()
-            ),
-        }],
-    });
-    if let Some(d) = description {
-        if !d.trim().is_empty() {
-            body["description"] = serde_json::Value::String(d.to_string());
-        }
-    }
-    body
+/// Group id and team thread id from the create answer. The web client
+/// reads `value` and takes the group id from `value.siteInfo.groupId`
+/// (`value.groupId` accepted too); the thread id is `value.skypeThreadId`.
+/// `None` without a group id. Pure.
+pub fn created_team_ids(v: &serde_json::Value) -> Option<(String, Option<String>)> {
+    let value = v.get("value").unwrap_or(v);
+    let text = |x: Option<&serde_json::Value>| {
+        x.and_then(|s| s.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+    };
+    let group = text(value.pointer("/siteInfo/groupId")).or_else(|| text(value.get("groupId")))?;
+    Some((group, text(value.get("skypeThreadId"))))
 }
 
 /// One Graph `teamsAsyncOperation` poll response (only the fields the
@@ -835,11 +976,13 @@ async fn fetch_team_with_channels(
     })
 }
 
-/// Create one standard team and wait for it (`POST /teams` answers 202
-/// + `Content-Location`; the operation is polled every
-/// [`TEAM_CREATE_POLL_SECS`]s until `succeeded`/`failed` or
-/// [`TEAM_CREATE_TIMEOUT_SECS`]s elapse). The caller joins as owner.
-/// Empty names are rejected before any network.
+/// Create one standard (private) team through the Teams middle tier
+/// (`POST …/beta/teams/create`, synchronous answer carrying the group
+/// id), then read it back with its channels from Graph (Team.ReadBasic.All
+/// / Channel.ReadBasic.All, granted). A fresh team Graph does not list
+/// yet degrades to the id + name with no channels (the next teams refresh
+/// fills them). The caller becomes the owner. Empty names are rejected
+/// before any network.
 pub async fn create_team_data(
     client: &TeamsClient,
     name: &str,
@@ -849,67 +992,31 @@ pub async fn create_team_data(
         bail!("empty name");
     }
     let started = std::time::Instant::now();
-    let me = super::me::whoami_data(client).await?;
-    let body = create_team_body(name.trim(), description, &me.id);
-    let resp = client.graph_post(create_team_path(), &body).await?;
-    if resp.status() != reqwest::StatusCode::ACCEPTED {
-        // Sync fallback: answer already carries the team.
-        let team: Team = resp
-            .json()
-            .await
-            .context("Failed to parse created team response")?;
-        let id = team.id.clone();
-        let team = fetch_team_with_channels(client, &id, name).await?;
-        return Ok(TeamCreateResult {
-            team,
-            polls: 0,
-            elapsed_ms: started.elapsed().as_millis() as u64,
-        });
-    }
-    let header = resp
-        .headers()
-        .get(reqwest::header::CONTENT_LOCATION)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("")
-        .to_string();
-    if header.trim().is_empty() {
-        bail!("202 without Content-Location");
-    }
-    let url = operation_url(&header);
-    let mut polls = 0u32;
-    loop {
-        if started.elapsed().as_secs() >= TEAM_CREATE_TIMEOUT_SECS {
-            bail!(
-                "team create timed out after {}s ({} polls); the team may still be creating",
-                TEAM_CREATE_TIMEOUT_SECS,
-                polls
-            );
+    let url = mt_create_team_url(&client.middle_tier_url());
+    let v: serde_json::Value = client
+        .mt_send_json("POST", &url, &create_team_body(name, description), None)
+        .await?
+        .json()
+        .await
+        .context("Failed to parse team create response")?;
+    let (group_id, _thread) =
+        created_team_ids(&v).context("team create answer carries no group id")?;
+    let team = match fetch_team_with_channels(client, &group_id, name).await {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::warn!("New team not readable from Graph yet: {:#}", e);
+            TeamInfo {
+                id: group_id,
+                name: name.trim().to_string(),
+                channels: Vec::new(),
+            }
         }
-        tokio::time::sleep(std::time::Duration::from_secs(TEAM_CREATE_POLL_SECS)).await;
-        let op: TeamsAsyncOperation = client
-            .graph_get_url(&url)
-            .await?
-            .json()
-            .await
-            .context("Failed to parse team operation response")?;
-        polls += 1;
-        if operation_succeeded(&op.status) {
-            let id = operation_team_id(&op).context("operation succeeded without team id")?;
-            let team = fetch_team_with_channels(client, &id, name).await?;
-            return Ok(TeamCreateResult {
-                team,
-                polls,
-                elapsed_ms: started.elapsed().as_millis() as u64,
-            });
-        }
-        if operation_failed(&op.status) {
-            let detail = op
-                .error
-                .map(|e| e.to_string())
-                .unwrap_or_else(|| "failed".to_string());
-            bail!("team create failed: {}", detail);
-        }
-    }
+    };
+    Ok(TeamCreateResult {
+        team,
+        polls: 0,
+        elapsed_ms: started.elapsed().as_millis() as u64,
+    })
 }
 
 #[cfg(test)]
@@ -925,6 +1032,29 @@ mod tests {
         assert!(check_id("team_id", "550e8400-e29b-41d4-a716-446655440000").is_ok());
         assert!(check_id("team_id", "f09c6c30-1234-abcd-ef00-1234567890ab").is_ok());
         assert!(check_id("member_id", "aWQ9abcDEF123==").is_ok());
+    }
+
+    #[test]
+    fn channel_edit_delete_path_and_body() {
+        assert_eq!(
+            channel_path(" team-1 ", "19:abc@thread.tacv2"),
+            "/teams/team-1/channels/19:abc@thread.tacv2"
+        );
+        assert_eq!(
+            update_channel_body(Some("  Launch  "), None),
+            serde_json::json!({"displayName": "Launch"})
+        );
+        assert_eq!(
+            update_channel_body(None, Some(" Plans ")),
+            serde_json::json!({"description": "Plans"})
+        );
+        assert_eq!(
+            update_channel_body(Some("  "), Some("")),
+            serde_json::json!({"description": ""})
+        );
+        assert_eq!(update_channel_body(Some(" "), None), serde_json::json!({}));
+        assert!(check_id("channel_id", "19:abc@thread.tacv2").is_ok());
+        assert!(check_id("channel_id", "19:a/b@thread.tacv2").is_err());
     }
 
     #[test]
@@ -1019,33 +1149,74 @@ mod tests {
         assert_eq!(channel_info(unnamed).name, "19:anon@thread.tacv2");
     }
 
+    /// §GRAPHSWEEP3: team create, channel edit/delete leave Graph for the
+    /// Teams middle tier, shaped like the web client's requests.
     #[test]
-    fn team_create_pins_path_body_and_template() {
-        assert_eq!(create_team_path(), "/teams");
+    fn team_create_goes_to_middle_tier_with_web_client_body() {
         assert_eq!(
-            standard_team_template(),
-            "https://graph.microsoft.com/v1.0/teamsTemplates('standard')"
+            mt_create_team_url("https://teams.microsoft.com/api/mt/emea/"),
+            "https://teams.microsoft.com/api/mt/emea/beta/teams/create"
         );
-        let body = create_team_body("  Squad  ", Some("Ship it"), "oid-1");
-        assert_eq!(body["template@odata.bind"], standard_team_template());
-        assert_eq!(body["displayName"], "  Squad  ");
-        assert_eq!(body["description"], "Ship it");
-        let members = body["members"].as_array().unwrap();
-        assert_eq!(members.len(), 1);
+        let body = create_team_body("  Squad  ", Some(" Ship it "));
         assert_eq!(
-            members[0]["@odata.type"],
-            "#microsoft.graph.aadUserConversationMember"
+            body,
+            serde_json::json!({
+                "displayName": "Squad",
+                "description": "Ship it",
+                "accessType": 1,
+                "isTenantWide": false,
+                "validationRequired": false,
+            })
         );
-        assert_eq!(members[0]["roles"], serde_json::json!(["owner"]));
+        // Blank description goes as "" (the web client's `description||""`).
+        assert_eq!(create_team_body("Squad", Some("   "))["description"], "");
+        assert_eq!(create_team_body("Squad", None)["description"], "");
+        assert!(body.get("template@odata.bind").is_none());
+        // Answer: group id from value.siteInfo.groupId, thread from skypeThreadId.
+        let answer = serde_json::json!({"value": {
+            "displayName": "Squad",
+            "siteInfo": {"groupId": "group-1"},
+            "skypeThreadId": "19:team@thread.tacv2"
+        }});
         assert_eq!(
-            members[0]["user@odata.bind"],
-            "https://graph.microsoft.com/v1.0/users('oid-1')"
+            created_team_ids(&answer),
+            Some(("group-1".to_string(), Some("19:team@thread.tacv2".to_string())))
         );
-        // Blank description is dropped, never sent as "".
-        let bare = create_team_body("Squad", Some("   "), "oid-1");
-        assert!(bare.get("description").is_none());
-        let none = create_team_body("Squad", None, "oid-1");
-        assert!(none.get("description").is_none());
+        let flat = serde_json::json!({"value": {"groupId": "group-2"}});
+        assert_eq!(created_team_ids(&flat), Some(("group-2".to_string(), None)));
+        assert_eq!(created_team_ids(&serde_json::json!({"value": {}})), None);
+    }
+
+    #[test]
+    fn channel_edit_delete_middle_tier_shapes() {
+        assert!(is_thread_id("19:abc@thread.tacv2"));
+        assert!(!is_thread_id("550e8400-e29b-41d4-a716-446655440000"));
+        assert_eq!(
+            team_internal_id(&serde_json::json!({"internalId": " 19:t@thread.tacv2 "})),
+            Some("19:t@thread.tacv2".to_string())
+        );
+        assert_eq!(team_internal_id(&serde_json::json!({"internalId": "x"})), None);
+        assert_eq!(team_internal_id(&serde_json::json!({})), None);
+        assert_eq!(
+            mt_channel_url("https://mt/", "19:t@thread.tacv2", "19:c@thread.tacv2"),
+            "https://mt/beta/teams/19%3At%40thread.tacv2/channels/19%3Ac%40thread.tacv2"
+        );
+        assert_eq!(
+            delete_channel_body("19:c@thread.tacv2", "19:t@thread.tacv2", "group-1"),
+            serde_json::json!({
+                "id": "19:c@thread.tacv2",
+                "hostTeamId": "19:t@thread.tacv2",
+                "hostTeamGroupId": "group-1",
+                "isGeneral": false,
+            })
+        );
+        let no_group = delete_channel_body("19:c@thread.tacv2", "19:t@thread.tacv2", "19:t@thread.tacv2");
+        assert!(no_group.get("hostTeamGroupId").is_none());
+        // The Graph routes stay refused before any network.
+        use crate::api::client::graph_denied;
+        assert!(graph_denied("PATCH", &channel_path("t", "c")).is_some());
+        assert!(graph_denied("DELETE", &channel_path("t", "c")).is_some());
+        assert!(graph_denied("POST", "/teams").is_some());
     }
 
     #[test]

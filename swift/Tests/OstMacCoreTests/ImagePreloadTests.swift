@@ -114,7 +114,7 @@ final class ImagePreloadTests: XCTestCase {
 
     func testPrefetchFillsWindowCache() async throws {
         let msgs = imgThread(30)
-        let cache = RichMediaCache(diskDir: nil)
+        let cache = RichMediaCache(diskDir: nil, memory: .pinned)
         let preloader = ImagePreloader(cache: cache)
         let calls = Counter()
         let bytes = try DemoMedia.data(for: DemoMedia.photo1)
@@ -137,7 +137,7 @@ final class ImagePreloadTests: XCTestCase {
 
     func testWindowHitsSkipFetch() async throws {
         let msgs = imgThread(30)
-        let cache = RichMediaCache(diskDir: nil)
+        let cache = RichMediaCache(diskDir: nil, memory: .pinned)
         let bytes = try DemoMedia.data(for: DemoMedia.photo1)
         let warm = ImagePreloader(cache: cache)
         await warm.update(messages: msgs, visibleIDs: ["m10"], fetcher: { _ in bytes })
@@ -158,7 +158,7 @@ final class ImagePreloadTests: XCTestCase {
 
     func testCancelFarFetches() async throws {
         let msgs = imgThread(30)
-        let cache = RichMediaCache(diskDir: nil)
+        let cache = RichMediaCache(diskDir: nil, memory: .pinned)
         let preloader = ImagePreloader(cache: cache, maxConcurrent: 1)
         let gate = FetchGate(bytes: try DemoMedia.data(for: DemoMedia.photo1))
         let fetcher: RichMediaCache.Fetcher = { [gate] url in try await gate.fetch(url: url) }
@@ -208,7 +208,7 @@ final class ImagePreloadTests: XCTestCase {
         // image must already be cached the moment its bubble appears —
         // zero loading indicators — and each image fetched exactly once.
         let msgs = imgThread(40)
-        let cache = RichMediaCache(diskDir: nil)
+        let cache = RichMediaCache(diskDir: nil, memory: .pinned)
         let preloader = ImagePreloader(cache: cache)
         let calls = Counter()
         let fetcher: RichMediaCache.Fetcher = { _ in

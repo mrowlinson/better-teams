@@ -514,9 +514,9 @@ final class TranscriptsTests: XCTestCase {
 
     // MARK: - Demo
 
-    func testDemoResponseHasFourRows() {
+    func testDemoResponseHasFiveRows() {
         let resp = TranscriptsDemo.response()
-        XCTAssertEqual(resp.transcripts.count, 4)
+        XCTAssertEqual(resp.transcripts.count, 5)
         XCTAssertTrue(resp.transcripts.allSatisfy {
             $0.mime == "text/vtt" && $0.source != nil
         })

@@ -197,7 +197,7 @@ enum LogsFolder {
     @MainActor
     static func open() {
         let dir = url
-        Task.detached(priority: .utility) {
+        Task.blocking(priority: .utility) {
             try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             let file = snapshot(into: dir)
             await MainActor.run {

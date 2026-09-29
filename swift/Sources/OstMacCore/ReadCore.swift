@@ -34,17 +34,38 @@ struct URLSessionReadFetcher: ReadFetcher {
 
 /// Sync-over-async bridge (callers already run off-main; same blocking
 /// contract the FFI `block_on` had).
+///
+/// The bridged op runs on `executor` (its own GCD queue), never the
+/// Swift cooperative pool. Callers block their thread in `sem.wait`, and
+/// most callers are `Task.detached` bodies on that same pool: when every
+/// pool thread was such a waiter, the ops they waited on could not start
+/// or resume, and every Swift read in the app (chat list, conversation
+/// open) stalled until some blocking call elsewhere returned.
 enum SyncBridge {
     private final class Box<T>: @unchecked Sendable {
         var value: Result<T, Error>?
     }
+
+    /// Task executor on a concurrent GCD queue (threads outside the pool).
+    final class QueueExecutor: TaskExecutor, @unchecked Sendable {
+        private let queue = DispatchQueue(
+            label: "dev.ostmac.syncbridge", qos: .userInitiated, attributes: .concurrent)
+
+        func enqueue(_ job: consuming ExecutorJob) {
+            let job = UnownedJob(job)
+            let executor = asUnownedTaskExecutor()
+            queue.async { job.runSynchronously(on: executor) }
+        }
+    }
+
+    static let executor = QueueExecutor()
 
     static func run<T: Sendable>(
         _ op: @Sendable @escaping () async throws -> T
     ) throws -> T {
         let box = Box<T>()
         let sem = DispatchSemaphore(value: 0)
-        Task {
+        Task(executorPreference: executor) {
             do {
                 box.value = .success(try await op())
             } catch {
@@ -83,8 +104,10 @@ public enum CoreReads {
         try whoami(profile: profile, ctx: production())
     }
 
+    /// Own presence from the Teams presence service (GRAPHSWEEP; Graph
+    /// `/me/presence` needs Presence.Read, which the Teams token lacks).
     public static func presence() throws -> PresenceResponse {
-        try presence(ctx: production())
+        try SyncBridge.run { try await UnifiedPresence.own() }
     }
 
     public static func teams() throws -> TeamsResponse {
@@ -275,33 +298,6 @@ public enum CoreReads {
         return out
     }
 
-    // MARK: presence (GET /me/presence)
-
-    private struct PresencePayload: Decodable {
-        let availability: String
-        let activity: String
-    }
-
-    static func presence(ctx: ReadContext) throws -> PresenceResponse {
-        let token = try graphToken(
-            profile: CoreLocal.activeProfileID(), code: "presence", ctx: ctx
-        )
-        let data = try graphGET(
-            "/me/presence", code: "presence", token: token, http: ctx.http
-        )
-        let p: PresencePayload
-        do {
-            p = try JSONDecoder().decode(PresencePayload.self, from: data)
-        } catch {
-            throw CoreCallError.failed(
-                "presence: Failed to parse presence response: \(error)"
-            )
-        }
-        return PresenceResponse(
-            ok: true, availability: p.availability, activity: p.activity
-        )
-    }
-
     // MARK: teams (GET /me/joinedTeams + per-team channels)
 
     private struct TeamsPayload: Decodable {
@@ -319,6 +315,7 @@ public enum CoreReads {
             let description: String?
             let membershipType: String?
             let webUrl: String?
+            let email: String?
         }
         let value: [Channel]
     }
@@ -338,8 +335,13 @@ public enum CoreReads {
                 "teams: Failed to parse joinedTeams response: \(error)"
             )
         }
-        var items: [TeamItem] = []
-        for team in teams.value {
+        // TEAMSYNC: per-team channel GETs run concurrently (the tree
+        // refresh was ~0.6 s per team sequentially); order is kept.
+        let joined = teams.value
+        var slots = [TeamItem?](repeating: nil, count: joined.count)
+        let lock = NSLock()
+        DispatchQueue.concurrentPerform(iterations: joined.count) { i in
+            let team = joined[i]
             // Channels failure degrades to an empty list (Rust parity).
             let channels = (try? graphGET(
                 "/teams/\(team.id)/channels", code: "teams",
@@ -352,15 +354,18 @@ public enum CoreReads {
                             channelId: ch.id, name: ch.displayName ?? ch.id,
                             description: ch.description,
                             membershipType: ch.membershipType,
-                            webUrl: ch.webUrl
+                            webUrl: ch.webUrl,
+                            email: ch.email
                         )
                     }
                 } ?? []
-            items.append(TeamItem(
+            let item = TeamItem(
                 teamId: team.id, name: team.displayName ?? team.id,
                 channels: channels
-            ))
+            )
+            lock.lock(); slots[i] = item; lock.unlock()
         }
+        let items = slots.compactMap { $0 }
         return TeamsResponse(ok: true, teams: items)
     }
 
@@ -509,6 +514,23 @@ public enum CoreReads {
         try chats(limit: limit, profile: profile, ctx: production())
     }
 
+    /// One further page of the chat list: `pageLink` is the previous
+    /// page's `next_link` (the chat service `_metadata.backwardLink`).
+    public static func chats(limit: Int32 = 20, profile: String? = nil, pageLink: String) throws -> ChatsResponse {
+        try chats(limit: limit, profile: profile, pageLink: pageLink, ctx: production())
+    }
+
+    /// A next-page link is only followed when it is an https chat service
+    /// conversations URL (the token goes with it, so never another host).
+    static func isChatPageLink(_ link: String) -> Bool {
+        guard let url = URL(string: link), url.scheme == "https",
+              let host = url.host?.lowercased(),
+              host.hasSuffix(".teams.microsoft.com") || host.hasSuffix(".teams.microsoft.us"),
+              url.path.hasSuffix("/conversations")
+        else { return false }
+        return true
+    }
+
     /// Region base URLs from the stored gtms JSON (verbatim port of
     /// `chat_service_url` / `chatsvcagg_url`; unparseable → defaults).
     static func regionGTMS(_ slots: TokenSlots) -> [String: String] {
@@ -584,8 +606,12 @@ public enum CoreReads {
     private struct ChatConversationsPayload: Decodable {
         struct ThreadProps: Decodable {
             let topic: String?
-            let lastjoinat: String?
+            let lastjoinat: LooseString?
+            let lastleaveat: LooseString?
             let members: String?
+            let threadType: String?
+            let productThreadType: String?
+            let hidden: LooseString?
         }
         struct NativeMsg: Decodable {
             let id: String?
@@ -600,8 +626,30 @@ public enum CoreReads {
             let id: String?
             let threadProperties: ThreadProps?
             let lastMessage: NativeMsg?
+            let properties: ConvProps?
+        }
+        /// Per-user conversation properties; `alerts` "false" = muted.
+        struct ConvProps: Decodable {
+            let alerts: String?
+            let isemptyconversation: LooseString?
+            let consumptionhorizon: String?
+            /// Teams "Mark as unread" bookmark (CHATSYNC).
+            let consumptionHorizonBookmark: String?
+            /// Teams "Delete chat" stamp (epoch ms, string or number).
+            let clearHistoryTime: LooseString?
+            var muted: Bool? {
+                switch alerts?.lowercased() {
+                case "false": true
+                case "true": false
+                default: nil
+                }
+            }
+        }
+        struct Metadata: Decodable {
+            let backwardLink: String?
         }
         let conversations: [Conversation]?
+        let _metadata: Metadata?
     }
 
     private struct ThreadMembersPayload: Decodable {
@@ -624,7 +672,9 @@ public enum CoreReads {
         let messages: [Msg]?
     }
 
-    static func chats(limit: Int32, profile: String? = nil, ctx: ReadContext) throws -> ChatsResponse {
+    static func chats(
+        limit: Int32, profile: String? = nil, pageLink: String? = nil, ctx: ReadContext
+    ) throws -> ChatsResponse {
         let lim = limit <= 0 ? 20 : Int(limit)
         let profile = profile ?? CoreLocal.activeProfileID()
         let (skype, slots) = try skypeToken(
@@ -635,7 +685,7 @@ public enum CoreReads {
         // Three strategies, first success wins (verbatim order); the
         // last error propagates when all fail.
         var lastError: Error?
-        let attempts: [(String, [String: String])] = [
+        var attempts: [(String, [String: String])] = [
             (
                 "\(csaConversations)?view=mychats&pageSize=\(lim)",
                 [
@@ -652,6 +702,12 @@ public enum CoreReads {
                 ["Authentication": "skypetoken=\(skype)"]
             ),
         ]
+        if let pageLink {
+            guard isChatPageLink(pageLink) else {
+                throw CoreCallError.failed("chats: Unexpected next-page link")
+            }
+            attempts = [(pageLink, ["Authentication": "skypetoken=\(skype)"])]
+        }
         var data = Data()
         for (urlString, headers) in attempts {
             do {
@@ -679,42 +735,102 @@ public enum CoreReads {
         let conversations = payload.conversations ?? []
         var items: [ChatItem] = []
         var needsMate: [(chat: Int, conv: Int)] = []
+        var selfChat: Int?
+        // Owner identity (cached whoami): resolved once, on first need.
+        var meResolved = false
+        var meValue: WhoamiResponse?
+        func resolveMe() -> WhoamiResponse? {
+            if !meResolved {
+                meResolved = true
+                meValue = try? whoami(profile: profile, ctx: ctx)
+            }
+            return meValue
+        }
         for (ci, conv) in conversations.enumerated() {
             let id = conv.id ?? ""
             if id.isEmpty { continue }
+            let tp = conv.threadProperties
+            if ChatListFilter.exclusion(
+                id: id, threadType: tp?.threadType,
+                productThreadType: tp?.productThreadType,
+                hidden: tp?.hidden?.value, lastJoinAt: tp?.lastjoinat?.value,
+                lastLeaveAt: tp?.lastleaveat?.value,
+                isEmpty: conv.properties?.isemptyconversation?.value,
+                hasLastMessage: conv.lastMessage != nil,
+                clearHistoryTime: conv.properties?.clearHistoryTime?.value,
+                lastMessageMs: Self.arrivalMs(id: conv.lastMessage?.id,
+                                              time: conv.lastMessage?.originalarrivaltime ?? conv.lastMessage?.composetime)
+            ) != nil { continue }
+            if ChatListFilter.isSelfChat(id) { selfChat = items.count }
             let topicMissing = (conv.threadProperties?.topic ?? "")
                 .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             if topicMissing, isOneToOneID(id) {
                 needsMate.append((items.count, ci))
             }
             let msg = conv.lastMessage
-            let preview = msg?.content.map {
-                truncatePreview(stripHTML($0))
+            let preview = msg?.content.map { listPreview($0) }
+            // A 1:1 never takes the owner's own name from their last
+            // message (CHATSYNC S2): the mate pass names it.
+            var senderName = msg?.imdisplayname
+            if topicMissing, isOneToOneID(id), let oid = resolveMe()?.id, !oid.isEmpty,
+               mriIsSelf(mriFromUserLink(msg?.from), selfOID: oid) {
+                senderName = nil
+            }
+            // Unread filter seed: the read horizon against the last
+            // message; unknown (nil) without a horizon or owner identity.
+            let horizon = conv.properties?.consumptionhorizon
+            var unread: Bool?
+            if ChatListSeed.horizon(horizon) != nil, let oid = resolveMe()?.id, !oid.isEmpty {
+                unread = ChatListSeed.isUnread(
+                    horizon: horizon, lastMessageID: msg?.id,
+                    lastMessageTime: msg?.originalarrivaltime ?? msg?.composetime,
+                    messageType: msg?.messagetype,
+                    fromOwner: mriIsSelf(mriFromUserLink(msg?.from), selfOID: oid))
             }
             items.append(ChatItem(
                 chatId: id,
-                name: conversationName(topic: conv.threadProperties?.topic, mate: nil, sender: msg?.imdisplayname, chatID: id),
+                name: conversationName(topic: conv.threadProperties?.topic, mate: nil, sender: senderName, chatID: id),
                 is_group: id.contains("thread") || id.contains("meeting"),
                 last_message_time: msg?.originalarrivaltime ?? msg?.composetime,
                 last_message_sender: msg?.imdisplayname,
-                last_message_preview: preview
+                last_message_preview: preview,
+                muted: conv.properties?.muted,
+                unread: unread,
+                read_horizon: horizon,
+                read_bookmark: conv.properties?.consumptionHorizonBookmark
             ))
         }
         // Second pass: 1:1 mate names. Any failure keeps the first-pass
         // name — the list never fails here.
-        if !needsMate.isEmpty,
-           let me = try? whoami(profile: profile, ctx: ctx)
+        let me = needsMate.isEmpty && selfChat == nil
+            ? nil : resolveMe()
+        // The chat with yourself reads "<your name> (You)", as in Teams.
+        if let i = selfChat, let me,
+           !me.display_name.trimmingCharacters(in: .whitespaces).isEmpty
         {
+            let old = items[i]
+            items[i] = ChatItem(
+                chatId: old.chatId, name: "\(me.display_name) (You)",
+                is_group: old.is_group,
+                last_message_time: old.last_message_time,
+                last_message_sender: old.last_message_sender,
+                last_message_preview: old.last_message_preview,
+                muted: old.muted,
+                unread: old.unread, read_horizon: old.read_horizon,
+                read_bookmark: old.read_bookmark
+            )
+        }
+        if !needsMate.isEmpty, let me {
             for (chatIdx, convIdx) in needsMate {
                 let chatID = items[chatIdx].chatId
                 if let mate = resolveMateName(
                     chatID: chatID, selfOID: me.id,
                     skype: skype, svc: svc, ctx: ctx
-                ) {
+                ) ?? mateDisplayName(chatID: chatID, selfOID: me.id, profile: profile, ctx: ctx) {
                     let conv = conversations[convIdx]
                     let renamed = conversationName(
                         topic: conv.threadProperties?.topic, mate: mate,
-                        sender: conv.lastMessage?.imdisplayname, chatID: chatID
+                        sender: nil, chatID: chatID
                     )
                     let old = items[chatIdx]
                     items[chatIdx] = ChatItem(
@@ -722,12 +838,60 @@ public enum CoreReads {
                         is_group: old.is_group,
                         last_message_time: old.last_message_time,
                         last_message_sender: old.last_message_sender,
-                        last_message_preview: old.last_message_preview
+                        last_message_preview: old.last_message_preview,
+                        muted: old.muted,
+                unread: old.unread, read_horizon: old.read_horizon,
+                read_bookmark: old.read_bookmark
                     )
                 }
             }
         }
-        return ChatsResponse(ok: true, chats: items)
+        let next = payload._metadata?.backwardLink ?? ""
+        return ChatsResponse(
+            ok: true, chats: items,
+            next_link: next.isEmpty || conversations.isEmpty ? nil : next
+        )
+    }
+
+    /// Chat mentions from the activity feed (`48:notifications`, newest
+    /// 50 items; a read-only GET that moves no read state). Feeds the
+    /// Mentions filter seed (ChatListSeed.mentionedChats).
+    public static func mentionActivity() throws -> [MentionActivity] {
+        try mentionActivity(profile: CoreLocal.activeProfileID(), ctx: production())
+    }
+
+    static func mentionActivity(profile: String, ctx: ReadContext) throws -> [MentionActivity] {
+        let (skype, slots) = try skypeToken(profile: profile, code: "mentions", ctx: ctx)
+        let data = try chatGET(
+            "\(chatServiceURL(slots))/v1/users/ME/conversations/48:notifications/messages?pageSize=50",
+            code: "mentions", skype: skype, http: ctx.http)
+        return ChatListSeed.parseMentionActivity(data)
+    }
+
+    /// The Activity feed: newest 50 `48:notifications` items as rows
+    /// (read-only GET; never touches the feed's read horizon).
+    public static func activityFeed() throws -> [ActivityItem] {
+        try activityFeed(profile: CoreLocal.activeProfileID(), ctx: production())
+    }
+
+    static func activityFeed(profile: String, ctx: ReadContext) throws -> [ActivityItem] {
+        let (skype, slots) = try skypeToken(profile: profile, code: "activity", ctx: ctx)
+        let data = try chatGET(
+            "\(chatServiceURL(slots))/v1/users/ME/conversations/\(ActivityFeed.conversationID)/messages?pageSize=50",
+            code: "activity", skype: skype, http: ctx.http)
+        return ActivityFeed.parse(data)
+    }
+
+    /// Row preview for a last message: the stripped text, or "Sent an
+    /// image" when the message is only an inline image (as in Teams).
+    static func listPreview(_ content: String) -> String {
+        let text = stripHTML(content)
+        if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           content.range(of: "<img", options: .caseInsensitive) != nil
+        {
+            return "Sent an image"
+        }
+        return truncatePreview(text)
     }
 
     /// Mate display name for a 1:1 chat (verbatim port of
@@ -779,6 +943,43 @@ public enum CoreReads {
             return sender
         }
         return nil
+    }
+
+    /// CHATSYNC S2: the 1:1 mate's directory name when the mate has not
+    /// written in the newest page (only the owner has, or every message
+    /// was deleted). Teams names these chats from the roster the same
+    /// way. The mate is the other object id in the 1:1 id
+    /// (`19:<oid>_<oid>@unq.gbl.spaces`); Graph `/users/{oid}` needs
+    /// User.ReadBasic.All (granted). Any failure is nil (first-pass name
+    /// stays).
+    static func mateDisplayName(chatID: String, selfOID: String, profile: String, ctx: ReadContext) -> String? {
+        guard let mate = mateOID(chatID: chatID, selfOID: selfOID),
+              let token = try? graphToken(profile: profile, code: "chats", ctx: ctx),
+              let data = try? graphGET("/users/\(mate)?$select=displayName", code: "chats", token: token, http: ctx.http),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let name = (obj["displayName"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !name.isEmpty
+        else { return nil }
+        return name
+    }
+
+    /// The other member's object id from a 1:1 id, or nil when the id
+    /// does not carry exactly one non-self id of that shape.
+    static func mateOID(chatID: String, selfOID: String) -> String? {
+        guard isOneToOneID(chatID), let at = chatID.firstIndex(of: "@") else { return nil }
+        let body = chatID[chatID.index(chatID.startIndex, offsetBy: 3)..<at]
+        let ids = body.split(separator: "_").map(String.init)
+        guard ids.count == 2 else { return nil }
+        let others = ids.filter { $0.lowercased() != selfOID.lowercased() }
+        guard others.count == 1, let o = others.first,
+              o.count == 36, o.allSatisfy({ $0.isHexDigit || $0 == "-" }) else { return nil }
+        return o
+    }
+
+    /// Arrival time (ms) of a list's last message: its id, else its time.
+    static func arrivalMs(id: String?, time: String?) -> Int64? {
+        if let id, let v = Int64(id), v > 0 { return v }
+        return time.flatMap(ChatListFormat.parse).map { Int64(($0.timeIntervalSince1970 * 1000).rounded()) }
     }
 
     // MARK: chat naming + text (verbatim ports from ost chat.rs)

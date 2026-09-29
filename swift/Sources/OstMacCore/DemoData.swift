@@ -41,6 +41,11 @@ public enum DemoData {
             """),
     ]
 
+    /// The demo Catch Up clock (CATCHTABS): fixed, so the period tabs
+    /// always split the canned threads the same way (threads stamped
+    /// relative to the demo clock read as inside every period).
+    public static let catchUpNow: Date = ISO8601DateFormatter().date(from: "2026-09-23T12:00:00Z")!
+
     /// Conversations the demo Catch Up window starts with (mentions of
     /// the owner, the @everyone standup, and Ava's 1:1).
     public static let catchUpChatIDs: Set<String> = mentionedChatIDs.union([standupID, avaID])
@@ -83,12 +88,14 @@ public enum DemoData {
             chatId: "demo-2", name: "Ava Lindqvist",
             last_message_time: "2026-09-22T08:47:33Z",
             last_message_sender: "Ava Lindqvist",
-            last_message_preview: "Standup moved to 10 — see you there."),
+            last_message_preview: "Standup moved to 10 — see you there.",
+            unread: true),
         ChatItem(
             chatId: "demo-3", name: "Platform Standup", is_group: true,
             last_message_time: "2026-09-21T16:20:11Z",
             last_message_sender: "Tom Becker",
-            last_message_preview: "Build is green, packaging is next."),
+            last_message_preview: "Build is green, packaging is next.",
+            muted: true),
         // Plain 1:1 recent contacts sit with the plain rows; the feature
         // threads follow, ending with the showcase (display order is by
         // recency, not array order).
@@ -96,7 +103,8 @@ public enum DemoData {
             chatId: tomID, name: "Tom Becker",
             last_message_time: "2026-09-19T15:04:00Z",
             last_message_sender: "Tom Becker",
-            last_message_preview: "Sounds good, I'll send the notes after lunch."),
+            last_message_preview: "Sounds good, I'll send the notes after lunch.",
+            muted: true, unread: true),
         ChatItem(
             chatId: meganID, name: "Megan Harper",
             last_message_time: "2026-09-18T11:32:00Z",
@@ -1060,7 +1068,7 @@ public enum DemoData {
                 raw: #"{"@type":"MessageCard","@context":"https://schema.org/extensions","title":"Build green","text":"main passed all checks","potentialAction":[{"@type":"OpenUri","name":"View run","targets":[{"os":"default","uri":"https://example.com/builds/7"}]}]}"#),
             ChatMessage(
                 id: "sc-6", sender: "Tom Becker",
-                timestamp: iso(at(dayOffset: 0, h: 8, m: 8)),
+                timestamp: iso(at(dayOffset: 0, h: 8, m: 58)),
                 content: "The const-generics note unblocked my render patch.",
                 raw: #"<quote author="Tech News RSS" guid="sc-4">Morning digest — 2 new stories</quote><p>The const-generics note unblocked my render patch.</p>"#,
                 reactions: [ReactionCount(emoji: "😂", count: 2, reactors: [Reactor(id: "8:orgid:demo-u-megan"), Reactor(id: "8:orgid:demo-u-me")])],

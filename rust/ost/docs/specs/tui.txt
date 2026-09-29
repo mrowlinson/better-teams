@@ -10,7 +10,7 @@
 ║    # general  3  ║  │ 👤 Sarah Chen                                9:15 AM today │  ║
 ║    # dev         ║  │                                                             │  ║
 ║    # announce    ║  │ Hey team! Just pushed the new authentication module to     │  ║
-║                  ║  │ staging. Can someone help review? @Alex @Jordan            │  ║
+║                  ║  │ staging. Can someone help review? @Alex @Sam               │  ║
 ║  ▼ Design        ║  │                                                             │  ║
 ║    # general     ║  │ 📎 auth-module-v2.zip                                       │  ║
 ║    # mockups  1  ║  │                                                             │  ║
@@ -27,7 +27,7 @@
 ║                  ║       └──────────────────────────────────────────────────────┘    ║
 ║                  ║                                                              ↓[+] ║
 ║  [4 unread]   ↓  ║  ┌─────────────────────────────────────────────────────────────┐  ║
-╠══════════════════╣  │ 👤 Jordan Lee                                9:45 AM today │  ║
+╠══════════════════╣  │ 👤 Sam Wright                                9:45 AM today │  ║
 ║ NAVIGATION       ║  │ Reminder: Sprint planning at 2pm! 📊                       │  ║
 ║ ↑↓ Move          ║  │ Please update your tickets before the meeting.             │  ║
 ║ ←→ Switch pane   ║  │ 👍 5   👀 2                                                │  ║

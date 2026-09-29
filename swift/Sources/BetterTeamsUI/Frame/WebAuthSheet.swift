@@ -15,6 +15,10 @@ final class WebAuthSheet: NSViewController, WKNavigationDelegate {
     private let redirectURI: String
     private let onFinish: (String?) -> Void
     private var finished = false
+    /// The frame host whose Teams web guard and test gate apply to this
+    /// sheet's navigations (app popups, consent, auth windows). Sheets
+    /// without one (account sign-in) still refuse the Teams web app.
+    weak var guardHost: FrameHost?
 
     /// `onFinish(callbackURL)`; nil = cancelled. An empty
     /// `redirectURI` never finishes on navigation (web-app popups close
@@ -25,6 +29,10 @@ final class WebAuthSheet: NSViewController, WKNavigationDelegate {
         self.redirectURI = redirectURI
         self.onFinish = onFinish
         super.init(nibName: nil, bundle: nil)
+        // Every sheet's web view, popups included (WebKit loads a popup
+        // child itself, right after it is handed over), navigates under
+        // this delegate: no frame of it ever loads the Teams web app (R8).
+        web.navigationDelegate = self
     }
 
     @available(*, unavailable)
@@ -54,7 +62,6 @@ final class WebAuthSheet: NSViewController, WKNavigationDelegate {
     override func viewDidLoad() {
         super.viewDidLoad()
         guard let start else { return }
-        web.navigationDelegate = self
         web.load(URLRequest(url: start))
     }
 
@@ -74,6 +81,14 @@ final class WebAuthSheet: NSViewController, WKNavigationDelegate {
             finish(url)
             return
         }
+        if let gate = guardHost?.navigationGate, !gate(action) { return decisionHandler(.cancel) }
+        if let url = action.request.url,
+           TeamsWebGuard.refuses(url, mainFrame: action.targetFrame?.isMainFrame ?? true, iframeHostDocument: false) {
+            decisionHandler(.cancel)
+            guardHost?.refuseTeamsWeb(url, userInitiated: action.navigationType == .linkActivated)
+            return
+        }
+        if action.shouldPerformDownload { return decisionHandler(.cancel) }
         decisionHandler(.allow)
     }
 }

@@ -100,7 +100,7 @@ public final class AvPanelModel: ObservableObject {
         _ apply: @escaping @MainActor (Result<T, Error>) -> Void,
         work: @escaping @Sendable () throws -> T
     ) {
-        Task.detached(priority: .userInitiated) {
+        Task.blocking(priority: .userInitiated) {
             let result: Result<T, Error>
             do { result = .success(try work()) } catch { result = .failure(error) }
             await MainActor.run {
@@ -142,7 +142,7 @@ public final class AvPanelModel: ObservableObject {
         // Timeout: a wedged HAL/driver can hold the cpal call forever,
         // so the UI gives up at N seconds and shows the error state.
         // A late success still lands (same generation clears the error).
-        Task.detached(priority: .utility) {
+        Task.blocking(priority: .utility) {
             try? await Task.sleep(nanoseconds: UInt64(budget * 1_000_000_000))
             await MainActor.run { [weak self] in
                 self?.scanTimedOut(generation: generation)
@@ -432,7 +432,7 @@ public final class AvPanelModel: ObservableObject {
                     }
                 }
             }
-            guard let enc = H264StreamEncoder(width: w, height: h) else {
+            guard let enc = H264StreamEncoder(width: w, height: h, path: "loopback") else {
                 throw CoreCallError.failed("no VT encoder")
             }
             let nals = try enc.encode(bgra: bgra)
@@ -445,7 +445,7 @@ public final class AvPanelModel: ObservableObject {
             guard let au = poll.au else {
                 throw CoreCallError.failed("incoming queue empty")
             }
-            guard let img = try H264StreamDecoder().decode(nals: au.nals) else {
+            guard let img = try H264StreamDecoder(path: "loopback").decode(nals: au.nals) else {
                 throw CoreCallError.failed("no slice NALs in AU")
             }
             return img

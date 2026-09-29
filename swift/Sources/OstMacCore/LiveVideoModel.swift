@@ -55,8 +55,8 @@ public final class LiveVideoModel: ObservableObject {
         let gen = loopToken.next()
         let token = loopToken
         let source = source
-        Task.detached(priority: .userInitiated) { [weak self] in
-            let decoder = H264StreamDecoder()
+        Task.blocking(priority: .userInitiated) { [weak self] in
+            let decoder = H264StreamDecoder(path: source == nil ? "call-recv" : "call-recv-source")
             var nilStreak = 0
             var needKey = false
             while token.alive(gen) {

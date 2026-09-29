@@ -13,8 +13,12 @@ public final class H264StreamDecoder {
     private var paramDesc: CMFormatDescription?
     private var sps: Data?
     private var pps: Data?
+    /// HWACCEL log tag (`call-recv`, `loopback`, …).
+    private let path: String
 
-    public init() {}
+    public init(path: String = "call-recv") {
+        self.path = path
+    }
 
     deinit {
         if let session { VTDecompressionSessionInvalidate(session) }
@@ -77,20 +81,12 @@ public final class H264StreamDecoder {
             throw H264DecodeError.format(status)
         }
         paramDesc = formatDesc
-        var newSession: VTDecompressionSession?
-        let ds = VTDecompressionSessionCreate(
-            allocator: kCFAllocatorDefault,
-            formatDescription: formatDesc,
-            decoderSpecification: nil,
-            imageBufferAttributes: [
-                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
-            ] as CFDictionary,
-            outputCallback: nil,
-            decompressionSessionOut: &newSession)
-        guard ds == noErr, let newSession else {
-            throw H264DecodeError.session(ds)
+        // HWACCEL: hardware decoder required (logged software fallback);
+        // IOSurface BGRA out, wrapped into a CGImage without a copy.
+        guard let made = HWVideo.makeDecompressionSession(format: formatDesc, path: path) else {
+            throw H264DecodeError.session(-1)
         }
-        session = newSession
+        session = made.session
     }
 
     private func decodeSlices(_ slices: [Data]) throws -> CGImage {

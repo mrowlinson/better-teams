@@ -87,6 +87,7 @@ struct NewChatSheet: View {
                 ForEach(candidates) { c in
                     HStack(spacing: 8) {
                         Avatar(name: c.name)
+                            .contactHover(name: c.is_group ? "" : c.name)
                             .overlay(alignment: .bottomTrailing) {
                                 if let status = presence.availabilityForChat(c.id)
                                     .flatMap(PresenceStatus.from(availability:)) {
@@ -153,6 +154,7 @@ struct PickedPeople: View {
                         } label: {
                             Label(p.displayName, systemImage: "xmark.circle.fill")
                                 .labelStyle(TrailingIconLabel())
+                                .contactHover(ContactRef(p), arrowEdge: .bottom)
                         }
                         .buttonStyle(.bordered)
                         .controlSize(.small)
@@ -192,7 +194,7 @@ struct DirectoryResults: View {
                         if added { people.removeAll { $0.id == p.id } } else { people.append(p) }
                     } label: {
                         HStack(spacing: 8) {
-                            Avatar(name: p.displayName)
+                            Avatar(name: p.displayName, person: ContactRef(p))
                             VStack(alignment: .leading, spacing: 0) {
                                 Text(p.displayName)
                                 if let email = p.email, !email.isEmpty {
@@ -203,6 +205,7 @@ struct DirectoryResults: View {
                             Image(systemName: added ? "checkmark.circle.fill" : "plus.circle")
                                 .foregroundStyle(added ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
                         }
+                        .contactHover(ContactRef(p))
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)

@@ -24,6 +24,12 @@ struct TeamsDetailPane: View {
         {
             ChannelDetail(team: team, channel: channel, sel: sel, conv: conv,
                           tabs: section.tabs(chID, model))
+        } else if let model, model.forced(.teams) == nil, let sel = TeamsSelection(model.nav.selection(in: .teams)),
+                  let chID = sel.channelID, teams.deletedChannelIDs.contains(chID) {
+            // TEAMSYNC: the open channel was deleted (here or elsewhere),
+            // or its team was left: say so instead of a blank pane.
+            EmptyPane("This channel was deleted", systemImage: "trash",
+                      message: "It's no longer available in Teams. Choose another channel.")
         } else if let model, model.forced(.teams) != nil || teams.teams.isEmpty {
             // Loading, error or no teams: the list pane carries the state;
             // an empty detail never repeats it or asks for a selection
@@ -70,17 +76,30 @@ struct ChannelDetail: View {
     /// A web tab renders in-window through FrameHost under `tab:<id>`
     /// (§6.3, §7.3); registering its URL is idempotent. A tab served by a
     /// catalog app is hosted natively over TeamsJS with channel context
-    /// (APPHOST-B2); unmatched tabs keep their Teams-shell page.
+    /// (APPHOST-B2); other tabs load their own page directly, the same
+    /// route chat tabs take. Never the tab's Teams web page (APPNATIVE4).
+    @ViewBuilder
     private func webTab(_ id: String, _ m: WindowModel) -> some View {
-        if let t = tabs.first(where: { $0.id == id }), case .web(let url) = t.target {
-            m.frameHost.library.store.ensureTeamApps(teamID: team.teamId, tabAppIDs: tabs.compactMap(\.appID))
-            if let l = m.frameHost.library.store.launch(forTab: t, team: team, channel: channel) {
-                m.frameHost.registerHostedTab(.tab(id), launch: l, title: t.name)
-            } else {
-                m.frameHost.registerTab(.tab(id), url: url, title: t.name)
+        if let t = tabs.first(where: { $0.id == id }), case .web = t.target {
+            let _ = m.frameHost.library.store.ensureTeamApps(teamID: team.teamId, tabAppIDs: tabs.compactMap(\.appID))
+            let l = m.frameHost.library.store.launch(forTab: t, team: team, channel: channel)
+            switch ChatTabCatalog.route(for: t, hasManifest: l != nil) {
+            case .hosted:
+                let _ = l.map { m.frameHost.registerHostedTab(.tab(id), launch: $0, title: t.name) }
+                FrameContainer(key: .tab(id))
+            case .web(let url):
+                let _ = m.frameHost.registerTab(.tab(id), url: url, title: t.name)
+                FrameContainer(key: .tab(id))
+            case .placeholder:
+                ChatTabPlaceholder(
+                    title: t.name, symbol: ChatTabCatalog.symbol(for: t),
+                    message: ChatTabCatalog.kind(of: t) == .wiki
+                        ? "Microsoft retired wiki tabs, so this tab has no pages to show."
+                        : "This tab has no page of its own to show here: Teams saved no address for it.")
             }
+        } else {
+            FrameContainer(key: .tab(id))
         }
-        return FrameContainer(key: .tab(id))
     }
 
     private func select(tab: ChannelTabKey, _ m: WindowModel) {

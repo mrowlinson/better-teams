@@ -7,7 +7,7 @@ import XCTest
 @MainActor
 final class CatchUpOnDeviceTests: XCTestCase {
     private func msg(_ id: String, _ sender: String = "Ava Stone", raw: String? = nil,
-                     content: String = "hello", ts: String? = nil, own: Bool = false) -> ChatMessage {
+                     content: String = "status update on the release", ts: String? = nil, own: Bool = false) -> ChatMessage {
         ChatMessage(id: id, sender: sender, timestamp: ts ?? "2026-09-28T09:00:\(id.suffix(2))Z",
                     content: content, isOwn: own, raw: raw)
     }
@@ -124,9 +124,12 @@ final class CatchUpOnDeviceTests: XCTestCase {
 
     private func digest(_ t: CatchUpTransport, mode: @escaping () -> CatchUpMode,
                         lowPower: Bool = false) -> CatchUpDigestStore {
-        let d = CatchUpDigestStore(transport: t, mode: mode, conditions: { (lowPower, .nominal) }, observeSystem: false)
+        let d = CatchUpDigestStore(transport: t, mode: mode, conditions: { (lowPower, .nominal) }, observeSystem: false,
+                                   defaults: MemoryDefaults())
         d.debounce = .seconds(3600)
         d.ownerDisplayName = { "Jordan Fox" }
+        // CATCHTABS: messages are period-bounded; pin the clock.
+        d.now = { ISO8601DateFormatter().date(from: "2026-09-28T12:00:00Z")! }
         return d
     }
 

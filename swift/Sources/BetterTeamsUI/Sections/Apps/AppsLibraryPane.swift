@@ -1,7 +1,7 @@
 // AppsLibraryPane.swift — the Apps list pane and app card (UI-SPEC
 // §7.2). Filter field at the top of the list (HIG search fields), then
-// Pinned · Built-in (always present) · Channel Tabs · Personal Apps ·
-// Web Links. Selection binds through Navigator (R3, R21); double-click
+// Pinned · Built-in (always present) · Personal Apps · Web Links.
+// Channel tabs are not apps: they live in each channel's tab bar. Selection binds through Navigator (R3, R21); double-click
 // or Return opens the app.
 import AppKit
 import SwiftUI
@@ -29,22 +29,20 @@ struct AppsListPane: View {
         let f = filter.trimmingCharacters(in: .whitespaces)
         let pinned = m.rail.pinned.compactMap(library.item(for:)).filter { $0.matches(f) }
         let builtIns = library.builtIns.filter { $0.matches(f) }
-        let tabs = forced == .empty ? [] : library.channelTabs.map(LibraryItem.init).filter { $0.matches(f) }
         let links = forced == .empty ? [] : library.webLinks.map(LibraryItem.init).filter { $0.matches(f) }
         let apps = forced == .empty ? [] : library.personalApps.map(LibraryItem.init).filter { $0.matches(f) }
-        let browse = f.isEmpty || "Browse in Teams on the Web".localizedCaseInsensitiveContains(f)
-        let personal = browse || !apps.isEmpty
-        if pinned.isEmpty, builtIns.isEmpty, tabs.isEmpty, links.isEmpty, !personal {
+        let personal = !apps.isEmpty
+        if pinned.isEmpty, builtIns.isEmpty, links.isEmpty, !personal {
             EmptyPane("No Results", systemImage: "magnifyingglass", message: "No apps match “\(f)”.")
         } else {
-            list(m, forced: forced, filtering: !f.isEmpty, pinned: pinned, builtIns: builtIns,
-                 tabs: tabs, links: links, apps: apps, personal: personal, browse: browse)
+            list(m, filtering: !f.isEmpty, pinned: pinned, builtIns: builtIns,
+                 links: links, apps: apps, personal: personal)
         }
     }
 
-    private func list(_ m: WindowModel, forced: ForcedPaneState?, filtering: Bool, pinned: [LibraryItem],
-                      builtIns: [LibraryItem], tabs: [LibraryItem], links: [LibraryItem],
-                      apps: [LibraryItem], personal: Bool, browse: Bool) -> some View {
+    private func list(_ m: WindowModel, filtering: Bool, pinned: [LibraryItem],
+                      builtIns: [LibraryItem], links: [LibraryItem],
+                      apps: [LibraryItem], personal: Bool) -> some View {
         let selection = Binding<String?>(
             get: { Self.tag(m.nav.selection(in: .apps)) },
             set: { tag in m.navigator?.select(tag.map(Self.selection(for:)), in: .apps) })
@@ -71,24 +69,10 @@ struct AppsListPane: View {
                     ForEach(builtIns) { AppRow(item: $0, pinned: pinnedSet.contains($0.entry)).tag($0.id) }
                 }
             }
-            if !filtering || !tabs.isEmpty {
-                Section("Channel Tabs") {
-                    ForEach(tabs) { item in
-                        AppRow(item: item, pinned: pinnedSet.contains(item.entry), detail: item.sourceLine)
-                            .tag(item.id)
-                    }
-                    if !filtering { scanStatus(m, forced: forced, empty: tabs.isEmpty) }
-                }
-            }
             if personal {
                 Section("Personal Apps") {
                     // Installed apps from the Teams app catalog, hosted natively.
                     ForEach(apps) { AppRow(item: $0, pinned: pinnedSet.contains($0.entry)).tag($0.id) }
-                    if browse {
-                        AppRow(item: LibraryItem(FrameBuiltIns.teamsWeb), pinned: false,
-                               titleOverride: "Browse in Teams on the Web")
-                            .tag("personal|\(FrameBuiltIns.teamsWebID)")
-                    }
                 }
             }
             if !links.isEmpty {
@@ -109,39 +93,6 @@ struct AppsListPane: View {
             if let tag = tags.first, let item = library.item(Self.selection(for: tag).id ?? "") {
                 AppActions.open(item, m)
             }
-        }
-    }
-
-    /// First run / scanning / scan error / nothing found, inline (§7.2 States).
-    @ViewBuilder
-    private func scanStatus(_ m: WindowModel, forced: ForcedPaneState?, empty: Bool) -> some View {
-        // Glyph in the rows' 20 pt symbol column, text at the rows' title
-        // x (`AppRow`): the status sits on the row grid.
-        if forced == .loading || (library.scanning && empty) {
-            HStack(spacing: 8) {
-                ProgressView().controlSize(.small)
-                    .frame(width: 20)
-                Text("Scanning your channels for apps…").foregroundStyle(.secondary)
-            }
-            .selectionDisabled()
-        } else if forced == .error || (library.scanError != nil && empty) {
-            HStack(spacing: 8) {
-                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Palette.failed)
-                    .frame(width: 20)
-                    .accessibilityHidden(true)
-                Text(forced == .error ? "Couldn't scan your channels." : (library.scanError ?? ""))
-                    .foregroundStyle(.secondary).lineLimit(2)
-                Spacer(minLength: 4)
-                // Same validation as the toolbar's Refresh Library.
-                Button("Retry") { library.refresh() }
-                    .controlSize(.small)
-                    .disabled(!library.canRefresh(offline: m.connection == .offline))
-            }
-            .selectionDisabled()
-        } else if empty {
-            Text(library.scanned ? "No channel tabs found." : "Refresh the library to find your channel tabs.")
-                .foregroundStyle(.secondary)
-                .selectionDisabled()
         }
     }
 
@@ -311,9 +262,6 @@ private struct AppCard: View {
                 Text("Apps that open in your browser can't be pinned to the tab bar.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
-            }
-            if case .web(let id) = item.entry, case .teamsHosted = item.launch {
-                AppCardAdvanced(id: id, host: m.frameHost, demo: m.options.demo)
             }
         }
         .padding(24)

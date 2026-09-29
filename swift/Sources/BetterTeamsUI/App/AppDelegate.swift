@@ -149,7 +149,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if options.demo, let route, let name = route.query["sheet"], let s = route.section {
             // Evidence: `<route>?sheet=<name>` opens a section sheet.
-            wc.model.presentSheet(SheetRequest(name, in: s))
+            // `contact=<name>` names the person for `sheet=contactCard`.
+            wc.model.presentSheet(SheetRequest(name, in: s, arg: route.query["contact"]))
         }
         Task {
             await state.startup()

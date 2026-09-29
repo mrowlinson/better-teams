@@ -1,5 +1,6 @@
-// CalendarWeekGrid.swift — the Week view (UI-SPEC §6.4): the store's
-// week window as day columns on an hour scale. Placement is a SwiftUI
+// CalendarWeekGrid.swift — the Day, Work week and Week views (UI-SPEC
+// §6.4): the given days of the store's week as columns on an hour
+// scale, all-day events in a strip under the day header. Placement is a SwiftUI
 // `Layout` (`WeekGridLayout`, R8: no geometry readers); overlapping
 // meetings share a column by the pure lane assignment in
 // `WeekGridLanes`. Selecting a meeting shows it in the inspector.
@@ -8,16 +9,24 @@ import SwiftUI
 
 struct WeekGrid: View {
     @ObservedObject var week: CalendarWeekStore
+    /// Day keys shown (one for Day, Mon–Fri for Work week, seven for Week).
+    let keys: [String]
     let selectedID: String?
     let select: (String?) -> Void
+    /// Day-header click (a day in the Day view); nil = not clickable.
+    var openDay: ((String) -> Void)?
     @Environment(\.contentTextScale) private var scale
+    @State private var position = ScrollPosition(edge: .top)
 
-    static let hourHeight: CGFloat = 44
+    static let hourHeight: CGFloat = 56
     static let gutter: CGFloat = 56
 
     struct Day: Identifiable {
         let id: String
+        /// Timed meetings (the hour scale).
         let meetings: [MeetingItem]
+        /// All-day events covering this day (the strip).
+        var allDay: [MeetingItem] = []
     }
 
     struct Hour: Identifiable {
@@ -27,7 +36,9 @@ struct WeekGrid: View {
     private static let hours = (0 ..< 24).map(Hour.init(id:))
 
     private var days: [Day] {
-        zip(week.dayKeys, week.columns).map { Day(id: $0.0, meetings: $0.1) }
+        zip(keys, CalWeek.bucket(week.meetings, keys: keys)).map { key, rows in
+            Day(id: key, meetings: rows.filter { !$0.isAllDay }, allDay: rows.filter(\.isAllDay))
+        }
     }
 
     var body: some View {
@@ -37,40 +48,44 @@ struct WeekGrid: View {
         // The day header is a pinned section header inside the scroll
         // view, so it and the columns share one width (a header outside
         // spans the legacy scroller too and drifts right, ~14 pt by Sat).
-        ScrollViewReader { proxy in
-            ScrollView(.vertical) {
-                LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
-                    Section {
-                        HStack(alignment: .top, spacing: 0) {
-                            gutter
-                            ForEach(days) { day in
-                                let today = Self.isToday(day.id, now)
-                                WeekDayColumn(meetings: day.meetings, selectedID: selectedID,
-                                              nowMinute: today ? nowMinute : nil, select: select)
-                                    .frame(maxWidth: .infinity)
-                                    .background(today ? AnyShapeStyle(.tint.opacity(0.05)) : AnyShapeStyle(Color.clear))
-                                    .overlay(alignment: .leading) { Divider() }
-                            }
+        ScrollView(.vertical) {
+            LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
+                Section {
+                    HStack(alignment: .top, spacing: 0) {
+                        gutter
+                        ForEach(days) { day in
+                            let today = Self.isToday(day.id, now)
+                            WeekDayColumn(meetings: day.meetings, selectedID: selectedID,
+                                          nowMinute: today ? nowMinute : nil, select: select)
+                                .frame(maxWidth: .infinity)
+                                .background(today ? AnyShapeStyle(.tint.opacity(0.05)) : AnyShapeStyle(Color.clear))
+                                .overlay(alignment: .leading) { Divider() }
                         }
-                        .frame(height: 24 * Self.hourHeight)
-                        .background { HourLines(hourHeight: Self.hourHeight, leading: Self.gutter) }
-                    } header: {
-                        VStack(spacing: 0) {
-                            header(now)
-                            Divider()
-                        }
-                        .background(Color(nsColor: .controlBackgroundColor))
                     }
+                    .frame(height: 24 * Self.hourHeight)
+                    .background { HourLines(hourHeight: Self.hourHeight, leading: Self.gutter) }
+                } header: {
+                    VStack(spacing: 0) {
+                        header(now)
+                        if days.contains(where: { !$0.allDay.isEmpty }) {
+                            Divider()
+                            allDayStrip
+                        }
+                        Divider()
+                    }
+                    .background(Color(nsColor: .controlBackgroundColor))
                 }
             }
-            // Opens on working hours (or an hour before now in the
-            // current week), not at the top of the day.
-            .task(id: days.first?.id) {
-                let hour = Self.initialHour(days: days, now: now)
-                // The pinned header covers the top hour row. Targets the
-                // gutter ForEach identity (the hour), no id modifier (R4).
-                proxy.scrollTo(Hour.ID(max(0, hour - 1)), anchor: .top)
-            }
+        }
+        // Opens on working hours (or an hour before now in the
+        // current week), not at the top of the day.
+        // An explicit offset: scrolling to a lazy row's identity landed
+        // short before the rows had measured (opened near 1 AM).
+        .scrollPosition($position)
+        .task(id: days.first?.id) {
+            let hour = Self.initialHour(days: days, now: now)
+            // 8 pt up so the hour label above the line is not under the header.
+            position.scrollTo(y: max(0, CGFloat(max(0, hour - 1)) * Self.hourHeight - 8))
         }
         .background(Color(nsColor: .controlBackgroundColor))
     }
@@ -94,7 +109,7 @@ struct WeekGrid: View {
             Color.clear.frame(width: Self.gutter, height: 1)
             ForEach(days) { day in
                 let today = Self.isToday(day.id, now)
-                VStack(spacing: 1) {
+                let label = VStack(spacing: 1) {
                     Text(CalendarFormat.day(day.id)?.formatted(.dateTime.weekday(.abbreviated)) ?? "")
                         .font(AppFont.caption(scale))
                         .foregroundStyle(today ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
@@ -108,8 +123,38 @@ struct WeekGrid: View {
                 }
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 6)
+                .contentShape(Rectangle())
                 .accessibilityElement(children: .combine)
                 .accessibilityLabel(CalendarFormat.dayTitle(day.id, now: now))
+                if let openDay {
+                    Button { openDay(day.id) } label: { label }
+                        .buttonStyle(.plain)
+                        .help("Show this day")
+                } else {
+                    label
+                }
+            }
+        }
+    }
+
+    /// All-day events per column (multi-day events repeat per day).
+    private var allDayStrip: some View {
+        HStack(alignment: .top, spacing: 0) {
+            Text("All day")
+                .font(AppFont.caption(scale))
+                .foregroundStyle(.secondary)
+                .frame(width: Self.gutter - 8, alignment: .trailing)
+                .padding(.trailing, 8)
+                .padding(.top, 4)
+            ForEach(days) { day in
+                VStack(spacing: 2) {
+                    ForEach(day.allDay) { m in
+                        CalendarChip(meeting: m, selected: m.id == selectedID, showTime: false) { select(m.id) }
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .top)
+                .padding(2)
+                .overlay(alignment: .leading) { Divider() }
             }
         }
     }
@@ -233,6 +278,12 @@ private struct WeekEventBlock: View {
     let action: () -> Void
     @Environment(\.contentTextScale) private var scale
 
+    /// Meetings of 30 minutes or less get a one-line chip.
+    private var isShort: Bool {
+        guard let a = CalendarFormat.minutes(meeting.start), let b = CalendarFormat.minutes(meeting.end) else { return false }
+        return b - a <= 30
+    }
+
     /// The first Outlook category's color, else the accent tint.
     private var color: AnyShapeStyle {
         meeting.categories.lazy.compactMap(WeekEventColor.color(forCategory:)).first
@@ -243,19 +294,42 @@ private struct WeekEventBlock: View {
         Button(action: action) {
             HStack(spacing: 0) {
                 Rectangle().fill(color).frame(width: 3)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(meeting.subject)
-                        .font(AppFont.caption(scale).weight(.semibold))
-                        .lineLimit(4)
-                    // Narrow lanes: start time only, never a clipped range.
-                    ViewThatFits(in: .horizontal) {
-                        Text(CalendarFormat.range(meeting))
-                        Text(CalendarFormat.date(meeting.start).map(CalendarFormat.time) ?? "")
+                Group {
+                    if isShort {
+                        // 30 minutes or less: one line, so the chip stays inside its slot.
+                        // Title and start time when both fit; in a narrow lane
+                        // the title alone, never a clipped time.
+                        ViewThatFits(in: .horizontal) {
+                            HStack(spacing: 4) {
+                                Text(meeting.subject)
+                                    .font(AppFont.caption(scale).weight(.semibold))
+                                    .lineLimit(1)
+                                Text(CalendarFormat.date(meeting.start).map(CalendarFormat.time) ?? "")
+                                    .font(AppFont.caption(scale))
+                                    .monospacedDigit()
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+                            Text(meeting.subject)
+                                .font(AppFont.caption(scale).weight(.semibold))
+                                .lineLimit(1)
+                        }
+                    } else {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(meeting.subject)
+                                .font(AppFont.caption(scale).weight(.semibold))
+                                .lineLimit(4)
+                            // Narrow lanes: start time only, never a clipped range.
+                            ViewThatFits(in: .horizontal) {
+                                Text(CalendarFormat.range(meeting))
+                                Text(CalendarFormat.date(meeting.start).map(CalendarFormat.time) ?? "")
+                            }
+                            .font(AppFont.caption(scale))
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                        }
                     }
-                    .font(AppFont.caption(scale))
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
                 }
                 .padding(.horizontal, 3)
                 .padding(.vertical, 2)

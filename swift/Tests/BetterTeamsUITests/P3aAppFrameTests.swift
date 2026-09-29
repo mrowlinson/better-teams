@@ -83,8 +83,8 @@ final class P3aAppFrameTests: XCTestCase {
 
         // Host: detach never destroys; eviction releases the LRU view.
         let host = FrameHost(accountKey: "demo")
-        for app in DemoFrameApps.channelTabs.prefix(3) { host.registerApp(app) }
-        let keys = DemoFrameApps.channelTabs.prefix(3).map { FrameKey.app($0.id) }
+        for app in DemoFrameApps.webLinks.prefix(3) { host.registerApp(app) }
+        let keys = DemoFrameApps.webLinks.prefix(3).map { FrameKey.app($0.id) }
         let box = NSView()
         host.attach(keys[0], to: box)
         let first = host.webView(keys[0])

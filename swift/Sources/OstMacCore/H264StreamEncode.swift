@@ -12,43 +12,70 @@ public final class H264StreamEncoder {
     private let width: Int
     private let height: Int
     private var frameCount = 0
+    private let fps: Int32
+    private var keyPending = false
+    /// Consecutive frames with no output (rate-control drops).
+    private var emptyRun = 0
+    private let path: String
     /// Pooled input buffers (was: one CVPixelBuffer alloc per frame).
     /// Touched only on the encode queue (see `encode`).
     private var pool: CVPixelBufferPool?
 
-    /// Nil when the session cannot be created or prepared.
-    public init?(width: Int, height: Int, fps: Int32 = 15, bitrate: Int32 = 256_000) {
+    /// VideoToolbox reports the hardware encoder is in use (HWACCEL).
+    public let hardware: Bool
+    /// The low-latency (real-time communication) rate controller is on.
+    public let lowLatency: Bool
+
+    /// Nil when the session cannot be created or prepared. `path` tags the
+    /// HWACCEL log line (`camera`, `screen-share`, …). Live send always
+    /// runs RealTime on the hardware encoder. `lowLatency` (the rtvc
+    /// low-latency rate controller) is opt-in: measured at the shipped
+    /// camera/share sizes it cost ~+0.5% of a core and ~+30% encode energy
+    /// over the hardware encoder with RealTime alone, without a bit-rate
+    /// gain there, and its wire shape is not yet proven against a Teams
+    /// peer (tmp/HWACCEL.md R6).
+    public init?(
+        width: Int, height: Int, fps: Int32 = 15, bitrate: Int32 = 256_000,
+        path: String = "live-send", lowLatency: Bool = false
+    ) {
         guard width > 0, height > 0 else { return nil }
         self.width = width
         self.height = height
-        var session: VTCompressionSession?
-        var status = VTCompressionSessionCreate(
-            allocator: kCFAllocatorDefault,
-            width: Int32(width), height: Int32(height),
-            codecType: kCMVideoCodecType_H264,
-            encoderSpecification: nil,
-            imageBufferAttributes: [
-                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
-            ] as CFDictionary,
-            compressedDataAllocator: nil,
-            outputCallback: nil,
-            refcon: nil,
-            compressionSessionOut: &session)
-        guard status == noErr, let session else { return nil }
+        self.fps = max(fps, 1)
+        self.path = path
+        guard let made = HWVideo.makeCompressionSession(
+            width: width, height: height, lowLatency: lowLatency, path: path)
+        else { return nil }
+        let session = made.session
         self.session = session
-        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_RealTime, value: true as CFBoolean)
-        VTSessionSetProperty(
-            session, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: fps as CFNumber)
-        VTSessionSetProperty(
-            session, key: kVTCompressionPropertyKey_AverageBitRate, value: bitrate as CFNumber)
-        VTSessionSetProperty(
-            session, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: 30 as CFNumber)
-        VTSessionSetProperty(
-            session, key: kVTCompressionPropertyKey_AllowFrameReordering, value: false as CFBoolean)
-        VTSessionSetProperty(
+        hardware = made.hardware
+        self.lowLatency = made.lowLatency
+        var refused: [String] = []
+        for (key, value) in [
+            (kVTCompressionPropertyKey_RealTime, true as CFBoolean),
+            (kVTCompressionPropertyKey_ExpectedFrameRate, fps as CFNumber),
+            (kVTCompressionPropertyKey_AverageBitRate, bitrate as CFNumber),
+            (kVTCompressionPropertyKey_MaxKeyFrameInterval, 30 as CFNumber),
+            (kVTCompressionPropertyKey_AllowFrameReordering, false as CFBoolean),
+        ] as [(CFString, CFTypeRef)] {
+            let st = VTSessionSetProperty(session, key: key, value: value)
+            if st != noErr { refused.append("\(key)=\(st)") }
+        }
+        if !refused.isEmpty {
+            Log.media.warning("encoder path=\(path, privacy: .public) refused \(refused.joined(separator: ","), privacy: .public)")
+        }
+        // The low-latency controller takes constrained baseline (what
+        // Apple's baseline output already is: no FMO/ASO); plain baseline
+        // is the fallback when the profile is refused.
+        if !made.lowLatency || VTSessionSetProperty(
             session, key: kVTCompressionPropertyKey_ProfileLevel,
-            value: kVTProfileLevel_H264_Baseline_AutoLevel as CFString)
-        status = VTCompressionSessionPrepareToEncodeFrames(session)
+            value: kVTProfileLevel_H264_ConstrainedBaseline_AutoLevel as CFString) != noErr
+        {
+            VTSessionSetProperty(
+                session, key: kVTCompressionPropertyKey_ProfileLevel,
+                value: kVTProfileLevel_H264_Baseline_AutoLevel as CFString)
+        }
+        let status = VTCompressionSessionPrepareToEncodeFrames(session)
         guard status == noErr else {
             VTCompressionSessionInvalidate(session)
             self.session = nil
@@ -58,12 +85,7 @@ public final class H264StreamEncoder {
         let poolStatus = CVPixelBufferPoolCreate(
             kCFAllocatorDefault,
             [kCVPixelBufferPoolMinimumBufferCountKey as String: 3] as CFDictionary,
-            [
-                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
-                kCVPixelBufferWidthKey as String: width,
-                kCVPixelBufferHeightKey as String: height,
-                kCVPixelBufferIOSurfacePropertiesKey as String: [:] as CFDictionary,
-            ] as CFDictionary,
+            HWVideo.surfaceAttributes(width: width, height: height) as CFDictionary,
             &pool)
         if poolStatus == kCVReturnSuccess { self.pool = pool }
     }
@@ -75,8 +97,10 @@ public final class H264StreamEncoder {
     /// Encode one BGRA frame (`width*height*4` bytes) to raw NALs.
     /// Keyframes return [sps, pps, slices...]; inter frames return [slices...].
     /// Call from one serial queue (matches the camera delegate queue).
+    /// Copies into a pooled IOSurface buffer; capture paths that already
+    /// hold a pixel buffer use `encode(pixelBuffer:)` (no copy).
     public func encode(bgra: Data) throws -> [Data] {
-        guard let session else { throw H264EncodeError.session(-1) }
+        guard session != nil else { throw H264EncodeError.session(-1) }
         guard bgra.count >= width * height * 4 else { throw H264EncodeError.badDims }
         var pixels: CVPixelBuffer?
         if let pool {
@@ -87,15 +111,15 @@ public final class H264StreamEncoder {
         } else {
             let cv = CVPixelBufferCreate(
                 kCFAllocatorDefault, width, height,
-                kCVPixelFormatType_32BGRA, nil, &pixels)
+                kCVPixelFormatType_32BGRA, HWVideo.surfaceAttributes() as CFDictionary, &pixels)
             guard cv == kCVReturnSuccess, pixels != nil else {
                 throw H264EncodeError.pixelBuffer(cv)
             }
         }
         guard let pixels else { throw H264EncodeError.pixelBuffer(kCVReturnError) }
         CVPixelBufferLockBaseAddress(pixels, [])
-        defer { CVPixelBufferUnlockBaseAddress(pixels, []) }
         guard let base = CVPixelBufferGetBaseAddress(pixels) else {
+            CVPixelBufferUnlockBaseAddress(pixels, [])
             throw H264EncodeError.pixelBuffer(kCVReturnError)
         }
         let stride = CVPixelBufferGetBytesPerRow(pixels)
@@ -105,8 +129,20 @@ public final class H264StreamEncoder {
                 memcpy(base + row * stride, s + row * width * 4, width * 4)
             }
         }
+        CVPixelBufferUnlockBaseAddress(pixels, [])
+        return try encode(pixelBuffer: pixels)
+    }
 
-        let forceKey = frameCount % 30 == 0
+    /// Encode a capture frame as-is (zero copy: the IOSurface-backed
+    /// buffer from AVCapture / ScreenCaptureKit goes straight to the
+    /// hardware encoder). Must match the encoder's width x height.
+    public func encode(pixelBuffer pixels: CVPixelBuffer) throws -> [Data] {
+        guard let session else { throw H264EncodeError.session(-1) }
+        guard CVPixelBufferGetWidth(pixels) == width,
+              CVPixelBufferGetHeight(pixels) == height
+        else { throw H264EncodeError.badDims }
+        let forceKey = frameCount % 30 == 0 || keyPending
+        keyPending = false
         frameCount += 1
         let box = StreamEncodeBox()
         let sema = DispatchSemaphore(value: 0)
@@ -117,7 +153,7 @@ public final class H264StreamEncoder {
         let status = VTCompressionSessionEncodeFrame(
             session,
             imageBuffer: pixels,
-            presentationTimeStamp: CMTime(value: CMTimeValue(frameCount), timescale: 15),
+            presentationTimeStamp: CMTime(value: CMTimeValue(frameCount), timescale: fps),
             duration: .invalid,
             frameProperties: props,
             infoFlagsOut: &flagsOut,
@@ -130,9 +166,21 @@ public final class H264StreamEncoder {
         if sema.wait(timeout: .now() + 5) == .timedOut {
             throw H264EncodeError.timeout
         }
-        guard box.status == noErr, let sample = box.sample else {
+        guard box.status == noErr else {
             throw H264EncodeError.encode(box.status ?? -1)
         }
+        guard let sample = box.sample else {
+            // Rate controller dropped the frame (low-latency mode holds
+            // the bit rate): nothing to send. A dropped keyframe is
+            // re-forced on the next frame so joiners are not held back.
+            if forceKey { keyPending = true }
+            emptyRun += 1
+            if emptyRun == 30 { // never silent: a stuck encoder shows up in the log
+                Log.media.warning("encoder path=\(self.path, privacy: .public) 30 frames in a row produced no output")
+            }
+            return []
+        }
+        emptyRun = 0
         var nals: [Data] = []
         if forceKey, let (sps, pps) = parameterSets(from: sample) {
             nals.append(sps)

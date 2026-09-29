@@ -298,6 +298,13 @@ final class TimelineViewController: NSViewController, NSTableViewDataSource, NST
         NotificationCenter.default.publisher(for: NSView.boundsDidChangeNotification, object: scroll.contentView)
             .sink { [weak self] _ in self?.scrolled() }
             .store(in: &cancellables)
+        // CHATSYNC S3a: coming back to this window / the app counts as
+        // viewing the newest message when the timeline sits on it.
+        NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)
+            .merge(with: NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification))
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.reportViewingLatest() }
+            .store(in: &cancellables)
         scroll.contentView.postsBoundsChangedNotifications = true
         // The viewport resized (window, composer growth, first layout):
         // bounds notifications do not fire for frame-driven changes, so
@@ -480,6 +487,7 @@ final class TimelineViewController: NSViewController, NSTableViewDataSource, NST
             scrollToBottom()
             retryPendingJump()
             retryPendingReaction()
+            reportViewingLatest(messages)
             return
         }
         let anchor = updateAnchor()
@@ -515,6 +523,7 @@ final class TimelineViewController: NSViewController, NSTableViewDataSource, NST
         restore(anchor)
         retryPendingJump()
         retryPendingReaction()
+        reportViewingLatest(messages)
     }
 
     /// Builds each message row's data and folds its extra state into the
@@ -838,6 +847,8 @@ final class TimelineViewController: NSViewController, NSTableViewDataSource, NST
     /// older page usually lands before the top is reached; the prepend
     /// keeps the visible rows in place (anchor restore in `apply`).
     private func scrolled() {
+        // No hover toolbar while content moves under the pointer.
+        actions?.hover.scrolled()
         let b = scroll.contentView.bounds
         // A size change is a resize, not a scroll: keep the pinned state
         // (and the bottom) instead of reading it from the new geometry.
@@ -851,6 +862,7 @@ final class TimelineViewController: NSViewController, NSTableViewDataSource, NST
             pinnedToBottom = pinned
             if pinned { newWhileAway = 0 }
             updateJumpButton()
+            if pinned { reportViewingLatest() }
         }
         guard Self.shouldPrefetchOlder(offsetFromTop: b.minY, viewportHeight: b.height),
               conv.canLoadMore, !conv.loadingMore,
@@ -884,6 +896,24 @@ final class TimelineViewController: NSViewController, NSTableViewDataSource, NST
         pinnedToBottom = true
         newWhileAway = 0
         updateJumpButton()
+        reportViewingLatest()
+    }
+
+    /// CHATSYNC S3a: tell the app this chat's newest message is on screen.
+    /// The app sends the Teams read position only when the gate holds
+    /// (open chat or pop-out, key window of the active app, pinned to the
+    /// newest row, first page loaded) — never from a hidden timeline.
+    /// `shown` = the rows `apply` just laid out: the store's sink fires in
+    /// willSet, so `conv.messages` still holds the previous list there.
+    /// What is on screen is what counts as read (a cached first paint
+    /// included; a newer page re-reports).
+    private func reportViewingLatest(_ shown: [ChatMessage]? = nil) {
+        guard case .conversation = scope, isViewLoaded, let window = view.window,
+              window.isVisible, !window.isMiniaturized else { return }
+        let rows = shown ?? conv.messages
+        model?.app?.noteViewingLatest(
+            chatID: conv.chatID, messages: rows, windowActive: window.isKeyWindow,
+            atLatest: pinnedToBottom, loaded: !rows.isEmpty)
     }
 
     // MARK: NSTableViewDataSource / Delegate
@@ -909,13 +939,16 @@ final class TimelineViewController: NSViewController, NSTableViewDataSource, NST
 
     func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool { false }
 
-    /// Evidence captures only (demo): a bottom-pinned timeline that
-    /// overflows usually cuts through its top row, leaving a sender name
-    /// half under the pane header. Scroll up to the start of that run
-    /// (its header row or day separator) so the top shows a whole header.
+    /// Evidence captures only (demo): a timeline scrolled into its
+    /// history can cut through its top row, leaving a sender name half
+    /// under the pane header. Scroll up to the start of that run (its
+    /// header row or day separator) so the top shows a whole header.
+    /// A bottom-pinned timeline stays put: scrolling it up would push the
+    /// newest bubble under the composer divider, and the newest message
+    /// with its bottom inset is what an open chat must show.
     func evidenceRevealTopHeader() {
         let b = scroll.contentView.bounds
-        guard !items.isEmpty, table.frame.height > b.height else { return }
+        guard !items.isEmpty, !pinnedToBottom, table.frame.height > b.height else { return }
         let top = b.minY + scroll.contentInsets.top
         let cut = table.row(at: NSPoint(x: 1, y: top))
         guard cut >= 0, table.rect(ofRow: cut).minY < top - 0.5 else { return }

@@ -50,8 +50,7 @@ final class DemoShowTests: XCTestCase {
         // Demo threads stamp from DemoClock too: pin it like --evidence.
         XCTAssertEqual(DemoClock.pinForEvidence(realNow: sunday, calendar: cal), pinned)
         defer { DemoClock.unpin() }
-        let store = ActivityStore(defaults: MemoryDefaults(), key: "demoshow")
-        store.seedDemo()
+        let store = ActivityStore.demo(DemoGate.launch(args: ["--demo"])!)
         XCTAssertGreaterThanOrEqual(store.items.count, 10)
         let today = store.items.map { Date(timeIntervalSince1970: TimeInterval($0.at)) }
             .filter { cal.isDate($0, inSameDayAs: pinned) }

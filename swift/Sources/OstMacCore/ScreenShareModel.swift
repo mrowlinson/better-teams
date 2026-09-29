@@ -269,43 +269,30 @@ private final class ShareFrameSink: NSObject, SCStreamOutput, @unchecked Sendabl
             SCFrameStatus(rawValue: raw) == .complete,
             let pixels = sampleBuffer.imageBuffer
         else { return }
-        let width = CVPixelBufferGetWidth(pixels)
-        let height = CVPixelBufferGetHeight(pixels)
-        var image: CGImage?
-        guard VTCreateCGImageFromCVPixelBuffer(pixels, options: nil, imageOut: &image) == noErr,
-              let image
-        else { return }
         var sent = false
         if flag.get() {
-            CVPixelBufferLockBaseAddress(pixels, .readOnly)
-            defer { CVPixelBufferUnlockBaseAddress(pixels, .readOnly) }
-            guard let base = CVPixelBufferGetBaseAddress(pixels) else {
-                note(image: image, sent: false)
-                return
-            }
-            let stride = CVPixelBufferGetBytesPerRow(pixels)
-            var packed = Data(count: width * height * 4)
-            packed.withUnsafeMutableBytes { (dst: UnsafeMutableRawBufferPointer) in
-                let dest = dst.baseAddress!
-                for row in 0 ..< height {
-                    memcpy(dest + row * width * 4, base + row * stride, width * 4)
-                }
-            }
+            // HWACCEL: the ScreenCaptureKit IOSurface buffer goes straight
+            // to the hardware encoder (was: a per-frame pack copy).
             do {
-                let nals = try box.encode(bgra: packed, width: width, height: height)
-                _ = try RustCore.videoSendPush(nals: nals)
-                sent = true
+                let nals = try box.encode(pixelBuffer: pixels)
+                // Empty = rate-control drop: nothing to send.
+                if !nals.isEmpty {
+                    _ = try RustCore.videoSendPush(nals: nals)
+                    sent = true
+                }
             } catch {
                 // Transient: the frame still previews, the next one retries.
                 // Nothing replaces a dropped frame (no black-IDR fallback:
                 // an idle or camera-off sender sends no video).
             }
         }
-        note(image: image, sent: sent)
+        note(pixels: pixels, sent: sent)
     }
 
     /// Count every frame; publish the latest preview at most 4Hz.
-    private func note(image: CGImage, sent: Bool) {
+    /// The preview CGImage is only made for a published frame (was: one
+    /// per captured frame, 3 of 4 thrown away by the gate).
+    private func note(pixels: CVPixelBuffer, sent: Bool) {
         pendingCaptured += 1
         if sent { pendingSent += 1 }
         let now = SharePreviewGate.nowMs()
@@ -317,6 +304,13 @@ private final class ShareFrameSink: NSObject, SCStreamOutput, @unchecked Sendabl
         let sentCount = pendingSent
         pendingCaptured = 0
         pendingSent = 0
+        // A copy on purpose: the preview outlives this callback, and
+        // holding ScreenCaptureKit's own surface would starve its small
+        // buffer queue (4Hz preview only; the encode path is zero-copy).
+        var image: CGImage?
+        guard VTCreateCGImageFromCVPixelBuffer(pixels, options: nil, imageOut: &image) == noErr,
+              let image
+        else { return }
         publish(image: image, captured: captured, sent: sentCount)
     }
 
@@ -346,16 +340,20 @@ private final class ShareEncoderBox: @unchecked Sendable {
     private var encoder: H264StreamEncoder?
     private var dims = (0, 0)
 
-    func encode(bgra: Data, width: Int, height: Int) throws -> [Data] {
+    /// HWACCEL: the capture buffer (IOSurface) goes straight to the
+    /// hardware encoder — no pack copy.
+    func encode(pixelBuffer: CVPixelBuffer) throws -> [Data] {
+        let width = CVPixelBufferGetWidth(pixelBuffer)
+        let height = CVPixelBufferGetHeight(pixelBuffer)
         lock.lock()
         if encoder == nil || dims != (width, height) {
-            encoder = H264StreamEncoder(width: width, height: height)
+            encoder = H264StreamEncoder(width: width, height: height, path: "screen-share")
             dims = (width, height)
         }
         let enc = encoder
         lock.unlock()
         guard let enc else { throw H264EncodeError.session(-1) }
-        return try enc.encode(bgra: bgra)
+        return try enc.encode(pixelBuffer: pixelBuffer)
     }
 
     func reset() {

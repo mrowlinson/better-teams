@@ -71,13 +71,13 @@ public final class MeetingChatStore: ObservableObject {
         openGeneration += 1
         let gen = openGeneration
         Task {
-            let own: String? = try? await Task.detached {
+            let own: String? = try? await Task.blocking {
                 try RustCore.whoami().display_name
             }.value
             guard gen == self.openGeneration else { return }
             if let own { self.ownDisplayName = own }
             do {
-                let resp = try await Task.detached {
+                let resp = try await Task.blocking {
                     try RustCore.messages(chatID: threadID, limit: limit)
                 }.value
                 guard gen == self.openGeneration else { return }
@@ -158,21 +158,45 @@ public final class MeetingChatStore: ObservableObject {
             return
         }
         guard let id = threadID else { return }
-        messages.append(ChatMessage(
-            id: "pending-\(UUID().uuidString)",
+        // §106: same reconcile as the main timeline — the bubble carries
+        // the client message id and settles on the POST answer, a verify
+        // read, or the echo (was: "Sending…" forever).
+        let cmid = SendReconcile.newClientMessageID()
+        let localID = SendReconcile.pendingID(for: cmid)
+        let local = ChatMessage(
+            id: localID,
             sender: "Me", timestamp: ConversationStore.nowISO(),
-            content: body, isOwn: true))
+            content: body, isOwn: true, clientMessageID: cmid)
+        messages.append(local)
         persist()
+        let request = OutgoingSend(chatID: id, text: body, clientMessageID: cmid)
+        let transport = sendTransport
         Task {
-            do {
-                _ = try await Task.detached {
-                    try RustCore.send(chatID: id, text: body)
-                }.value
-            } catch {
-                self.error = "send failed: \(error)"
+            let outcome = await Task.blocking {
+                SendPipeline.run(request, transport: transport)
+            }.value
+            switch outcome {
+            case .sent(let serverID, let row, _):
+                var settled = row ?? ChatMessage(
+                    id: serverID ?? SendReconcile.settledID(for: cmid),
+                    sender: self.ownDisplayName ?? local.sender, timestamp: local.timestamp,
+                    content: local.content, isOwn: true, clientMessageID: cmid)
+                settled.isOwn = true
+                if settled.clientMessageID == nil { settled.clientMessageID = cmid }
+                let next = SendReconcile.replacing(localID, with: settled, in: self.messages)
+                if next != self.messages { self.messages = next; self.persist() }
+            case .failed(let err):
+                // Verified not delivered: the panel has no Retry row, so
+                // the local row goes (it must never pass as sent) and the
+                // banner reports the failure.
+                self.messages.removeAll { $0.id == localID }
+                self.error = "send failed: \(err)"
             }
         }
     }
+
+    /// §106: send wire (tests inject a fake).
+    public var sendTransport: SendTransport = .live
 
     /// Drop memory after sign-out and delete the persisted snapshot
     /// (fail closed; history re-fetches on the next sign-in).
@@ -191,7 +215,13 @@ public final class MeetingChatStore: ObservableObject {
     /// bubble that landed before history never drops).
     public static func merge(history: [ChatMessage], keeping live: [ChatMessage]) -> [ChatMessage] {
         let known = Set(history.map(\.id))
-        return history + live.filter { !known.contains($0.id) }
+        // §106: a local own row the history already carries (by client
+        // message id) is settled — the history copy wins.
+        let cmids = Set(history.compactMap(\.clientMessageID))
+        return history + live.filter {
+            !known.contains($0.id)
+                && !(SendReconcile.isLocalRow($0) && $0.clientMessageID.map(cmids.contains) == true)
+        }
     }
 
     private func ingestLive(_ message: RealtimeMessage) {
@@ -208,7 +238,14 @@ public final class MeetingChatStore: ObservableObject {
         }
         var m = message.asChatMessage
         m.isOwn = ownDisplayName.map { m.sender == $0 } ?? false
-        messages = ConversationStore.upsert(m, into: messages)
+        // §106: an own send's echo settles its local row in place.
+        if !message.isEdit, let cmid = m.clientMessageID,
+           let local = messages.first(where: { $0.clientMessageID == cmid }) {
+            m.isOwn = true
+            messages = SendReconcile.replacing(local.id, with: m, in: messages)
+        } else {
+            messages = ConversationStore.upsert(m, into: messages)
+        }
         if let r = message.reactions {
             applyReactions(id: targetID, reactions: r)
         }

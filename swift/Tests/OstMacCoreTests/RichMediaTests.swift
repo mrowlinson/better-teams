@@ -119,7 +119,7 @@ final class RichMediaTests: XCTestCase {
     }
 
     func testCacheDedupesConcurrentFetch() async throws {
-        let cache = RichMediaCache(diskDir: nil)
+        let cache = RichMediaCache(diskDir: nil, memory: .pinned)
         let calls = Counter()
         let bytes = Data([1, 2, 3, 4])
         let fetcher: RichMediaCache.Fetcher = { _ in
@@ -139,7 +139,7 @@ final class RichMediaTests: XCTestCase {
     }
 
     func testCacheFailureNotCached() async {
-        let cache = RichMediaCache(diskDir: nil)
+        let cache = RichMediaCache(diskDir: nil, memory: .pinned)
         let calls = Counter()
         let fetcher: RichMediaCache.Fetcher = { _ in
             calls.inc()
@@ -160,10 +160,10 @@ final class RichMediaTests: XCTestCase {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: dir) }
         let bytes = Data([9, 9, 9])
-        let c1 = RichMediaCache(diskDir: dir)
+        let c1 = RichMediaCache(diskDir: dir, memory: .pinned)
         _ = try await c1.data(url: "https://h/x.png", messageID: "m1", fetcher: { _ in bytes })
         // Fresh instance (cold memory) reads disk without fetching.
-        let c2 = RichMediaCache(diskDir: dir)
+        let c2 = RichMediaCache(diskDir: dir, memory: .pinned)
         let hit = try await c2.data(
             url: "https://h/x.png", messageID: "m1",
             fetcher: { _ in throw MediaFetchError.failed("must not refetch") })
@@ -199,7 +199,7 @@ final class RichMediaTests: XCTestCase {
         try plantFile(in: dir, name: "oldest", bytes: 10, age: 300)
         try plantFile(in: dir, name: "middle", bytes: 10, age: 200)
         try plantFile(in: dir, name: "newer", bytes: 10, age: 100)
-        let cache = RichMediaCache(diskDir: dir, diskCapFiles: 3)
+        let cache = RichMediaCache(diskDir: dir, diskCapFiles: 3, memory: .pinned)
         _ = try await cache.data(
             url: "https://h/fresh.png", messageID: "m",
             fetcher: { _ in Data(repeating: 1, count: 10) })
@@ -220,7 +220,7 @@ final class RichMediaTests: XCTestCase {
         let keyB = RichMediaCache.key(url: "https://h/b.png", messageID: "m")
         try plantFile(in: dir, name: keyA, bytes: 8, age: 300)
         try plantFile(in: dir, name: keyB, bytes: 8, age: 200)
-        let cache = RichMediaCache(diskDir: dir, diskCapFiles: 2)
+        let cache = RichMediaCache(diskDir: dir, diskCapFiles: 2, memory: .pinned)
         // Reading A refreshes its recency (served from disk, no fetch).
         let hit = try await cache.data(
             url: "https://h/a.png", messageID: "m",
@@ -240,7 +240,7 @@ final class RichMediaTests: XCTestCase {
         let dir = try scratchDir()
         defer { try? FileManager.default.removeItem(at: dir) }
         try plantFile(in: dir, name: "stale", bytes: 20, age: 300)
-        let cache = RichMediaCache(diskDir: dir, diskCapBytes: 25)
+        let cache = RichMediaCache(diskDir: dir, diskCapBytes: 25, memory: .pinned)
         _ = try await cache.data(
             url: "https://h/fresh.png", messageID: "m",
             fetcher: { _ in Data(repeating: 1, count: 10) })
@@ -287,7 +287,7 @@ final class RichMediaTests: XCTestCase {
         let bytes = try DemoMedia.data(for: DemoMedia.photo1)
         let model = RemoteImageModel(
             url: DemoMedia.photo1, messageID: "m1",
-            cache: RichMediaCache(diskDir: nil),
+            cache: RichMediaCache(diskDir: nil, memory: .pinned),
             fetcher: { _ in bytes })
         XCTAssertEqual(model.phase, .loading)
         await model.reload()
@@ -299,7 +299,7 @@ final class RichMediaTests: XCTestCase {
         let calls = Counter()
         let model = RemoteImageModel(
             url: "demo://missing", messageID: "m1",
-            cache: RichMediaCache(diskDir: nil),
+            cache: RichMediaCache(diskDir: nil, memory: .pinned),
             fetcher: { _ in
                 calls.inc()
                 throw MediaFetchError.failed("nope")
@@ -316,7 +316,7 @@ final class RichMediaTests: XCTestCase {
     func testRemoteImageModelRejectsNonImage() async {
         let model = RemoteImageModel(
             url: "https://h/x", messageID: "m1",
-            cache: RichMediaCache(diskDir: nil),
+            cache: RichMediaCache(diskDir: nil, memory: .pinned),
             fetcher: { _ in Data("not png".utf8) })
         await model.reload()
         XCTAssertEqual(model.phase, .failed("not an image"))

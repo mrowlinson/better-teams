@@ -25,22 +25,12 @@ public enum H264Encode {
             throw H264EncodeError.badDims
         }
 
-        var session: VTCompressionSession?
-        var status = VTCompressionSessionCreate(
-            allocator: kCFAllocatorDefault,
-            width: Int32(width), height: Int32(height),
-            codecType: kCMVideoCodecType_H264,
-            encoderSpecification: nil,
-            imageBufferAttributes: [
-                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
-            ] as CFDictionary,
-            compressedDataAllocator: nil,
-            outputCallback: nil,
-            refcon: nil,
-            compressionSessionOut: &session)
-        guard status == noErr, let session else {
-            throw H264EncodeError.session(status)
-        }
+        // HWACCEL: hardware encoder required (logged software fallback).
+        guard let made = HWVideo.makeCompressionSession(
+            width: width, height: height, path: "oneshot-encode")
+        else { throw H264EncodeError.session(-1) }
+        let session = made.session
+        var status: OSStatus = noErr
         defer { VTCompressionSessionInvalidate(session) }
 
         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_RealTime, value: true as CFBoolean)
@@ -61,7 +51,7 @@ public enum H264Encode {
         var pixels: CVPixelBuffer?
         let cv = CVPixelBufferCreate(
             kCFAllocatorDefault, width, height,
-            kCVPixelFormatType_32BGRA, nil, &pixels)
+            kCVPixelFormatType_32BGRA, HWVideo.surfaceAttributes() as CFDictionary, &pixels)
         guard cv == kCVReturnSuccess, let pixels else {
             throw H264EncodeError.pixelBuffer(cv)
         }

@@ -98,7 +98,7 @@ final class FfiLaterB4ChatsTests: XCTestCase {
     func testChatsFallbackToAgg() throws {
         signIn()
         http.routes[csaURL()] = (500, "csa down")
-        http.routes[aggURL()] = (200, #"{"conversations":[{"id":"19:abc@thread","threadProperties":{"topic":"Grp"}}]}"#)
+        http.routes[aggURL()] = (200, #"{"conversations":[{"id":"19:abc@thread","threadProperties":{"topic":"Grp"},"lastMessage":{"content":"p"}}]}"#)
         let r = try CoreReads.chats(limit: 20, ctx: ctx())
         XCTAssertEqual(r.chats.count, 1)
         XCTAssertEqual(r.chats[0].name, "Grp")
@@ -142,7 +142,7 @@ final class FfiLaterB4ChatsTests: XCTestCase {
 
     func testChatsIsGroup() throws {
         signIn()
-        http.routes[csaURL()] = (200, #"{"conversations":[{"id":"19:a@thread.v2","threadProperties":{"topic":"G"}},{"id":"19:meeting_xyz","threadProperties":{"topic":"M"}},{"id":"19:abc@unq.one","threadProperties":{"topic":"D"}}]}"#)
+        http.routes[csaURL()] = (200, #"{"conversations":[{"id":"19:a@thread.v2","threadProperties":{"topic":"G"},"lastMessage":{"content":"p"}},{"id":"19:meeting_xyz","threadProperties":{"topic":"M"},"lastMessage":{"content":"p"}},{"id":"19:abc@unq.one","threadProperties":{"topic":"D"},"lastMessage":{"content":"p"}}]}"#)
         let r = try CoreReads.chats(limit: 20, ctx: ctx())
         XCTAssertEqual(r.chats.map(\.is_group), [true, true, false])
     }

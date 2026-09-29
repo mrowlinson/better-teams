@@ -413,9 +413,9 @@ final class RecordingsTests: XCTestCase {
 
     // MARK: - Demo
 
-    func testDemoResponseHasFourRows() {
+    func testDemoResponseHasFiveRows() {
         let resp = RecordingsDemo.response()
-        XCTAssertEqual(resp.recordings.count, 4)
+        XCTAssertEqual(resp.recordings.count, 5)
         XCTAssertTrue(resp.recordings.allSatisfy {
             $0.duration_ms != nil && $0.source != nil
         })

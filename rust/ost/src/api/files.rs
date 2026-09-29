@@ -100,6 +100,7 @@ struct ParentRef {
     drive_id: Option<String>,
 }
 
+#[cfg(test)]
 #[derive(Debug, Deserialize)]
 struct ChatMessagesResponse {
     value: Vec<GraphChatMessage>,
@@ -285,44 +286,108 @@ pub async fn list_chat_files_data_opts(
     limit: usize,
     include_folders: bool,
 ) -> Result<Vec<SharedFile>> {
-    if is_channel_id(chat_id) {
-        if let Ok(files) =
-            list_via_channel_folder(client, chat_id, limit, include_folders).await
-        {
-            return Ok(files);
-        }
-        list_via_chat_messages(client, chat_id, limit, include_folders).await
+    // §GRAPHSWEEP: no Graph `/me/chats/{id}/messages` route any more — it
+    // needs Chat.Read, which the Teams web token lacks (live 403), and for
+    // channel ids it was never a valid route. Chats read the chat service,
+    // channels (and anything else) the channel files folder; their error
+    // is the one surfaced.
+    if is_chat_id(chat_id) {
+        list_via_chat_service(client, chat_id, limit, include_folders).await
     } else {
-        if let Ok(files) =
-            list_via_chat_messages(client, chat_id, limit, include_folders).await
-        {
-            return Ok(files);
-        }
         list_via_channel_folder(client, chat_id, limit, include_folders).await
     }
 }
 
-async fn list_via_chat_messages(
+/// True when `id` is chat-shaped: group/meeting `19:…@thread.v2`, 1:1
+/// `19:…@unq.gbl.spaces`, legacy `@thread.skype`, or the `48:` self and
+/// system conversations. Channel ids (`@thread.tacv2`) are not.
+pub fn is_chat_id(id: &str) -> bool {
+    let id = id.trim();
+    id.starts_with("48:")
+        || id.starts_with("28:") // OstMac §83: bot 1:1 chats
+        || (id.starts_with("19:")
+            && ["@thread.v2", "@unq.gbl.spaces", "@thread.skype"].iter().any(|s| id.ends_with(s)))
+}
+
+/// Most chat-service history pages the Shared tab walks (200 each).
+const CHAT_FILE_PAGES: usize = 5;
+
+/// Chat Shared tab via the chat service: the files messages carry
+/// (`properties.files`), newest first, each resolved to its driveItem
+/// through `/shares/{id}/driveItem` (Files.ReadWrite.All). A file that
+/// will not resolve (deleted, no access) still lists from the message
+/// metadata: name, link, sender, time; no drive id (open-only).
+async fn list_via_chat_service(
     client: &TeamsClient,
     chat_id: &str,
     limit: usize,
     include_folders: bool,
 ) -> Result<Vec<SharedFile>> {
-    let path = format!("/me/chats/{}/messages?$top={}", chat_id, limit.max(1));
-    let resp = client.graph_get(&path).await?;
-    let msgs: ChatMessagesResponse = resp
-        .json()
-        .await
-        .context("Failed to parse chat messages response")?;
+    let refs = crate::api::chat::chat_file_refs_data(client, chat_id, limit.max(1), CHAT_FILE_PAGES).await?;
+    Ok(resolve_file_refs(client, refs, include_folders).await)
+}
 
+/// Chat-service file refs → Shared files: each resolved through
+/// `/shares/{id}/driveItem` (share link first, then the object URL);
+/// unresolvable refs list from their metadata (open-only). Deduped by
+/// driveItem id; each keeps its message attachment id.
+async fn resolve_file_refs(
+    client: &TeamsClient,
+    refs: Vec<crate::api::chat::ChatFileRef>,
+    include_folders: bool,
+) -> Vec<SharedFile> {
     let mut files = Vec::new();
     let mut seen = std::collections::HashSet::new();
-    for msg in &msgs.value {
-        for (_, file) in reference_files(client, msg, include_folders, &mut seen).await {
-            files.push(file);
+    for r in refs {
+        let mut item = None;
+        for u in [r.share_url.as_deref(), Some(r.object_url.as_str())].into_iter().flatten() {
+            let spath = format!("/shares/{}/driveItem", encode_share_id(u));
+            if let Ok(resp) = client.graph_get(&spath).await {
+                if let Ok(it) = resp.json::<DriveItem>().await {
+                    item = Some(it);
+                    break;
+                }
+            }
         }
+        let file = match item {
+            Some(it) => {
+                if !keep_item(&it, include_folders) || !seen.insert(it.id.clone()) {
+                    continue;
+                }
+                let mut f = shared_from_item(it, r.sender.clone());
+                if f.name == "[unnamed]" {
+                    f.name = r.name.clone();
+                }
+                if f.attachment_id.is_none() {
+                    f.attachment_id = r.attachment_id.clone();
+                }
+                f
+            }
+            None => shared_from_ref(&r),
+        };
+        files.push(file);
     }
-    Ok(files)
+    files
+}
+
+/// A chat file that did not resolve to a driveItem, from its message
+/// metadata alone (open-in-browser only: no drive id, no size).
+fn shared_from_ref(r: &crate::api::chat::ChatFileRef) -> SharedFile {
+    SharedFile {
+        id: r.attachment_id.clone().unwrap_or_else(|| r.object_url.clone()),
+        name: r.name.clone(),
+        size: 0,
+        mime: None,
+        web_url: Some(r.object_url.clone()),
+        download_url: None,
+        drive_id: None,
+        created: r.time.clone(),
+        modified: r.time.clone(),
+        sender: r.sender.clone(),
+        is_folder: false,
+        share_url: r.share_url.clone(),
+        attachment_id: r.attachment_id.clone(),
+    }
 }
 
 /// Resolve one message's `reference` attachments to driveItems through
@@ -405,17 +470,37 @@ pub fn message_path(conversation_id: &str, message_id: &str, team_id: Option<&st
     })
 }
 
+/// §GRAPHSWEEP: which source a message's shared files come from — the
+/// chat service for every id except channel posts (`@thread.tacv2`, read
+/// under their team with ChannelMessage.Read.All). Pure so tests pin it.
+pub fn message_files_via_chat_service(conversation_id: &str) -> bool {
+    !is_channel_id(conversation_id)
+}
+
 /// The files one message shares: its `reference` attachments resolved
 /// to driveItems, each tagged with the attachment's own id (the
 /// `<attachment id>` in the body) so a timeline chip matches it even
-/// past the first page of the Shared list. Chats read
-/// `/me/chats/{c}/messages/{m}`; channel ids (`@thread.tacv2`) read the
+/// past the first page of the Shared list. Chat ids read the chat
+/// service (§83; Graph `/me/chats/{c}/messages/{m}` 403s without
+/// Chat.Read), as do all other non-channel ids; channel ids (`@thread.tacv2`) read the
 /// channel post under its team. Folders are skipped.
 pub async fn list_message_files_data(
     client: &TeamsClient,
     conversation_id: &str,
     message_id: &str,
 ) -> Result<Vec<SharedFile>> {
+    // §GRAPHSWEEP: every non-channel id reads the chat service — the Graph
+    // `/me/chats/{c}/messages/{m}` route needs Chat.Read, which the Teams
+    // web token lacks (a guaranteed 403).
+    if message_files_via_chat_service(conversation_id) {
+        // OstMac §83: chats read the chat service (Graph needs Chat.Read).
+        message_path(conversation_id, message_id, None)?; // guard ids pre-network
+        let refs = crate::api::chat::chat_message_file_refs_data(
+            client, conversation_id, message_id, CHAT_FILE_PAGES,
+        )
+        .await?;
+        return Ok(resolve_file_refs(client, refs, false).await);
+    }
     let team = if is_channel_id(conversation_id) {
         message_path(conversation_id, message_id, Some("t"))?; // guard ids pre-network
         Some(find_team_for_channel(client, conversation_id.trim()).await?)
@@ -726,6 +811,24 @@ pub async fn upload_file_data_with_progress(
     local_path: &str,
     progress: Option<&UploadProgress<'_>>,
 ) -> Result<SharedFile> {
+    let cmid = crate::api::new_client_message_id();
+    upload_file_data_idem(client, chat_id, local_path, progress, &cmid, false).await
+}
+
+/// OstMac §106: [`upload_file_data_with_progress`] with a caller-owned
+/// `clientmessageid` for the chat file post (a Retry reuses it).
+/// `verify_first` (retries): when the chat already carries a message with
+/// that id, the (idempotent, replace) upload runs but the post is skipped
+/// — a post whose answer was lost is never posted twice. Channel posts
+/// use the same chat-service post + verify (FIXPACK F1).
+pub async fn upload_file_data_idem(
+    client: &TeamsClient,
+    chat_id: &str,
+    local_path: &str,
+    progress: Option<&UploadProgress<'_>>,
+    client_message_id: &str,
+    verify_first: bool,
+) -> Result<SharedFile> {
     let bytes = std::fs::read(local_path)
         .with_context(|| format!("Failed to read {}", local_path))?;
     let report = |sent: u64, total: u64| {
@@ -744,9 +847,9 @@ pub async fn upload_file_data_with_progress(
     // (the scan costs joinedTeams + one channels call per team).
     if is_channel_id(chat_id) {
         let team_id = find_team_for_channel(client, chat_id).await?;
-        upload_to_channel(client, &team_id, chat_id, filename, bytes, &report).await
+        upload_to_channel(client, &team_id, chat_id, filename, bytes, &report, client_message_id, verify_first).await
     } else {
-        upload_to_chat(client, chat_id, filename, bytes, &report).await
+        upload_to_chat(client, chat_id, filename, bytes, &report, client_message_id, verify_first).await
     }
 }
 
@@ -756,6 +859,8 @@ async fn upload_to_chat(
     filename: &str,
     bytes: Vec<u8>,
     report: &impl Fn(u64, u64),
+    cmid: &str,
+    verify_first: bool,
 ) -> Result<SharedFile> {
     let folder = encode_segment(CHAT_FILES_FOLDER);
     let fname = encode_segment(filename);
@@ -773,14 +878,114 @@ async fn upload_to_chat(
             .await
             .context("Failed to parse upload response")?
     };
-    post_reference_message(
+    // §84: the chat service leads (skypetoken; Graph chat-message POST
+    // needs ChatMessage.Send, which the Teams web token may lack).
+    // OstMac §106/§FIXPACK-F1: the post carries a clientmessageid and is
+    // settled by [`post_file_message_idem`] (verify before any fallback).
+    post_file_message_idem(
         client,
-        &format!("/me/chats/{}/messages", chat_id),
+        chat_id,
         &item,
         filename,
+        cmid,
+        verify_first,
+        &format!("/me/chats/{}/messages", chat_id),
     )
     .await?;
     Ok(shared_from_item(item, None))
+}
+
+/// OstMac FIXPACK F1: what to do after the chat-service file post
+/// returned an error. `landed` is the by-clientmessageid lookup:
+/// `Some(true)` found, `Some(false)` looked and absent, `None` lookup failed.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum FilePostNext {
+    /// Teams already has the message: done, never post again.
+    Landed,
+    /// Teams definitely rejected it and it is absent: Graph reference post.
+    Graph,
+    /// Cannot tell (timeout / 5xx / lookup failed): stop, surface an error;
+    /// the Swift Retry verifies by the same id before posting again.
+    Unknown,
+}
+
+/// A rejection the server answered (HTTP 4xx): the message was not accepted.
+/// Timeouts, transport errors and 5xx are ambiguous (Teams may have accepted).
+pub(crate) fn is_definite_rejection(err: &str) -> bool {
+    let e = err.trim_start();
+    e.starts_with("HTTP 4") || e.starts_with("401 ")
+}
+
+pub(crate) fn file_post_next(err: &str, landed: Option<bool>) -> FilePostNext {
+    match landed {
+        Some(true) => FilePostNext::Landed,
+        Some(false) if is_definite_rejection(err) => FilePostNext::Graph,
+        _ => FilePostNext::Unknown,
+    }
+}
+
+/// Post the uploaded file into a chat or channel through the chat service
+/// with `cmid` as the idempotency key. `verify_first` (Retry): a message
+/// already carrying `cmid` means the earlier post landed, so nothing is
+/// posted. After a failed post the lookup by `cmid` runs (three tries with a
+/// short wait when the failure is ambiguous, for indexing lag) before any
+/// Graph fallback; an ambiguous failure with no proof of absence is an error,
+/// never a second post. Used for chats and channels alike.
+async fn post_file_message_idem(
+    client: &TeamsClient,
+    chat_id: &str,
+    item: &DriveItem,
+    filename: &str,
+    cmid: &str,
+    verify_first: bool,
+    graph_path: &str,
+) -> Result<()> {
+    if verify_first {
+        if let Ok(Some(_)) = crate::api::find_message_by_client_id(client, chat_id, cmid).await {
+            return Ok(());
+        }
+    }
+    let svc = async {
+        let mut body = chat_service_file_body_for(item, filename)?;
+        body["clientmessageid"] = serde_json::json!(cmid);
+        let url = format!("{}/v1/users/ME/conversations/{}/messages", client.chat_service_url(), chat_id);
+        client.chat_post(&url, &body).await?;
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+    let e = match svc {
+        Ok(()) => return Ok(()),
+        Err(e) => e,
+    };
+    let msg = format!("{:#}", e);
+    let tries = if is_definite_rejection(&msg) { 1 } else { 3 };
+    let mut landed = None;
+    for i in 0..tries {
+        if i > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+        }
+        landed = match crate::api::find_message_by_client_id(client, chat_id, cmid).await {
+            Ok(Some(_)) => Some(true),
+            Ok(None) => Some(false),
+            Err(_) => None,
+        };
+        if landed == Some(true) {
+            break;
+        }
+    }
+    match file_post_next(&msg, landed) {
+        FilePostNext::Landed => Ok(()),
+        FilePostNext::Graph => {
+            tracing::debug!("chat-service file post rejected, trying Graph: {}", msg);
+            post_reference_message(client, graph_path, item, filename)
+                .await
+                .map_err(|g| g.context(format!("chat-service file post also failed: {}", msg)))
+        }
+        FilePostNext::Unknown => bail!(
+            "file post state unknown ({}); not posted again, Retry checks first",
+            msg
+        ),
+    }
 }
 
 async fn upload_to_channel(
@@ -790,6 +995,8 @@ async fn upload_to_channel(
     filename: &str,
     bytes: Vec<u8>,
     report: &impl Fn(u64, u64),
+    cmid: &str,
+    verify_first: bool,
 ) -> Result<SharedFile> {
     let fpath = format!("/teams/{}/channels/{}/filesFolder", team_id, channel_id);
     let resp = client.graph_get(&fpath).await?;
@@ -823,11 +1030,16 @@ async fn upload_to_channel(
             .await
             .context("Failed to parse upload response")?
     };
-    post_reference_message(
+    // OstMac FIXPACK F1: channel posts use the same idempotent chat-service
+    // post (clientmessageid + verify) as chats; Graph only on a proven rejection.
+    post_file_message_idem(
         client,
-        &format!("/teams/{}/channels/{}/messages", team_id, channel_id),
+        channel_id,
         &item,
         filename,
+        cmid,
+        verify_first,
+        &format!("/teams/{}/channels/{}/messages", team_id, channel_id),
     )
     .await?;
     Ok(shared_from_item(item, None))
@@ -895,6 +1107,75 @@ fn reference_attachment(item: &DriveItem, filename: &str) -> Result<serde_json::
         "contentUrl": content_url,
         "name": filename,
     }))
+}
+
+/// SharePoint site root of a file URL (`…/personal/<u>/` or
+/// `…/sites/<s>/`), else the origin + `/`. Pure.
+pub fn file_base_url(object_url: &str) -> String {
+    let (scheme, rest) = object_url.split_once("://").unwrap_or(("https", object_url));
+    let mut parts = rest.split('/');
+    let host = parts.next().unwrap_or("");
+    let segs: Vec<&str> = parts.collect();
+    match segs.first() {
+        Some(&kind) if (kind == "personal" || kind == "sites" || kind == "teams") && segs.len() > 2 => {
+            format!("{}://{}/{}/{}/", scheme, host, kind, segs[1])
+        }
+        _ => format!("{}://{}/", scheme, host),
+    }
+}
+
+/// OstMac §84: chat-service POST body for a file message, the shape the
+/// Teams web client sends and `parse_chat_file_refs` reads back:
+/// `properties.files` is a JSON *string* of one
+/// `http://schema.skype.com/File` entry (`id`/`itemid` = the SharePoint
+/// unique id from the upload eTag, `objectUrl` = the file itself). The
+/// visible content is the file name (never an empty bubble). Pure.
+pub fn chat_service_file_body(attach_id: &str, object_url: &str, filename: &str) -> serde_json::Value {
+    let ext = filename.rsplit_once('.').map(|(_, e)| e.to_lowercase()).unwrap_or_default();
+    let base = file_base_url(object_url);
+    let file = serde_json::json!({
+        "@type": "http://schema.skype.com/File",
+        "version": 2,
+        "id": attach_id,
+        "baseUrl": base,
+        "type": ext,
+        "title": filename,
+        "state": "active",
+        "objectUrl": object_url,
+        "providerData": "",
+        "itemid": attach_id,
+        "fileName": filename,
+        "fileType": ext,
+        "fileInfo": {
+            "itemId": null,
+            "fileUrl": object_url,
+            "siteUrl": base,
+            "serverRelativeUrl": "",
+            "shareUrl": null,
+            "shareId": null
+        },
+        "botFileProperties": {},
+        "permissionScope": "users",
+        "filePreview": {},
+        "fileChicletState": {"serviceName": "p2p", "state": "active"}
+    });
+    serde_json::json!({
+        "content": format!("<p>{}</p>", html_escape_text(filename)),
+        "messagetype": "RichText/Html",
+        "contenttype": "text",
+        "properties": {"files": serde_json::Value::Array(vec![file]).to_string()}
+    })
+}
+
+fn html_escape_text(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+}
+
+fn chat_service_file_body_for(item: &DriveItem, filename: &str) -> Result<serde_json::Value> {
+    let attachment = reference_attachment(item, filename)?;
+    let id = attachment["id"].as_str().unwrap_or("");
+    let url = attachment["contentUrl"].as_str().unwrap_or("");
+    Ok(chat_service_file_body(id, url, filename))
 }
 
 async fn post_reference_message(
@@ -1130,6 +1411,36 @@ pub async fn delete_file_data(client: &TeamsClient, drive_id: &str, item_id: &st
     let path = drive_item_path(drive_id, item_id);
     client.graph_delete(&path).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod chat_file_send_tests {
+    use super::*;
+
+    #[test]
+    fn chat_service_file_body_round_trips_through_the_reader() {
+        let url = "https://contoso-my.sharepoint.com/personal/a_contoso_com/Documents/Microsoft Teams Chat Files/Q3 <Plan>.docx";
+        let b = chat_service_file_body("0f1e2d3c-aaaa-bbbb-cccc-000000000001", url, "Q3 <Plan>.docx");
+        assert_eq!(b["messagetype"], "RichText/Html");
+        assert_eq!(b["content"], "<p>Q3 &lt;Plan&gt;.docx</p>");
+        // files travels as a JSON string, like the Teams web client.
+        let files: serde_json::Value = serde_json::from_str(b["properties"]["files"].as_str().unwrap()).unwrap();
+        let f = &files[0];
+        assert_eq!(f["@type"], "http://schema.skype.com/File");
+        assert_eq!(f["id"], f["itemid"]);
+        assert_eq!(f["fileType"], "docx");
+        assert_eq!(f["baseUrl"], "https://contoso-my.sharepoint.com/personal/a_contoso_com/");
+        assert_eq!(f["fileInfo"]["fileUrl"], url);
+        // The §83 reader sees exactly one file with this id and name.
+        let page = serde_json::json!({"messages": [{"id": "1", "properties": b["properties"].clone()}]});
+        let (refs, _) = crate::api::chat::parse_chat_file_refs(&page);
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].name, "Q3 <Plan>.docx");
+        assert_eq!(refs[0].object_url, url);
+        assert_eq!(refs[0].attachment_id.as_deref(), Some("0f1e2d3c-aaaa-bbbb-cccc-000000000001"));
+        assert_eq!(file_base_url("https://h.sharepoint.com/sites/Eng/Shared Documents/x.pdf"), "https://h.sharepoint.com/sites/Eng/");
+        assert_eq!(file_base_url("https://h/x.pdf"), "https://h/");
+    }
 }
 
 #[cfg(test)]
@@ -1377,6 +1688,18 @@ mod tests {
         );
     }
 
+    /// §GRAPHSWEEP: only channel posts read Graph; every other id (chats,
+    /// meetings, bots, odd shapes) reads the chat service, never Graph
+    /// `/me/chats/{c}/messages/{m}` (Chat.Read is not on the Teams token).
+    #[test]
+    fn message_files_route_off_graph_chats() {
+        for id in ["19:a@thread.v2", "19:a_b@unq.gbl.spaces", "48:notes", "28:bot", "19:x@thread.other", " 19:y@thread.skype "] {
+            assert!(message_files_via_chat_service(id), "{}", id);
+        }
+        assert!(!message_files_via_chat_service("19:c@thread.tacv2"));
+        assert!(!message_files_via_chat_service(" 19:c@thread.tacv2 "));
+    }
+
     #[test]
     fn message_paths_and_attachment_ids() {
         assert_eq!(message_path("19:a@thread.v2", "1727", None).unwrap(),
@@ -1491,6 +1814,34 @@ mod tests {
     }
 
     #[test]
+    fn chat_scope_never_takes_the_channel_scan() {
+        assert!(is_chat_id("19:abc@thread.v2"));
+        assert!(is_chat_id(" 19:meeting_xyz@thread.v2 "));
+        assert!(is_chat_id("19:a_b@unq.gbl.spaces"));
+        assert!(is_chat_id("19:old@thread.skype"));
+        assert!(is_chat_id("48:notes"));
+        assert!(is_chat_id("28:1a2b3c4d-bot"));
+        assert!(!is_chat_id("19:general@thread.tacv2"));
+        assert!(!is_chat_id("general"));
+        assert!(!is_chat_id(""));
+        let r = crate::api::chat::ChatFileRef {
+            attachment_id: Some("att-1".into()),
+            name: "Plan.docx".into(),
+            file_type: Some("docx".into()),
+            object_url: "https://contoso-my.sharepoint.com/personal/a/Documents/Plan.docx".into(),
+            share_url: None,
+            sender: Some("Alex Carter".into()),
+            time: Some("2026-09-28T09:00:00Z".into()),
+        };
+        let f = shared_from_ref(&r);
+        assert_eq!(f.id, "att-1");
+        assert_eq!(f.drive_id, None);
+        assert_eq!(f.web_url.as_deref(), Some(r.object_url.as_str()));
+        assert_eq!(f.attachment_id.as_deref(), Some("att-1"));
+        assert!(!f.is_folder);
+    }
+
+    #[test]
     fn chunk_ranges_cover_total_with_short_tail() {
         // Exact multiple: no tail.
         assert_eq!(
@@ -1522,5 +1873,153 @@ mod tests {
             "replace"
         );
         assert_eq!(body["item"]["name"], "a b.pdf");
+    }
+}
+
+#[cfg(test)]
+mod file_post_idem_tests {
+    use super::*;
+
+    #[test]
+    fn timeout_with_no_proof_of_absence_never_falls_back_to_a_second_post() {
+        // Post timed out, lookup failed or found nothing yet: Teams may have
+        // accepted it. Never the Graph fallback (that was the double-post).
+        let timeout = "Chat POST https://x/v1/users/ME/conversations/19:a/messages failed: operation timed out";
+        assert_eq!(file_post_next(timeout, Some(false)), FilePostNext::Unknown);
+        assert_eq!(file_post_next(timeout, None), FilePostNext::Unknown);
+        let five = "HTTP 503 for https://x: unavailable";
+        assert_eq!(file_post_next(five, Some(false)), FilePostNext::Unknown);
+    }
+
+    #[test]
+    fn landed_message_is_settled_without_a_second_post() {
+        let timeout = "Chat POST failed: operation timed out";
+        assert_eq!(file_post_next(timeout, Some(true)), FilePostNext::Landed);
+    }
+
+    #[test]
+    fn only_a_proven_4xx_rejection_with_the_id_absent_uses_graph() {
+        assert_eq!(file_post_next("HTTP 403 for https://x: no", Some(false)), FilePostNext::Graph);
+        assert_eq!(file_post_next("401 Unauthorized for https://x.", Some(false)), FilePostNext::Graph);
+        // 4xx but the lookup failed: still unknown.
+        assert_eq!(file_post_next("HTTP 403 for https://x: no", None), FilePostNext::Unknown);
+        assert!(!is_definite_rejection("HTTP 500 for x"));
+    }
+}
+
+/// F1 fake-transport tests: the real `post_file_message_idem` against a
+/// loopback fake (chat service + Graph), no tenant contact.
+#[cfg(test)]
+mod file_post_idem_fake_tests {
+    use super::*;
+    use crate::api::fake_transport::Fake;
+    use serde_json::json;
+
+    const CHAT: &str = "19:chat1@thread.v2";
+    const CHANNEL: &str = "19:chan1@thread.tacv2";
+    const CMID: &str = "1700000000000123";
+
+    fn item() -> DriveItem {
+        serde_json::from_value(json!({
+            "id": "item1",
+            "eTag": "\"{0F1E2D3C-AAAA-BBBB-CCCC-000000000001},2\"",
+            "webUrl": "https://contoso-my.sharepoint.com/personal/a_contoso_com/Documents/Microsoft Teams Chat Files/plan.docx",
+        }))
+        .expect("item")
+    }
+
+    fn landed_page() -> String {
+        json!({"messages": [{
+            "id": "1", "messagetype": "RichText/Html", "content": "<p>plan.docx</p>",
+            "clientmessageid": CMID, "imdisplayname": "Alex Carter",
+            "originalarrivaltime": "2026-09-29T10:00:00.000Z",
+        }]})
+        .to_string()
+    }
+
+    async fn run(fake: &Fake, id: &str, verify_first: bool) -> Result<()> {
+        let graph_path = format!("/me/chats/{}/messages", id);
+        post_file_message_idem(&fake.client(), id, &item(), "plan.docx", CMID, verify_first, &graph_path).await
+    }
+
+    fn count(fake: &Fake, method: &str, prefix: &str) -> usize {
+        fake.requests().iter().filter(|r| r.method == method && r.path.starts_with(prefix)).count()
+    }
+
+    #[tokio::test]
+    async fn first_post_carries_the_client_message_id_and_stops() {
+        for id in [CHAT, CHANNEL] {
+            let fake = Fake::start(vec![("POST", "/chat/v1/users/ME/conversations/", 201, "{}".into())]).await;
+            run(&fake, id, false).await.expect("posted");
+            let reqs = fake.requests();
+            assert_eq!(reqs.len(), 1, "one POST, nothing else: {id}");
+            assert_eq!(reqs[0].json()["clientmessageid"], CMID);
+        }
+    }
+
+    #[tokio::test]
+    async fn retry_finds_the_landed_message_and_posts_nothing() {
+        for id in [CHAT, CHANNEL] {
+            let fake = Fake::start(vec![
+                ("GET", "/chat/v1/users/ME/conversations/", 200, landed_page()),
+                ("POST", "/chat/", 201, "{}".into()),
+            ])
+            .await;
+            run(&fake, id, true).await.expect("settled");
+            assert_eq!(count(&fake, "POST", "/"), 0, "verify-first found it: no post at all ({id})");
+        }
+    }
+
+    #[tokio::test]
+    async fn timed_out_post_that_landed_is_not_posted_to_graph() {
+        // Chat service answers 503 (ambiguous) but the message is there.
+        let fake = Fake::start(vec![
+            ("POST", "/chat/v1/users/ME/conversations/", 503, "{}".into()),
+            ("GET", "/chat/v1/users/ME/conversations/", 200, landed_page()),
+        ])
+        .await;
+        run(&fake, CHANNEL, false).await.expect("landed = success");
+        assert_eq!(count(&fake, "POST", "/graph"), 0);
+        assert_eq!(count(&fake, "POST", "/chat"), 1);
+    }
+
+    #[tokio::test]
+    async fn ambiguous_failure_with_nothing_found_errors_and_never_double_posts() {
+        let fake = Fake::start(vec![
+            ("POST", "/chat/v1/users/ME/conversations/", 503, "{}".into()),
+            ("GET", "/chat/v1/users/ME/conversations/", 200, "{\"messages\":[]}".into()),
+            ("POST", "/graph/", 201, "{}".into()),
+        ])
+        .await;
+        let err = run(&fake, CHAT, false).await.err().expect("unknown = error");
+        assert!(format!("{err:#}").contains("Retry checks first"), "{err:#}");
+        assert_eq!(count(&fake, "POST", "/graph"), 0, "no second post to Graph");
+        assert_eq!(count(&fake, "POST", "/chat"), 1);
+    }
+
+    #[tokio::test]
+    async fn lookup_failure_after_a_failed_post_errors_without_a_second_post() {
+        let fake = Fake::start(vec![
+            ("POST", "/chat/v1/users/ME/conversations/", 503, "{}".into()),
+            ("GET", "/chat/v1/users/ME/conversations/", 500, "{}".into()),
+            ("POST", "/graph/", 201, "{}".into()),
+        ])
+        .await;
+        assert!(run(&fake, CHANNEL, false).await.is_err());
+        assert_eq!(count(&fake, "POST", "/graph"), 0);
+    }
+
+    #[tokio::test]
+    async fn proven_rejection_falls_back_to_graph_once() {
+        for (id, path) in [(CHAT, "/graph/me/chats/"), (CHANNEL, "/graph/me/chats/")] {
+            let fake = Fake::start(vec![
+                ("POST", "/chat/v1/users/ME/conversations/", 403, "{\"error\":\"no\"}".into()),
+                ("GET", "/chat/v1/users/ME/conversations/", 200, "{\"messages\":[]}".into()),
+                ("POST", "/graph/", 201, "{}".into()),
+            ])
+            .await;
+            run(&fake, id, false).await.expect("graph fallback ok");
+            assert_eq!(count(&fake, "POST", path), 1, "{id}");
+        }
     }
 }

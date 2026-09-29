@@ -7,20 +7,25 @@ import os
 
 /// How an app loads (§7.1 `launch`).
 public enum FrameLaunch: Equatable, Sendable {
-    /// Teams-hosted entity page (`/_#/l/entity/…`).
-    case teamsHosted(URL)
+    /// A Teams link (`/l/entity/…`, `/l/channel/…`): opens its native view
+    /// (the app host, a channel tab, a chat). Never loaded as a page: the
+    /// Teams web app does not run in Better Teams (APPNATIVE4).
+    case teamsLink(URL)
     /// Standalone allow-listed page, no Teams chrome.
     case direct(URL)
     /// Opens in the default browser (the only "not otherwise possible" case).
     case external(URL)
     /// A Teams app with a manifest, hosted natively over TeamsJS (no
-    /// Teams web shell); `fallback` is its Teams-shell page.
+    /// Teams web shell, and no Teams web page to fall back to).
     case teamsApp(TeamsAppLaunch)
 
+    /// The address this launch shows or links to. A hosted app: its own
+    /// content page (placeholders empty), never a Teams web page.
     public var url: URL {
         switch self {
-        case .teamsHosted(let u), .direct(let u), .external(let u): u
-        case .teamsApp(let l): l.fallback
+        case .teamsLink(let u), .direct(let u), .external(let u): u
+        case .teamsApp(let l):
+            URL(string: TeamsJSPolicy.expand(l.contentTemplate, TeamsJSAppContext())) ?? URL(string: "about:blank")!
         }
     }
 
@@ -36,8 +41,6 @@ public struct TeamsAppLaunch: Equatable, Sendable {
     public var entityID: String
     /// Manifest contentUrl, placeholders unexpanded (`{tid}`, `{locale}`…).
     public var contentTemplate: String
-    /// Teams-shell page for the same tab (per-app fallback).
-    public var fallback: URL
     /// `webApplicationInfo`: SSO token audience for getAuthToken.
     public var resource: String?
     public var webAppID: String?
@@ -47,16 +50,20 @@ public struct TeamsAppLaunch: Equatable, Sendable {
     public var demoHTML: String?
     /// Channel tab context (APPHOST-B2): nil for personal apps.
     public var channel: TeamsAppChannelContext?
+    /// Manifest / tab websiteUrl, placeholders unexpanded: the app's own
+    /// web page. Tried once, on its own host only, when the Teams-embedded
+    /// page stays blank (APPNATIVE3).
+    public var websiteTemplate: String?
 
-    public init(appID: String, entityID: String, contentTemplate: String, fallback: URL,
+    public init(appID: String, entityID: String, contentTemplate: String,
                 resource: String? = nil, webAppID: String? = nil, validDomains: [String] = [],
                 transport: TeamsJSTransport = .frameless, demoHTML: String? = nil,
-                channel: TeamsAppChannelContext? = nil) {
+                channel: TeamsAppChannelContext? = nil, website: String? = nil) {
         self.channel = channel
+        self.websiteTemplate = website
         self.appID = appID
         self.entityID = entityID
         self.contentTemplate = contentTemplate
-        self.fallback = fallback
         self.resource = resource
         self.webAppID = webAppID
         self.validDomains = validDomains
@@ -69,16 +76,8 @@ public struct TeamsAppLaunch: Equatable, Sendable {
     public init?(manifest m: TeamsAppManifest) {
         guard let tab = m.personalTab, let content = tab.contentUrl else { return nil }
         self.init(appID: m.id, entityID: tab.entityId, contentTemplate: content,
-                  fallback: Self.teamsEntityURL(appID: m.id, entityID: tab.entityId),
                   resource: m.webApplicationInfo?.resource, webAppID: m.webApplicationInfo?.id,
-                  validDomains: m.validDomains)
-    }
-
-    /// `https://teams.microsoft.com/_#/l/entity/<app>/<entity>`: the
-    /// app's personal tab inside Teams on the web.
-    public static func teamsEntityURL(appID: String, entityID: String) -> URL {
-        let enc = { (s: String) in s.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed.subtracting(["/"])) ?? s }
-        return FramePolicy.hashRoute(URL(string: "https://teams.microsoft.com/l/entity/\(enc(appID))/\(enc(entityID))")!)
+                  validDomains: m.validDomains, website: tab.websiteUrl)
     }
 }
 
@@ -147,6 +146,27 @@ public struct WebLink: Codable, Equatable, Sendable {
 
 // MARK: - Policy (pure; unit-tested)
 
+/// The Teams web app. No pane, tab, popup or fallback ever loads it
+/// (APPNATIVE4: "we should never be loading the full webapp"): Teams
+/// links route to native views instead. App pages Microsoft hosts on
+/// the Teams hosts (Shifts, …) are apps, not the web app.
+public enum TeamsWebGuard {
+    public static let hosts = ChatTabCatalog.teamsHosts
+
+    public static func isTeamsWeb(_ url: URL) -> Bool {
+        ChatTabCatalog.isTeamsWebApp(url)
+    }
+
+    /// Whether a navigation is refused: any Teams web address, in the
+    /// main frame, a subframe or a popup. The single exception is the
+    /// iframe transport's own host document (a local HTML string at the
+    /// Teams origin, no network), and only as the main frame.
+    public static func refuses(_ url: URL, mainFrame: Bool, iframeHostDocument: Bool) -> Bool {
+        guard isTeamsWeb(url) else { return false }
+        return !(mainFrame && iframeHostDocument)
+    }
+}
+
 public enum FramePolicy {
     /// Allow-listed standalone hosts: load directly, no Teams chrome (§7.1 rule 2).
     public static let standaloneHosts = [
@@ -165,22 +185,8 @@ public enum FramePolicy {
         guard scheme == "https" || scheme == "http" else { return .external(url) }
         guard let host = url.host?.lowercased() else { return nil }
         if hostMatches(host, standaloneHosts) { return .direct(url) }
-        if hostMatches(host, ["teams.microsoft.com", "teams.live.com"]) {
-            return .teamsHosted(hashRoute(url))
-        }
+        if TeamsWebGuard.isTeamsWeb(url) { return .teamsLink(url) }
         return .external(url)
-    }
-
-    /// `/l/entity/…` → `/_#/l/entity/…`, which skips the launcher
-    /// interstitial (FRAME-LIVE-PROOF). Other paths unchanged.
-    static func hashRoute(_ url: URL) -> URL {
-        guard url.path.hasPrefix("/l/entity/"), var c = URLComponents(url: url, resolvingAgainstBaseURL: false)
-        else { return url }
-        let tail = c.path + (c.percentEncodedQuery.map { "?" + $0 } ?? "")
-        c.path = "/_"
-        c.percentEncodedQuery = nil
-        c.fragment = tail
-        return c.url ?? url
     }
 
     static func hostMatches(_ host: String, _ suffixes: [String]) -> Bool {
@@ -270,34 +276,25 @@ public enum FrameAppDirectory {
 // MARK: - Built-ins and demo fixtures
 
 public enum FrameBuiltIns {
-    /// "Teams on the Web": full Teams, no crop (§7.2 Built-in).
-    public static let teamsWebID: FrameAppID = "teams-web"
-
-    public static let teamsWeb = FrameApp(
-        id: teamsWebID, label: "Teams on the Web", symbol: "globe",
-        source: .teamsWeb, launch: .direct(URL(string: TeamsFrameConfig.defaultURL)!))
+    /// The retired "Teams on the Web" built-in (APPNATIVE4: the Teams web
+    /// app never loads); a rail pin saved under this id is dropped.
+    public static let retiredTeamsWebID: FrameAppID = "teams-web"
 }
 
 /// Deterministic demo apps (no network: demo pages are local HTML).
 public enum DemoFrameApps {
-    static func tab(_ id: String, _ label: String, _ symbol: String, _ url: String) -> FrameApp {
-        FrameApp(id: id, label: label, symbol: symbol,
-                 source: .channelTab(team: "Marketing", channel: "Launch Plan"),
+    static func link(_ id: String, _ label: String, _ symbol: String, _ url: String) -> FrameApp {
+        FrameApp(id: id, label: label, symbol: symbol, source: .webLink,
                  launch: FramePolicy.launch(url: url, label: label)!)
     }
 
-    public static let channelTabs: [FrameApp] = [
-        tab("web-demo", "Wiki", "doc.richtext", "https://contoso.sharepoint.com/sites/marketing/wiki"),
-        tab("web-demo-board", "Release Board", "rectangle.split.3x1",
-            "https://tasks.office.com/contoso/board"),
-        tab("web-demo-roadmap", "Roadmap", "map", "https://contoso.sharepoint.com/sites/marketing/roadmap"),
-        tab("web-demo-status", "Status Page", "waveform.path.ecg", "https://status.example.com"),
-    ]
-
+    /// Demo web links (the Apps list shows apps only, never channel tabs).
     public static let webLinks: [FrameApp] = [
-        FrameApp(id: "web-demo-handbook", label: "Employee Handbook", symbol: "book",
-                 source: .webLink,
-                 launch: .direct(URL(string: "https://contoso.sharepoint.com/sites/hr/handbook")!)),
+        link("web-demo", "Wiki", "doc.richtext", "https://contoso.sharepoint.com/sites/marketing/wiki"),
+        link("web-demo-board", "Release Board", "rectangle.split.3x1", "https://tasks.office.com/contoso/board"),
+        link("web-demo-roadmap", "Roadmap", "map", "https://contoso.sharepoint.com/sites/marketing/roadmap"),
+        link("web-demo-status", "Status Page", "waveform.path.ecg", "https://status.example.com"),
+        link("web-demo-handbook", "Employee Handbook", "book", "https://contoso.sharepoint.com/sites/hr/handbook"),
     ]
 
     /// `pins=<n>` seeds (rail overflow evidence).

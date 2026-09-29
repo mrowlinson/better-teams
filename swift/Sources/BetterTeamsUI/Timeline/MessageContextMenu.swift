@@ -153,10 +153,11 @@ final class TimelineActions {
                       })
     }
 
-    /// Re-sends in place of the failed bubble (never a duplicate row).
+    /// Re-sends in place of the failed bubble (never a duplicate row):
+    /// same bubble, same client message id, verified before re-posting
+    /// (§106 — a copy that landed late is never posted twice).
     func retry(_ m: ChatMessage) {
-        guard let text = conv.discardFailed(id: m.id) else { return }
-        conv.send(text: text)
+        conv.retry(id: m.id)
     }
 
     /// Failed sends never reached the server: dropped locally.

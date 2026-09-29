@@ -136,8 +136,9 @@ Autosave `splitView.autosaveName = "main.<accountID>"` (widths; collapse states 
 | Size | 64 × 54 pt hit area (≥ the 28 × 28 pt default control size in HIG accessibility); 10 pt continuous corners |
 | Content | SF Symbol `.title2`, 3 pt gap, label `.subheadline` (11 pt), one line, tail truncation, full name in `.help()` |
 | Unselected | symbol `.secondary`, label `.primary`, no background |
-| Selected | `.symbolVariant(.fill)` (tab bars: "Prefer filled symbols"); foreground `.tint`; background `.tint.quaternary` |
-| Selected, inactive window | when `controlActiveState != .key`: symbol `.secondary`, label `.primary` (as unselected: a `.secondary` label read lighter than the unselected tabs, as if disabled), background `.fill.tertiary` (matches system selection) |
+| Selected | `.symbolVariant(.fill)` (tab bars: "Prefer filled symbols"); symbol `.tint`; label `.primary` in every state (a `.tint` label resolves to an unemphasized mid-gray whenever the app is not active, even with `controlActiveState == .key`, and read lighter than the unselected tabs, as if disabled); background `.tint.quaternary` |
+| Selected, inactive window | when `controlActiveState != .key`: symbol `.secondary`, label `.primary`, background `.fill.tertiary` (matches system selection) |
+| Catalog app icon | a pinned, transient or More-menu catalog app shows its manifest `colorIcon` (22 pt, app-tile corners, never tinted) in place of the symbol once cached (`AppIconCache`: memory, then disk, so it draws on the first render and after relaunch; anonymous fetch only on a miss; demo registers none); the symbol until then and for native apps, built-ins and web links |
 | Hover / pressed | `.fill.quaternary` / `.fill.tertiary` (via `onHover`) |
 | Keyboard focus | only with keyboard navigation or Full Keyboard Access on: the hover fill, read from `EnvironmentValues.isFocused`; never a ring (§10) |
 | Badge | red capsule, white `.caption2.monospacedDigit()`, overlaid top-trailing on the symbol, never affects layout; `1…99`, then `99+`; dot-only = unread without count (tab bars: "red oval containing white text") |

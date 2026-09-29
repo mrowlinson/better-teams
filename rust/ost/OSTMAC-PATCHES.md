@@ -1332,6 +1332,312 @@ Notes:
     placeholders. Tests: `installed_apps_parse_ids_and_path`,
     `app_id_from_expanded_teams_app`, `grant_forms` (naa_scope; Debug
     hides id_token).
+79. [feature] `src/api/chat.rs`, `src/api/mod.rs` — **chat mute, hide
+    and folders (chatmenu lane)**. Mute: chat service `PUT
+    {svc}/v1/users/ME/conversations/{id}/properties?name=alerts` body
+    `{"alerts":"false"|"true"}` ("false" = muted; the property is read
+    back in the conversation list) via `alerts_url` / `alerts_body` /
+    `set_chat_muted_with_client`. Hide: Graph `POST
+    /chats/{id}/hideForUser` / `unhideForUser` with a
+    `teamworkUserIdentity` body (`hide_chat_path` / `hide_chat_body` /
+    `set_chat_hidden_with_client`). Folders, read-only: `GET
+    teams.microsoft.com/api/csa/api/v1/teams/users/me/conversationFolders`
+    (`supportsAdditionalSystemGeneratedFolders`, `supportsSliceItems`)
+    with a `chatsvcagg.teams.microsoft.com/.default` bearer;
+    `parse_conversation_folders` names system folders by type
+    (Favorites). Folder GET verified live 2026-09-28 (read-only); the
+    mute PUT and hide POST are not exercised live (no live writes).
+    Tests: `chatmenu_tests` (request shapes, alerts parse, folder
+    parse).
+
+80. [feature] `src/api/chat.rs`, `src/api/mod.rs`, `src/api/client.rs`
+    — **chat folder move** (chatlist2 lane). New pure
+    `folder_move_actions` (from a raw `conversationFolders` payload:
+    `RemoveItem` from every non-system folder holding the chat except
+    the target, `AddItem` to the target; blank target = out of every
+    folder; system views and unknown ids refused) and
+    `folder_move_body` (`{folderHierarchyVersion, actions:[{action,
+    folderId, itemId}]}`), plus `conversation_folder_move_with_client`:
+    fresh folder GET for version + membership, one `POST` to the same
+    `conversationFolders` URL with the chatsvcagg bearer and
+    `Authentication: skypetoken=…`, then the returned (or re-read)
+    folders must show the chat in the target. `TeamsClient::skype_token`
+    is now `pub(crate)` for that header. Verified live 2026-09-28 with
+    one round trip on the self chat only (into Favorites, verified,
+    back out, verified; folder counts restored). Test:
+    `chatmenu_tests::folder_move_request_shape`.
+
+81. [fix] `src/api/files.rs`, `src/api/chat.rs`, `src/api/tabs.rs`,
+    `src/api/mod.rs` — **chat Files tab + chat tabs** (chattabs lane).
+    The Teams web Graph token has no `Chat.Read`, so
+    `/me/chats/{id}/messages` is 403 and `list_chat_files_data_opts`
+    fell through to the channel-folder scan, whose "No joined team
+    contains channel" error was shown for every chat. New
+    `is_chat_id` (`48:`, or `19:` ending `@thread.v2`,
+    `@unq.gbl.spaces`, `@thread.skype`): chat ids read shared files
+    from the chat service first (`chat_file_refs_data`: message
+    `properties.files` over up to `CHAT_FILE_PAGES` backward pages of
+    `CHAT_FILES_PAGE_SIZE`, deleted messages/files skipped, deduped by
+    object URL), resolve each through `/shares/{u!…}/driveItem` (share
+    URL, then object URL; unresolved refs kept as `shared_from_ref`),
+    fall back to the Graph message route, and never take the channel
+    scan. Message reads are GETs; the consumption horizon is untouched.
+    Tabs: `TabInfo` gains `app_name` (teamsApp displayName) and
+    `teams_url` (tab webUrl); new `chat_tabs_path`, `parse_tabs`,
+    `list_chat_tabs_data` (`GET /chats/{id}/tabs?$expand=teamsApp`,
+    `19:` ids only; live 200). Tests:
+    `files::…::chat_scope_never_takes_the_channel_scan`,
+    `chat_files_tests::file_refs_from_chat_service_page`,
+    `tabs::…::chat_tabs_parse_name_and_teams_link`.
+
+82. [feature] `src/api/teams.rs`, `src/api/mod.rs` — **channel edit and
+    delete** (teamsync lane). Pure `channel_path` and
+    `update_channel_body` (`displayName` only when non-blank,
+    `description` trimmed, `""` clears it), plus
+    `update_channel_data` (one Graph `PATCH
+    /teams/{t}/channels/{c}`, refuses an empty body) and
+    `delete_channel_data` (one Graph `DELETE` on the same path). Both
+    check ids with `check_id` before any request. Never exercised
+    against the live tenant; unit tests use shapes only. Test:
+    `tests::channel_edit_delete_path_and_body`.
+    Same lane: `tests/e2e_read.sh`, `tests/e2e_trouter.sh` and
+    `tests/e2e_echo123.sh` (the only scripts that write: self-chat
+    sends and a self-call) now exit 0 with a SKIP unless
+    `OST_E2E_LIVE_WRITES=1` is set.
+
+83. [fix] `src/api/files.rs`, `src/api/chat.rs` — **message file chips
+    via the chat service + bot 1:1 fixtures** (chatrows lane).
+    `list_message_files_data` (timeline file chips past the Shared
+    list's first page) read Graph `/me/chats/{c}/messages/{m}`: 403
+    without `Chat.Read`. Chat ids now read the chat service: new
+    `chat_message_file_refs_data` GETs the single message
+    (`message_url`), else walks at most `CHAT_FILE_PAGES` backward
+    history pages until the page reaching the message (ids are arrival
+    ms, `page_reaches`); `message_file_refs` pulls that message's
+    `properties.files`. Refs resolve through the §81 shares path, now
+    shared as `resolve_file_refs`. `is_chat_id` also takes bare bot
+    MRI chats (`28:`). GETs only; consumption horizon untouched.
+    Tests: `chat_files_tests::message_file_refs_single_and_page`,
+    `tests::bot_one_to_one_chats_list_like_teams` (live-shaped
+    `19:{oid}_{botApp}@unq.gbl.spaces` and legacy `28:` rows list as
+    1:1s named after the bot), `chat_scope_never_takes_the_channel_scan`.
+
+84. [feature] `src/api/chat.rs`, `src/api/files.rs`, `src/api/mod.rs` —
+    **server-side pinned chat messages + chat-service file send**
+    (chatrows lane). Nothing read Teams' own pins: new
+    `chat_pinned_messages_data` GETs the chat-service thread
+    (`thread_pins_url`: `/v1/threads/{id}?view=msnp24Equivalent`) and
+    parses it tolerantly (`parse_thread_pins`: every `properties` key
+    containing "pinned", value a JSON string, array, or comma-separated
+    ids; objects take `messageId|id` + optional pinnedBy/pinnedTime/
+    sender/content — the shape is undocumented), falling back to Graph
+    `GET /chats/{id}/pinnedMessages?$expand=message`
+    (`parse_graph_pins`; needs Chat.Read, 403 on the Teams web token).
+    `pick_pins` fixes precedence (non-empty thread → Graph → empty
+    thread → chat-service error). Thread pins missing sender/preview
+    are filled from their chat-service message (`message_url`,
+    `fill_pin_from_message`). `chat_unpin_message_with_client` = Graph
+    `DELETE /chats/{id}/pinnedMessages/{pinId}`. GETs only on read;
+    consumption horizon untouched. `upload_to_chat` now posts the file
+    message through the chat service first (`chat_service_file_body`:
+    `properties.files` JSON string of one `http://schema.skype.com/File`
+    entry, the shape `parse_chat_file_refs` reads back) and falls back
+    to the Graph reference post. Tests: `pinned_tests::*` (thread
+    properties as JSON string and array, CSV, Graph payload, Graph 403
+    precedence), `chat_file_send_tests::chat_service_file_body_round_trips_through_the_reader`.
+
+85. [fix] `src/api/chat.rs`, `src/api/files.rs`, `src/api/mod.rs`,
+    `src/trouter/mod.rs`, `src/trouter/registrar.rs` — **reliable sends
+    and live chat pushes** (sendfix lane; code comments tag it §106).
+    (a) Idempotent posts: `send_message_with_client_id`,
+    `reply_message_with_client_id`, `thread_reply_with_client_id` carry a
+    caller-owned `clientmessageid` (`new_client_message_id`, 19 digits)
+    and return `SentMessage` (server id from `Location` or
+    `OriginalArrivalTime`, `sent_id_from_response`);
+    `find_message_by_client_id` verifies a timed-out post by reading
+    the newest page (`MessageInfo.client_message_id` now parsed).
+    Chat file sends: `upload_file_data_idem` threads one client id
+    through `upload_to_chat`; a retry (`verify_first`) skips the post
+    when the id already landed; a failed chat-service post is verified
+    before the Graph fallback. (b) Trouter: `3:::` data frames (the
+    HTTP-over-WS pushes) were printed and dropped — `data_frame_event`
+    now decodes them (body top-level or under `data`, object or string,
+    gzip+base64 by header or fallback, `cp`/`gp` wrappers) and publishes
+    chat-service events to `event_hub`. Registration: the CDL entry used
+    the consumer template `TeamsCDLWebWorker_2.6` with transport context
+    `TFL` and a random registration id; no messaging push ever reached
+    the socket (live: 90 s sniff + own post into a 1:1, zero `3:::`
+    frames). Now business template `TeamsCDLWebWorker_2.1`, empty
+    context, `registrationId` = the socket epid
+    (`register_with_endpoint`), `user.activity` active after the
+    handshake, and a CDL re-registration with `TeamsCDLWebWorker_1.9` on
+    the first `trouter.message_loss` (`register_cdl`), matching the
+    purple-teams business client. Live after the change: an own post
+    arrived as a `3:::` `/messaging` frame 1.16 s after the POST.
+    (c) 1:1 open: `POST /me/chats` is not a Graph create endpoint (405)
+    and Graph `POST /chats` needs Chat.Create (403 on the Teams web
+    token), so every live 1:1 open/quick message failed.
+    `create_one_to_one_chat_data` now resolves both AAD ids, derives
+    `19:<lo>_<hi>@unq.gbl.spaces` (`one_to_one_thread_id`; 38/38 live
+    1:1 ids have this shape), probes `/v1/threads/{id}` and, only on
+    404, creates the unique-roster 1:1 on the chat service
+    (`one_to_one_thread_body`: `uniquerosterthread` + `fixedRoster`; the
+    answered id must equal the derived one). Tests:
+    `sendfix_tests::*` (chat.rs: client id shape, receipt id parse,
+    page lookup, 1:1 id ordering; trouter: plain/gzip/`data`/object/
+    `cp`/`gp` bodies, non-chat frames skipped).
+
+86. [fix] `src/api/client.rs`, `src/api/chat.rs`, `src/api/files.rs`,
+    `src/api/mod.rs` — **Graph calls the Teams web token cannot use**
+    (graphsweep lane; code comments tag it §GRAPHSWEEP). The app signs
+    in with the Teams web client; its Graph token's decoded `scp` (35
+    names, 09-28) has no Presence.*, Chat.Read/ReadBasic/ReadWrite/
+    Create, ChatMember.*, OnlineMeetings.*, Team.Create,
+    ChannelSettings.*, Channel.Delete.All,
+    TeamsAppInstallation.*ForUser or TeamworkTag.*. Live: `/chats/{id}/
+    members`, `/chats/{id}/pinnedMessages`, `/me/chats/{id}/messages`,
+    `/users/{id}/presence`, `/me/presence`, `/me/onlineMeetings` all 403.
+    (a) `create_group_chat_data` creates the group thread on the chat
+    service (`POST /v1/threads`, `thread_create_url`,
+    `group_chat_create_body`: `8:orgid:` members, all `Admin`,
+    `threadType: chat`, optional topic; id from `Location`,
+    `created_thread_id`) instead of Graph `POST /chats`; UPNs resolve via
+    Graph `/users/{ref}?$select=id` (granted). (b)
+    `list_chat_members_data` reads only the chat-service roster (no
+    Graph attempt) and fills blank names from Graph `/users/{oid}`
+    (`fill_member_names`, User.ReadBasic.All; live roster 2/2 blank).
+    (c) `chat_pinned_messages_data` drops the Graph `pinnedMessages`
+    fallback; `chat_unpin_message_with_client` fails without network.
+    (d) `list_chat_files_data_opts` drops the Graph
+    `/me/chats/{id}/messages` route (chats: chat service; others:
+    channel files folder). (e) `graph_denied` refuses, before any
+    network and with a plain reason, the routes whose permission is not
+    granted and that have no wired Teams-service equivalent: create
+    team, edit/delete channel, add an app for yourself, hide a chat,
+    find a meeting by ID. (f) `list_message_files_data` reads every
+    non-channel id on the chat service (`message_files_via_chat_service`);
+    Graph `/me/chats/{c}/messages/{m}` (Chat.Read) is never called.
+    Tests: `client::tests::graph_denied_table`,
+    `denied_route_fails_before_network`,
+    `files::tests::message_files_route_off_graph_chats`,
+    `roster_name_tests::roster_blank_names_fill_from_users`, ostmac-core
+    `core_a_group_chat_body_and_member_normalization`.
+87. [fix] `src/api/client.rs`, `src/api/teams.rs`, `src/api/apps.rs`,
+    `src/api/chat.rs`, `src/api/mod.rs` — **Teams-service routes for the
+    writes §86 refused** (graphsweep lane; comments tag §GRAPHSWEEP3).
+    Request shapes come from the Teams web client's own code (public CDN
+    chunks `services-teams-and-channels`, `services-apps-platform`, chat
+    service transport, and the CDL shared-worker resolvers, 09-29); none
+    was sent live (writes limited to one test message). (a)
+    `TeamsClient::mt_send_json` — any-method JSON call on the middle tier
+    with the existing MT auth (AAD bearer + X-Skypetoken), optional
+    `x-ms-client-caller`. (b) `create_team_data` → `POST
+    {mt}/beta/teams/create`, body `displayName`, `description` ("" when
+    blank), `accessType` 1 (Private; web enum None 0/Private 1/Secret
+    2/Public 3), `isTenantWide`/`validationRequired` false; group id from
+    `value.siteInfo.groupId` (`created_team_ids`); read back via Graph
+    `fetch_team_with_channels`, degrading to id + name. The Graph
+    template body, owner bind and operation poll are no longer used by
+    the create path. (c) `update_channel_data` → `PATCH
+    {mt}/beta/teams/{teamThreadId}/channels/{channelId}` with
+    `displayName`/`description`; `delete_channel_data` → `DELETE` same
+    URL with the channel descriptor subset `delete_channel_body` (INFERRED
+    minimal body); General channel (id = team thread id) refused
+    pre-network. Team thread id from Graph `GET
+    /teams/{id}?$select=internalId` (`team_thread_id`, Team.ReadBasic.All).
+    (d) `install_app_for_user` → middle-tier batchedDefinitions read, then
+    `POST {mt}/beta/users/apps/entitlements` with the definition as body
+    and caller `apps-platform-service-meta-os-installApp` (web
+    `createAppEntitlement`, Personal scope). (e) `set_chat_hidden_with_client`
+    → chat service `PUT /v1/users/ME/conversations/{id}/properties?name=`
+    `unpinnedTime` (hide: now ms; unhide: null) then, on hide,
+    `historyHiddenTime` (same stamp as string), as the web
+    `setChatVisibility` resolver does; signature drops user/tenant ids.
+    `graph_denied` keeps every Graph route shut. Not switched: find
+    meeting by ID (web client has no code→thread REST lookup; the only
+    middle-tier call, `GET beta/meetings/identifiers`, returns a tenant
+    id; §GRAPH2 superseded the old "keep opening the `/meet/{id}?p=`
+    link" fallback: the app now shows an error and never opens it). Tests: `teams::tests::team_create_goes_to_middle_tier_with_web_client_body`,
+    `channel_edit_delete_middle_tier_shapes`, `apps::tests::store_parse_sections_detail_fields_and_install_body`,
+    `chat::chatmenu_tests::hide_request_shape`.
+89. [feat] `src/api/tags.rs` (new), `src/api/client.rs`, `src/api/mod.rs`,
+    `src/api/fake_transport.rs` + `src/api/write_fakes.rs` (test-only) —
+    **Teams tags read from the CSA service; fake-transport tests for the
+    §87 writes** (graph2 lane, comments tag §GRAPH2). (a) `tags::
+    my_tag_cards_data` → `GET {csa}/teams/users/me/teams/tagCards?tagType=
+    Team&pageSize=500` with the skype-token bearer `csa_get` already uses
+    (URL, query keys and page size from the web client's shared worker
+    `getTeamsTagCards`). INFERRED, not live: the `Team` tag type value,
+    the response shape and whether the list is only the user's own tags.
+    `parse_tag_cards` is strict: an unreadable answer or a non-empty list
+    with no nameable card is an error, never "no tags"; a card's
+    `isMember`/`isCurrentUserMember`/`isUserMember` false drops it. Graph
+    `/teams/{id}/tags` stays refused (TeamworkTag.Read). ostmac-core
+    exposes it as `ostmac_catchup_tags`. (b) `TeamsClient::csa_base`,
+    `graph_base` (and test-only `for_test`) let unit tests point every
+    service root at a loopback fake; production values are unchanged
+    consts (the `graphBase`/`csaBase` overrides compile only under
+    `cfg(test)`). (c) `write_fakes` runs create team, edit channel, delete
+    channel (body INFERRED), add app for yourself and hide/unhide chat
+    end to end against `fake_transport::Fake`, asserting method, path,
+    auth headers (AAD+X-Skypetoken on the middle tier, skype token only on
+    the chat service, Graph token only on Graph reads, no token crossing
+    services) and JSON body. Tests: `write_fakes::*` (11), `tags::tests::*`
+    (5), ostmac-core `catchup_tags::tests::names_are_lowercased_sorted_and_deduped`.
+    Also: §87's old "keep opening the `/meet/{id}?p=` link" fallback is
+    superseded — the app no longer opens it (see Swift
+    `MeetingsViewModel.joinByMeetingID`).
+
+
+88. [feature] `src/api/team_settings.rs` (new), `src/api/mod.rs` —
+    **team member permissions + General channel id** (chanmenu lane).
+    `team_settings_data` runs two independent read-only Graph GETs:
+    `GET /teams/{id}` (`memberSettings.allowDeleteChannels` /
+    `allowCreateUpdateChannels`) and `GET /teams/{id}/primaryChannel`
+    (the General channel id). One failing leaves its fields `None`
+    (unknown); only both failing is an error. Pure helpers
+    `team_path`, `primary_channel_path`, `parse_member_settings`,
+    `parse_primary_channel_id`; ids checked before any request. Not
+    exercised live (stored Graph token stale at the time); allowlist
+    row is `unproven`. Tests: `team_settings::tests::*` (5). Host side
+    (ostmac-core, not vendored): `team_settings_json` /
+    `ostmac_team_settings`, and realtime now treats a
+    `ThreadActivity/*` system message as a tree-refresh signal
+    (`realtime::tests::thread_activity_system_message_is_a_tree_signal`).
+
+90. [fix/feature] `src/api/files.rs`, `src/api/chat.rs`,
+    `src/api/client.rs`, `src/api/media.rs`, `src/api/fake_transport.rs`
+    (test-only), `src/api/write_fakes.rs` (test-only),
+    `docs/specs/tui.txt` — **FIXPACK lane**.
+    (a) files.rs: chat AND channel file posts share
+    `post_file_message_idem`: the chat-service post carries the caller's
+    `clientmessageid`; a Retry looks the id up first (`verify_first`); a
+    failed post is looked up by id (three tries when the failure is
+    ambiguous) before anything else. The Graph reference post runs only
+    when the server answered HTTP 4xx AND the id is proven absent;
+    timeout / 5xx / a failed lookup is an error ("Retry checks first"),
+    never a second post. Pure `file_post_next` / `is_definite_rejection`.
+    (b) chat.rs: untitled 1:1 mate names for chat-list paging resolve six
+    at a time (`resolve_mates_cached`, `buffer_unordered`), cache hits
+    need no whoami or network, and names persist per profile in
+    `mates-<config stem>.json` beside the config (14 day TTL, best-effort
+    write). Before: one whoami plus a sequential roster + history read
+    per untitled 1:1 on every page (4-5 s a page live).
+    (c) client.rs/media.rs: `media_get_head` / `fetch_media_head_data`
+    read the first N bytes of a media URL with HTTP `Range`, same auth as
+    `media_get`, whole-request deadline; the body is read only up to N.
+    The result is a PREFIX (host side must never cache it as the file).
+    (d) test-only: `Fake` answers a `@location:<url>\n` body prefix as a
+    Location header; new fake-transport tests for group chat create
+    round trip, unpin bailing before any request, pins never touching
+    Graph, the F1 post/verify matrix, mate batching/persistence, and the
+    range probe. (e) `docs/specs/tui.txt`: one demo name replaced with a
+    Western name (also needs a public-snapshot republish + upstream PR).
+    Host side (ostmac-core, not vendored): `media_head_json` /
+    `ostmac_media_head` (never cached), five rustc warnings removed.
+    Tests: `file_post_idem_tests` (3), `file_post_idem_fake_tests` (6),
+    `write_fakes` (+4), `mate_batch_tests` (3), `head_tests` (2).
+
 ## Upstream PRs, wave 9 (2026-09-25 R10 audit; base 0892144; origin/main still 0892144)
 
 No-file wave. `git diff 307d221..db62ed7 -- rust/ost` is empty (wave-8
@@ -1347,5 +1653,7 @@ Standing out-of-scope (no action):
 - `SharedFile.attachment_id` (unledgered om-inline-docs eTag mining;
   wave-6 note; stays out of PRs until ledgered).
 
-Gate: `cargo test` in vendored `rust/ost` green (lib 257/0, bin
-257/0, imgfix probe 1 pass + 2 ignored live, doc 0).
+Gate (FIXPACK pass, 2026-09-29): `cargo test --release --lib` in vendored
+`rust/ost` green (lib 373/0; bin, imgfix probe and doc runs not repeated
+this pass), `rust/ostmac-core` lib 224/0. Older counts (lib 257, core
+222-230) predate the §85-§89 test additions.

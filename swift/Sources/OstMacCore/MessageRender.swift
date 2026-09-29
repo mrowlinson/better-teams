@@ -762,10 +762,34 @@ public enum MessageRender {
                     j = text.index(after: j); count += 1
                 } else { break }
             }
-            let name = String(text[text.index(after: i) ..< j])
-                .trimmingCharacters(in: .whitespaces)
+            // The greedy scan above overshoots into the sentence ("@Jordan
+            // Fox can you confirm ..."). Keep the first word plus following
+            // capitalized name words (or name particles), at most 4 words.
+            let raw = String(text[text.index(after: i) ..< j])
+            let particles: Set<String> = ["van", "von", "de", "der", "den", "da", "di", "la", "le", "del", "bin", "al"]
+            var kept: [Substring] = []
+            var end = raw.startIndex
+            var pos = raw.startIndex
+            while pos < raw.endIndex, kept.count < 4 {
+                while pos < raw.endIndex, raw[pos] == " " { pos = raw.index(after: pos) }
+                guard pos < raw.endIndex else { break }
+                var q = pos
+                while q < raw.endIndex, raw[q] != " " { q = raw.index(after: q) }
+                let word = raw[pos ..< q]
+                let ok = kept.isEmpty || (word.first?.isUppercase ?? false) || particles.contains(word.lowercased())
+                guard ok else { break }
+                kept.append(word)
+                end = q
+                pos = q
+                // A word ending in "," or "." (sentence punctuation) ends the
+                // name unless it is "Last," in a "Last, First" pair.
+                if word.hasSuffix(".") { break }
+                if word.hasSuffix(","), kept.count > 1 { break }
+            }
+            let name = String(raw[raw.startIndex ..< end])
+                .trimmingCharacters(in: CharacterSet(charactersIn: " ,."))
             if !name.isEmpty { out.append(name) }
-            i = j
+            i = text.index(text.index(after: i), offsetBy: raw.distance(from: raw.startIndex, to: end))
         }
         return out
     }

@@ -38,6 +38,9 @@ struct WireTab {
 #[derive(Debug, Deserialize)]
 struct WireTeamsApp {
     id: Option<String>,
+    /// Catalog display name (`$expand=teamsApp`): "Whiteboard", "Excel"…
+    #[serde(rename = "displayName")]
+    display_name: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -63,22 +66,60 @@ pub struct TabInfo {
     pub website_url: Option<String>,
     /// Tab configuration `entityId` (native TeamsJS hosting context).
     pub entity_id: Option<String>,
+    /// Expanded `teamsApp.displayName` (chat tab icon/kind), if any.
+    pub app_name: Option<String>,
+    /// The tab's own Teams web deep link (`webUrl`), if any: where
+    /// "Open in Teams on the web" goes for tabs the host cannot show.
+    pub teams_url: Option<String>,
 }
 
 fn tab_from_wire(tab: WireTab) -> TabInfo {
     let name = tab.display_name.unwrap_or_else(|| tab.id.clone());
+    let teams_url = tab.web_url.clone().filter(|s| !s.is_empty());
     let (content_url, website_url, entity_id) = match tab.configuration {
         Some(c) => (c.content_url, c.website_url.or(tab.web_url), c.entity_id),
         None => (None, tab.web_url, None),
     };
+    let (app_id, app_name) = match tab.teams_app {
+        Some(a) => (a.id, a.display_name),
+        None => (None, None),
+    };
     TabInfo {
         id: tab.id,
         name,
-        app_id: tab.teams_app_id.or_else(|| tab.teams_app.and_then(|a| a.id)).filter(|s| !s.is_empty()),
+        app_id: tab.teams_app_id.or(app_id).filter(|s| !s.is_empty()),
         content_url,
         website_url,
         entity_id,
+        app_name: app_name.filter(|s| !s.is_empty()),
+        teams_url,
     }
+}
+
+/// Graph path for one chat's pinned tabs (`/chats/{id}/tabs`), with the
+/// app expanded for its id and display name. Read-only (TeamsTab.Read*).
+pub fn chat_tabs_path(chat_id: &str) -> String {
+    format!("/chats/{}/tabs?$expand=teamsApp", chat_id.trim())
+}
+
+/// Parse a Graph `teamsTab` collection page (chat or channel).
+pub fn parse_tabs(body: &str) -> Result<Vec<TabInfo>> {
+    let parsed: TabsResponse = serde_json::from_str(body).context("Failed to parse tabs response")?;
+    Ok(parsed.value.into_iter().map(tab_from_wire).collect())
+}
+
+/// List a chat's pinned tabs (Whiteboard, Q&A, file and app tabs). The
+/// built-in Chat/Shared/Recap tabs are not Graph tabs; the host adds
+/// them. Only `19:` thread ids carry tabs: other ids (`48:notes`) bail
+/// before any network. Read-only GET.
+pub async fn list_chat_tabs_data(client: &TeamsClient, chat_id: &str) -> Result<Vec<TabInfo>> {
+    let chat_id = chat_id.trim();
+    if !chat_id.starts_with("19:") || chat_id.contains(['/', '?', '#', ' ']) {
+        bail!("chat has no tabs: {}", chat_id);
+    }
+    let resp = client.graph_get(&chat_tabs_path(chat_id)).await?;
+    let body = resp.text().await.context("Failed to read chat tabs response")?;
+    parse_tabs(&body)
 }
 
 // -- Data-returning API function --
@@ -242,5 +283,23 @@ mod tests {
         let tabs: Vec<TabInfo> = parsed.value.into_iter().map(tab_from_wire).collect();
         assert_eq!(tabs[0].app_id.as_deref(), Some("com.microsoft.teamspace.tab.planner"));
         assert_eq!(tabs[1].app_id.as_deref(), Some("app-2"));
+    }
+
+    #[test]
+    fn chat_tabs_parse_name_and_teams_link() {
+        assert_eq!(chat_tabs_path(" 19:abc@thread.v2 "), "/chats/19:abc@thread.v2/tabs?$expand=teamsApp");
+        let tabs = parse_tabs(
+            r#"{"value":[{"id":"t1","displayName":"Whiteboard","webUrl":"https://teams.microsoft.com/l/entity/x",
+               "teamsApp":{"id":"95de633a-083e-42f5-b444-a4295d8e9314","displayName":"Whiteboard"},
+               "configuration":{"contentUrl":"https://app.whiteboard.microsoft.com/x","websiteUrl":null}},
+              {"id":"t2","displayName":"Budget.xlsx","teamsApp":{"id":"1c256a65-83a6-4b5c-9ccf-78f8afb6f1e8","displayName":""}}]}"#,
+        )
+        .unwrap();
+        assert_eq!(tabs[0].app_name.as_deref(), Some("Whiteboard"));
+        assert_eq!(tabs[0].teams_url.as_deref(), Some("https://teams.microsoft.com/l/entity/x"));
+        assert_eq!(tabs[0].website_url.as_deref(), Some("https://teams.microsoft.com/l/entity/x"));
+        assert_eq!(tabs[1].app_name, None);
+        assert_eq!(tabs[1].teams_url, None);
+        assert_eq!(tabs[1].app_id.as_deref(), Some("1c256a65-83a6-4b5c-9ccf-78f8afb6f1e8"));
     }
 }

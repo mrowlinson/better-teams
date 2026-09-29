@@ -29,7 +29,9 @@ public struct LiveTeamsClient: TeamsClient {
     }
 
     public func send(chatID: String, text: String) throws -> SendResponse {
-        try RustCore.send(chatID: chatID, text: text)
+        // §106: idempotent + verified (a lost answer is never a second copy).
+        let id = try SendPipeline.postVerified(chatID: chatID, text: text)
+        return SendResponse(ok: true, chat_id: chatID, id: id)
     }
 
     public func react(chatID: String, messageID: String, emoji: String, remove: Bool) throws -> SendResponse {

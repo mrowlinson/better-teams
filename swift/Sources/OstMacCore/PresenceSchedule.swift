@@ -208,7 +208,7 @@ public final class PresenceScheduleStore: ObservableObject {
         Task {
             defer { inflight = false }
             do {
-                let resp = try await Task.detached { try fetcher(want) }.value
+                let resp = try await Task.blocking { try fetcher(want) }.value
                 failures[entry.id] = 0
                 lastSetAt = now
                 lastStatus = entry.status

@@ -31,6 +31,9 @@ public final class AppState: ObservableObject {
     /// are per-account namespaces).
     @Published public var chats: ChatListViewModel
     public let teams: TeamsViewModel
+    /// TEAMSYNC: keeps the team/channel tree current (realtime thread
+    /// updates, app activation, short interval with backoff).
+    public private(set) lazy var teamsSync = TeamsSync(model: teams)
     public let reminders: RemindersViewModel
     public let planner: PlannerViewModel
     public let recordings: RecordingsViewModel
@@ -124,6 +127,9 @@ public final class AppState: ObservableObject {
     /// members. UI loads it per chat (`chatRoster.load(chatID:)`).
     public let chatRoster: ChatRosterStore
     public let receipts = ReceiptStore()
+    /// CHATSYNC: the owner's Teams read state (view → read position,
+    /// Mark as read/unread, Delete chat).
+    public let readSync = ReadSync()
     /// Rebuilt per account on switch (d1-accounts).
     @Published public var pinnedMessages: PinnedMessageStore
     /// Cross-chat saved collection (e2-saved). Rebuilt per account on
@@ -131,6 +137,11 @@ public final class AppState: ObservableObject {
     @Published public var savedMessages: SavedMessageStore
     public let auth = AuthViewModel()
     public let presence = PresenceStore()
+    /// Contact hover/full cards (Graph profile, org, presence) and the
+    /// name→person directory behind them. Demo = canned people.
+    public let contactCards: ContactStore
+    /// Real profile photos for avatars (disk-cached; demo = generated).
+    public let photos: ProfilePhotoStore
     /// Ghost mode (f1-ghost): suppresses own read-receipt PUTs and
     /// presence writes while on (injected into receipts/presence/
     /// presenceSchedule below; toggles persist, counters clear out).
@@ -175,6 +186,12 @@ public final class AppState: ObservableObject {
     /// Cross-conversation catch-up behind the Catch Up window (AICATCH):
     /// mentions flagged on arrival, summaries per `catchUp.mode`.
     public let catchUpDigest: CatchUpDigestStore
+    /// Catch Up "Not important" dismissals (CATCHTABS), local only.
+    public let catchUpFeedback: CatchUpFeedbackStore
+    /// Names of Teams tags that include the user (read-only, cached).
+    private var catchUpTagNames: Set<String> = []
+    private var catchUpTagsLoading = false
+    private var catchUpTagsLoaded = false
     /// Demo only: the canned Catch Up transport (evidence holds it to
     /// show the streaming / updating states). Nil in live builds.
     public let demoCatchUpTransport: CatchUpDemoTransport?
@@ -231,6 +248,11 @@ public final class AppState: ObservableObject {
     /// gap-g1 sweep timer (30s, ungated — background accounts must
     /// banner while minimized, when the 2s tick stands down).
     private var bgTimer: Timer?
+    /// §106: open-chat fallback poll (1s check, adaptive cadence) and
+    /// the focus observer that polls at once on activation.
+    private let openChatPoller = OpenChatPoller()
+    private var openChatPollTimer: Timer?
+    private var openChatFocusObserver: NSObjectProtocol?
     private var started = false
     private var contentOpened = false
     // om-rules: notify/skip rules over the live feed (RulesStore loads
@@ -244,7 +266,11 @@ public final class AppState: ObservableObject {
     public init(args: [String]) {
         // core-b demo-leak sweep: demo stores get in-memory defaults,
         // temp-dir files, a memory-only media cache and no keychain.
-        let demo = args.contains("--demo")
+        let demoGate = DemoGate.launch(args: args)
+        let demo = demoGate != nil
+        // DEMOLEAK: earlier demo runs persisted fixtures into the real
+        // defaults; a live launch drops them before any store loads.
+        if !demo { DemoFixture.scrubLive(.standard) }
         let store: UserDefaults = demo ? MemoryDefaults() : .standard
         storageDefaults = store
         transfers = TransferStore(defaults: store)
@@ -257,7 +283,7 @@ public final class AppState: ObservableObject {
             ? ScheduledSendStore(path: Self.demoTempPath("scheduled.json"))
             : ScheduledSendStore()
         canned = CannedResponsesStore(defaults: store)
-        activity = ActivityStore(defaults: store)
+        activity = demoGate.map { ActivityStore.demo($0) } ?? ActivityStore(defaults: store)
         ghost = GhostStore(defaults: store)
         teamsFrame = TeamsFrameStore(defaults: store)
         density = DensityStore(defaults: store)
@@ -287,6 +313,7 @@ public final class AppState: ObservableObject {
         // Ghost (f1-ghost): one store gates all three outbound paths
         // (receipt sends, manual presence sets, scheduled sets).
         receipts.ghost = ghost
+        readSync.ghost = ghost
         presence.ghost = ghost
         presenceSchedule.ghost = ghost
         // top10-presence: truth auto-sets hold under ghost; the schedule
@@ -309,7 +336,8 @@ public final class AppState: ObservableObject {
         call = CallStore(demo: isDemo)
         chatRoster = ChatRosterStore(demo: isDemo)
         actionItems = ActionItemsStore()
-        pinnedMessages = PinnedMessageStore(defaults: store)
+        // §84: real mode reads Teams' own pins; demo keeps its seeds.
+        pinnedMessages = PinnedMessageStore(defaults: store, server: isDemo ? nil : LivePinnedServer())
         if isDemo {
             // Demo builds: memory key store always, never the real
             // keychain (re-signed demo builds must not prompt); memory
@@ -321,12 +349,18 @@ public final class AppState: ObservableObject {
                 transport: canned, cliTransport: canned, onDeviceTransport: canned,
                 defaults: store, keyStore: CatchUpMemoryKeyStore())
             catchUp = cu
-            catchUpDigest = CatchUpDigestStore(transport: canned, mode: { [weak cu] in cu?.mode ?? .off })
+            let fb = CatchUpFeedbackStore(defaults: store)
+            catchUpFeedback = fb
+            catchUpDigest = CatchUpDigestStore(transport: canned, mode: { [weak cu] in cu?.mode ?? .off },
+                                               defaults: store, feedback: fb)
         } else {
             demoCatchUpTransport = nil
             let cu = CatchUpStore()
             catchUp = cu
-            catchUpDigest = CatchUpDigestStore(transport: OnDeviceCatchUpTransport(), mode: { [weak cu] in cu?.mode ?? .off })
+            let fb = CatchUpFeedbackStore(defaults: store)
+            catchUpFeedback = fb
+            catchUpDigest = CatchUpDigestStore(transport: OnDeviceCatchUpTransport(), mode: { [weak cu] in cu?.mode ?? .off },
+                                               defaults: store, feedback: fb)
         }
         if let i = args.firstIndex(of: "--chat"), i + 1 < args.count {
             preselectID = args[i + 1]
@@ -360,6 +394,7 @@ public final class AppState: ObservableObject {
         if !isDemo {
             do {
                 try localSearch.loadDefault(for: searchIndexAccountID)
+                localSearch.removeFixtureDocs() // DEMOLEAK: stale demo docs
                 searchIndexDocs = localSearch.docCount
             } catch {
                 searchIndexError = "index load: \(error)"
@@ -379,6 +414,16 @@ public final class AppState: ObservableObject {
             : ContactsStore()
         contacts.presence = presence
         if isDemo {
+            contactCards = ContactStore.demo()
+            photos = ProfilePhotoStore.demo(directory: contactCards.directory)
+            contactCards.seedDemo()
+        } else {
+            let directory = ContactDirectory(searcher: ContactDirectory.liveSearcher())
+            contactCards = ContactStore(directory: directory)
+            photos = ProfilePhotoStore.live(directory: directory)
+        }
+        contactCards.presence = presence
+        if isDemo {
             // Speed Dial rows in demo (in-memory defaults, never persisted).
             for person in DemoData.speedDial { contacts.pin(person) }
         }
@@ -396,15 +441,27 @@ public final class AppState: ObservableObject {
             let teamsLedger = DemoTeams.Ledger()
             teams = TeamsViewModel(
                 fetcher: { DemoTeams.response(ledger: teamsLedger) },
-                creator: { _, name, _ in
-                    ChannelCreateResponse(
-                        ok: true,
-                        channel: TeamChannel(
-                            channelId: "demo-channel-\(name)", name: name))
+                creator: { teamID, name, _ in
+                    let channel = TeamChannel(channelId: "demo-channel-\(name)", name: name)
+                    teamsLedger.addChannel(channel, teamID: teamID)
+                    return ChannelCreateResponse(ok: true, channel: channel)
                 },
                 joiner: { try DemoTeams.join($0, ledger: teamsLedger) },
                 teamCreator: { name, _ in DemoTeams.create(name, ledger: teamsLedger) },
-                publicSearcher: { DemoTeams.search($0, ledger: teamsLedger) })
+                publicSearcher: { DemoTeams.search($0, ledger: teamsLedger) },
+                channelDeleter: { _, channelID in teamsLedger.deleteChannel(channelID) },
+                channelUpdater: { _, channelID, name, description in
+                    teamsLedger.editChannel(channelID, name: name, description: description)
+                },
+                teamLeaver: { teamsLedger.leaveTeam($0) },
+                // Demo: owner of every team but Marketing, where members
+                // may edit channels but not delete them.
+                ownerCheck: { $0 != "demo-team-mkt" },
+                settingsFetcher: {
+                    $0 == "demo-team-mkt"
+                        ? TeamMemberSettings(allowDeleteChannels: false, allowCreateUpdateChannels: true)
+                        : TeamMemberSettings()
+                })
             reminders = RemindersViewModel(
                 listsFetcher: { DemoData.remindersResponse() },
                 tasksFetcher: { DemoData.reminderTasksResponse(for: $0) },
@@ -446,9 +503,10 @@ public final class AppState: ObservableObject {
                 videoJoinRunner: { DemoData.demoJoinResult(threadID: $0) },
                 // Demo join-by-ID resolves in memory (never Graph).
                 meetingIDResolver: { _, _ in DemoData.meetingIDResolution() })
+            let calendarGate = demoGate!
             calWeek = CalendarWeekStore(
-                weekFetcher: { _ in Self.calWeekDemoResponse() },
-                localEdits: true)
+                weekFetcher: { CalendarDemo.week(calendarGate, start: $0) },
+                localEdits: true, demoGate: calendarGate, prefetchAdjacentWeeks: true)
             shifts = ShiftsStore(week: { ShiftsDemo.response(teamID: $0) },
                                  members: { DemoTeams.roster(teamID: $0) })
             presence.adoptOwn(DemoData.ownPresence())
@@ -459,7 +517,6 @@ public final class AppState: ObservableObject {
                 presence.adoptPeer(peer)
             }
             mentions.adopt(DemoData.mentionedChatIDs)
-            activity.seedDemo() // canned feed (in-memory, offline)
             searchRecents.seedDemo(DemoData.searchRecents)
             // Offline search in demo: every demo thread is in the
             // (in-memory) on-device index from launch.
@@ -487,6 +544,10 @@ public final class AppState: ObservableObject {
         }
         wireChats()
         wireSearchIndex() // gap-g6g7: history + delete → offline index
+        // §106 diagnostics: lose the first send's answer (verify path).
+        if !isDemo, CommandLine.arguments.contains("--send-timeout-shim") {
+            conv.sendTransport = SendTransport.live.losingFirstAnswer()
+        }
         // histload: per-account chat snapshots (reopen paints instantly).
         if !isDemo { conv.historyCache = .disk(for: searchIndexAccountID) }
         popouts.historyCache = conv.historyCache // pop-outs open from the same snapshots
@@ -523,6 +584,26 @@ public final class AppState: ObservableObject {
         shifts.reloadTeams = { [weak self] in
             Task { await self?.reloadTeamsForShifts() }
         }
+        // Contact cards: learn name→person from every list that carries
+        // both (rosters, directory hits) so name-only surfaces resolve.
+        chatRoster.$members
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] members in
+                Task { @MainActor [weak self] in self?.contactCards.directory.learn(members) }
+            }
+            .store(in: &cancellables)
+        filePeople.$people
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] people in
+                Task { @MainActor [weak self] in self?.contactCards.directory.learn(people) }
+            }
+            .store(in: &cancellables)
+        contacts.$results
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] people in
+                Task { @MainActor [weak self] in self?.contactCards.directory.learn(people) }
+            }
+            .store(in: &cancellables)
         // Single reaction point for the gate: every auth transition
         // (gate, Settings, Auth window — same model) runs authChanged,
         // which flips the gate via the signedIn/contentOpened flags.
@@ -670,11 +751,39 @@ public final class AppState: ObservableObject {
     /// sink). Re-run after every `chats` rebuild (account switch).
     private func wireChats() {
         chatsCancellables = Set<AnyCancellable>()
+        chatHorizons = [:] // per-account seed inputs
+        mentionActivity = []
         // om-leave-block: a locally-removed row drops its satellite
         // state (unread, mention flags) — never a list refresh.
         chats.onLocalRemove = { [weak self] id in
             self?.unread.markRead(chatID: id)
             self?.mentions.markRead(chatID: id)
+        }
+        // chatmenu: mute and hide reach Teams, the list adopts the Teams
+        // mute state, and Teams folders fill the Filter menu. Demo stays
+        // in memory (no remote, demo folders seeded instead).
+        if isDemo {
+            DemoData.seedFolders(chats.folders)
+            // Demo rows state their Teams read/mute state (unread, muted,
+            // muted + unread): the same adoption a fetched page gets.
+            rules.adoptServerMutes(DemoData.chats)
+            unread.seed(ChatListSeed.unreadSeeds(DemoData.chats, mutedIDs: Set(DemoData.chats.filter { $0.muted == true }.map(\.id))))
+        } else {
+            rules.remote = .live
+            chats.onFetched = { [weak self] list in self?.adoptServerChatState(list) }
+            chats.deleter = { [weak self] id, lastMs in
+                try await self?.readSync.deleteChat(chatID: id, lastMessageMs: lastMs)
+            }
+            chats.mentionReader = { try CoreReads.mentionActivity() }
+            // DEMOLEAK: the real Teams activity feed (48:notifications).
+            activity.feedReader = { try CoreReads.activityFeed() }
+            activity.chatName = { [weak self] in self?.chatNameOrNil(for: $0) }
+            chats.onMentionActivity = { [weak self] list in
+                self?.mentionActivity = list
+                self?.seedMentions()
+            }
+            chats.folderReader = { try RustCore.chatFolders() }
+            chats.folders.serverMover = { try RustCore.moveChatToFolder(chatID: $0, folderID: $1) }
         }
         chats.$selectedChatID
             .dropFirst()
@@ -683,6 +792,86 @@ public final class AppState: ObservableObject {
                 Task { @MainActor [weak self] in self?.openSelected(id) }
             }
             .store(in: &chatsCancellables)
+    }
+
+    /// Read horizons from every fetched chat page (Mentions seed input).
+    private var chatHorizons: [String: String] = [:]
+    /// Last activity-feed read (Mentions seed input).
+    private var mentionActivity: [MentionActivity] = []
+
+    /// A fetched chat page: adopt the Teams mute state, then seed the
+    /// Unread and Mentions filters from its read horizons.
+    private func adoptServerChatState(_ list: [ChatItem]) {
+        rules.adoptServerMutes(list)
+        for c in list { chatHorizons[c.id] = c.read_horizon }
+        let muted = Set(list.lazy.filter { self.rules.level(chatID: $0.id) == .muted }.map(\.id))
+        let seeds = ChatListSeed.unreadSeeds(list, mutedIDs: muted)
+        var horizons: [String: String] = [:]
+        for c in list { if let h = c.read_horizon { horizons[c.id] = h } }
+        readSync.adopt(horizons: horizons, markedUnread: Set(seeds.filter(\.markedUnread).map(\.chatID)),
+                       listed: Set(list.map(\.id)))
+        unread.seed(seeds, asOf: chats.lastFetchStartedAt)
+        seedMentions()
+    }
+
+    // MARK: CHATSYNC read state
+
+    /// The on-screen timeline reports its newest message (open chat or a
+    /// pop-out). Only a visible, active, bottom-pinned, loaded timeline
+    /// moves the Teams read position (`ReadSync.shouldMarkViewed`).
+    public func noteViewingLatest(chatID: String?, messages: [ChatMessage], windowActive: Bool,
+                                  atLatest: Bool, loaded: Bool) {
+        guard let id = chatID, !id.isEmpty, !isDemo else { return }
+        let open = id == openChatID || popouts.stores[id] != nil
+        let gate = ReadViewGate(isOpen: open, windowActive: windowActive && NSApp.isActive,
+                                atLatest: atLatest, loaded: loaded)
+        readSync.viewed(chatID: id, messages: messages, gate: gate)
+    }
+
+    /// Row menu Mark as read / Mark as unread, on Teams too. A refused
+    /// write undoes the local change and says so under the list.
+    public func setChatUnread(_ id: String, unread wantUnread: Bool) {
+        let lastMs = CoreReads.arrivalMs(id: nil, time: chats.chat(id: id)?.last_message_time)
+        if wantUnread {
+            unread.markUnread(chatID: id, muted: rules.level(chatID: id) == .muted)
+        } else {
+            unread.markRead(chatID: id)
+        }
+        guard !isDemo else { return }
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                if wantUnread {
+                    try await self.readSync.markUnread(chatID: id, lastMessageMs: lastMs)
+                } else {
+                    try await self.readSync.markRead(chatID: id, lastMessageMs: lastMs)
+                }
+            } catch {
+                if wantUnread { self.unread.markRead(chatID: id) }
+                self.chats.readStateError = "Couldn't mark the chat \(wantUnread ? "unread" : "read"): \(error)"
+            }
+        }
+    }
+
+    /// Read state made elsewhere (Teams on another device) lands here by
+    /// re-reading the chat list quietly: on focus and every
+    /// `readPollSeconds` while a window is visible and the app is active.
+    /// Rows publish only when they change; unread seeds are diffs.
+    public static let readPollSeconds: TimeInterval = 20
+    private var lastReadPoll = Date.distantPast
+    private var readPollTimer: Timer?
+
+    func pollReadState(force: Bool) {
+        guard !isDemo, Self.surfacesVisible(), NSApp.isActive else { return }
+        let now = Date()
+        guard force || now.timeIntervalSince(lastReadPoll) >= Self.readPollSeconds - 1 else { return }
+        guard now.timeIntervalSince(lastReadPoll) >= 3 else { return } // focus bursts
+        lastReadPoll = now
+        Task { await chats.loadQuietly() }
+    }
+
+    private func seedMentions() {
+        mentions.seed(ChatListSeed.mentionedChats(mentionActivity, horizons: chatHorizons))
     }
 
     /// Offline-index writer wiring (gap-g6g7): fetched history
@@ -701,6 +890,69 @@ public final class AppState: ObservableObject {
                 self?.dropIndexed(chatID: chatID, messageID: id)
             }
         }
+        // §106: settled own sends + polled arrivals keep the chat row's
+        // preview/order current and keep the poll cadence hot.
+        conv.onSendSettled = { [weak self] chatID, row in
+            Task { @MainActor [weak self] in self?.noteOpenChatRows(chatID: chatID, rows: [row]) }
+        }
+        conv.onNewRows = { [weak self] chatID, rows in
+            Task { @MainActor [weak self] in self?.noteOpenChatRows(chatID: chatID, rows: rows) }
+        }
+    }
+
+    /// §106: rows that reached the open chat outside the live feed
+    /// (settled own sends, polled arrivals) → chat list row (preview,
+    /// order; one publish) + hot poll cadence. Unread never accrues for
+    /// the open chat, so there is nothing to count.
+    private func noteOpenChatRows(chatID: String, rows: [ChatMessage]) {
+        openChatPoller.noteActivity()
+        let events = rows.map {
+            RealtimeMessage(
+                chatID: chatID, msgId: $0.id, sender: $0.sender, text: $0.content,
+                time: $0.timestamp, isEdit: false, raw: $0.raw,
+                clientMessageID: $0.clientMessageID)
+        }
+        chats.ingest(batch: events)
+    }
+
+    /// §106: start the open-chat fallback poll (live only, once).
+    private func startOpenChatPoll() {
+        guard !isDemo, openChatPollTimer == nil else { return }
+        openChatPollTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.pollOpenChat() }
+        }
+        openChatFocusObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.openChatPoller.noteActivity(pollNow: true)
+                self?.pollOpenChat()
+                self?.pollReadState(force: true) // CHATSYNC: read elsewhere
+            }
+        }
+        readPollTimer = Timer.scheduledTimer(withTimeInterval: Self.readPollSeconds, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.pollReadState(force: false) }
+        }
+    }
+
+    /// One poll check: re-read the open chat's newest page quietly when
+    /// the cadence says so (visible windows only; never over a load).
+    private func pollOpenChat() {
+        guard !isDemo, openChatID != nil || !popouts.stores.isEmpty else { return }
+        let busy = conv.loading || conv.refreshing
+        guard openChatPoller.shouldPoll(
+            chatOpen: true, visible: Self.surfacesVisible(), busy: busy) else { return }
+        if openChatID != nil { conv.refresh(limit: 20, quiet: true) }
+        // Popped-out chats are open chats too: same quiet, diffed poll;
+        // their arrivals keep the chat list row current.
+        for store in popouts.stores.values where !store.loading && !store.refreshing {
+            if store.onNewRows == nil {
+                store.onNewRows = { [weak self] chatID, rows in
+                    Task { @MainActor [weak self] in self?.noteOpenChatRows(chatID: chatID, rows: rows) }
+                }
+            }
+            store.refresh(limit: 20, quiet: true)
+        }
     }
 
     /// Catch Up digest wiring (AICATCH): identity for mention flags,
@@ -714,13 +966,93 @@ public final class AppState: ObservableObject {
             return own.isEmpty ? self.rules.config.owner.displayName : own
         }
         catchUpDigest.seed = { [weak self] in self?.catchUpSeed() ?? [] }
+        if isDemo {
+            // Demo: a fixed Catch Up clock, so the period tabs keep the
+            // same spread over the canned threads whenever they run.
+            catchUpDigest.now = { DemoData.catchUpNow }
+        } else {
+            catchUpDigest.retryTags = { [weak self] in self?.retryCatchUpTags() }
+            catchUpDigest.ownerTags = { [weak self] in
+                self?.loadCatchUpTags()
+                return self?.catchUpTagNames ?? []
+            }
+            catchUpDigest.backfill = { [weak self] chatID, since in
+                await self?.catchUpBackfill(chatID: chatID, since: since) ?? []
+            }
+        }
         catchUp.$config
             .map(\.mode)
             .removeDuplicates()
             .sink { [weak self] mode in
-                Task { @MainActor [weak self] in self?.catchUpDigest.modeChanged(mode) }
+                Task { @MainActor [weak self] in
+                    self?.catchUpDigest.modeChanged(mode)
+                    if mode != .off { self?.loadCatchUpTags() }
+                }
             }
             .store(in: &cancellables)
+    }
+
+    /// Tag membership for @tag mentions: one read-only Teams CSA read,
+    /// cached a day, off the main actor at utility priority. Live
+    /// accounts only. A failed read is shown in the Catch Up status bar
+    /// (`tagsError`) and is not retried until the user asks.
+    private func loadCatchUpTags() {
+        guard !isDemo, !catchUpTagsLoading, !catchUpTagsLoaded,
+              let userID = CatchUpTags.userID(fromMRI: resolvedOwnerMRI) else { return }
+        catchUpTagsLoading = true
+        Task { [weak self] in
+            let result = await Task.blocking(priority: .utility) { CatchUpTags.load(userID: userID) }.value
+            guard let self else { return }
+            switch result {
+            case .success(let names):
+                self.catchUpTagNames = names
+                self.catchUpDigest.setTagsError(nil)
+            case .failure(let failure):
+                self.catchUpTagNames = []
+                self.catchUpDigest.setTagsError(failure.message)
+            }
+            self.catchUpTagsLoading = false
+            self.catchUpTagsLoaded = true
+        }
+    }
+
+    /// Catch Up status bar Retry for a failed tag read.
+    private func retryCatchUpTags() {
+        catchUpTagsLoaded = false
+        loadCatchUpTags()
+    }
+
+    /// Older history for a longer Catch Up period: read-only message
+    /// pages (never a read receipt), at most 4 pages of 50, stopping
+    /// once a page reaches back past `since`. Utility priority.
+    private func catchUpBackfill(chatID: String, since: Date) async -> [ChatMessage] {
+        let runner = conv.coreRunner
+        let acct = conv.accountID
+        let pages = await Task.blocking(priority: .utility) { () -> [ChatMessage] in
+            var out: [ChatMessage] = []
+            var token: String?
+            for page in 0 ..< 4 {
+                let resp: MessagesResponse
+                do {
+                    if page == 0 {
+                        resp = try runner.run({ try RustCore.messages(chatID: chatID, limit: 50) }, accountID: acct)
+                    } else if let t = token {
+                        resp = try runner.run({ try RustCore.messagesPage(chatID: chatID, pageToken: t, limit: 50) },
+                                              accountID: acct)
+                    } else {
+                        break
+                    }
+                } catch {
+                    break
+                }
+                out.append(contentsOf: resp.messages)
+                token = resp.page_token
+                if let oldest = resp.messages.compactMap(CatchUpBound.date).min(), oldest < since { break }
+                if token == nil { break }
+            }
+            return out
+        }.value
+        return ConversationStore.stampOwnership(pages, ownName: conv.ownDisplayName)
     }
 
     /// What the digest reads when it starts empty: conversations with
@@ -794,7 +1126,9 @@ public final class AppState: ObservableObject {
         blocked = freshBlocked
         chats = makeChats(accountID: id, blocked: freshBlocked)
         wireChats()
-        pinnedMessages = PinnedMessageStore(defaults: storageDefaults, key: PinnedMessages.key(for: id))
+        pinnedMessages = PinnedMessageStore(
+            defaults: storageDefaults, key: PinnedMessages.key(for: id),
+            server: isDemo ? nil : LivePinnedServer())
         savedMessages = isDemo
             ? SavedMessageStore(defaults: nil)
             : SavedMessageStore(key: SavedMessages.key(for: id))
@@ -862,7 +1196,7 @@ public final class AppState: ObservableObject {
         guard !isDemo else { return }
         Task {
             let profile = vm.profile
-            let me = try? await Task.detached {
+            let me = try? await Task.blocking {
                 try RustCore.whoami(profile: profile)
             }.value
             let name: String
@@ -887,7 +1221,7 @@ public final class AppState: ObservableObject {
     /// first sign-in): the default profile becomes the first account.
     private func adoptLegacyAccount() async {
         guard accounts.accounts.isEmpty else { return }
-        let me = try? await Task.detached { try RustCore.whoami() }.value
+        let me = try? await Task.blocking { try RustCore.whoami() }.value
         let name: String
         if let display = me?.display_name, !display.isEmpty {
             name = display
@@ -906,6 +1240,7 @@ public final class AppState: ObservableObject {
         Task {
             await chats.loadQuietly()
             await teams.loadQuietly()
+            startLivePresence()
             await presence.refreshOwn()
             resolveOwnerMRI()
             reminders.refresh()
@@ -990,11 +1325,15 @@ public final class AppState: ObservableObject {
             guard let self else { return }
             await self.teams.load()
             Log.content("teams", ms: Log.ms(since: launchStart), cached: false)
+            self.teamsSync.start()
+            Task { await self.teams.refreshOwnership() }
             // Shifts needs only the teams list (team picker + grid).
             self.seedShifts()
         }
         await chats.load()
         Log.content("chats", ms: Log.ms(since: launchStart), cached: false)
+        Task { @MainActor [weak self] in await self?.activity.refresh() }
+        Task { @MainActor [weak self] in await self?.presence.pollOnce() } // 1:1 dots
         // Second wave (after the chat list claims the core): To Do +
         // Planner in parallel, never blocking the restore below.
         Task { @MainActor [weak self] in
@@ -1053,6 +1392,7 @@ public final class AppState: ObservableObject {
             break
         }
         if !isDemo {
+            startLivePresence() // own + people + 1:1 dots (unified presence)
             presence.refreshOwnSoon() // own dot; non-critical on failure
             setupNotifier() // om-rules: banners for filtered live events
             resolveOwnerMRI() // async; name backup covers the gap
@@ -1074,6 +1414,10 @@ public final class AppState: ObservableObject {
             feed.onRoster { [weak self] ev in
                 Task { @MainActor [weak self] in self?.handleRoster(ev) }
             }
+            // TEAMSYNC: team/channel/thread tree changed elsewhere.
+            feed.onThreadUpdate { [weak self] _ in
+                Task { @MainActor [weak self] in self?.teamsSync.kick() }
+            }
             // Single shared response delegate (routes both banner
             // families; installed after Notifier.setup so it wins).
             notifs.attach()
@@ -1082,6 +1426,7 @@ public final class AppState: ObservableObject {
             // gap-g1: background sweep over inactive accounts (first
             // sweep seeds silently — no launch banner storm).
             startBackgroundPoll()
+            startOpenChatPoll() // §106: open chat never waits on push alone
         }
         if let say = autoSay {
             if openChatID == nil, isDemo, let first = chats.chats.first {
@@ -1230,8 +1575,8 @@ public final class AppState: ObservableObject {
         Task {
             do {
                 let (id, content) = (targetID, body)
-                _ = try await Task.detached {
-                    try RustCore.send(chatID: id, text: content)
+                _ = try await Task.blocking {
+                    try SendPipeline.postVerified(chatID: id, text: content) // §106
                 }.value
                 self.lastQuickSend = QuickSendRecord(
                     targetID: targetID, targetName: targetName, text: body,
@@ -1531,6 +1876,9 @@ public final class AppState: ObservableObject {
             fetcher: { [id = record.id] in
                 try RustCore.chats(limit: $0, profile: id)
             },
+            pageFetcher: { [id = record.id] in
+                try RustCore.chats(limit: 50, profile: id, pageLink: $0)
+            },
             blocked: blocked,
             folders: FolderStore(accountID: record.id))
         return AccountWindowGraph(
@@ -1609,7 +1957,7 @@ public final class AppState: ObservableObject {
         let name = person.displayName
         let email = person.email
         Task { @MainActor [weak self] in
-            let created: ChatCreateResponse? = try? await Task.detached {
+            let created: ChatCreateResponse? = try? await Task.blocking {
                 try RustCore.chatCreateOneToOne(user: ref)
             }.value
             guard let self, let chat = created?.chat else {
@@ -1620,10 +1968,65 @@ public final class AppState: ObservableObject {
         }
     }
 
+    /// Last contact-card quick message (demo records here instead of sending).
+    public struct QuickMessageRecord: Equatable, Sendable {
+        public let chatID: String
+        public let text: String
+    }
+    @Published public private(set) var lastQuickMessage: QuickMessageRecord?
+
+    /// Contact card "Send a quick message": post plain text to the 1:1
+    /// chat with `person` without leaving the current view. Demo records
+    /// it (never core); live creates or re-opens the 1:1 via core
+    /// off-main, then uses the plain send path. Returns the chat id, nil
+    /// on failure or empty text.
+    public func sendQuickMessage(_ text: String, to person: TeamMember) async -> String? {
+        let body = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !body.isEmpty, let ref = PersonChat.userRef(for: person) else { return nil }
+        if isDemo {
+            let id = PersonChat.demoChatID(for: person)
+            lastQuickMessage = QuickMessageRecord(chatID: id, text: body)
+            return id
+        }
+        // §106: the 1:1 open in the main timeline takes the reconciled
+        // bubble path (Sending… settles); otherwise one idempotent,
+        // verified post (never a second copy on a lost answer).
+        let created: String? = try? await Task.blocking {
+            try RustCore.chatCreateOneToOne(user: ref).chat.chatId
+        }.value
+        guard let chat = created else { return nil }
+        if conv.chatID == chat {
+            conv.send(text: body)
+        } else {
+            do {
+                _ = try await Task.blocking {
+                    try SendPipeline.postVerified(chatID: chat, text: body)
+                }.value
+            } catch {
+                return nil
+            }
+        }
+        lastQuickMessage = QuickMessageRecord(chatID: chat, text: body)
+        return chat
+    }
+
     /// Pinned-channel store for one account key (core-b; local only, see
     /// PinnedChannels.swift). Demo = memory only, never the real key.
     public func pinnedChannelStore(accountKey: String) -> PinnedChannelStore {
         PinnedChannelStore(accountKey: accountKey, defaults: isDemo ? nil : .standard)
+    }
+
+    /// Live presence: the unified presence service, one batch per poll
+    /// (Graph presence needs Presence.Read, which the Teams token lacks).
+    /// Idempotent; demo never polls.
+    private func startLivePresence() {
+        guard !isDemo else { return }
+        if presence.batchFetcher == nil {
+            presence.batchFetcher = UnifiedPresence.liveBatch
+            presence.ownIDProvider = { [weak self] in self?.ownUserID ?? UnifiedPresence.ownUserID() }
+            presence.chatIDsProvider = { [weak self] in self?.chats.chats.map(\.chatId) ?? [] }
+        }
+        presence.startPolling()
     }
 
     /// Signed-in user's Graph id for id-based owner checks (core-a):
@@ -1660,7 +2063,7 @@ public final class AppState: ObservableObject {
             return true
         }
         do {
-            let created = try await Task.detached {
+            let created = try await Task.blocking {
                 try RustCore.chatCreateGroup(users: refs, topic: cleanTopic)
             }.value
             jump(chatID: created.chat.chatId, chatName: created.chat.name.isEmpty ? name : created.chat.name)
@@ -1760,6 +2163,7 @@ public final class AppState: ObservableObject {
             shared.showDemo(chatID: id, files: DemoData.sharedFiles(for: id))
         } else {
             conv.open(chatID: id, chatName: chatName, seekMessageID: seek)
+            openChatPoller.noteActivity() // §106: fresh chat polls fast
             // Notes scope: channels read the team (M365 group) notebook;
             // plain chats read the user's own OneNote (no shared notebook).
             notes.open(groupID: teamID(forChannel: id))
@@ -1770,6 +2174,10 @@ public final class AppState: ObservableObject {
             }
             // om-receipts: peer positions for Seen state (no list refresh).
             receipts.refresh(threadID: id)
+            // §84: Teams' own pins join the strip (off-main; applied
+            // only when they change the thread's pins).
+            let pins = pinnedMessages
+            Task { await pins.refreshFromServer(chatID: id) }
         }
         // d2-send: opening a chat delivers its past-due queue items into
         // it (own-bubbles); claim-then-send keeps this idempotent with
@@ -1914,6 +2322,7 @@ public final class AppState: ObservableObject {
         localSearch.removeAll()
         do {
             try localSearch.loadDefault(for: accountID)
+            localSearch.removeFixtureDocs() // DEMOLEAK: stale demo docs
             searchIndexError = nil
         } catch {
             searchIndexError = "index load: \(error)"
@@ -1924,6 +2333,17 @@ public final class AppState: ObservableObject {
     private func handleRealtime(_ msg: RealtimeMessage) {
         feedEvents += 1
         refreshFeedStatus()
+        // DEMOLEAK: a new Teams activity item → re-read the feed (the
+        // item itself is not a chat message).
+        if msg.chatID == ActivityFeed.conversationID {
+            Task { @MainActor [weak self] in await self?.activity.refresh() }
+        }
+        // TEAMSYNC: a post in a channel the tree doesn't know means a
+        // channel was added (or a team joined) elsewhere.
+        if msg.chatID.hasSuffix("@thread.tacv2"),
+           !teams.teams.contains(where: { $0.channels.contains { $0.channelId == msg.chatID } }) {
+            teamsSync.kick()
+        }
         // om-leave-block: blocked senders skip everything (list, typing,
         // unread, mentions, banners) — counted as a skip in Diagnostics.
         // Unknown threads default to 1:1, so a new thread from a blocked
@@ -1981,7 +2401,7 @@ public final class AppState: ObservableObject {
         let visible = popouts.visibleChatIDs(open: openChatID)
         unread.ingest(
             decision: decision, chatID: msg.chatID, openChatID: openChatID,
-            visibleChatIDs: visible)
+            visibleChatIDs: visible, messageAt: ChatListFormat.parse(msg.time))
         mentions.ingest(
             realtime: msg, ownName: conv.ownDisplayName,
             ownerMRI: resolvedOwnerMRI, openChatID: openChatID,
@@ -2027,6 +2447,7 @@ public final class AppState: ObservableObject {
         // traffic, and popped threads refresh Seen like open ones.
         let seenWorthy = !msg.isEdit && !msg.text.isEmpty
         if msg.isFor(chatID: openChatID) {
+            openChatPoller.noteActivity() // §106
             conv.ingest(realtime: msg)
             // om-receipts: a peer reply implies they read through our tail;
             // refresh Seen state (no list refresh — receipts only).
@@ -2210,7 +2631,7 @@ public final class AppState: ObservableObject {
                     "couldn't switch to the message's account"))
             }
             do {
-                _ = try RustCore.send(chatID: chatID, text: text)
+                try SendPipeline.postVerified(chatID: chatID, text: text) // §106
                 return .success(())
             } catch {
                 return .failure(error)
@@ -2235,7 +2656,7 @@ public final class AppState: ObservableObject {
     /// MRI-preferred own/mention matching. Off-main (first call may hit
     /// network); the display-name backup covers messages until it lands.
     private func resolveOwnerMRI() {
-        Task.detached { [weak self] in
+        Task.blocking { [weak self] in
             guard let me = try? RustCore.whoami(), !me.id.isEmpty else { return }
             let mri = "8:orgid:\(me.id)"
             guard let strongSelf = self else { return }
@@ -2278,8 +2699,8 @@ public final class AppState: ObservableObject {
                     body: "Reply failed: couldn't switch to the message's account.")
                 return
             }
-            Task.detached {
-                _ = try? RustCore.send(chatID: id, text: text)
+            Task.blocking {
+                _ = try? SendPipeline.postVerified(chatID: id, text: text) // §106
             }
             return
         }
@@ -2287,8 +2708,8 @@ public final class AppState: ObservableObject {
             conv.send(text: text)
             return
         }
-        Task.detached {
-            _ = try? RustCore.send(chatID: id, text: text)
+        Task.blocking {
+            _ = try? SendPipeline.postVerified(chatID: id, text: text) // §106
         }
     }
 
@@ -2331,7 +2752,7 @@ public final class AppState: ObservableObject {
         let active = accounts.activeID
         guard snapshot.contains(where: { $0.id != active }) else { return }
         let poller = bgPoller
-        Task.detached { [weak self] in
+        Task.blocking { [weak self] in
             let events = poller.pollOnce(accounts: snapshot, activeID: active)
             guard !events.isEmpty else { return }
             await MainActor.run { [weak self] in
@@ -2494,8 +2915,8 @@ public final class AppState: ObservableObject {
         }
         if isDemo { return }
         let id = item.chatID, body = item.text
-        Task.detached {
-            try? RustCore.send(chatID: id, text: body)
+        Task.blocking {
+            _ = try? SendPipeline.postVerified(chatID: id, text: body) // §106
         }
     }
 
@@ -2530,80 +2951,6 @@ public final class AppState: ObservableObject {
         }
     }
 
-    /// Demo week-grid meetings dated inside the current week (B1 merge):
-    /// a working week, Monday to Friday, colored by Outlook category.
-    /// Nonisolated: runs inside the store's off-main fetch closure.
-    private nonisolated static func calWeekDemoResponse() -> CalWeekResponse {
-        let cal = Calendar.current
-        let weekStart = CalWeek.startOfWeek(containing: DemoClock.now)
-        // Offsets below count from Monday, whatever day the locale's
-        // week starts on.
-        let mondayOffset = (2 - cal.firstWeekday + 7) % 7
-        let fmt = DateFormatter()
-        fmt.locale = Locale(identifier: "en_US_POSIX")
-        fmt.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
-        func at(dayOffset: Int, hour: Int, minute: Int) -> String {
-            let base = cal.date(byAdding: .day, value: mondayOffset + dayOffset, to: weekStart) ?? weekStart
-            let parts = cal.dateComponents([.year, .month, .day], from: base)
-            let date = cal.date(from: DateComponents(
-                year: parts.year, month: parts.month, day: parts.day,
-                hour: hour, minute: minute)) ?? base
-            return fmt.string(from: date)
-        }
-        func meeting(_ id: String, _ subject: String, day: Int, _ h: Int, _ m: Int, minutes: Int,
-                     organizer: String, category: String, online: Bool = true) -> MeetingItem {
-            let endMinute = h * 60 + m + minutes
-            return MeetingItem(
-                meetingId: id, subject: subject,
-                start: at(dayOffset: day, hour: h, minute: m),
-                end: at(dayOffset: day, hour: endMinute / 60, minute: endMinute % 60),
-                joinURL: online ? "https://teams.microsoft.com/l/meetup-join/19:\(id)@thread.v2/0" : nil,
-                organizer: organizer, isOnline: online, categories: [category])
-        }
-        return CalWeekResponse(
-            ok: true,
-            weekStart: Int64(weekStart.timeIntervalSince1970), days: 7,
-            meetings: [
-                meeting("demo-cal-standup", "Engineering standup", day: 0, 9, 30, minutes: 15,
-                        organizer: "Harper, Megan", category: "Blue category"),
-                meeting("demo-cal-planning", "Sprint planning", day: 0, 11, 0, minutes: 60,
-                        organizer: "Harper, Megan", category: "Purple category"),
-                meeting("demo-cal-northwind", "Customer call: Northwind", day: 0, 14, 0, minutes: 60,
-                        organizer: "Ortega, Luis", category: "Orange category"),
-                meeting("demo-cal-crit", "Design critique", day: 1, 10, 0, minutes: 60,
-                        organizer: "Lindqvist, Ava", category: "Purple category", online: false),
-                meeting("demo-cal-oneonone", "1:1 with Megan", day: 1, 13, 0, minutes: 30,
-                        organizer: "Harper, Megan", category: "Yellow category"),
-                meeting("demo-cal-hiring", "Hiring sync", day: 1, 15, 30, minutes: 30,
-                        organizer: "Norris, Paula", category: "Red category"),
-                MeetingItem(
-                    meetingId: "demo-cal-roadmap", subject: "Roadmap review",
-                    start: at(dayOffset: 2, hour: 10, minute: 0),
-                    end: at(dayOffset: 2, hour: 11, minute: 30),
-                    joinURL: "https://teams.microsoft.com/l/meetup-join/19:demo_roadmap@thread.v2/0",
-                    // Organized by the demo owner (Cancel Meeting… by identity).
-                    organizer: DemoData.ownerDisplayName,
-                    organizerEmail: "jordan.fox@contoso.example",
-                    isOrganizer: true, isOnline: true, categories: ["Blue category"]),
-                meeting("demo-cal-vendor", "Vendor demo", day: 2, 13, 0, minutes: 60,
-                        organizer: "Becker, Tom", category: "Orange category"),
-                meeting("demo-cal-focus", "Focus time", day: 2, 14, 30, minutes: 120,
-                        organizer: DemoData.ownerDisplayName, category: "Gray category", online: false),
-                meeting("demo-cal-design", "Design sync", day: 3, 9, 0, minutes: 60,
-                        organizer: "Lindqvist, Ava", category: "Purple category"),
-                meeting("demo-cal-gonogo", "Release go/no-go", day: 3, 11, 0, minutes: 30,
-                        organizer: "Harper, Megan", category: "Red category"),
-                meeting("demo-cal-lunch", "Team lunch", day: 3, 12, 30, minutes: 60,
-                        organizer: "Norris, Paula", category: "Green category", online: false),
-                meeting("demo-cal-demo", "Sprint demo", day: 4, 10, 0, minutes: 60,
-                        organizer: "Harper, Megan", category: "Blue category"),
-                meeting("demo-cal-retro", "Retrospective", day: 4, 11, 0, minutes: 45,
-                        organizer: "Becker, Tom", category: "Teal category"),
-                meeting("demo-cal-tom", "1:1 with Tom", day: 4, 14, 0, minutes: 30,
-                        organizer: DemoData.ownerDisplayName, category: "Yellow category"),
-            ])
-    }
-
     /// Demo sibling-recording lookup: demo transcript stems match the
     /// demo recording stems (`Title with Name` ↔ `Title with Name.mp4`).
     private static func demoRecordingLookup() -> TranscriptsViewModel.RecordingLookup {
@@ -2635,6 +2982,7 @@ public final class AppState: ObservableObject {
                     return
                 }
                 chats.refresh()
+                Task { @MainActor [weak self] in await self?.activity.refresh() }
                 teams.refresh()
                 reminders.refresh()
                 planner.refresh()
@@ -2650,6 +2998,7 @@ public final class AppState: ObservableObject {
                 }
                 if !isDemo {
                     feed.start()
+                    startLivePresence()
                     presence.refreshOwnSoon()
                 }
             } else {

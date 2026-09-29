@@ -68,6 +68,11 @@ private struct FrameContent: View {
             failure("A server with the specified hostname could not be found.")
         } else if case .failed(let message, false) = page.state {
             failure(message)
+        } else if case .info(let message, let systemImage) = page.state {
+            // A neutral empty state (a meeting app outside a meeting), as
+            // Teams shows it: no "couldn't load", no Retry.
+            EmptyPane(page.title, systemImage: systemImage, message: message) { EmptyView() }
+                .background(.background)
         } else if offline {
             EmptyPane("You're Offline", systemImage: "wifi.slash",
                       message: "\(page.title) will load when you're back online.") {
@@ -109,8 +114,12 @@ private struct FrameContent: View {
             // otherwise squeezes them to equal widths ("Open in Brow…").
             HStack {
                 Button("Retry") { host.retry(page.key) }
-                Button("Open in Browser") { NSWorkspace.shared.open(page.url) }
-                    .disabled(demo)
+                // The app's own page only: never the Teams web app, and a
+                // Teams link has no page of its own (APPNATIVE4).
+                if ["http", "https"].contains(page.url.scheme?.lowercased() ?? ""), !TeamsWebGuard.isTeamsWeb(page.url) {
+                    Button("Open in Browser") { host.openExternal(page.url) }
+                        .disabled(demo)
+                }
             }
             .fixedSize()
         }

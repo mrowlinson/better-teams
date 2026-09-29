@@ -38,6 +38,13 @@ public enum ActivityKind: String, Codable, Sendable, Equatable {
     case reply
     case reaction
     case missedCall
+    /// New post in a channel the user follows (`follow` items).
+    case channelPost
+    /// Meeting / call notification from the Teams feed (started,
+    /// reminder, recording ready, …).
+    case meeting
+    /// App or system notification from the Teams feed.
+    case app
 
     /// SF Symbol for the feed row.
     public var systemImage: String {
@@ -47,6 +54,9 @@ public enum ActivityKind: String, Codable, Sendable, Equatable {
         case .reply: "arrowshape.turn.up.left"
         case .reaction: "face.smiling"
         case .missedCall: "phone.arrow.down.left.fill"
+        case .channelPost: "bubble.left.and.text.bubble.right"
+        case .meeting: "video"
+        case .app: "app.badge"
         }
     }
 
@@ -58,6 +68,9 @@ public enum ActivityKind: String, Codable, Sendable, Equatable {
         case .reply: "Reply"
         case .reaction: "Reaction"
         case .missedCall: "Missed call"
+        case .channelPost: "Channel post"
+        case .meeting: "Meeting"
+        case .app: "Notification"
         }
     }
 }
@@ -611,7 +624,15 @@ public final class ActivityStore: ObservableObject {
     /// announcement and 1:1 missed calls). Each row is built from the demo message it opens
     /// (same id, sender, text and time), so the row matches the landed
     /// bubble. In-memory only — demo never touches the persisted list.
-    public func seedDemo(now: Date = DemoClock.now) {
+    /// Only a demo launch can build one (`DemoGate`): a live store can
+    /// never be seeded with fixtures.
+    public static func demo(_ gate: DemoGate, now: Date = DemoClock.now) -> ActivityStore {
+        let store = ActivityStore(defaults: MemoryDefaults(), key: defaultsKey)
+        store.seedDemo(gate, now: now)
+        return store
+    }
+
+    private func seedDemo(_ gate: DemoGate, now: Date) {
         // Demo reviews stay in memory: never persist canned rows over
         // the account's real feed.
         persists = false
@@ -677,7 +698,73 @@ public final class ActivityStore: ObservableObject {
             chatName: "Tom Becker", snippet: "Missed call",
             at: Self.stamp(now) - 19 * 3600, reviewed: true, id: "missedCall:-:demo-missed-tom",
             callerID: "demo-u-tom"))
+        // Feed-only kinds (live: Teams 48:notifications): a meeting
+        // notice on its meeting chat and a sourceless app notification.
+        feed.append(ActivityItem(
+            kind: .meeting, chatID: "", actor: "Weekly Design Review",
+            snippet: "The meeting has started", at: Self.stamp(now) - 2 * 3600,
+            reviewed: true, id: "meeting:-:demo-meeting-started"))
+        feed.append(ActivityItem(
+            kind: .app, chatID: "", actor: "Approvals",
+            snippet: "Your travel request was approved by Oliver Grant",
+            at: Self.stamp(now) - 3 * 3600, reviewed: true, id: "app:-:demo-approval"))
         items = feed.sorted { $0.at > $1.at }
+    }
+
+    // MARK: - Teams activity feed (live)
+
+    /// Reads the Teams feed (`48:notifications`) off the main thread;
+    /// nil in demo (the demo feed is seeded, never fetched).
+    public var feedReader: (@Sendable () throws -> [ActivityItem])?
+    /// Names a chat for feed rows that carry no topic (1:1 chats).
+    public var chatName: ((String) -> String?)?
+    /// Last feed read failure (quiet inline notice); nil after a good read.
+    @Published public private(set) var lastError: String?
+    private var refreshing = false
+
+    /// Fetch the feed and merge it in. A failure keeps every row and
+    /// only sets `lastError` — never blanks the list, never demo.
+    public func refresh() async {
+        guard let reader = feedReader, !refreshing else { return }
+        refreshing = true
+        defer { refreshing = false }
+        do {
+            let fetched = try await ChatListViewModel.offPool { try reader() }
+            adoptFeed(fetched)
+            if lastError != nil { lastError = nil }
+        } catch {
+            let text = "\(error)"
+            if lastError != text { lastError = text }
+        }
+    }
+
+    /// Merge one feed read: new rows land, known rows keep their local
+    /// state (a row reviewed here stays reviewed; a row the feed marks
+    /// read becomes reviewed), rows the feed no longer lists stay.
+    /// Publishes only when something changed (no reload flash).
+    public func adoptFeed(_ fetched: [ActivityItem]) {
+        var merged = items
+        var index: [String: Int] = [:]
+        for (i, item) in merged.enumerated() { index[item.id] = i }
+        for var f in fetched {
+            if f.chatName.isEmpty, let name = chatName?(f.chatID), !name.isEmpty {
+                f = ActivityItem(
+                    kind: f.kind, chatID: f.chatID, messageID: f.messageID, actor: f.actor,
+                    chatName: name, snippet: f.snippet, at: f.at, reviewed: f.reviewed,
+                    id: f.id, callerID: f.callerID)
+            }
+            if let i = index[f.id] {
+                if f.reviewed, !merged[i].reviewed { merged[i].reviewed = true }
+            } else {
+                index[f.id] = merged.count
+                merged.append(f)
+            }
+        }
+        merged.sort { $0.at == $1.at ? $0.id < $1.id : $0.at > $1.at }
+        if merged.count > Self.maxItems { merged = Array(merged.prefix(Self.maxItems)) }
+        guard merged != items else { return }
+        items = merged
+        save()
     }
 
     // MARK: - Persistence

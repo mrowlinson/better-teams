@@ -24,6 +24,9 @@ import WebKit
 public enum FrameLoadState: Equatable, Sendable {
     case idle, loading, loaded
     case failed(message: String, offline: Bool)
+    /// A neutral, non-error pane (a meeting app opened outside a meeting):
+    /// Teams' equivalent empty state, not a "couldn't load" failure.
+    case info(message: String, systemImage: String)
 }
 
 /// One keyed page: its web view (while resident) and observable load
@@ -43,7 +46,22 @@ public final class FramePage: NSObject {
     @ObservationIgnored private var observations: [NSKeyValueObservation] = []
     @ObservationIgnored fileprivate weak var host: FrameHost?
     /// Running downloads → their Transfers entry (§7.3, Files ▸ Downloads).
-    @ObservationIgnored fileprivate var downloads: [ObjectIdentifier: (id: String, dest: URL?, obs: NSKeyValueObservation?)] = [:]
+    @ObservationIgnored fileprivate var downloads: [ObjectIdentifier: (id: String?, dest: URL?, obs: NSKeyValueObservation?)] = [:]
+    /// A sign-in round trip left the allowlist (the tenant's federated
+    /// sign-in and its hops): its pages stay in the frame until it lands
+    /// back on an allowed host (APPSIGNIN).
+    @ObservationIgnored fileprivate var signingIn = false
+    /// The host gave up on this app page (reason in `state`) until the
+    /// next load (APPNATIVE4).
+    @ObservationIgnored fileprivate var hostFailed = false
+    /// Ends a load that never finishes (no endless loading pane): a load
+    /// that has not committed in this long fails with Retry. Reset on each
+    /// provisional navigation, so it bounds one hop, not a whole redirect
+    /// chain. 45 s (was 30 s): a slow provider-auth redirect (Planner's
+    /// `auth_pvr` hop) sometimes needs more than 30 s to answer, and a
+    /// dead host still fails fast via a DNS/connection error, not this
+    /// timer (APPNATIVE5, R7).
+    @ObservationIgnored fileprivate let loadWatch = Debounce(milliseconds: 45_000)
 
     public fileprivate(set) var state: FrameLoadState = .idle
     /// True once the first page has committed (first paint).
@@ -101,6 +119,21 @@ public final class FramePage: NSObject {
     }
 
     fileprivate func stopObserving() { observations = [] }
+
+    /// Arms the load timeout: still unpainted → failed (Retry); painted
+    /// but still loading → the progress line goes, the page stays.
+    fileprivate func watchLoad() {
+        loadWatch.schedule { [weak self] in
+            guard let self, self.state == .loading else { return }
+            if self.committed {
+                self.state = .loaded
+                return
+            }
+            self.web?.stopLoading()
+            self.restoring = false
+            self.state = .failed(message: "The page took too long to respond.", offline: false)
+        }
+    }
 }
 
 // MARK: - WKNavigationDelegate
@@ -116,22 +149,45 @@ extension FramePage: WKNavigationDelegate {
             return decisionHandler(scheme == "about" || scheme == "data" ? .allow : .cancel)
         }
         let main = action.targetFrame?.isMainFrame ?? true
+        if let gate = host.navigationGate, !gate(action) { return decisionHandler(.cancel) }
+        if TeamsWebGuard.refuses(url, mainFrame: main, iframeHostDocument: main && host.isIframeHostDocument(self, url)) {
+            // The Teams web app never loads, in the pane or in any of its
+            // frames (APPNATIVE4/6): a page that redirects there on its
+            // own is refused quietly; a clicked link opens its native view.
+            decisionHandler(.cancel)
+            host.refuseTeamsWeb(url, userInitiated: action.navigationType == .linkActivated)
+            return
+        }
+        if let view = host.documentViewRedirect(self, url, mainFrame: main) {
+            // A document page opens read-only (R9): its edit address
+            // becomes the view address.
+            decisionHandler(.cancel)
+            webView.load(URLRequest(url: view))
+            return
+        }
         if main, !host.hostedWillNavigate(self, to: url, from: webView.url) {
             // The native host gave up on this app (APPHOST-B3).
             return decisionHandler(.cancel)
         }
-        if main, !host.isAllowed(url, for: self) {
-            // §7.3 navigation policy: leave the frame for the browser.
-            decisionHandler(.cancel)
-            NSWorkspace.shared.open(url)
-            return
+        if main {
+            switch FrameHost.mainFrameRoute(to: url, allowed: host.isAllowed(url, for: self), from: webView.url,
+                                            signingIn: signingIn, signInHosts: host.signInHosts) {
+            case .frame(let signingIn):
+                self.signingIn = signingIn
+            case .browser:
+                // §7.3 navigation policy: leave the frame for the browser.
+                decisionHandler(.cancel)
+                host.openExternal(url)
+                return
+            }
         }
         decisionHandler(.allow)
     }
 
     public func webView(_ webView: WKWebView, decidePolicyFor response: WKNavigationResponse,
                         decisionHandler: @escaping @MainActor @Sendable (WKNavigationResponsePolicy) -> Void) {
-        decisionHandler(response.canShowMIMEType ? .allow : .download)
+        decisionHandler(FrameHost.responsePolicy(response.response, mainFrame: response.isForMainFrame,
+                                                 canShow: response.canShowMIMEType))
     }
 
     public func webView(_ webView: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) {
@@ -144,6 +200,7 @@ extension FramePage: WKNavigationDelegate {
 
     public func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         state = .loading
+        watchLoad()
     }
 
     public func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
@@ -153,8 +210,11 @@ extension FramePage: WKNavigationDelegate {
     public func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         committed = true
         restoring = false
+        loadWatch.cancel()
+        // The host gave up on this app while it loaded: the pane keeps
+        // the reason (APPNATIVE4).
+        if hostFailed { return }
         state = .loaded
-        host?.probeChrome(self)
         host?.hostedDidFinish(self)
     }
 
@@ -189,19 +249,33 @@ extension FramePage: WKNavigationDelegate {
 // MARK: - WKUIDelegate (popups, permissions)
 
 extension FramePage: WKUIDelegate {
-    /// §7.3 popups: auth hosts open in a sheet around a child view made
-    /// here (R16); other allowed hosts load in place; anything else goes
-    /// to the default browser. No popup windows, ever.
+    /// §7.3 popups: sign-in popups (auth hosts, scripted popup windows,
+    /// popups from a sign-in page) open in a sheet around a child view
+    /// made here (R16), keeping `window.opener`; other allowed hosts load
+    /// in place; anything else goes to the default browser. No popup
+    /// windows, ever.
     public func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
                         for action: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
-        guard action.targetFrame == nil, let url = action.request.url, let host, !host.isDemo else { return nil }
-        if FrameHost.isAuthHost(url) {
-            return host.presentPopup(configuration: configuration, opener: self)
+        guard action.targetFrame == nil, let host, !host.isDemo else { return nil }
+        if let gate = host.navigationGate, !gate(action) { return nil }
+        let url = action.request.url
+        if let url, TeamsWebGuard.isTeamsWeb(url) {
+            // Never the Teams web app, not even in a popup (APPNATIVE4):
+            // its native view when the router knows it, else nothing.
+            host.refuseTeamsWeb(url, userInitiated: true)
+            return nil
         }
-        if host.isAllowed(url, for: self) {
+        let sized = windowFeatures.width != nil || windowFeatures.height != nil
+        let fromSignIn = signingIn || webView.url.map { FrameHost.isSignInHost($0, host.signInHosts) } == true
+        switch FrameHost.popupRoute(to: url, sized: sized, allowed: url.map { host.isAllowed($0, for: self) } ?? false,
+                                    fromSignIn: fromSignIn, signInHosts: host.signInHosts) {
+        case .sheet:
+            return host.presentPopup(configuration: configuration, opener: self)
+        case .frame:
             webView.load(action.request)
-        } else {
-            NSWorkspace.shared.open(url)
+        case .browser:
+            // Not a Teams address (refused above): the default browser.
+            if let url { host.openExternal(url) }
         }
         return nil
     }
@@ -224,7 +298,8 @@ extension FramePage: WKDownloadDelegate {
     public func download(_ download: WKDownload, decideDestinationUsing response: URLResponse,
                          suggestedFilename: String,
                          completionHandler: @escaping @MainActor @Sendable (URL?) -> Void) {
-        let dir = host?.downloadsFolder ?? TeamsFrameDownloads.defaultDirectory()
+        let dir = host?.downloadsFolder ?? FrameHost.defaultDownloads()
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let name = TeamsFrameDownloads.sanitizedFilename(suggestedFilename)
         var dest = dir.appendingPathComponent(name)
         var n = 1
@@ -244,6 +319,8 @@ extension FramePage: WKDownloadDelegate {
                 Task { @MainActor in transfers?.update(id, progress: f) }
             }
             downloads[ObjectIdentifier(download)] = (id, dest, obs)
+        } else {
+            downloads[ObjectIdentifier(download)] = (nil, dest, nil)
         }
         completionHandler(dest)
     }
@@ -252,28 +329,20 @@ extension FramePage: WKDownloadDelegate {
         guard let d = downloads.removeValue(forKey: ObjectIdentifier(download)) else { return }
         d.obs?.invalidate()
         let size = d.dest.flatMap { try? FileManager.default.attributesOfItem(atPath: $0.path)[.size] as? UInt64 }
-        host?.window?.app?.transfers.finish(d.id, path: d.dest?.path, size: size)
+        // An empty download is never kept (APPNATIVE4): it was a page or
+        // sign-in answer, not a file.
+        if size == 0, let dest = d.dest {
+            try? FileManager.default.removeItem(at: dest)
+            if let id = d.id { host?.window?.app?.transfers.fail(id, message: "The download was empty.") }
+            return
+        }
+        if let id = d.id { host?.window?.app?.transfers.finish(id, path: d.dest?.path, size: size) }
     }
 
     public func download(_ download: WKDownload, didFailWithError error: any Error, resumeData: Data?) {
         guard let d = downloads.removeValue(forKey: ObjectIdentifier(download)) else { return }
         d.obs?.invalidate()
-        host?.window?.app?.transfers.fail(d.id, message: error.localizedDescription)
-    }
-}
-
-// MARK: - chrome route relay
-
-/// Receives a Teams page's in-page route changes (`FrameChromeStyle`
-/// route hook). Weak to its page: the content controller retains it.
-@MainActor
-private final class FrameChromeRouteRelay: NSObject, WKScriptMessageHandler {
-    weak var page: FramePage?
-    init(_ page: FramePage) { self.page = page }
-
-    func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
-        guard message.frameInfo.isMainFrame, let page else { return }
-        page.host?.probeChrome(page)
+        if let id = d.id { host?.window?.app?.transfers.fail(id, message: error.localizedDescription) }
     }
 }
 
@@ -295,16 +364,17 @@ public final class FrameHost {
     private var ssoWaiting: [FramePage]?
     /// Manifest apps hosted natively over TeamsJS (APPHOST), by key.
     private var hosted: [String: TeamsAppLaunch] = [:]
-    /// Every registered manifest app page, native or on its Teams web
-    /// page, by key (a host-mode change re-hosts either way).
+    /// Every registered manifest app page, by key (a host-mode change
+    /// re-hosts it).
     private var launches: [String: TeamsAppLaunch] = [:]
     /// The TeamsJS host of each resident hosted view, by key.
     private var jsHosts: [String: TeamsJSHost] = [:]
-    /// Catalog app ids switched to their Teams-shell page this session
-    /// (native host failed; Automatic also remembers it across launches).
-    private(set) var fallbackApps: Set<String> = []
+    /// Why an app's page could not load this session, by catalog app id
+    /// (the app card shows it). There is no Teams web page to fall back
+    /// to: a failed app shows its reason in the pane, with Retry.
+    private(set) var failures: [String: String] = [:]
     private var identityCache: TeamsAppIdentity?
-    private lazy var broker: TeamsJSTokenBroker = isDemo ? DemoTokenBroker() : CoreTokenBroker(profile: accountKey)
+    lazy var broker: TeamsJSTokenBroker = isDemo ? DemoTokenBroker() : CoreTokenBroker(profile: accountKey)
 
     /// Non-visible views kept resident (§7.3: 1 / 3 default / 6).
     var keepInMemory: Int
@@ -312,18 +382,21 @@ public final class FrameHost {
     var keepAlive: TimeInterval
     /// Settings ▸ Apps ▸ Downloads folder (§7.3 downloads).
     var downloadsFolder: URL
-    /// Settings ▸ Apps ▸ Hide the Teams header and app bar (§7.3 chrome
-    /// hiding): Teams-hosted pages get the `FrameChromeStyle` sheet.
-    var hideChrome: Bool {
-        didSet { if hideChrome != oldValue { applyChromeStyle() } }
-    }
-    /// Per-app crops (§7.3 fallback), keyed by `FrameKey.raw`; absent = none.
-    private(set) var crops: [String: TeamsFrameCrop]
-    /// Chrome the measure probe still saw after the last load or route
-    /// change, keyed by `FrameKey.raw`; absent = hidden or not measured.
-    private(set) var measured: [String: TeamsFrameCrop] = [:]
+
 
     static let downloadsFolderKey = "bt.frame.downloadsFolder"
+
+    /// Test harness hooks (nil in the app): extra page scripts and
+    /// handlers, and a veto on navigations.
+    var instrument: ((WKUserContentController, FrameKey) -> Void)?
+    var navigationGate: ((WKNavigationAction) -> Bool)?
+    private var storeOverride: WKWebsiteDataStore?
+
+    /// `store`: a data store of the caller's (tests), else the account's.
+    convenience init(accountKey: String, store: WKWebsiteDataStore) {
+        self.init(accountKey: accountKey)
+        storeOverride = store
+    }
 
     public init(accountKey: String) {
         self.accountKey = accountKey
@@ -332,19 +405,26 @@ public final class FrameHost {
         keepInMemory = demo ? 3 : FramePolicy.keepInMemory()
         keepAlive = demo ? 15 * 60 : TimeInterval(TeamsFrameConfig.keepAliveMinutes(defaults: .standard) * 60)
         let saved = demo ? nil : UserDefaults.standard.string(forKey: Self.downloadsFolderKey)
-        downloadsFolder = saved.map { URL(fileURLWithPath: $0, isDirectory: true) }
-            ?? TeamsFrameDownloads.defaultDirectory()
-        hideChrome = demo ? true : FrameChromeStyle.hideChrome(defaults: .standard)
-        crops = demo ? [:] : FrameChromeStyle.loadCrops(defaults: .standard)
+        downloadsFolder = (Self.isTestProcess ? nil : saved).map { URL(fileURLWithPath: $0, isDirectory: true) }
+            ?? Self.defaultDownloads()
     }
 
     var isDemo: Bool { accountKey == "demo" }
 
     /// One persistent store per account; demo never touches disk.
     public private(set) lazy var dataStore: WKWebsiteDataStore = {
+        if let storeOverride { return storeOverride }
         if isDemo { return .nonPersistent() }
-        return WKWebsiteDataStore(forIdentifier: Self.storeUUID(accountKey))
+        let store = WKWebsiteDataStore(forIdentifier: Self.storeUUID(accountKey))
+        WebSessionKeeper.watch(store)
+        return store
     }()
+
+    /// Saves the account's Microsoft web session so it outlives the app
+    /// (sign-in without "Stay signed in" is session-only; APPNATIVE4).
+    public func keepWebSession() {
+        WebSessionKeeper.watch(dataStore)
+    }
 
     /// Stable per-account store identifier (created once, persisted).
     static func storeUUID(_ account: String) -> UUID {
@@ -367,6 +447,10 @@ public final class FrameHost {
         let key = FrameKey.app(app.id)
         if case .teamsApp(let l) = app.launch {
             registerTeamsApp(key, launch: l, title: app.label)
+        } else if app.id.hasPrefix(AppsLibrary.documentPrefix) {
+            launches[key.raw] = nil
+            hosted[key.raw] = nil
+            registerDocument(key, url: app.launch.url, title: app.label)
         } else {
             launches[key.raw] = nil
             hosted[key.raw] = nil
@@ -382,30 +466,24 @@ public final class FrameHost {
         registerTeamsApp(key, launch: launch, title: title)
     }
 
-    /// A manifest app page: native over TeamsJS when its host mode
-    /// resolves to a transport, else its Teams web page (APPHOST-B3
-    /// safety default). Idempotent: an unchanged launch never
-    /// re-registers (session placeholders would change the URL and reload).
+    /// A manifest app page, always in the native host: its own content
+    /// page is the top document of the pane, over the TeamsJS bridge. It
+    /// never loads the Teams web app (APPNATIVE4). Idempotent: an
+    /// unchanged launch never re-registers (session placeholders would
+    /// change the URL and reload).
     private func registerTeamsApp(_ key: FrameKey, launch: TeamsAppLaunch, title: String) {
         launches[key.raw] = launch
-        let native = nativeLaunch(launch)
-        if pages[key.raw]?.web != nil, (hosted[key.raw] != nil) != (native != nil) {
-            // Native ↔ Teams web page needs a new view (scripts, store);
-            // registration runs in view bodies, so not in this pass.
+        if pages[key.raw]?.web != nil, hosted[key.raw] == nil {
+            // A plain page becoming an app page needs a new view (the
+            // bridge scripts); registration runs in view bodies, so not
+            // in this pass.
             Task { @MainActor [weak self] in
-                guard let self, let base = self.launches[key.raw] else { return }
-                let now = self.nativeLaunch(base)
-                if (self.hosted[key.raw] != nil) != (now != nil) { self.rehost(key, native: now) }
+                guard let self, let base = self.launches[key.raw], self.hosted[key.raw] == nil else { return }
+                self.rehost(key, native: self.nativeLaunch(base))
             }
             return
         }
-        guard let l = native else {
-            hosted[key.raw] = nil
-            // A shown Teams web page keeps its URL (a late catalog match
-            // must not reload it); failures switch through `rehost`.
-            if pages[key.raw] == nil { register(key, url: launch.fallback, title: title) }
-            return
-        }
+        let l = nativeLaunch(launch)
         if pages[key.raw] != nil, let cur = hosted[key.raw], cur.appID == l.appID,
            cur.contentTemplate == l.contentTemplate, cur.channel == l.channel {
             return
@@ -414,40 +492,40 @@ public final class FrameHost {
         register(key, url: hostedURL(l), title: title)
     }
 
-    /// `launch` on the transport it resolves to; nil = Teams web page.
-    private func nativeLaunch(_ launch: TeamsAppLaunch) -> TeamsAppLaunch? {
-        guard !fallbackApps.contains(launch.appID.lowercased()),
-              let t = TeamsJSTransportChoice.resolve(launch, demo: isDemo) else { return nil }
+    /// `launch` on the transport its host mode resolves to.
+    private func nativeLaunch(_ launch: TeamsAppLaunch) -> TeamsAppLaunch {
         var l = launch
-        l.transport = t
+        l.transport = TeamsJSTransportChoice.resolve(launch, demo: isDemo)
         if !isDemo { loadRealm() }
         return TeamsJSPolicy.resolved(l, appContext(l, theme: "default"))
     }
 
-    /// Theme-free expansion: a theme change must not reload.
+    /// Theme-free expansion: a theme change must not reload. An address
+    /// that does not parse loads nothing (the pane says so).
     private func hostedURL(_ l: TeamsAppLaunch) -> URL {
-        URL(string: TeamsJSPolicy.expand(l.contentTemplate, appContext(l, theme: "default"))) ?? l.fallback
+        URL(string: TeamsJSPolicy.expand(l.contentTemplate, appContext(l, theme: "default")))
+            ?? URL(string: "about:blank")!
     }
 
-    /// Host mode changed in the app card (or Try Again): the app gets a
-    /// fresh chance natively, and every page of it re-hosts in place.
+    /// Host mode changed in the app card (or Try Again): every page of
+    /// the app re-hosts in place with a fresh start.
     func hostModeChanged(appID: String) {
-        fallbackApps.remove(appID.lowercased())
+        failures[appID.lowercased()] = nil
         for (raw, base) in launches where base.appID.caseInsensitiveCompare(appID) == .orderedSame {
             guard let key = pages[raw]?.key else { continue }
-            let native = nativeLaunch(base)
-            if native?.transport != hosted[raw]?.transport { rehost(key, native: native) }
+            rehost(key, native: nativeLaunch(base))
         }
     }
 
-    /// Whether `appID` is on its Teams web page this session because the
-    /// native host failed (app card status).
-    func nativeHostFailed(appID: String) -> Bool { fallbackApps.contains(appID.lowercased()) }
+    /// Why `appID` could not load this session (app card status), if it failed.
+    func hostFailure(appID: String) -> String? { failures[appID.lowercased()] }
 
-    /// Automatic host mode: a frameless page that has not initialized
-    /// TeamsJS 8 s after loading gets one try in the iframe transport; an
-    /// iframe try that also stays silent goes back to frameless for good.
-    /// The first transport that initializes is remembered per app.
+    /// Automatic host mode: a frameless page that has neither initialized
+    /// TeamsJS nor drawn anything 13 s after loading gets one try in the
+    /// iframe transport; an iframe try that also stays silent goes back
+    /// to frameless for good. A page that draws without TeamsJS (a plain
+    /// web page, e.g. a SharePoint page) stays. The first transport that
+    /// works is remembered per app.
     func hostedDidFinish(_ p: FramePage) {
         scheduleBlankCheck(p)
         guard let l = hosted[p.key.raw], let js0 = jsHosts[p.key.raw],
@@ -459,18 +537,19 @@ public final class FrameHost {
         }
         guard learned != .frameless, learned == nil || l.transport == .iframe else { return }
         let key = p.key
-        let check = Debounce(milliseconds: 8_000)
+        let check = Debounce(milliseconds: Self.transportCheck)
         hostChecks[key.raw] = check
         check.schedule { [weak self] in
             // Same view as scheduled (a rehost or reload starts over).
             guard let self, let js = self.jsHosts[key.raw], js === js0, let cur = self.hosted[key.raw] else { return }
             let demo = self.isDemo
             let now = TeamsJSTransportChoice.learned(cur.appID, demo: demo)
-            if js.initialized {
+            if js.initialized || !(js.paint?.isBlank ?? true) {
                 if now == nil { TeamsJSTransportChoice.learn(cur.transport, app: cur.appID, demo: demo) }
                 return
             }
-            guard now != .frameless else { return }
+            // The app's own web page is plain web: no transport to try.
+            guard now != .frameless, !TeamsJSTransportChoice.usesWebsite(cur.appID, demo: demo) else { return }
             let next: TeamsJSTransport = cur.transport == .frameless ? .iframe : .frameless
             TeamsJSTransportChoice.learn(next, app: cur.appID, demo: demo)
             var l = cur
@@ -481,6 +560,9 @@ public final class FrameHost {
 
     /// Pending automatic host-mode checks, by key (one per page).
     private var hostChecks: [String: Debounce] = [:]
+    /// The transport check runs after the paint probe's first report
+    /// (12 s after the DOM is ready).
+    static let transportCheck: UInt64 = 13_000
 
     // MARK: native host failure watch (APPHOST-B3)
 
@@ -490,50 +572,20 @@ public final class FrameHost {
         TeamsJSTransportChoice.mode(l.appID, demo: isDemo) == .automatic
     }
 
-    /// A native page still on a Microsoft sign-in page this long needs an
-    /// interactive sign-in (silent SSO round-trips take about a second).
-    static let signInDwell: UInt64 = 8_000
     /// A native page with nothing painted in its app frame this long
     /// after loading is blank (the paint probe reports at 12 s / 20 s).
     static let blankAfter: UInt64 = 26_000
-    private var signInChecks: [String: Debounce] = [:]
     private var blankChecks: [String: Debounce] = [:]
 
     /// Main-frame navigation of a native page. False = cancel: the page
-    /// switched to its Teams web page (sign-in error, or a sign-in hop
-    /// to a host the frame does not allow).
+    /// shows why it cannot load (a sign-in error), with Retry.
     func hostedWillNavigate(_ p: FramePage, to url: URL, from current: URL?) -> Bool {
-        guard let l = hosted[p.key.raw], watchesFailures(l) else { return true }
-        let key = p.key
+        guard hosted[p.key.raw] != nil else { return true }
         if let why = TeamsJSPolicy.signInFailure(url) {
-            fallBack(key, why: why)
-            return false
-        }
-        if isSignInPage(url) {
-            guard signInChecks[key.raw] == nil, let js0 = jsHosts[key.raw] else { return true }
-            let check = Debounce(milliseconds: Self.signInDwell)
-            signInChecks[key.raw] = check
-            check.schedule { [weak self, weak check] in
-                guard let self else { return }
-                if self.signInChecks[key.raw] === check { self.signInChecks[key.raw] = nil }
-                guard self.jsHosts[key.raw] === js0 else { return }
-                if let now = self.pages[key.raw]?.web?.url, self.isSignInPage(now) {
-                    self.fallBack(key, why: "needs a web sign-in")
-                }
-            }
-            return true
-        }
-        signInChecks[key.raw] = nil
-        if let current, isSignInPage(current), !isAllowed(url, for: p) {
-            fallBack(key, why: "sign-in goes through another host")
+            fail(p.key, why: why)
             return false
         }
         return true
-    }
-
-    /// Microsoft sign-in, or the tenant's own federated sign-in host.
-    private func isSignInPage(_ url: URL) -> Bool {
-        Self.isAuthHost(url) || url.host.map { signInHosts.contains($0.lowercased()) } ?? false
     }
 
     // MARK: tenant sign-in hosts + SharePoint values (APPHOST-B3)
@@ -544,11 +596,13 @@ public final class FrameHost {
     private var realmAsked = false
 
     private func loadRealm() {
-        guard !realmAsked, let upn = identity()?.upn, !upn.isEmpty,
+        // One identity read per host, found or not (it is a core call).
+        guard !realmAsked else { return }
+        realmAsked = true
+        guard let upn = identity()?.upn, !upn.isEmpty,
               let enc = upn.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed.subtracting(["/"])),
               let url = URL(string: "https://login.microsoftonline.com/common/userrealm/\(enc)?api-version=2.1")
         else { return }
-        realmAsked = true
         Task { @MainActor [weak self] in
             // Public realm discovery (no token); the answer names the IdP.
             guard let (data, _) = try? await URLSession.shared.data(from: url),
@@ -607,26 +661,97 @@ public final class FrameHost {
             guard self.jsHosts[key.raw] === js0, let page = self.pages[key.raw] else { return }
             // Offline or mid-load: no verdict (the page shows its state).
             guard page.state == .loaded else { return }
-            if js0.paint?.isBlank ?? true { self.fallBack(key, why: "blank page") }
+            guard js0.paint?.isBlank ?? true, let web = page.web else { return }
+            // The DOM probe misses some pages (reloads, shadow DOM): the
+            // view's own pixels decide before switching.
+            Task { @MainActor [weak self] in
+                let ink = await Self.inkFraction(web)
+                guard let self, self.jsHosts[key.raw] === js0, ink.map({ $0 < Self.blankInk }) ?? true else { return }
+                self.blankPage(key)
+            }
         }
     }
 
-    /// Rebuilds a page's view in place: natively on `l`'s transport, or
-    /// (nil) as its Teams web page.
-    private func rehost(_ key: FrameKey, native l: TeamsAppLaunch?) {
-        guard let p = pages[key.raw], let base = launches[key.raw] ?? hosted[key.raw] else { return }
+    /// A native page stayed blank: its Teams-embedded page gets one
+    /// stand-in, the app's own web page (a same-host websiteUrl from its
+    /// manifest or tab), remembered per app when it draws; otherwise, or
+    /// when that is blank too, the pane says the app showed nothing.
+    private func blankPage(_ key: FrameKey) {
+        guard let l = hosted[key.raw] else { return }
+        if !TeamsJSTransportChoice.usesWebsite(l.appID, demo: isDemo), websiteURL(l) != nil {
+            TeamsJSTransportChoice.setUsesWebsite(true, app: l.appID, demo: isDemo)
+            TeamsJSTransportChoice.learn(.frameless, app: l.appID, demo: isDemo)
+            var f = l
+            f.transport = .frameless
+            rehost(key, native: f)
+            return
+        }
+        // A meeting app (Q&A) opened outside a meeting draws nothing, just
+        // as it does in Teams: show Teams' equivalent state, not an error.
+        if jsHosts[key.raw]?.wantsMeetingContext == true { meetingState(key); return }
+        fail(key, why: "blank page")
+    }
+
+    /// The app's own web page for `l`, when it may stand in (see
+    /// `TeamsJSPolicy.websiteURL`).
+    private func websiteURL(_ l: TeamsAppLaunch) -> URL? {
+        TeamsJSPolicy.websiteURL(l, appContext(l, theme: "default"))
+    }
+
+    /// Share of sampled pixels that differ from the page background; a
+    /// painted app is above this (a live feed page measured 0.02, blank
+    /// apps 0.00).
+    static let blankInk = 0.01
+
+    /// Fraction of a snapshot's sampled pixels unlike its bottom-left
+    /// background pixel; nil when no snapshot could be taken.
+    static func inkFraction(_ web: WKWebView) async -> Double? {
+        guard let img = try? await web.takeSnapshot(configuration: nil),
+              let cg = img.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
+        return inkFraction(cg)
+    }
+
+    static func inkFraction(_ cg: CGImage) -> Double? {
+        let w = cg.width, h = cg.height
+        guard w > 4, h > 4, let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+                                                space: CGColorSpaceCreateDeviceRGB(),
+                                                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+        else { return nil }
+        ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
+        guard let data = ctx.data?.assumingMemoryBound(to: UInt8.self) else { return nil }
+        func px(_ x: Int, _ y: Int) -> (Int, Int, Int) {
+            let o = y * w * 4 + x * 4
+            return (Int(data[o]), Int(data[o + 1]), Int(data[o + 2]))
+        }
+        let bg = px(2, h - 3)
+        var n = 0, d = 0
+        for y in stride(from: 0, to: h, by: 6) {
+            for x in stride(from: 0, to: w, by: 6) {
+                n += 1
+                let c = px(x, y)
+                if abs(c.0 - bg.0) + abs(c.1 - bg.1) + abs(c.2 - bg.2) > 24 { d += 1 }
+            }
+        }
+        return n == 0 ? nil : Double(d) / Double(n)
+    }
+
+    /// Rebuilds a page's view in place, natively on `l`'s transport.
+    private func rehost(_ key: FrameKey, native l: TeamsAppLaunch) {
+        guard let p = pages[key.raw] else { return }
         hostChecks[key.raw] = nil
-        signInChecks[key.raw] = nil
         blankChecks[key.raw] = nil
         hosted[key.raw] = l
         let container = p.web?.superview
         evict(p, keepState: false)
-        _ = p.update(url: l.map(hostedURL) ?? base.fallback, title: p.title)
+        _ = p.update(url: hostedURL(l), title: p.title)
         if let container { attach(key, to: container) }
     }
 
     /// Whether `key` is shown by the native TeamsJS host.
     func isNativelyHosted(_ key: FrameKey) -> Bool { hosted[key.raw] != nil }
+
+    /// The TeamsJS host of a hosted page (tests, diagnostics).
+    func teamsJSHost(_ key: FrameKey) -> TeamsJSHost? { jsHosts[key.raw] }
 
     // MARK: native TeamsJS host (APPHOST)
 
@@ -670,13 +795,14 @@ public final class FrameHost {
         let js = TeamsJSHost(transport: l.transport, launch: l, context: appContext(l, theme: theme))
         js.broker = broker
         js.trustsBlankOrigin = isDemo
-        js.onFallback = { [weak self] why in self?.fallBack(key, why: why) }
+        js.onFallback = { [weak self] why in self?.fail(key, why: why) }
         js.watchesFailures = watchesFailures(l)
         js.onConsent = { [weak self] resource in await self?.presentConsent(resource) ?? false }
         js.onAuthenticate = { [weak self, weak js] url in
             guard let self, let js else { return (false, "CancelledByUser") }
             return await self.presentAuthWindow(url, opener: js)
         }
+        js.onJoinedTeams = { [weak self] in await self?.joinedTeams() ?? [] }
         js.onDeepLink = { [weak self] url in
             guard let m = self?.window else { return false }
             return DeepLinkRouter.route(url, m)
@@ -703,13 +829,27 @@ public final class FrameHost {
             }
             return
         }
+        let sp = sharePointHosts(js)
+        if spSessions.mustWait(sp) {
+            // SharePoint / OneDrive pages: sign the account's web store in
+            // to their hosts with an app token first (no web sign-in).
+            p.state = .loading
+            Task { @MainActor [weak self, weak p] in
+                guard let self else { return }
+                await self.spSessions.prepare(sp, broker: self.broker, store: self.dataStore)
+                guard let p, self.jsHosts[p.key.raw] === js, let web = p.web else { return }
+                self.loadHosted(p, js, in: web)
+            }
+            return
+        }
         guard let content = js.contentURL else {
             p.state = .failed(message: "This app's page address isn't valid.", offline: false)
             return
         }
+        let website = TeamsJSTransportChoice.usesWebsite(js.launch.appID, demo: isDemo) ? websiteURL(js.launch) : nil
         switch js.transport {
         case .frameless:
-            web.load(URLRequest(url: p.savedURL ?? content))
+            web.load(URLRequest(url: p.savedURL ?? website ?? content))
         case .iframe:
             web.loadHTMLString(TeamsJSHost.iframeHostHTML(src: content),
                                baseURL: URL(string: "https://teams.microsoft.com/"))
@@ -717,22 +857,104 @@ public final class FrameHost {
         p.savedURL = nil
     }
 
-    /// The native host cannot run this app (auth refused, sign-in page,
-    /// app-reported failure, blank page): every page of it switches in
-    /// place to its Teams-shell page for the session, and Automatic
-    /// remembers it (the app card offers Try Again).
-    private func fallBack(_ key: FrameKey, why: String) {
-        guard let l = hosted[key.raw] else { return }
-        fallbackApps.insert(l.appID.lowercased())
-        if TeamsJSTransportChoice.mode(l.appID, demo: isDemo) == .automatic {
-            TeamsJSTransportChoice.rememberFailure(why, app: l.appID, demo: isDemo)
+    /// The account's joined teams for hosted apps, read once a session
+    /// from the core (demo: none).
+    private var joinedTeamsCache: [TeamsJSTeamInfo]?
+
+    private func joinedTeams() async -> [TeamsJSTeamInfo] {
+        if isDemo { return [] }
+        if let c = joinedTeamsCache { return c }
+        let teams = await TeamsAppService.joinedTeams()
+        let list = teams.compactMap(TeamsJSTeamInfo.from)
+        if !teams.isEmpty { joinedTeamsCache = list }
+        return list
+    }
+
+    /// SharePoint session sign-ins for native pages (APPNATIVE2).
+    private let spSessions = SharePointSessions()
+
+    /// SharePoint hosts a native page needs a session on: its own, and
+    /// the account's root and OneDrive sites (pages hop between them).
+    private func sharePointHosts(_ js: TeamsJSHost) -> [String] {
+        let own = SharePointSession.hosts(for: js.launch, content: js.contentURL)
+        guard !own.isEmpty else { return [] }
+        let account = [sites.root, sites.mySite].compactMap { TeamsJSPolicy.siteParts($0).domain }
+            .filter { !$0.isEmpty && SharePointSession.isSharePointHost($0) }
+        var seen = Set<String>()
+        return (own + account).filter { seen.insert($0).inserted }
+    }
+
+    /// The app cannot run (sign-in error, app-reported failure, blank
+    /// page): its pane shows the concrete reason with Retry. Never the
+    /// Teams web app (APPNATIVE4: there is no such fallback).
+    private func fail(_ key: FrameKey, why: String) {
+        guard let p = pages[key.raw] else { return }
+        if let l = hosted[key.raw] { failures[l.appID.lowercased()] = why }
+        hostChecks[key.raw] = nil
+        blankChecks[key.raw] = nil
+        p.web?.stopLoading()
+        p.loadWatch.cancel()
+        p.restoring = false
+        p.hostFailed = true
+        p.state = .failed(message: Self.failureMessage(why), offline: false)
+    }
+
+    /// A meeting app (Q&A) opened outside a meeting: an informational
+    /// pane matching Teams' own empty state, not a retryable error.
+    /// Kept out of `failures` so the app card shows no failure badge.
+    static let meetingAppMessage = "This app opens inside a Teams meeting. Start or join a meeting to use it."
+    private func meetingState(_ key: FrameKey) {
+        guard let p = pages[key.raw] else { return }
+        hostChecks[key.raw] = nil
+        blankChecks[key.raw] = nil
+        p.web?.stopLoading()
+        p.loadWatch.cancel()
+        p.restoring = false
+        p.hostFailed = true
+        p.state = .info(message: Self.meetingAppMessage, systemImage: "video")
+    }
+
+    /// The pane's sentence for a failure reason (short, never page content).
+    static func failureMessage(_ why: String) -> String {
+        let w = why.lowercased()
+        if w.hasPrefix("sign-in error") {
+            return "Microsoft sign-in refused this app (\(why.dropFirst("sign-in error".count).trimmingCharacters(in: .whitespaces).isEmpty ? "no code" : why.dropFirst("sign-in error ".count))). Retry, or check the app's permissions with your admin."
         }
-        for (raw, h) in hosted where h.appID.caseInsensitiveCompare(l.appID) == .orderedSame {
-            if let k = pages[raw]?.key { rehost(k, native: nil) }
+        if w == "blank page" { return "The app loaded but showed nothing." }
+        if w == "consent declined" {
+            return "This app needs your permission before it can sign you in. Retry to see the permission request again."
         }
+        if w.hasPrefix("app reported") { return "The app reported a problem: \(why.dropFirst("app reported ".count))." }
+        if w == "nested app auth failed" || w.contains("token") { return "The app couldn't get a sign-in token for your account." }
+        if w == "teams web link" { return "This is a Teams location, not an app page. It opens in its own view in Better Teams." }
+        return why.prefix(1).uppercased() + why.dropFirst() + "."
     }
 
     private func register(_ key: FrameKey, url: URL, title: String) {
+        // The Teams web app never loads in a pane (APPNATIVE4): a Teams
+        // link registered as a page stays unloaded and says where it goes.
+        if TeamsWebGuard.isTeamsWeb(url) {
+            let p = pages[key.raw] ?? FramePage(key: key, url: URL(string: "about:blank")!, title: title)
+            p.host = self
+            pages[key.raw] = p
+            launches[key.raw] = nil
+            hosted[key.raw] = nil
+            if p.web != nil { evict(p, keepState: false) }
+            teamsLinks.insert(key.raw)
+            p.state = .failed(message: Self.failureMessage("teams web link"), offline: false)
+            return
+        }
+        teamsLinks.remove(key.raw)
+        // Any plain page that is an Office document stored in SharePoint
+        // or OneDrive (a Files item, a file tab, a web link) opens its
+        // read-only view (R9, R4).
+        var url = url
+        if hosted[key.raw] == nil, let view = OfficeDocumentView.viewURL(url) {
+            documentKeys.insert(key.raw)
+            url = view
+        } else if hosted[key.raw] != nil {
+            documentKeys.remove(key.raw)
+        }
         if let p = pages[key.raw] {
             // A changed URL reloads the resident view in place.
             if p.update(url: url, title: title), let web = p.web { load(p, in: web) }
@@ -744,6 +966,86 @@ public final class FrameHost {
     }
 
     public func page(_ key: FrameKey) -> FramePage? { pages[key.raw] }
+
+    /// Pages registered with a Teams web address: never loaded.
+    private var teamsLinks: Set<String> = []
+
+    /// Pages opened as documents (Files ▸ Open, R9): they stay read-only.
+    private(set) var documentKeys: Set<String> = []
+
+    /// Opens an Office document's web page in a pane, read-only.
+    func registerDocument(_ key: FrameKey, url: URL, title: String) {
+        documentKeys.insert(key.raw)
+        register(key, url: url, title: title)
+    }
+
+    /// A document page's main-frame hop to an edit address: the view
+    /// address instead (nil = let it load).
+    func documentViewRedirect(_ p: FramePage, _ url: URL, mainFrame: Bool) -> URL? {
+        guard mainFrame, documentKeys.contains(p.key.raw) else { return nil }
+        return OfficeDocumentView.viewURL(url).flatMap { $0 == url ? nil : $0 }
+    }
+
+    /// The iframe transport's own host document (an HTML string at the
+    /// Teams origin, no network): the one Teams-origin load allowed.
+    func isIframeHostDocument(_ p: FramePage, _ url: URL) -> Bool {
+        hosted[p.key.raw]?.transport == .iframe && url.host?.lowercased() == "teams.microsoft.com"
+            && (url.path.isEmpty || url.path == "/") && url.query == nil && url.fragment == nil
+    }
+
+    /// A Teams link the user opened: its native view (chat, channel, tab,
+    /// app). Never a pane, and never the default browser either: there it
+    /// is the Teams web app (APPNATIVE6, R13). False = no native view.
+    @discardableResult
+    func openTeamsLink(_ url: URL) -> Bool {
+        if isDemo { return false }
+        guard let m = window else { return false }
+        return DeepLinkRouter.route(url, m)
+    }
+
+    /// A page, frame or popup went for a Teams web address (the load was
+    /// cancelled): a clicked link opens its native view; a page going
+    /// there by itself (a "you're not in Teams" redirect) is ignored.
+    func refuseTeamsWeb(_ url: URL, userInitiated: Bool) {
+        refusedTeamsWeb += 1
+        if userInitiated { openTeamsLink(url) }
+    }
+
+    /// Teams web loads refused this session (tests, diagnostics).
+    private(set) var refusedTeamsWeb = 0
+
+    /// Opens a URL outside the app. Never in a test process: a test run
+    /// once opened a Teams address in the default browser, which saved
+    /// an empty file to ~/Downloads (APPNATIVE4).
+    var openExternal: (URL) -> Void = { url in
+        guard !FrameHost.isTestProcess else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    /// XCTest is loaded: nothing may open a browser or write to the
+    /// user's folders.
+    nonisolated static let isTestProcess = UserFolders.isTestProcess
+
+    /// Where downloads land by default: ~/Downloads, or a temporary
+    /// folder of its own in a test process.
+    nonisolated static func defaultDownloads(test: Bool = isTestProcess) -> URL {
+        UserFolders.downloads(test: test)
+    }
+
+    /// Only a real file downloads (APPNATIVE4): a response the view can
+    /// show loads; one it cannot downloads only when it is the page's own
+    /// navigation (or a declared attachment), succeeded, has a body, and
+    /// is not a sign-in answer. Anything else is dropped, never saved.
+    static func responsePolicy(_ r: URLResponse, mainFrame: Bool, canShow: Bool) -> WKNavigationResponsePolicy {
+        if canShow { return .allow }
+        let http = r as? HTTPURLResponse
+        let status = http?.statusCode ?? 200
+        let attachment = (http?.value(forHTTPHeaderField: "Content-Disposition") ?? "")
+            .trimmingCharacters(in: .whitespaces).lowercased().hasPrefix("attachment")
+        guard (200..<300).contains(status), r.expectedContentLength != 0,
+              let url = r.url, !isAuthHost(url), mainFrame || attachment else { return .cancel }
+        return .download
+    }
 
     /// The resident web view, if any (tests, commands).
     func webView(_ key: FrameKey) -> WKWebView? { pages[key.raw]?.web }
@@ -757,7 +1059,7 @@ public final class FrameHost {
         let web = p.web ?? makeView(p)
         if web.superview !== container {
             web.removeFromSuperview()
-            web.frame = FrameChromeStyle.frame(in: container.bounds, crop: layoutCrop(key), flipped: container.isFlipped)
+            web.frame = container.bounds
             web.autoresizingMask = [.width, .height]
             container.addSubview(web)
         }
@@ -811,76 +1113,6 @@ public final class FrameHost {
         pages.values.filter(\.isResident).sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
     }
 
-    // MARK: chrome hiding and crops (§7.3)
-
-    func crop(_ key: FrameKey) -> TeamsFrameCrop { crops[key.raw] ?? .none }
-
-    /// The crop the view is laid out with: the app's own crop, else (while
-    /// hiding is on) the chrome the probe still measures, else none.
-    func layoutCrop(_ key: FrameKey) -> TeamsFrameCrop {
-        crops[key.raw] ?? (hideChrome ? measured[key.raw] : nil) ?? .none
-    }
-
-    /// Runs the `TeamsFrameMeasure` probe on a resident Teams page:
-    /// visible app bar + header insets, or nil when none show (or the
-    /// page is not resident / not Teams-hosted). Reads layout only.
-    func measureChrome(_ key: FrameKey) async -> TeamsFrameCrop? {
-        guard !isDemo, let p = pages[key.raw], let web = p.web, FrameChromeStyle.applies(to: p.url) else { return nil }
-        guard let json = try? await web.evaluateJavaScript(TeamsFrameMeasure.script) as? String else { return nil }
-        return TeamsFrameMeasure.parseResult(json)
-    }
-
-    /// §7.3 (2): re-measure after every load and in-page route change;
-    /// chrome still showing despite the sheet becomes the layout crop.
-    func probeChrome(_ p: FramePage) {
-        guard hideChrome, !isDemo, p.web != nil, FrameChromeStyle.applies(to: p.url) else { return }
-        let key = p.key
-        Task { @MainActor [weak self] in
-            let seen = await self?.measureChrome(key)
-            guard let self, self.measured[key.raw] != seen else { return }
-            self.measured[key.raw] = seen
-            self.relayout(key)
-        }
-    }
-
-    /// Sets one app's crop and re-lays out its view if resident.
-    func setCrop(_ crop: TeamsFrameCrop, for key: FrameKey) {
-        crops[key.raw] = crop == .none ? nil : crop
-        relayout(key)
-    }
-
-    /// Settings ▸ Apps ▸ Reset Crops.
-    func resetCrops() {
-        let keys = crops.keys
-        crops = [:]
-        for k in keys { relayout(FrameKey(k)) }
-    }
-
-    private func relayout(_ key: FrameKey) {
-        guard let web = pages[key.raw]?.web, let container = web.superview else { return }
-        web.frame = FrameChromeStyle.frame(in: container.bounds, crop: layoutCrop(key), flipped: container.isFlipped)
-    }
-
-    /// Hiding toggled: resident Teams pages add or drop the sheet now and
-    /// keep the matching document-start script for later loads.
-    private func applyChromeStyle() {
-        for p in pages.values {
-            guard let web = p.web, FrameChromeStyle.applies(to: p.url) else { continue }
-            let content = web.configuration.userContentController
-            content.removeAllUserScripts()
-            if hideChrome {
-                content.addUserScript(FrameChromeStyle.userScript())
-                content.addUserScript(FrameChromeStyle.routeScript())
-                web.evaluateJavaScript(FrameChromeStyle.injectJS + FrameChromeStyle.routeHookJS)
-                probeChrome(p)
-            } else {
-                web.evaluateJavaScript(FrameChromeStyle.removeJS)
-                // Hiding off: the probe's fallback crop no longer applies.
-                if measured.removeValue(forKey: p.key.raw) != nil { relayout(p.key) }
-            }
-        }
-    }
-
     /// Residents, for policy and tests.
     var residents: [FramePolicy.Resident] {
         pages.values.compactMap { p in
@@ -920,7 +1152,6 @@ public final class FrameHost {
         web.stopLoading()
         web.navigationDelegate = nil
         web.uiDelegate = nil
-        web.configuration.userContentController.removeScriptMessageHandler(forName: FrameChromeStyle.routeMessage)
         if let js = jsHosts.removeValue(forKey: p.key.raw) {
             js.detach()
             TeamsJSHost.uninstall(from: web.configuration.userContentController)
@@ -943,19 +1174,13 @@ public final class FrameHost {
         var js: TeamsJSHost?
         if let l = hosted[p.key.raw] {
             let h = makeJSHost(l, key: p.key)
-            // The iframe host page speaks as teams.microsoft.com: keep it
-            // out of the account's cookie store (spike B6).
-            if l.transport == .iframe { config.websiteDataStore = .nonPersistent() }
+            // Both transports use the account's store (APPNATIVE2): the
+            // app frame inside the iframe host needs the same sessions.
             h.install(into: config.userContentController)
             jsHosts[p.key.raw] = h
             js = h
-        } else if FrameChromeStyle.applies(to: p.url) {
-            config.userContentController.add(FrameChromeRouteRelay(p), name: FrameChromeStyle.routeMessage)
-            if hideChrome {
-                config.userContentController.addUserScript(FrameChromeStyle.userScript())
-                config.userContentController.addUserScript(FrameChromeStyle.routeScript())
-            }
         }
+        instrument?(config.userContentController, p.key)
         let web = WKWebView(frame: NSRect(x: 0, y: 0, width: 800, height: 600), configuration: config)
         web.focusRingType = .none
         web.allowsBackForwardNavigationGestures = true
@@ -979,8 +1204,18 @@ public final class FrameHost {
     }
 
     private func load(_ p: FramePage, in web: WKWebView) {
+        if teamsLinks.contains(p.key.raw) {
+            p.state = .failed(message: Self.failureMessage("teams web link"), offline: false)
+            return
+        }
         p.state = .loading
         p.committed = false
+        p.signingIn = false
+        p.hostFailed = false
+        if !isDemo {
+            p.watchLoad()
+            loadRealm()
+        }
         if isDemo, let js = jsHosts[p.key.raw] {
             loadHosted(p, js, in: web)
             return
@@ -1002,7 +1237,21 @@ public final class FrameHost {
             loadHosted(p, js, in: web)
             return
         }
-        web.load(URLRequest(url: p.savedURL ?? p.url))
+        let target = p.savedURL ?? p.url
+        let sp = target.host.map { SharePointSession.isSharePointHost($0) ? [$0.lowercased()] : [] } ?? []
+        if spSessions.mustWait(sp) {
+            // A plain SharePoint / OneDrive page (a document from Files,
+            // a website tab): the same SharePoint sign-in native app pages
+            // get first (APPNATIVE2), so it opens without a web sign-in.
+            Task { @MainActor [weak self, weak p] in
+                guard let self else { return }
+                await self.spSessions.prepare(sp, broker: self.broker, store: self.dataStore)
+                guard let p, let web = p.web, self.jsHosts[p.key.raw] == nil else { return }
+                self.load(p, in: web)
+            }
+            return
+        }
+        web.load(URLRequest(url: target))
         p.savedURL = nil
     }
 
@@ -1047,12 +1296,61 @@ public final class FrameHost {
         return FramePolicy.hostMatches(h, authHosts)
     }
 
+    /// Microsoft sign-in, or the tenant's federated sign-in host.
+    static func isSignInHost(_ url: URL, _ signInHosts: [String]) -> Bool {
+        isAuthHost(url) || url.host.map { signInHosts.contains($0.lowercased()) } ?? false
+    }
+
+    /// Where a main-frame navigation goes.
+    enum MainFrameRoute: Equatable {
+        /// Stays in the frame; `signingIn` = a sign-in round trip is off
+        /// the allowlist (its next hops stay too).
+        case frame(signingIn: Bool)
+        case browser
+    }
+
+    /// Main-frame policy (APPSIGNIN): allowed hosts stay. So does every
+    /// https hop of a sign-in round trip: leaving a Microsoft sign-in
+    /// page for the tenant's federated IdP (WS-Fed/SAML), and that IdP's
+    /// own hops (MFA), until it lands back on an allowed host. Sending
+    /// them to the browser strands the frame: the browser signs in, the
+    /// frame never learns.
+    static func mainFrameRoute(to url: URL, allowed: Bool, from current: URL?, signingIn: Bool,
+                               signInHosts: [String]) -> MainFrameRoute {
+        if allowed { return .frame(signingIn: false) }
+        guard url.scheme?.lowercased() == "https" else { return .browser }
+        if signingIn || isSignInHost(url, signInHosts) || current.map({ isSignInHost($0, signInHosts) }) == true {
+            return .frame(signingIn: true)
+        }
+        return .browser
+    }
+
+    /// Where a popup (`window.open`, target=_blank) goes.
+    enum PopupRoute: Equatable { case sheet, frame, browser }
+
+    /// Popup policy (APPSIGNIN): sign-in popups get an in-app child view
+    /// in a sheet, so `window.opener` / postMessage / `window.close()`
+    /// work (MSAL popups, TeamsJS `authentication.authenticate`): popups
+    /// to sign-in hosts, scripted popup windows (a size in the window
+    /// features, or a blank window the opener writes into), and popups
+    /// from a sign-in page. Plain new-window links keep §7.3.
+    static func popupRoute(to url: URL?, sized: Bool, allowed: Bool, fromSignIn: Bool,
+                           signInHosts: [String]) -> PopupRoute {
+        let scheme = url?.scheme?.lowercased() ?? ""
+        let blank = url == nil || url?.absoluteString.isEmpty == true || scheme == "about"
+        let web = scheme == "https" || scheme == "http"
+        if let url, web, isSignInHost(url, signInHosts) { return .sheet }
+        if blank || (web && (sized || fromSignIn)) { return .sheet }
+        return allowed ? .frame : .browser
+    }
+
     /// Allowed in a frame: Teams + Microsoft auth/content hosts, the
     /// standalone app hosts, and the page's own host.
     func isAllowed(_ url: URL, for p: FramePage) -> Bool {
         // Natively hosted apps: their manifest's validDomains (APPHOST).
         if let l = hosted[p.key.raw] { return TeamsJSPolicy.allowsNavigation(url, launch: l, signInHosts: signInHosts) }
-        if TeamsFrameConfig.isAllowed(url) { return true }
+        if TeamsWebGuard.isTeamsWeb(url) { return false }
+        if Self.isAuthHost(url) { return true }
         guard let h = url.host?.lowercased() else { return false }
         if FramePolicy.hostMatches(h, FramePolicy.standaloneHosts) { return true }
         return h == p.url.host?.lowercased()
@@ -1069,6 +1367,9 @@ public final class FrameHost {
         let sheet = WebAuthSheet(web: child, start: nil, redirectURI: "") { [weak self] _ in
             self?.closePopup(child)
         }
+        // The popup's own navigations (every frame) pass the same Teams
+        // web guard as the pane (R8): the sheet is its navigation delegate.
+        sheet.guardHost = self
         guard window.presenter?.present(sheet, request: SheetRequest("webPopup", in: window.nav.section)) == true
         else { return nil }
         popup = child
@@ -1089,6 +1390,7 @@ public final class FrameHost {
                 self?.window?.dismissSheet()
                 cont.resume(returning: cb.map { $0.contains("code=") } ?? false)
             }
+            sheet.guardHost = self
             guard window.presenter?.present(sheet, request: SheetRequest("webPopup", in: window.nav.section)) == true
             else { return cont.resume(returning: false) }
             popup = web
@@ -1128,6 +1430,7 @@ public final class FrameHost {
             }
             js.onAuthResult = { ok, result in finish(ok, result) }
             let sheet = WebAuthSheet(web: web, start: url, redirectURI: "") { _ in finish(false, "CancelledByUser") }
+            sheet.guardHost = self
             guard window.presenter?.present(sheet, request: SheetRequest("webPopup", in: window.nav.section)) == true
             else { return finish(false, "CancelledByUser") }
             once.shown = true
@@ -1159,6 +1462,14 @@ public final class FrameHost {
     /// Try Again after a failure: a fresh load of the app's URL.
     func retry(_ key: FrameKey) {
         guard let p = pages[key.raw], let web = p.web else { return }
+        // An app page starts over in the native host (fresh bridge and
+        // checks), never on another page.
+        if let base = launches[key.raw] {
+            failures[base.appID.lowercased()] = nil
+            TeamsJSTransportChoice.forgetFailure(app: base.appID, demo: isDemo)
+            rehost(key, native: nativeLaunch(base))
+            return
+        }
         load(p, in: web)
     }
 
@@ -1214,18 +1525,42 @@ public final class FrameHost {
 
     /// The Microsoft sign-in web view, on the account's data store
     /// (§7.4). No custom chrome; the sheet owns Cancel.
-    /// `ephemeral`: a store of its own (Add Account: the new account must
-    /// not sign in with this account's Microsoft session).
-    public func makeSignInWebView(ephemeral: Bool = false) -> WKWebView {
+    /// `addingProfile`: Add Account signs in on the NEW account's own
+    /// persistent store (never this account's Microsoft session), so the
+    /// web session it makes is already there when that account's apps
+    /// load: no second sign-in (APPNATIVE4).
+    public func makeSignInWebView(addingProfile: String? = nil) -> WKWebView {
         let config = WKWebViewConfiguration()
-        config.websiteDataStore = ephemeral ? .nonPersistent() : dataStore
+        let store: WKWebsiteDataStore
+        if let addingProfile, !isDemo, storeOverride == nil {
+            store = WKWebsiteDataStore(forIdentifier: Self.storeUUID(addingProfile))
+        } else {
+            store = dataStore
+        }
+        WebSessionKeeper.watch(store)
+        config.websiteDataStore = store
         let web = WKWebView(frame: NSRect(x: 0, y: 0, width: 520, height: 600), configuration: config)
         web.focusRingType = .none
         return web
     }
 
-    /// Settings ▸ Accounts ▸ Sign In to Web Apps: the sheet opens Teams on
-    /// the web in this account's store and closes once Teams loads
-    /// signed in, so every web app shares that session (§7.3 SSO).
-    static let webAppsSignedInPrefix = "https://teams.microsoft.com/v2"
+    /// Settings ▸ Accounts ▸ Sign In to Web Apps: Microsoft sign-in for
+    /// this account in its store, ending at the native-client redirect
+    /// (the code is never redeemed): the sign-in leaves the account's web
+    /// session in the store, shared by every app (§7.3 SSO). No Teams web
+    /// app (APPNATIVE4).
+    static let webAppsSignedInPrefix = TeamsJSPolicy.nativeRedirect
+
+    func webSessionSignInURL() -> URL? {
+        let id = identity()
+        var c = URLComponents(string: "https://login.microsoftonline.com/")
+        c?.path = "/\((id?.tenantId).flatMap { $0.isEmpty ? nil : $0 } ?? "organizations")/oauth2/v2.0/authorize"
+        c?.queryItems = [
+            URLQueryItem(name: "client_id", value: TeamsJSPolicy.teamsClientID),
+            URLQueryItem(name: "response_type", value: "code"),
+            URLQueryItem(name: "redirect_uri", value: TeamsJSPolicy.nativeRedirect),
+            URLQueryItem(name: "scope", value: "openid profile"),
+        ] + ((id?.upn).flatMap { $0.isEmpty ? nil : [URLQueryItem(name: "login_hint", value: $0)] } ?? [])
+        return c?.url
+    }
 }

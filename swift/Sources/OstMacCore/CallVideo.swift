@@ -321,7 +321,7 @@ public final class MeetingVideoModel: ObservableObject {
         CallVideoLog.note("meeting video: start")
         let gen = loopToken.next()
         let token = loopToken
-        Task.detached(priority: .utility) { [weak self] in
+        Task.blocking(priority: .utility) { [weak self] in
             var n = 0
             while token.alive(gen) {
                 let roster = try? RustCore.callRoster()

@@ -12,6 +12,7 @@ struct TeamsListPane: View {
     @ObservedObject var unread: UnreadStore
     @ObservedObject var mentions: MentionStore
     @ObservedObject var prefs: ChannelPrefs
+    @ObservedObject var folders: FolderStore
     let state: TeamsSectionState
     @Environment(\.windowModel) private var model
 
@@ -44,6 +45,29 @@ struct TeamsListPane: View {
             list(m)
                 .refreshStatus(teams.state == .loading, failure: Self.failure(teams.state),
                                label: "Updating Teams", retry: { teams.refresh() })
+                .safeAreaInset(edge: .bottom, spacing: 0) { actionError }
+        }
+    }
+
+    /// Quiet note when Teams refused a channel/team action (the change
+    /// was undone); dismissible, no alert. Same shape as the chat list.
+    @ViewBuilder
+    private var actionError: some View {
+        if let text = teams.actionError {
+            HStack(spacing: 6) {
+                Image(systemName: "exclamationmark.circle").foregroundStyle(.secondary)
+                Text("Couldn't complete that: \(text)").font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                Spacer(minLength: 4)
+                Button {
+                    teams.clearActionError()
+                } label: { Image(systemName: "xmark") }
+                    .buttonStyle(.borderless)
+                    .help("Dismiss")
+                    .accessibilityLabel("Dismiss")
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(.bar)
         }
     }
 
@@ -57,7 +81,17 @@ struct TeamsListPane: View {
         let pinned = prefs.pinned.compactMap { id in
             Self.locate(id, in: all).map { PinnedChannel(team: $0.0, channel: $0.1) }
         }
-        let pinnedIDs = Set(pinned.map(\.id))
+        // Channels moved into a section (a folder) list under its name,
+        // after Pinned; pinned wins when both apply.
+        let sections: [(ChatFolder, [PinnedChannel])] = folders.folders.compactMap { f in
+            let rows = all.flatMap { team in
+                team.channels
+                    .filter { folders.overrides[$0.channelId] == f.id && !prefs.isPinned($0.channelId) && !prefs.isHidden($0.channelId) }
+                    .map { PinnedChannel(team: team, channel: $0) }
+            }
+            return rows.isEmpty ? nil : (f, rows)
+        }
+        let pinnedIDs = Set(pinned.map(\.id)).union(sections.flatMap { $0.1.map(\.id) })
         let selection = Binding<String?>(
             get: { TeamsSelection(m.nav.selection(in: .teams))?.rowTag },
             set: { tag in select(tag, m) })
@@ -69,8 +103,15 @@ struct TeamsListPane: View {
                     }
                 }
             }
+            ForEach(sections, id: \.0.id) { folder, rows in
+                Section(folder.name) {
+                    ForEach(rows) { p in
+                        channelRow(p.channel, team: p.team, showsTeam: true, m)
+                    }
+                }
+            }
             Section("Your Teams") {
-                ForEach(all) { team in
+                ForEach(all.filter { !prefs.isHidden($0.teamId) }) { team in
                     DisclosureGroup(isExpanded: Binding(get: { state.isExpanded(team.teamId) },
                                                         set: { state.setExpanded(team.teamId, $0) })) {
                         let visible = team.channels.filter { !pinnedIDs.contains($0.channelId) }
@@ -92,6 +133,16 @@ struct TeamsListPane: View {
                         TeamRow(name: team.name,
                                 unread: !state.isExpanded(team.teamId)
                                     && team.channels.contains { unread.isUnread(chatID: $0.channelId) })
+                            .tag("team:\(team.teamId)")
+                    }
+                }
+            }
+            let hiddenTeams = all.filter { prefs.isHidden($0.teamId) }
+            if !hiddenTeams.isEmpty {
+                Section("Hidden Teams") {
+                    ForEach(hiddenTeams) { team in
+                        TeamRow(name: team.name, unread: false)
+                            .foregroundStyle(.secondary)
                             .tag("team:\(team.teamId)")
                     }
                 }
@@ -124,26 +175,73 @@ struct TeamsListPane: View {
 
     @ViewBuilder
     private func teamMenu(_ team: TeamItem, _ m: WindowModel) -> some View {
-        Button("Create Channel…") { run(TeamsCommands.createChannel, team.teamId, m) }
-        Button("Manage Members…") { run(TeamsCommands.manageMembers, team.teamId, m) }
-        Divider()
+        Button(prefs.isHidden(team.teamId) ? "Show" : "Hide") { run(TeamsCommands.hideTeam, team.teamId, m) }
+        Button("Manage Team…") { run(TeamsCommands.manageMembers, team.teamId, m) }
+        Button("Add Channel…") { run(TeamsCommands.createChannel, team.teamId, m) }
+        Button("Get Link to Team") { run(TeamsCommands.teamLink, team.teamId, m) }
         Button("Mark All as Read") { run(TeamsCommands.markTeamRead, team.teamId, m) }
+        Divider()
+        Button("Leave Team…", role: .destructive) { run(TeamsCommands.leaveTeam, team.teamId, m) }
+            .disabled(m.connection == .offline)
     }
 
+    /// Channel menu, in Teams' order: window, notification/section/hide
+    /// group, edit/manage/link/email/workflows group, Delete last after a
+    /// separator. Every item works or is disabled with its reason.
     @ViewBuilder
     private func channelMenu(_ id: String, _ m: WindowModel) -> some View {
+        let located = Self.locate(id, in: teams.teams)
+        let offline = m.connection == .offline
+        Button("Open in New Window") { run(TeamsCommands.openChannelWindow, id, m) }
+        Divider()
         Button("Mark as Read") { run(TeamsCommands.markChannelRead, id, m) }
-        Menu("Notifications") {
+        Menu("Channel Notifications") {
             ForEach(ChatNotifyLevel.allCases, id: \.rawValue) { l in
                 Toggle(TeamsSection.levelTitle(l), isOn: Binding(
                     get: { prefs.level(id) == l },
                     set: { if $0 { run(TeamsCommands.notifications, "\(l.rawValue)|\(id)", m) } }))
             }
         }
-        Button("Copy Link") { run(TeamsCommands.copyLink, id, m) }
-        Divider()
+        Menu("Move to Section") {
+            if folders.folders.isEmpty {
+                Button("No Sections Yet") {}.disabled(true)
+                Text("Make a folder from a chat's Move to Folder menu.")
+            }
+            ForEach(folders.folders) { f in
+                Toggle(f.name, isOn: Binding(
+                    get: { folders.overrides[id] == f.id },
+                    set: { run(TeamsCommands.moveChannelToSection, "\($0 ? f.id : "none")|\(id)", m) }))
+            }
+            if folders.overrides[id] != nil {
+                Divider()
+                Button("Remove from Section") { run(TeamsCommands.moveChannelToSection, "none|\(id)", m) }
+            }
+        }
         Button(prefs.isPinned(id) ? "Unpin" : "Pin") { run(TeamsCommands.pinChannel, id, m) }
         Button(prefs.isHidden(id) ? "Show" : "Hide") { run(TeamsCommands.hideChannel, id, m) }
+        Divider()
+        let edit = located.map { teams.permission(.edit, teamID: $0.0.teamId, channelID: id) }
+            ?? .denied("This channel is no longer available.")
+        Button("Edit Channel\u{2026}") { run(TeamsCommands.editChannel, id, m) }
+            .disabled(offline || !edit.isAllowed)
+            .help(edit.reason ?? "")
+        Button("Manage Channel\u{2026}") { run(TeamsCommands.manageChannel, id, m) }
+        Button("Get Link to Channel") { run(TeamsCommands.copyLink, id, m) }
+        Button("Get Email Address") { run(TeamsCommands.channelEmail, id, m) }
+            .disabled((located?.1.email ?? "").isEmpty)
+            .help((located?.1.email ?? "").isEmpty ? "This channel has no email address." : "")
+        Button("Workflows\u{2026}") { run(TeamsCommands.channelWorkflows, id, m) }
+            .disabled(m.options.demo)
+            .help(m.options.demo ? "Workflows open in Power Automate, which the demo doesn't reach." : "")
+        Divider()
+        let del = located.map { teams.permission(.delete, teamID: $0.0.teamId, channelID: id) }
+            ?? .denied("This channel is no longer available.")
+        Button("Delete Channel\u{2026}") { run(TeamsCommands.deleteChannel, id, m) }
+            .disabled(offline || !del.isAllowed)
+            .help(del.reason ?? "")
+        if let why = del.reason {
+            Text(why)
+        }
     }
 
     private func run(_ c: CommandID, _ arg: String, _ m: WindowModel) {

@@ -1,6 +1,6 @@
 // SetGapsTests.swift — Settings gaps (UI-SPEC §9.2–§9.4, §7.3): account
 // reorder, mention switches and the banner's sender, apps in memory,
-// crops and downloads folder, Teams chrome hiding, demo-inert
+// downloads folder, Teams links that never load as pages, demo-inert
 // maintenance, and the Dock and menu bar extra menus.
 import AppKit
 import XCTest
@@ -18,7 +18,7 @@ final class SetGapsTests: XCTestCase {
 
     private let teamsApp = FrameApp(
         id: "sg.board", label: "Launch Board", symbol: "square.grid.2x2", source: .webLink,
-        launch: .teamsHosted(URL(string: "https://teams.microsoft.com/_#/l/entity/sg-board")!))
+        launch: .direct(URL(string: "https://contoso.sharepoint.com/sites/board")!))
 
     /// §9.4 Accounts: drag reorder persists; out-of-range offsets are a no-op.
     func testAccountReorderPersists() throws {
@@ -67,10 +67,10 @@ final class SetGapsTests: XCTestCase {
         XCTAssertNotNil(NotificationRouter.avatarPNG("Laura Bennett"))
     }
 
-    /// §9.4 Apps: apps in memory list residents with Unload; a per-app
-    /// crop outsets the view in its clipping container; Reset Crops;
-    /// demo never reads a saved downloads folder.
-    func testAppsResidentsCropsAndUnload() {
+    /// §9.4 Apps: apps in memory list residents with Unload; the view
+    /// fills its clipping container; demo never reads a saved downloads
+    /// folder.
+    func testAppsResidentsAndUnload() {
         let host = FrameHost(accountKey: "demo")
         let key = FrameKey.app(teamsApp.id)
         host.registerApp(teamsApp)
@@ -81,47 +81,34 @@ final class SetGapsTests: XCTestCase {
         XCTAssertEqual(host.residentPages.map(\.key), [key])
         XCTAssertFalse(host.residentPages[0].isOnScreen)
         XCTAssertTrue(container.clipsToBounds)
-        XCTAssertEqual(host.webView(key)?.frame, container.bounds, "control: no crop")
-
-        host.setCrop(TeamsFrameCrop(left: 68, top: 48), for: key)
-        XCTAssertEqual(host.webView(key)?.frame, NSRect(x: -68, y: 0, width: 468, height: 348))
-        let d = MemoryDefaults()
-        FrameChromeStyle.saveCrops(host.crops, defaults: d)
-        XCTAssertEqual(FrameChromeStyle.loadCrops(defaults: d)[key.raw], TeamsFrameCrop(left: 68, top: 48))
-        host.resetCrops()
-        XCTAssertTrue(host.crops.isEmpty)
-        XCTAssertEqual(host.webView(key)?.frame, container.bounds)
+        XCTAssertEqual(host.webView(key)?.frame, container.bounds, "the view fills its pane (no crops: APPNATIVE4)")
 
         host.detach(key, from: container)
         host.unload(key)
         XCTAssertTrue(host.residentPages.isEmpty)
-        XCTAssertEqual(host.downloadsFolder, TeamsFrameDownloads.defaultDirectory())
+        XCTAssertEqual(host.downloadsFolder, FrameHost.defaultDownloads())
     }
 
-    /// §7.3 chrome hiding: Teams-hosted pages get the stylesheet script,
-    /// standalone hosts never; the Settings switch adds and removes it.
-    func testChromeHidingScriptsTeamsHostedOnly() {
+    /// APPNATIVE4: a Teams link saved as an app never loads the Teams
+    /// web app: its pane stays unloaded and says where the link goes;
+    /// a standalone page (control) loads as it is.
+    func testTeamsLinkAppNeverLoadsTeamsWeb() throws {
         let host = FrameHost(accountKey: "demo")
+        let link = FrameApp(id: "sg.link", label: "Board", symbol: "doc", source: .webLink,
+                            launch: try XCTUnwrap(FramePolicy.launch(url: "https://teams.microsoft.com/_#/l/entity/sg-board")))
         let direct = FrameApp(id: "sg.sheet", label: "Budget Sheet", symbol: "doc", source: .webLink,
                               launch: .direct(URL(string: "https://contoso.sharepoint.com/sites/budget")!))
-        for a in [teamsApp, direct] {
+        for a in [link, direct] {
             host.registerApp(a)
             host.attach(.app(a.id), to: NSView(frame: NSRect(x: 0, y: 0, width: 200, height: 200)))
         }
-        func scripts(_ a: FrameApp) -> Int {
-            host.webView(.app(a.id))?.configuration.userContentController.userScripts.count ?? -1
-        }
-        // Stylesheet + SPA route hook (re-sheet and re-probe on in-page navigation).
-        XCTAssertEqual(scripts(direct), 0, "control: standalone hosts load as they are")
-        XCTAssertEqual(scripts(teamsApp), 2)
-        XCTAssertTrue(FrameChromeStyle.injectJS.contains("app-bar"))
-        for hook in ["pushState", "replaceState", "popstate", "hashchange", FrameChromeStyle.routeMessage] {
-            XCTAssertTrue(FrameChromeStyle.routeHookJS.contains(hook), hook)
-        }
-        host.hideChrome = false
-        XCTAssertEqual(scripts(teamsApp), 0)
-        host.hideChrome = true
-        XCTAssertEqual(scripts(teamsApp), 2)
+        let page = try XCTUnwrap(host.page(.app(link.id)))
+        XCTAssertFalse(TeamsWebGuard.isTeamsWeb(page.url), page.url.absoluteString)
+        guard case .failed(let message, _) = page.state else { return XCTFail("\(page.state)") }
+        XCTAssertEqual(message, FrameHost.failureMessage("teams web link"))
+        let control = try XCTUnwrap(host.page(.app(direct.id)))
+        XCTAssertEqual(control.url.host, "contoso.sharepoint.com", "control: a standalone page loads")
+        if case .failed = control.state { XCTFail("control failed") }
     }
 
     /// §9.4 Advanced: Rebuild Offline Index and Reset Caches do nothing

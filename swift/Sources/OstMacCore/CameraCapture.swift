@@ -324,16 +324,20 @@ private final class StreamEncoderBox: @unchecked Sendable {
     private var encoder: H264StreamEncoder?
     private var dims = (0, 0)
 
-    func encode(bgra: Data, width: Int, height: Int) throws -> [Data] {
+    /// HWACCEL: the capture buffer (IOSurface) goes straight to the
+    /// hardware encoder — no pack copy.
+    func encode(pixelBuffer: CVPixelBuffer) throws -> [Data] {
+        let width = CVPixelBufferGetWidth(pixelBuffer)
+        let height = CVPixelBufferGetHeight(pixelBuffer)
         lock.lock()
         if encoder == nil || dims != (width, height) {
-            encoder = H264StreamEncoder(width: width, height: height)
+            encoder = H264StreamEncoder(width: width, height: height, path: "camera")
             dims = (width, height)
         }
         let enc = encoder
         lock.unlock()
         guard let enc else { throw H264EncodeError.session(-1) }
-        return try enc.encode(bgra: bgra)
+        return try enc.encode(pixelBuffer: pixelBuffer)
     }
 
     func reset() {
@@ -449,6 +453,9 @@ extension CameraCapture: AVCaptureVideoDataOutputSampleBufferDelegate {
         let box = liveBox
         let flag = liveFlag
         let stats = statsGate
+        // The capture surface rides to the encoder (read-only; the gate
+        // bounds how many are held, AVFoundation recycles them after).
+        nonisolated(unsafe) let frame = pixels
         worker.async { [weak self] in
             defer {
                 pool.checkin(packed)
@@ -466,8 +473,9 @@ extension CameraCapture: AVCaptureVideoDataOutputSampleBufferDelegate {
                     // drop the frame and nothing replaces it (no black-IDR
                     // fallback: with the camera off, no video is sent).
                     do {
-                        let nals = try box.encode(bgra: packed, width: w, height: h)
-                        _ = try RustCore.videoSendPush(nals: nals)
+                        let nals = try box.encode(pixelBuffer: frame)
+                        // Empty = rate-control drop: nothing to send.
+                        if !nals.isEmpty { _ = try RustCore.videoSendPush(nals: nals) }
                     } catch {
                         // First failure surfaces; the rest stay silent.
                         if counts.current == 1 {

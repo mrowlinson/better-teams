@@ -12,6 +12,8 @@ public enum AppFont {
     public static func subheadline(_ s: Double) -> Font { .system(size: 11 * s) }
     public static func caption(_ s: Double) -> Font { .system(size: max(10, 10 * s)) }
     public static func title3(_ s: Double) -> Font { .system(size: 15 * s, weight: .semibold) }
+    /// Full contact card name.
+    public static func title(_ s: Double) -> Font { .system(size: 20 * s, weight: .semibold) }
     public static func code(_ s: Double) -> Font { .system(size: 12 * s, design: .monospaced) }
     /// AppKit twins for attributed message runs.
     public static func nsBodyEmphasized(_ s: Double) -> NSFont { .systemFont(ofSize: 13 * s, weight: .semibold) }

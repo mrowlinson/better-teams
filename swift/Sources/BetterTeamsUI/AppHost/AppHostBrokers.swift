@@ -75,30 +75,29 @@ public enum DemoTeamsJSApp {
         TeamsAppLaunch(
             appID: transport == .iframe ? iframeAppID : appID, entityID: "home",
             contentTemplate: "https://sample.contoso.example/tab?locale={locale}&theme={theme}&tid={tid}",
-            fallback: TeamsAppLaunch.teamsEntityURL(appID: appID, entityID: "home"),
             resource: "api://sample.contoso.example/00000000-0000-0000-0000-00000000a99e",
             webAppID: "00000000-0000-0000-0000-00000000a99e",
             validDomains: ["sample.contoso.example"], transport: transport, demoHTML: html)
     }
 
     public static let apps: [FrameApp] = [
-        FrameApp(id: appID, label: "Sample Tab App", symbol: "square.grid.2x2", source: .personal,
+        FrameApp(id: appID, label: "Team Pulse", symbol: "square.grid.2x2", source: .personal,
                  launch: .teamsApp(launch(.frameless))),
-        FrameApp(id: iframeAppID, label: "Sample Tab App (Framed)", symbol: "square.grid.2x2", source: .personal,
+        FrameApp(id: iframeAppID, label: "Pulse Reports", symbol: "square.grid.2x2", source: .personal,
                  launch: .teamsApp(launch(.iframe))),
     ]
 
     /// The sample page titled for one demo app.
     public static func html(title: String) -> String {
         let safe = title.replacingOccurrences(of: "&", with: "&amp;").replacingOccurrences(of: "<", with: "&lt;")
-        return html.replacingOccurrences(of: "Sample Tab App", with: safe)
+        return html.replacingOccurrences(of: "Team Pulse", with: safe)
     }
 
     /// A self-contained TeamsJS client (public sample content only): the
     /// frameless wire protocol inline, since no SDK can be fetched in demo.
     /// In the iframe transport it posts to its parent instead.
     public static let html = #"""
-    <!doctype html><html><head><meta charset="utf-8"><title>Sample Tab App</title>
+    <!doctype html><html><head><meta charset="utf-8"><title>Team Pulse</title>
     <style>
     :root{color-scheme:light;--fg:#1d1d1f;--sub:#6e6e73;--bg:#fff;--card:#f5f5f7;--ok:#248a3d;--bad:#d70015}
     body.dark{color-scheme:dark;--fg:#f5f5f7;--sub:#98989d;--bg:#1e1e1e;--card:#2c2c2e;--ok:#30d158;--bad:#ff453a}
@@ -110,7 +109,7 @@ public enum DemoTeamsJSApp {
     .k{color:var(--sub)}.v{font-variant-numeric:tabular-nums;text-align:right}
     .ok{color:var(--ok)}.bad{color:var(--bad)}
     </style></head><body>
-    <h1>Sample Tab App</h1>
+    <h1>Team Pulse</h1>
     <p class="sub">A TeamsJS app running in the native Teams host.</p>
     <div class="card" id="host"><div class="row"><span class="k">Host</span><span class="v">Connecting…</span></div></div>
     <div class="card" id="ctx"></div>

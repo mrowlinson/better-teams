@@ -16,7 +16,7 @@
 //! `{mt}` is `region_gtms.middleTier`. Auth is the Teams AAD token
 //! (Bearer) plus `X-Skypetoken` (see `TeamsClient::mt_get`).
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde::Serialize;
 use serde_json::{json, Value};
 
@@ -149,14 +149,29 @@ pub fn search_url(mt: &str, query: &str) -> String {
     format!("{}/beta/users/apps/search?query={}", mt.trim_end_matches('/'), q)
 }
 
-/// Graph personal-scope install (documented: `POST /me/teamwork/installedApps`).
-pub const INSTALL_PATH: &str = "/me/teamwork/installedApps";
+/// OstMac §GRAPHSWEEP3: personal install goes to the Teams middle tier
+/// like the web client's `createAppEntitlement` (Personal scope):
+/// `POST {mt}/beta/users/apps/entitlements` ([`entitlements_url`]), body =
+/// the app's catalog definition, `x-ms-client-caller` below. Graph
+/// `POST /me/teamwork/installedApps` needs
+/// TeamsAppInstallation.ReadWriteSelfForUser, which the Teams token lacks.
+pub const INSTALL_CALLER: &str = "apps-platform-service-meta-os-installApp";
 
-/// Graph install body for a catalog app id.
-pub fn install_body(app_id: &str) -> Value {
-    json!({
-        "teamsApp@odata.bind": format!("https://graph.microsoft.com/v1.0/appCatalogs/teamsApps/{}", app_id.trim())
-    })
+/// The catalog definition object for `app_id` (id or appId, case-blind)
+/// anywhere in a batchedDefinitions answer. Pure.
+pub fn definition_for(v: &Value, app_id: &str) -> Option<Value> {
+    let want = app_id.trim();
+    match v {
+        Value::Object(o) => {
+            let id = o.get("id").or_else(|| o.get("appId")).and_then(|s| s.as_str());
+            if id.map(|s| s.trim().eq_ignore_ascii_case(want)).unwrap_or(false) && !want.is_empty() {
+                return Some(v.clone());
+            }
+            o.values().find_map(|c| definition_for(c, want))
+        }
+        Value::Array(a) => a.iter().find_map(|c| definition_for(c, want)),
+        _ => None,
+    }
 }
 
 /// Definitions per batchedDefinitions call.
@@ -630,11 +645,26 @@ pub async fn app_search_data(client: &TeamsClient, query: &str) -> Result<Vec<Ap
 
 /// Installs a catalog app for the signed-in user (REMOTE WRITE: the
 /// tenant sees a new personal install). Callers must confirm first.
+/// Reads the app's definition from the middle tier (batchedDefinitions,
+/// read-only), then posts it as a personal entitlement, as the web client
+/// does. An app the catalog does not resolve fails before the write.
 pub async fn install_app_for_user(client: &TeamsClient, app_id: &str) -> Result<()> {
-    if app_id.trim().is_empty() {
+    let id = app_id.trim();
+    if id.is_empty() {
         anyhow::bail!("empty app id");
     }
-    client.graph_post(INSTALL_PATH, &install_body(app_id)).await?;
+    let mt = client.middle_tier_url();
+    let defs: Value = client
+        .mt_post(&definitions_url(&mt), &definitions_body(&[id.to_string()]))
+        .await?
+        .json()
+        .await
+        .context("Failed to parse app definitions")?;
+    let def = definition_for(&defs, id)
+        .with_context(|| format!("app {} is not in your Teams app catalog", id))?;
+    client
+        .mt_send_json("POST", &entitlements_url(&mt), &def, Some(INSTALL_CALLER))
+        .await?;
     Ok(())
 }
 
@@ -834,10 +864,22 @@ mod tests {
             search_url("https://mt.example/api/mt/amer/", "sprint board"),
             "https://mt.example/api/mt/amer/beta/users/apps/search?query=sprint+board"
         );
+        // §GRAPHSWEEP3: install = middle-tier entitlement POST of the
+        // catalog definition (web client `createAppEntitlement`, Personal).
+        assert_eq!(INSTALL_CALLER, "apps-platform-service-meta-os-installApp");
         assert_eq!(
-            install_body("app-a")["teamsApp@odata.bind"],
-            "https://graph.microsoft.com/v1.0/appCatalogs/teamsApps/app-a"
+            entitlements_url("https://mt.example/api/mt/amer/"),
+            "https://mt.example/api/mt/amer/beta/users/apps/entitlements"
         );
+        let defs = json!({"definitions": [
+            {"id": "app-a", "manifestVersion": "1.16", "name": {"short": "A"}},
+            {"appId": "APP-B", "bots": []}
+        ]});
+        assert_eq!(definition_for(&defs, " app-a ").unwrap()["name"]["short"], "A");
+        assert_eq!(definition_for(&defs, "app-b").unwrap()["appId"], "APP-B");
+        assert!(definition_for(&defs, "app-c").is_none());
+        assert!(definition_for(&defs, "").is_none());
+        assert!(crate::api::client::graph_denied("POST", "/me/teamwork/installedApps").is_some());
     }
 
     #[test]

@@ -15,7 +15,7 @@ import UniformTypeIdentifiers
 
 @MainActor
 final class ImageViewerController: NSWindowController, NSWindowDelegate {
-    static let shared = ImageViewerController()
+    static let shared = ImageViewerController(viewerWindow: ImageViewerChrome.makeWindow())
 
     /// Thumbnail (bubble decode) for an item, if already loaded.
     typealias ThumbProvider = @MainActor (ImageViewerItem) -> NSImage?
@@ -35,6 +35,10 @@ final class ImageViewerController: NSWindowController, NSWindowDelegate {
     private var shownFull = false
     private var userZoomed = false
     private let gif = GifFrameTicker()
+    /// Bumped per open: a stale pre-show size lookup never orders in.
+    private var openID = 0
+    /// Byte cache the models read (tests inject an isolated one).
+    var cache: RichMediaCache = .shared
 
     private let scroll = NSScrollView()
     private let imageView = ViewerImageView()
@@ -46,24 +50,29 @@ final class ImageViewerController: NSWindowController, NSWindowDelegate {
     private var nextButton: NSButton!
     private var actionButtons: [NSButton] = []
 
-    private init() {
-        let w = ImageViewerChrome.makeWindow()
-        w.appearance = NSAppearance(named: .darkAqua)
-        w.backgroundColor = NSColor(white: 0.08, alpha: 1)
-        w.minSize = NSSize(width: 480, height: 360)
+    /// `shared` in the app; tests pass a window that never goes on screen.
+    init(viewerWindow w: NSWindow) {
+        // Themed (no forced appearance): follows light/dark live.
+        w.minSize = NSSize(width: 480, height: 240)
         w.isReleasedWhenClosed = false
         w.collectionBehavior.insert(.fullScreenPrimary)
+        // IMGWIN2: appears at its final frame — no open zoom, no
+        // restored/cascaded frame.
+        w.animationBehavior = .none
+        w.isRestorable = false
         super.init(window: w)
+        shouldCascadeWindows = false
         w.delegate = self
         build(w)
-        // Size/position persist across opens and launches.
-        if !w.setFrameUsingName(Self.frameName) { w.center() }
-        w.setFrameAutosaveName(Self.frameName)
     }
 
-    private static let frameName = "BetterTeamsImageViewer"
-
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+    /// Evidence: the current image's original has loaded.
+    var evidenceLoaded: Bool {
+        guard let nav, let m = models[nav.current], case .loaded = m.phase else { return false }
+        return true
+    }
 
     // MARK: - Open
 
@@ -73,19 +82,52 @@ final class ImageViewerController: NSWindowController, NSWindowDelegate {
         self.saver = saver
         fetcher = demo ? { @Sendable url in try DemoMedia.data(for: url) } : nil
         models = [:]
+        openID += 1
         guard let w = window else { return }
-        showWindow(nil)
-        w.makeKeyAndOrderFront(nil)
-        // Lay out first so fit-to-window sees the real viewport.
+        // Already open: the frame stays; the new image letterboxes in it.
+        if w.isVisible {
+            present(resetZoom: true)
+            w.makeKeyAndOrderFront(nil)
+            return
+        }
+        // IMGWIN2: the final frame is set BEFORE ordering in and never
+        // changes while on screen. Size source: the cached original's
+        // header, else the tag's width/height, else the thumbnail aspect.
+        let id = openID
+        let item = nav.current
+        let m = model(item)
+        let screen = (NSApp.mainWindow ?? NSApp.keyWindow)?.screen ?? NSScreen.main
+        Task { [weak self] in
+            var cached = await m.cachedPixelSize()
+            // FIXPACK F7: uncached and no tag size: read the header bytes
+            // (range GET, 300 ms cap) so it opens at its exact fitted size.
+            if ImageViewerOpenSize.needsHeader(cached: cached, metadata: item.pixelSize) {
+                cached = await m.headPixelSize()
+            }
+            guard let self, self.openID == id, !w.isVisible else { return }
+            let natural = ImageViewerOpenSize.natural(cached: cached, metadata: item.pixelSize, thumb: m.thumb?.size)
+            self.place(w, natural: natural, on: screen)
+            self.present(resetZoom: true)
+            w.makeKeyAndOrderFront(nil)
+            w.makeFirstResponder(w.contentView)
+        }
+    }
+
+    /// Final frame for `natural` (40% budget, chrome included), centered
+    /// on `screen`; set while hidden and laid out before ordering in.
+    private func place(_ w: NSWindow, natural: CGSize, on screen: NSScreen?) {
+        guard let vis = (screen ?? NSScreen.main)?.visibleFrame else { return }
+        let size = ImageViewerWindowFit.windowSize(
+            image: natural, chrome: CGSize(width: 0, height: ImageViewerChrome.titlebarHeight),
+            minimum: w.minSize, screen: vis.size)
+        w.setFrame(ImageViewerWindowFit.centered(size, in: vis), display: false)
         w.contentView?.layoutSubtreeIfNeeded()
-        present(resetZoom: true)
-        w.makeFirstResponder(w.contentView)
     }
 
     private func model(_ item: ImageViewerItem) -> FullResImageModel {
         if let m = models[item] { return m }
         let m = FullResImageModel(thumbURL: item.url, messageID: item.messageID, thumb: thumbs(item),
-                                  fetcher: fetcher, maxPixels: Self.displayMaxPixels(window?.screen))
+                                  cache: cache, fetcher: fetcher, maxPixels: Self.displayMaxPixels(window?.screen))
         models[item] = m
         return m
     }
@@ -120,6 +162,8 @@ final class ImageViewerController: NSWindowController, NSWindowDelegate {
     private func refresh(swap: Bool) {
         guard let nav, let m = models[nav.current] else { return }
         let full = m.image != nil
+        // The window frame never follows the image (IMGWIN2): a new
+        // size/aspect letterboxes at fit inside the open frame.
         if let img = m.displayImage, docSize == .zero || full != shownFull {
             layoutImage(img, model: m, isFull: full)
         }
@@ -175,6 +219,15 @@ final class ImageViewerController: NSWindowController, NSWindowDelegate {
         let mag = oldMag * old.width / max(img.size.width, 1)
         scroll.setMagnification(mag, centeredAt: CGPoint(x: oldCenter.x * img.size.width,
                                                           y: oldCenter.y * img.size.height))
+    }
+
+    /// Re-fits the magnification to the current viewport (untouched zoom).
+    private func refit() {
+        guard !userZoomed, docSize != .zero else { return }
+        window?.contentView?.layoutSubtreeIfNeeded()
+        let (fit, _) = zoomBounds()
+        scroll.minMagnification = min(scroll.minMagnification, fit)
+        scroll.magnification = fit
     }
 
     /// (fit, actual) for the current document. A placeholder thumbnail
@@ -288,14 +341,10 @@ final class ImageViewerController: NSWindowController, NSWindowDelegate {
         nav = nil
         imageView.image = nil
         docSize = .zero
+        openID += 1
     }
 
-    func windowDidResize(_ notification: Notification) {
-        guard !userZoomed, docSize != .zero else { return }
-        let (fit, _) = zoomBounds()
-        scroll.minMagnification = min(scroll.minMagnification, fit)
-        scroll.magnification = fit
-    }
+    func windowDidResize(_ notification: Notification) { refit() }
 
     @objc private func didEndPinch(_ n: Notification) {
         let (fit, _) = zoomBounds()
@@ -383,7 +432,8 @@ final class ImageViewerController: NSWindowController, NSWindowDelegate {
         NSLayoutConstraint.activate([
             scroll.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             scroll.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            scroll.topAnchor.constraint(equalTo: root.topAnchor),
+            // Below the titlebar: the chrome is part of the window size.
+            scroll.topAnchor.constraint(equalTo: (w.contentLayoutGuide as? NSLayoutGuide)?.topAnchor ?? root.topAnchor),
             scroll.bottomAnchor.constraint(equalTo: root.bottomAnchor),
             stack.leadingAnchor.constraint(equalTo: bar.leadingAnchor),
             stack.trailingAnchor.constraint(equalTo: bar.trailingAnchor),

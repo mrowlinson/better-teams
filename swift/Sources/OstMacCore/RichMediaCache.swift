@@ -3,7 +3,8 @@
 // Keyed by URL+message-id (sha256 hex), so paging (prepend) and streaming
 // (upsert) re-render the same bubbles without refetching. In-flight
 // requests dedupe: N bubbles awaiting the same key share one fetch.
-// Memory is an NSCache (64 MB); disk persists across launches.
+// Memory is a MediaMemoryStore (NSCache in the app, 64 MB); disk persists
+// across launches.
 import CryptoKit
 import Foundation
 
@@ -37,7 +38,7 @@ public actor RichMediaCache {
     public static let defaultDiskCapBytes = 256 * 1024 * 1024
     public static let defaultDiskCapFiles = 2000
 
-    private let memory = NSCache<NSString, NSData>()
+    private let memory: MediaMemoryStore<NSData>
     private var inFlight: [String: Task<Data, Error>] = [:]
     private var diskDir: URL?
     private let diskCapBytes: Int
@@ -59,12 +60,14 @@ public actor RichMediaCache {
     public init(
         diskDir: URL?, memoryLimitMB: Int = 64,
         diskCapBytes: Int = RichMediaCache.defaultDiskCapBytes,
-        diskCapFiles: Int = RichMediaCache.defaultDiskCapFiles
+        diskCapFiles: Int = RichMediaCache.defaultDiskCapFiles,
+        memory memoryPolicy: MediaMemoryPolicy = .system
     ) {
         self.diskDir = diskDir
         self.diskCapBytes = diskCapBytes
         self.diskCapFiles = diskCapFiles
-        memory.totalCostLimit = memoryLimitMB * 1024 * 1024
+        memory = MediaMemoryStore(
+            policy: memoryPolicy, costLimit: memoryLimitMB * 1024 * 1024)
     }
 
     public static func defaultDiskDir() -> URL? {
@@ -143,7 +146,7 @@ public actor RichMediaCache {
         if url.hasPrefix("demo://") {
             return try DemoMedia.data(for: url)
         }
-        return try await Task.detached {
+        return try await Task.blocking {
             try RustCore.mediaFetch(url: url).data
         }.value
     }

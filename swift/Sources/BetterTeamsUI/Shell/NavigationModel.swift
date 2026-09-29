@@ -105,13 +105,16 @@ public typealias ConversationRef = String
 
 /// Conversation detail tabs (§6.2).
 public enum ConversationTab: String, Codable, Sendable, CaseIterable {
-    case chat, files, notes
+    case chat, files, notes, recap
 
+    /// Teams' names: the files tab of a chat is "Shared" (CHATTABS);
+    /// Recap exists on meeting chats only (`ChatTabCatalog`).
     public var title: String {
         switch self {
         case .chat: "Chat"
-        case .files: "Files"
+        case .files: "Shared"
         case .notes: "Notes"
+        case .recap: "Recap"
         }
     }
 }
@@ -147,6 +150,12 @@ public final class NavigationModel {
     public private(set) var previousSection: SectionID?
     public private(set) var selection: [SectionID: SectionSelection] = [:]
     public private(set) var detailTab: [ConversationRef: ConversationTab] = [:]
+    /// A chat's selected pinned tab (Graph tab id), over `detailTab`;
+    /// UI-only (not persisted). Any built-in tab write clears it.
+    public private(set) var detailAppTab: [ConversationRef: String] = [:]
+    /// A chat's pinned tab opened from "+N": a temporary tab with a close
+    /// button until closed or replaced (TABS2); UI-only.
+    public private(set) var detailOpenedTab: [ConversationRef: String] = [:]
     public private(set) var inspectorVisible: [SectionID: Bool] = [:]
     public private(set) var search: SearchState?
 
@@ -172,8 +181,19 @@ public final class NavigationModel {
     }
 
     func setTab(_ t: ConversationTab, for ref: ConversationRef, _: NavigationWriteToken) {
+        if detailAppTab[ref] != nil { detailAppTab[ref] = nil }
         guard tab(for: ref) != t else { return }
         detailTab[ref] = t
+    }
+
+    func setAppTab(_ id: String, for ref: ConversationRef, _: NavigationWriteToken) {
+        guard detailAppTab[ref] != id else { return }
+        detailAppTab[ref] = id
+    }
+
+    func setOpenedTab(_ id: String?, for ref: ConversationRef, _: NavigationWriteToken) {
+        guard detailOpenedTab[ref] != id else { return }
+        detailOpenedTab[ref] = id
     }
 
     func setInspector(_ visible: Bool, in s: SectionID, _: NavigationWriteToken) {

@@ -8,7 +8,8 @@ import OstMacCore
 
 @MainActor
 enum ConversationToolbar {
-    static let items: [CommandID] = [ChatCommands.audioCall, ChatCommands.videoCall, ChatCommands.catchUp]
+    static let items: [CommandID] = [ChatCommands.audioCall, ChatCommands.videoCall, ChatCommands.meetNow,
+                                     ChatCommands.catchUp]
 
     /// Audio Call (§6.2, §8): places a call on the conversation's thread,
     /// so every participant rings (the core call slot's `placeLive`, as
@@ -49,6 +50,35 @@ enum ConversationToolbar {
     /// Video Call is available: a call could start (any conversation).
     static func canStartVideoCall(_ m: WindowModel) -> Bool {
         canStartCall(m)
+    }
+
+    /// Meet now (group chats, Teams parity): starts a meeting on the
+    /// chat's thread immediately. The call goes to the thread, so every
+    /// member of the chat is invited (rings / sees the meeting to join);
+    /// hosted as a group call (tile grid), audio first like Teams. Nil
+    /// outside a group chat, without an account, or while a call runs.
+    @discardableResult
+    static func meetNow(_ m: WindowModel, show: Bool = true, store: CallStore? = nil) -> CallSession? {
+        guard let id = chatID(m), isGroupChat(id, m), let slot = store ?? m.app?.call else { return nil }
+        let name = m.graph.chats.chats.first { $0.id == id }?.name ?? ""
+        guard let s = m.beginCall(.person(name: name.isEmpty ? "Meeting" : name, thread: id),
+                                  show: show, store: store, video: false, group: true)
+        else { return nil }
+        slot.placeLive(threadID: id)
+        return s
+    }
+
+    /// Meet now is available: a group chat on screen and no call running.
+    static func canMeetNow(_ m: WindowModel) -> Bool {
+        guard canStartCall(m), let id = chatID(m) else { return false }
+        return isGroupChat(id, m)
+    }
+
+    /// A known group chat (not 1:1, not a meeting chat).
+    static func isGroupChat(_ id: String, _ m: WindowModel) -> Bool {
+        guard !id.hasPrefix("19:meeting_"), let chat = m.graph.chats.chats.first(where: { $0.id == id })
+        else { return false }
+        return chat.is_group
     }
 
     /// A known 1:1 chat (not a group chat, not a meeting chat).

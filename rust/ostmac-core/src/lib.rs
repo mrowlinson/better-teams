@@ -35,6 +35,7 @@ pub mod browser_auth;
 pub mod call_roster;
 pub mod calls;
 pub mod calweek;
+pub mod catchup_tags;
 pub mod live;
 pub mod planner;
 pub mod realtime;
@@ -222,6 +223,7 @@ fn whoami_cache() -> &'static Mutex<HashMap<String, String>> {
     W.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+#[cfg(test)]
 fn whoami_cache_clear() {
     whoami_cache()
         .lock()
@@ -407,6 +409,74 @@ pub fn channel_create_json(team_id: &str, name: &str, description: Option<&str>)
     }
 }
 
+/// Rename a channel and/or change its description (Teams middle tier PATCH).
+/// `name`/`description` may be None (unchanged). Returns
+/// `{ok:true, team_id, channel_id}` or `{ok:false}`. Bad ids and an
+/// empty change are rejected before any network.
+pub fn channel_update_json(
+    team_id: &str,
+    channel_id: &str,
+    name: Option<&str>,
+    description: Option<&str>,
+) -> String {
+    if let Err(e) = todo_id_ok("team_id", team_id) {
+        return e;
+    }
+    if let Err(e) = todo_id_ok("channel_id", channel_id) {
+        return e;
+    }
+    let name = name.filter(|n| !n.trim().is_empty());
+    if name.is_none() && description.is_none() {
+        return err_json("arg", "nothing to update");
+    }
+    let run = || -> Result<String, String> {
+        let rt = rt()?;
+        rt.block_on(async {
+            let client = ost::api::client::TeamsClient::new()
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            ost::api::update_channel_data(&client, team_id, channel_id, name, description)
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            Ok(json!({"ok": true, "team_id": team_id.trim(), "channel_id": channel_id.trim()})
+                .to_string())
+        })
+    };
+    match run() {
+        Ok(s) => s,
+        Err(e) => err_json("channel_update", e),
+    }
+}
+
+/// Delete one channel (Teams middle tier DELETE). Returns `{ok:true, team_id,
+/// channel_id}` or `{ok:false}`. Bad ids are rejected before any
+/// network.
+pub fn channel_delete_json(team_id: &str, channel_id: &str) -> String {
+    if let Err(e) = todo_id_ok("team_id", team_id) {
+        return e;
+    }
+    if let Err(e) = todo_id_ok("channel_id", channel_id) {
+        return e;
+    }
+    let run = || -> Result<String, String> {
+        let rt = rt()?;
+        rt.block_on(async {
+            let client = ost::api::client::TeamsClient::new()
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            ost::api::delete_channel_data(&client, team_id, channel_id)
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            Ok(json!({"ok": true, "team_id": team_id.trim(), "channel_id": channel_id.trim()})
+                .to_string())
+        })
+    };
+    match run() {
+        Ok(s) => s,
+        Err(e) => err_json("channel_delete", e),
+    }
+}
+
 /// Join one team by id (self-enroll, `POST /teams/{id}/members`).
 /// Returns `{ok:true, team_id}` or `{ok:false}`. Requires sign-in.
 /// Empty ids and ids containing path separators are rejected before
@@ -491,11 +561,11 @@ fn public_teams_json(
     json!({"ok": true, "query": query, "source": source, "teams": items}).to_string()
 }
 
-/// Create one standard team and wait for the async operation
-/// (`POST /teams` -> 202 + `Content-Location` poll, 3s x 120s cap).
-/// Returns `{ok:true, team:{id,name,channels}, polls, elapsed_ms}` or
-/// `{ok:false}`. Blank `name` is rejected before any network; a blank
-/// description is dropped (never sent).
+/// Create one standard (private) team through the Teams middle tier
+/// (`POST …/beta/teams/create`, §GRAPHSWEEP3), then read it back from
+/// Graph. Returns `{ok:true, team:{id,name,channels}, polls, elapsed_ms}`
+/// (`polls` always 0 now) or `{ok:false}`. Blank `name` is rejected
+/// before any network; a blank description is sent as "".
 pub fn team_create_json(name: &str, description: Option<&str>) -> String {
     if name.trim().is_empty() {
         return err_json("arg", "empty name");
@@ -533,7 +603,40 @@ fn tab_to_json(t: &ost::api::TabInfo) -> serde_json::Value {
         "content_url": t.content_url,
         "website_url": t.website_url,
         "entity_id": t.entity_id,
+        "app_name": t.app_name,
+        "teams_url": t.teams_url,
     })
+}
+
+/// One chat's pinned tabs as JSON (read-only Graph
+/// `GET /chats/{id}/tabs?$expand=teamsApp`): `{ok, chat_id, tabs}`, same
+/// tab shape as [`tabs_json`]. Non-`19:` ids (`48:notes`) have no tabs
+/// and yield `{ok:true, tabs:[]}` without network.
+pub fn chat_tabs_json(chat_id: &str) -> String {
+    let chat_id = chat_id.trim();
+    if chat_id.is_empty() {
+        return err_json("arg", "empty chat_id");
+    }
+    if !chat_id.starts_with("19:") {
+        return json!({"ok": true, "chat_id": chat_id, "tabs": []}).to_string();
+    }
+    let run = || -> Result<String, String> {
+        let rt = rt()?;
+        rt.block_on(async {
+            let client = ost::api::client::TeamsClient::new()
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            let tabs = ost::api::list_chat_tabs_data(&client, chat_id)
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            let items: Vec<_> = tabs.iter().map(tab_to_json).collect();
+            Ok(json!({"ok": true, "chat_id": chat_id, "tabs": items}).to_string())
+        })
+    };
+    match run() {
+        Ok(s) => s,
+        Err(e) => err_json("tabs", e),
+    }
 }
 
 /// One channel's pinned tabs as JSON (read-only). Requires sign-in;
@@ -602,6 +705,40 @@ pub fn team_members_json(team_id: &str) -> String {
     match run() {
         Ok(s) => s,
         Err(e) => err_json("team_members", e),
+    }
+}
+
+/// One team's member permissions and General channel id (read-only).
+/// `{ok:true, team_id, allow_delete_channels: bool|null,
+/// allow_create_update_channels: bool|null, primary_channel_id:
+/// string|null}`; null = unknown. Bad ids are rejected before any
+/// network.
+pub fn team_settings_json(team_id: &str) -> String {
+    if let Err(e) = todo_id_ok("team_id", team_id) {
+        return e;
+    }
+    let run = || -> Result<String, String> {
+        let rt = rt()?;
+        rt.block_on(async {
+            let client = ost::api::client::TeamsClient::new()
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            let s = ost::api::team_settings_data(&client, team_id)
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            Ok(json!({
+                "ok": true,
+                "team_id": team_id.trim(),
+                "allow_delete_channels": s.allow_delete_channels,
+                "allow_create_update_channels": s.allow_create_update_channels,
+                "primary_channel_id": s.primary_channel_id,
+            })
+            .to_string())
+        })
+    };
+    match run() {
+        Ok(s) => s,
+        Err(e) => err_json("team_settings", e),
     }
 }
 
@@ -687,6 +824,7 @@ fn message_to_json(m: &ost::api::MessageInfo) -> serde_json::Value {
         "raw": m.raw,
         "reactions": reactions,
         "reply_to": m.reply_to,
+        "client_message_id": m.client_message_id,
     })
 }
 
@@ -821,6 +959,21 @@ pub fn reply_json(
     parent_text: &str,
     text: &str,
 ) -> String {
+    reply_idem_json(chat_id, parent_id, parent_sender, parent_text, text, "")
+}
+
+/// §106: [`reply_json`] with a caller-owned `clientmessageid` (blank =
+/// fresh). Success adds `id` (server id when the answer named it) and
+/// `client_message_id`.
+pub fn reply_idem_json(
+    chat_id: &str,
+    parent_id: &str,
+    parent_sender: &str,
+    parent_text: &str,
+    text: &str,
+    client_message_id: &str,
+) -> String {
+    let cmid = cmid_or_new(client_message_id);
     if chat_id.trim().is_empty() {
         return err_json("arg", "empty chat_id");
     }
@@ -846,12 +999,12 @@ pub fn reply_json(
             let client = ost::api::client::TeamsClient::new()
                 .await
                 .map_err(|e| format!("{:#}", e))?;
-            ost::api::reply_message_with_client(
-                &client, chat_id, parent_id, sender, snippet_src, text,
+            let sent = ost::api::reply_message_with_client_id(
+                &client, chat_id, parent_id, sender, snippet_src, text, &cmid,
             )
             .await
             .map_err(|e| format!("{:#}", e))?;
-            Ok(json!({"ok": true, "chat_id": chat_id}).to_string())
+            Ok(sent_json(chat_id, &sent))
         })
     };
     match run() {
@@ -866,6 +1019,17 @@ pub fn reply_json(
 /// `{ok:false}`. Non-channel ids and blank args are rejected before
 /// any network.
 pub fn thread_reply_json(channel_id: &str, root_id: &str, text: &str) -> String {
+    thread_reply_idem_json(channel_id, root_id, text, "")
+}
+
+/// §106: [`thread_reply_json`] with a caller-owned `clientmessageid`.
+pub fn thread_reply_idem_json(
+    channel_id: &str,
+    root_id: &str,
+    text: &str,
+    client_message_id: &str,
+) -> String {
+    let cmid = cmid_or_new(client_message_id);
     if !ost::api::is_channel_conversation_id(channel_id) {
         return err_json("arg", "not a channel id");
     }
@@ -882,10 +1046,13 @@ pub fn thread_reply_json(channel_id: &str, root_id: &str, text: &str) -> String 
             let client = ost::api::client::TeamsClient::new()
                 .await
                 .map_err(|e| format!("{:#}", e))?;
-            ost::api::thread_reply_with_client(&client, channel_id.trim(), root, text)
-                .await
-                .map_err(|e| format!("{:#}", e))?;
-            Ok(json!({"ok": true, "chat_id": channel_id.trim(), "root_id": root}).to_string())
+            let sent =
+                ost::api::thread_reply_with_client_id(&client, channel_id.trim(), root, text, &cmid)
+                    .await
+                    .map_err(|e| format!("{:#}", e))?;
+            Ok(json!({"ok": true, "chat_id": channel_id.trim(), "root_id": root,
+                      "id": sent.id, "client_message_id": sent.client_message_id})
+            .to_string())
         })
     };
     match run() {
@@ -973,9 +1140,66 @@ pub fn chat_create_group_json(users_json: &str, topic: Option<&str>) -> String {
     }
 }
 
+/// §106 verify: `{ok:true, found:bool, message?}` — the newest page of
+/// `chat_id` searched for `client_message_id` (a timed-out send checks
+/// this before showing Failed or re-posting). Blank args are rejected
+/// before any network.
+pub fn find_client_message_json(chat_id: &str, client_message_id: &str) -> String {
+    if chat_id.trim().is_empty() {
+        return err_json("arg", "empty chat_id");
+    }
+    if client_message_id.trim().is_empty() {
+        return err_json("arg", "empty client_message_id");
+    }
+    let run = || -> Result<String, String> {
+        let rt = rt()?;
+        rt.block_on(async {
+            let client = ost::api::client::TeamsClient::new()
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            let hit = ost::api::find_message_by_client_id(&client, chat_id, client_message_id)
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            Ok(match hit {
+                Some(m) => json!({"ok": true, "found": true, "message": message_to_json(&m)}),
+                None => json!({"ok": true, "found": false}),
+            }
+            .to_string())
+        })
+    };
+    match run() {
+        Ok(s) => s,
+        Err(e) => err_json("find_client_message", e),
+    }
+}
+
 /// Post one message to a chat. Returns `{ok:true, chat_id}` or `{ok:false}`.
 /// Empty `chat_id`/`text` are rejected before any network.
 pub fn send_json(chat_id: &str, text: &str) -> String {
+    send_idem_json(chat_id, text, "")
+}
+
+/// §106: `{ok:true, chat_id, id?, client_message_id}` for one post.
+fn sent_json(chat_id: &str, sent: &ost::api::SentMessage) -> String {
+    json!({"ok": true, "chat_id": chat_id, "id": sent.id,
+           "client_message_id": sent.client_message_id})
+    .to_string()
+}
+
+/// §106: blank → a fresh 19-digit client message id; else trimmed.
+fn cmid_or_new(client_message_id: &str) -> String {
+    let t = client_message_id.trim();
+    if t.is_empty() {
+        ost::api::new_client_message_id()
+    } else {
+        t.to_string()
+    }
+}
+
+/// §106: [`send_json`] with a caller-owned `clientmessageid` (retries
+/// reuse it; blank = fresh). Success adds `id` + `client_message_id`.
+pub fn send_idem_json(chat_id: &str, text: &str, client_message_id: &str) -> String {
+    let cmid = cmid_or_new(client_message_id);
     if chat_id.trim().is_empty() {
         return err_json("arg", "empty chat_id");
     }
@@ -988,10 +1212,10 @@ pub fn send_json(chat_id: &str, text: &str) -> String {
             let client = ost::api::client::TeamsClient::new()
                 .await
                 .map_err(|e| format!("{:#}", e))?;
-            ost::api::send_message_with_client(&client, chat_id, text)
+            let sent = ost::api::send_message_with_client_id(&client, chat_id, text, &cmid)
                 .await
                 .map_err(|e| format!("{:#}", e))?;
-            Ok(json!({"ok": true, "chat_id": chat_id}).to_string())
+            Ok(sent_json(chat_id, &sent))
         })
     };
     match run() {
@@ -1118,6 +1342,109 @@ pub fn delete_json(chat_id: &str, message_id: &str) -> String {
         Ok(s) => s,
         Err(e) => err_json("delete", e),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Chat list actions: mute, hide, folders (chatmenu lane, ost §79)
+// ---------------------------------------------------------------------------
+
+/// Mute (`alerts: "false"`) or unmute one chat on the server. Returns
+/// `{ok:true, chat_id, muted}` or `{ok:false}`. Empty ids are rejected
+/// before any network.
+pub fn set_chat_muted_json(chat_id: &str, muted: bool) -> String {
+    let id = chat_id.trim();
+    if id.is_empty() {
+        return err_json("arg", "empty chat_id");
+    }
+    let run = || -> Result<String, String> {
+        rt()?.block_on(async {
+            let client = ost::api::client::TeamsClient::new()
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            ost::api::set_chat_muted_with_client(&client, id, muted)
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            Ok(json!({"ok": true, "chat_id": id, "muted": muted}).to_string())
+        })
+    };
+    run().unwrap_or_else(|e| err_json("mute", e))
+}
+
+/// Hide or unhide one chat for the signed-in user (chat service
+/// conversation properties, §GRAPHSWEEP3). Returns `{ok:true, chat_id,
+/// hidden}` or `{ok:false}`.
+pub fn set_chat_hidden_json(chat_id: &str, hidden: bool) -> String {
+    let id = chat_id.trim();
+    if id.is_empty() {
+        return err_json("arg", "empty chat_id");
+    }
+    let run = || -> Result<String, String> {
+        rt()?.block_on(async {
+            let client = ost::api::client::TeamsClient::new()
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            ost::api::set_chat_hidden_with_client(&client, id, hidden)
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            Ok(json!({"ok": true, "chat_id": id, "hidden": hidden}).to_string())
+        })
+    };
+    run().unwrap_or_else(|e| err_json("hide", e))
+}
+
+/// Serialize parsed server folders (`{ok, folders:[{id,name,folder_type,item_ids}]}`).
+pub fn chat_folders_to_json(folders: &[ost::api::ConversationFolder]) -> String {
+    let list: Vec<serde_json::Value> = folders
+        .iter()
+        .map(|f| json!({"id": f.id, "name": f.name, "folder_type": f.folder_type, "item_ids": f.item_ids}))
+        .collect();
+    json!({"ok": true, "folders": list}).to_string()
+}
+
+/// Read-only: the signed-in user's chat folders (Favorites + user
+/// folders) with a chatsvcagg token minted from the stored refresh token.
+pub fn chat_folders_json() -> String {
+    let run = || -> Result<String, String> {
+        let profile = ost::config::active_profile();
+        rt()?.block_on(async {
+            let grant = ost::auth::oauth::token_for_scope_for(&profile, ost::api::CHATSVCAGG_SCOPE)
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            let folders = ost::api::conversation_folders_data(&grant.access_token)
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            Ok(chat_folders_to_json(&folders))
+        })
+    };
+    run().unwrap_or_else(|e| err_json("folders", e))
+}
+
+/// Move one chat into a Teams chat folder (`folder_id` blank = out of
+/// every folder), verified against the server's answer. Returns the
+/// folders after the move (`chat_folders_json` shape) or `{ok:false}`.
+pub fn chat_folder_move_json(chat_id: &str, folder_id: &str) -> String {
+    let id = chat_id.trim();
+    if id.is_empty() {
+        return err_json("arg", "empty chat_id");
+    }
+    let run = || -> Result<String, String> {
+        let profile = ost::config::active_profile();
+        rt()?.block_on(async {
+            let grant = ost::auth::oauth::token_for_scope_for(&profile, ost::api::CHATSVCAGG_SCOPE)
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            let client = ost::api::client::TeamsClient::new()
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            let folders = ost::api::conversation_folder_move_with_client(
+                &client, &grant.access_token, id, folder_id,
+            )
+            .await
+            .map_err(|e| format!("{:#}", e))?;
+            Ok(chat_folders_to_json(&folders))
+        })
+    };
+    run().unwrap_or_else(|e| err_json("folder_move", e))
 }
 
 // ---------------------------------------------------------------------------
@@ -1352,6 +1679,45 @@ pub fn media_fetch_json(url: &str) -> String {
     }
 }
 
+/// FIXPACK F7: the first `max_bytes` of an image URL as
+/// `{ok:true, data_base64, content_type?}` within `timeout_ms` (a header
+/// probe for the viewer's open size). Never cached: the bytes are a
+/// prefix. Empty/non-https URLs and a zero/oversized budget are rejected
+/// before any network. Caller frees.
+pub fn media_head_json(url: &str, max_bytes: u32, timeout_ms: u32) -> String {
+    let u = url.trim();
+    if u.is_empty() {
+        return err_json("arg", "empty url");
+    }
+    if !u.starts_with("https://") {
+        return err_json("arg", "media URL must be https");
+    }
+    if max_bytes == 0 || max_bytes > 1 << 20 || timeout_ms == 0 {
+        return err_json("arg", "bad head budget");
+    }
+    let run = || -> Result<String, String> {
+        let rt = rt()?;
+        rt.block_on(async {
+            let client = ost::api::client::TeamsClient::new()
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            let mb = ost::api::media::fetch_media_head_data(
+                &client,
+                u,
+                max_bytes as usize,
+                std::time::Duration::from_millis(timeout_ms as u64),
+            )
+            .await
+            .map_err(|e| format!("{:#}", e))?;
+            Ok(media_envelope(&mb.data, &mb.content_type))
+        })
+    };
+    match run() {
+        Ok(s) => s,
+        Err(e) => err_json("media", e),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Shared files (om-shared lane: Graph driveItems for chats + channels)
 // ---------------------------------------------------------------------------
@@ -1433,6 +1799,77 @@ pub fn message_files_json(chat_id: &str, message_id: &str) -> String {
     match run() {
         Ok(s) => s,
         Err(e) => err_json("message_files", e),
+    }
+}
+
+fn pinned_ref_to_json(p: &ost::api::PinnedRef) -> serde_json::Value {
+    json!({
+        "message_id": p.message_id,
+        "sender": p.sender,
+        "preview": p.preview,
+        "time": p.time,
+        "pinned_by": p.pinned_by,
+        "pinned_at": p.pinned_at,
+        "graph_pin_id": p.graph_pin_id,
+    })
+}
+
+/// OstMac §84: a chat's server-side pinned messages. `{ok, chat_id,
+/// source:"chatsvc"|"graph", pins:[{message_id, sender?, preview?,
+/// time?, pinned_by?, pinned_at?, graph_pin_id?}]}`. Chat-service
+/// thread first, Graph fallback. GETs only. Bad ids rejected before
+/// any network.
+pub fn chat_pinned_messages_json(chat_id: &str) -> String {
+    let id = chat_id.trim();
+    if id.is_empty() || id.contains(['/', '?', '#', ' ']) {
+        return err_json("arg", "bad chat_id");
+    }
+    let run = || -> Result<String, String> {
+        let rt = rt()?;
+        rt.block_on(async {
+            let client = ost::api::client::TeamsClient::new()
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            let (source, pins) = ost::api::chat_pinned_messages_data(&client, id)
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            let source = match source {
+                ost::api::PinSource::ChatService => "chatsvc",
+                ost::api::PinSource::Graph => "graph",
+            };
+            let items: Vec<_> = pins.iter().map(pinned_ref_to_json).collect();
+            Ok(json!({"ok": true, "chat_id": id, "source": source, "pins": items}).to_string())
+        })
+    };
+    match run() {
+        Ok(s) => s,
+        Err(e) => err_json("pinned_messages", e),
+    }
+}
+
+/// OstMac §84: unpin one Graph-sourced pin (`DELETE
+/// /chats/{id}/pinnedMessages/{pinId}`). `{ok:true, chat_id, pin_id}`.
+/// Bad ids rejected before any network.
+pub fn chat_unpin_message_json(chat_id: &str, pin_id: &str) -> String {
+    let bad = |s: &str| s.trim().is_empty() || s.trim().contains(['/', '?', '#', ' ']);
+    if bad(chat_id) || bad(pin_id) {
+        return err_json("arg", "bad chat_id or pin_id");
+    }
+    let run = || -> Result<String, String> {
+        let rt = rt()?;
+        rt.block_on(async {
+            let client = ost::api::client::TeamsClient::new()
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            ost::api::chat_unpin_message_with_client(&client, chat_id, pin_id)
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            Ok(json!({"ok": true, "chat_id": chat_id.trim(), "pin_id": pin_id.trim()}).to_string())
+        })
+    };
+    match run() {
+        Ok(s) => s,
+        Err(e) => err_json("unpin_message", e),
     }
 }
 
@@ -1558,6 +1995,18 @@ pub fn people_search_json(query: &str, limit: usize) -> String {
 /// lands in the upload-progress store (see [`upload_progress_json`]).
 /// Empty args are rejected before any network. Returns `{ok:true, file}`.
 pub fn files_upload_json(chat_id: &str, path: &str) -> String {
+    files_upload_idem_json(chat_id, path, "", false)
+}
+
+/// §106: [`files_upload_json`] with a caller-owned `clientmessageid` for
+/// the chat file post (blank = fresh). A Retry passes the same id with
+/// `verify_first`: a file message that already landed is not posted again.
+pub fn files_upload_idem_json(
+    chat_id: &str,
+    path: &str,
+    client_message_id: &str,
+    verify_first: bool,
+) -> String {
     if chat_id.trim().is_empty() {
         return err_json("arg", "empty chat_id");
     }
@@ -1571,11 +2020,14 @@ pub fn files_upload_json(chat_id: &str, path: &str) -> String {
             let client = ost::api::client::TeamsClient::new()
                 .await
                 .map_err(|e| format!("{:#}", e))?;
-            let file = ost::api::upload_file_data_with_progress(
+            let cmid = cmid_or_new(client_message_id);
+            let file = ost::api::upload_file_data_idem(
                 &client,
                 chat_id,
                 path,
                 Some(&upload_progress_report),
+                &cmid,
+                verify_first,
             )
             .await
             .map_err(|e| format!("{:#}", e))?;
@@ -1934,140 +2386,11 @@ pub fn file_version_download_json(
     }
 }
 
-// ---------------------------------------------------------------------------
-// Presence (om-presence lane: ost CLI get/set + TUI LoadPresence parity)
-// ---------------------------------------------------------------------------
-
-fn presence_envelope(availability: &str, activity: &str) -> String {
-    json!({
-        "ok": true,
-        "availability": availability,
-        "activity": activity,
-    })
-    .to_string()
-}
-
-/// Teams `setUserPreferredPresence` status table (lowercased input):
-/// available, busy, dnd|donotdisturb, brb|berightback, away, offline.
-/// NOTE (fid-presence D3/D4): busy/dnd pairs intentionally differ from
-/// ost's table (ost sends InACall/Presenting); real Teams sets
-/// (Busy,Busy) and (DoNotDisturb,DoNotDisturb) — Graph combos doc.
-fn presence_status_pair(status: &str) -> Option<(&'static str, &'static str)> {
-    match status.to_lowercase().as_str() {
-        "available" => Some(("Available", "Available")),
-        "busy" => Some(("Busy", "Busy")),
-        "dnd" | "donotdisturb" => Some(("DoNotDisturb", "DoNotDisturb")),
-        "brb" | "berightback" => Some(("BeRightBack", "BeRightBack")),
-        "away" => Some(("Away", "Away")),
-        "offline" => Some(("Offline", "OffWork")),
-        _ => None,
-    }
-}
-
-/// `setUserPreferredPresence` request body. Expiration follows the Graph
-/// defaults — Busy/DND persist 1 day, everything else 7 days — so a set
-/// status survives past one hour (fid-presence D5; was: fixed PT1H).
-fn presence_set_body(availability: &str, activity: &str) -> serde_json::Value {
-    let expiration = match availability {
-        "Busy" | "DoNotDisturb" => "P1D",
-        _ => "P7D",
-    };
-    serde_json::json!({
-        "sessionId": "teams-cli",
-        "availability": availability,
-        "activity": activity,
-        "expirationDuration": expiration
-    })
-}
-
-// NOTE (R14 om-later-b4 B4): presence read moved to Swift (CoreReads);
-// backing fn + export deleted. presence_envelope stays (set/user).
-
-/// Set own preferred presence (Teams status table + body, minus the
-/// CLI print). Unknown/empty `status` is rejected before any network.
-/// Returns the applied `{ok:true, availability, activity}`.
-pub fn set_presence_json(status: &str) -> String {
-    let want = status.trim();
-    if want.is_empty() {
-        return err_json("arg", "empty status");
-    }
-    let (availability, activity) = match presence_status_pair(want) {
-        Some(p) => p,
-        None => {
-            return err_json(
-                "arg",
-                format!(
-                    "Unknown status: {}. Use: available, busy, dnd, brb, away, offline",
-                    want
-                ),
-            )
-        }
-    };
-    let run = || -> Result<String, String> {
-        let rt = rt()?;
-        rt.block_on(async {
-            let client = ost::api::client::TeamsClient::new()
-                .await
-                .map_err(|e| format!("{:#}", e))?;
-            let body = presence_set_body(availability, activity);
-            client
-                .graph_post("/me/presence/setUserPreferredPresence", &body)
-                .await
-                .map_err(|e| format!("{:#}", e))?;
-            Ok(presence_envelope(availability, activity))
-        })
-    };
-    match run() {
-        Ok(s) => s,
-        Err(e) => err_json("presence_set", e),
-    }
-}
-
-/// One other user's presence via Graph /users/{id}/presence (same wire
-/// shape as /me/presence). `user_id` is an Entra ID or UPN; empty or
-/// path-breaking ids are rejected before any network.
-/// `{ok:true, id, availability, activity}` or `{ok:false}`.
-pub fn user_presence_json(user_id: &str) -> String {
-    let id = user_id.trim();
-    if id.is_empty() {
-        return err_json("arg", "empty user_id");
-    }
-    if id.contains('/') || id.chars().any(|c| c.is_whitespace()) {
-        return err_json("arg", "user_id must not contain '/' or whitespace");
-    }
-    let run = || -> Result<String, String> {
-        let rt = rt()?;
-        rt.block_on(async {
-            let client = ost::api::client::TeamsClient::new()
-                .await
-                .map_err(|e| format!("{:#}", e))?;
-            let resp = client
-                .graph_get(&format!("/users/{}/presence", id))
-                .await
-                .map_err(|e| format!("{:#}", e))?;
-            #[derive(serde::Deserialize)]
-            struct P {
-                availability: String,
-                activity: String,
-            }
-            let p: P = resp
-                .json()
-                .await
-                .map_err(|e| format!("Failed to parse presence response: {}", e))?;
-            Ok(json!({
-                "ok": true,
-                "id": id,
-                "availability": p.availability,
-                "activity": p.activity,
-            })
-            .to_string())
-        })
-    };
-    match run() {
-        Ok(s) => s,
-        Err(e) => err_json("presence_user", e),
-    }
-}
+// NOTE (GRAPHSWEEP): own-status set and per-user presence moved to Swift
+// (UnifiedPresence, Teams presence service). Graph /me/presence,
+// /users/{id}/presence and setUserPreferredPresence need Presence.* scopes
+// the Teams web token does not carry (live 403); backing fns + exports
+// ostmac_presence_set / ostmac_presence_user deleted.
 
 // ---------------------------------------------------------------------------
 // MRI resolution (om-steal-ids lane)
@@ -2507,7 +2830,6 @@ pub fn note_append_json(page_id: &str, text: &str, group_id: Option<&str>) -> St
 // ---------------------------------------------------------------------------
 
 struct TrouterState {
-    rt: &'static tokio::runtime::Runtime,
     shutdown: Option<tokio::sync::oneshot::Sender<()>>,
     task: tokio::task::JoinHandle<()>,
     driver: Option<std::thread::JoinHandle<()>>,
@@ -2554,7 +2876,6 @@ pub fn trouter_start() -> c_int {
     // Drop stale queued events from any previous run.
     let _ = ost::event_hub::drain(1024);
     *guard = Some(TrouterState {
-        rt,
         shutdown: Some(shutdown_tx),
         task,
         driver,
@@ -2643,6 +2964,7 @@ fn typed_envelope(events: Vec<String>) -> String {
         "calls": call_events,
         "typing": batch.typing,
         "roster": batch.roster,
+        "threads": batch.threads,
         "backlog": backlog,
     })
     .to_string()
@@ -2760,6 +3082,50 @@ pub extern "C" fn ostmac_channel_create(
     }
 }
 
+/// Rename a channel and/or change its description. `name` and
+/// `description` may be NULL (unchanged). See [`channel_update_json`].
+/// Caller frees.
+#[no_mangle]
+pub extern "C" fn ostmac_channel_update(
+    team_id: *const c_char,
+    channel_id: *const c_char,
+    name: *const c_char,
+    description: *const c_char,
+) -> *mut c_char {
+    let team = match cstr_to_string(team_id) {
+        Ok(s) => s,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    let chan = match cstr_to_string(channel_id) {
+        Ok(s) => s,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    let nm = match opt_cstr_to_string(name) {
+        Ok(s) => s,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    match opt_cstr_to_string(description) {
+        Ok(d) => string_to_c(channel_update_json(&team, &chan, nm.as_deref(), d.as_deref())),
+        Err(e) => string_to_c(err_json("arg", e)),
+    }
+}
+
+/// Delete one channel. See [`channel_delete_json`]. Caller frees.
+#[no_mangle]
+pub extern "C" fn ostmac_channel_delete(
+    team_id: *const c_char,
+    channel_id: *const c_char,
+) -> *mut c_char {
+    let team = match cstr_to_string(team_id) {
+        Ok(s) => s,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    match cstr_to_string(channel_id) {
+        Ok(c) => string_to_c(channel_delete_json(&team, &c)),
+        Err(e) => string_to_c(err_json("arg", e)),
+    }
+}
+
 /// Join one team by id (requires sign-in). See [`team_join_json`].
 #[no_mangle]
 pub extern "C" fn ostmac_team_join(team_id: *const c_char) -> *mut c_char {
@@ -2779,7 +3145,7 @@ pub extern "C" fn ostmac_team_search(query: *const c_char, limit: c_int) -> *mut
     }
 }
 
-/// Create one standard team (async Graph POST, requires sign-in).
+/// Create one standard team (Teams middle tier POST, requires sign-in).
 /// `description` may be NULL (no description). See
 /// [`team_create_json`]. Caller frees.
 #[no_mangle]
@@ -2806,11 +3172,29 @@ pub extern "C" fn ostmac_team_members(team_id: *const c_char) -> *mut c_char {
     }
 }
 
+/// One team's member permissions JSON (read-only). See [`team_settings_json`].
+#[no_mangle]
+pub extern "C" fn ostmac_team_settings(team_id: *const c_char) -> *mut c_char {
+    match cstr_to_string(team_id) {
+        Ok(t) => string_to_c(team_settings_json(&t)),
+        Err(e) => string_to_c(err_json("arg", e)),
+    }
+}
+
 /// One channel's pinned tabs JSON (read-only). See [`tabs_json`].
 #[no_mangle]
 pub extern "C" fn ostmac_tabs(channel_id: *const c_char) -> *mut c_char {
     match cstr_to_string(channel_id) {
         Ok(id) => string_to_c(tabs_json(&id)),
+        Err(e) => string_to_c(err_json("arg", e)),
+    }
+}
+
+/// One chat's pinned tabs JSON (read-only). See [`chat_tabs_json`].
+#[no_mangle]
+pub extern "C" fn ostmac_chat_tabs(chat_id: *const c_char) -> *mut c_char {
+    match cstr_to_string(chat_id) {
+        Ok(id) => string_to_c(chat_tabs_json(&id)),
         Err(e) => string_to_c(err_json("arg", e)),
     }
 }
@@ -2984,6 +3368,86 @@ pub extern "C" fn ostmac_send(chat_id: *const c_char, text: *const c_char) -> *m
     }
 }
 
+/// §106: post with a caller-owned client message id. See
+/// [`send_idem_json`]. Caller frees.
+#[no_mangle]
+pub extern "C" fn ostmac_send_idem(
+    chat_id: *const c_char,
+    text: *const c_char,
+    client_message_id: *const c_char,
+) -> *mut c_char {
+    let args = (|| Ok::<_, String>((cstr_to_string(chat_id)?, cstr_to_string(text)?,
+                                    cstr_to_string(client_message_id)?)))();
+    match args {
+        Ok((id, t, c)) => string_to_c(send_idem_json(&id, &t, &c)),
+        Err(e) => string_to_c(err_json("arg", e)),
+    }
+}
+
+/// §106: quote reply with a caller-owned client message id. See
+/// [`reply_idem_json`]. Caller frees.
+#[no_mangle]
+pub extern "C" fn ostmac_reply_idem(
+    chat_id: *const c_char,
+    parent_id: *const c_char,
+    parent_sender: *const c_char,
+    parent_text: *const c_char,
+    text: *const c_char,
+    client_message_id: *const c_char,
+) -> *mut c_char {
+    let args = (|| {
+        Ok::<_, String>((
+            cstr_to_string(chat_id)?,
+            cstr_to_string(parent_id)?,
+            cstr_to_string(parent_sender)?,
+            cstr_to_string(parent_text)?,
+            cstr_to_string(text)?,
+            cstr_to_string(client_message_id)?,
+        ))
+    })();
+    match args {
+        Ok((id, p, s, pt, t, c)) => string_to_c(reply_idem_json(&id, &p, &s, &pt, &t, &c)),
+        Err(e) => string_to_c(err_json("arg", e)),
+    }
+}
+
+/// §106: channel thread reply with a caller-owned client message id.
+/// See [`thread_reply_idem_json`]. Caller frees.
+#[no_mangle]
+pub extern "C" fn ostmac_thread_reply_idem(
+    channel_id: *const c_char,
+    root_id: *const c_char,
+    text: *const c_char,
+    client_message_id: *const c_char,
+) -> *mut c_char {
+    let args = (|| {
+        Ok::<_, String>((
+            cstr_to_string(channel_id)?,
+            cstr_to_string(root_id)?,
+            cstr_to_string(text)?,
+            cstr_to_string(client_message_id)?,
+        ))
+    })();
+    match args {
+        Ok((id, r, t, c)) => string_to_c(thread_reply_idem_json(&id, &r, &t, &c)),
+        Err(e) => string_to_c(err_json("arg", e)),
+    }
+}
+
+/// §106: find a posted message by client message id. See
+/// [`find_client_message_json`]. Caller frees.
+#[no_mangle]
+pub extern "C" fn ostmac_find_client_message(
+    chat_id: *const c_char,
+    client_message_id: *const c_char,
+) -> *mut c_char {
+    let args = (|| Ok::<_, String>((cstr_to_string(chat_id)?, cstr_to_string(client_message_id)?)))();
+    match args {
+        Ok((id, c)) => string_to_c(find_client_message_json(&id, &c)),
+        Err(e) => string_to_c(err_json("arg", e)),
+    }
+}
+
 /// Add one emoji reaction to a message. See [`react_json`].
 #[no_mangle]
 pub extern "C" fn ostmac_react(
@@ -3063,6 +3527,40 @@ pub extern "C" fn ostmac_delete(
     }
 }
 
+/// Mute or unmute one chat. See [`set_chat_muted_json`].
+#[no_mangle]
+pub extern "C" fn ostmac_set_chat_muted(chat_id: *const c_char, muted: bool) -> *mut c_char {
+    match cstr_to_string(chat_id) {
+        Ok(t) => string_to_c(set_chat_muted_json(&t, muted)),
+        Err(e) => string_to_c(err_json("arg", e)),
+    }
+}
+
+/// Hide or unhide one chat. See [`set_chat_hidden_json`].
+#[no_mangle]
+pub extern "C" fn ostmac_set_chat_hidden(chat_id: *const c_char, hidden: bool) -> *mut c_char {
+    match cstr_to_string(chat_id) {
+        Ok(t) => string_to_c(set_chat_hidden_json(&t, hidden)),
+        Err(e) => string_to_c(err_json("arg", e)),
+    }
+}
+
+/// The signed-in user's chat folders. See [`chat_folders_json`].
+#[no_mangle]
+pub extern "C" fn ostmac_chat_folders() -> *mut c_char {
+    string_to_c(chat_folders_json())
+}
+
+/// Move one chat into a Teams folder (blank = out of every folder).
+/// See [`chat_folder_move_json`].
+#[no_mangle]
+pub extern "C" fn ostmac_chat_folder_move(chat_id: *const c_char, folder_id: *const c_char) -> *mut c_char {
+    match (cstr_to_string(chat_id), cstr_to_string(folder_id)) {
+        (Ok(c), Ok(f)) => string_to_c(chat_folder_move_json(&c, &f)),
+        (Err(e), _) | (_, Err(e)) => string_to_c(err_json("arg", e)),
+    }
+}
+
 /// Leave one group chat. See [`leave_json`].
 #[no_mangle]
 pub extern "C" fn ostmac_leave(chat_id: *const c_char) -> *mut c_char {
@@ -3093,6 +3591,15 @@ pub extern "C" fn ostmac_mark_read(
 pub extern "C" fn ostmac_receipts(thread_id: *const c_char) -> *mut c_char {
     match cstr_to_string(thread_id) {
         Ok(t) => string_to_c(receipts_json(&t)),
+        Err(e) => string_to_c(err_json("arg", e)),
+    }
+}
+
+/// FIXPACK F7: image-header probe. See [`media_head_json`]. Caller frees.
+#[no_mangle]
+pub extern "C" fn ostmac_media_head(url: *const c_char, max_bytes: u32, timeout_ms: u32) -> *mut c_char {
+    match cstr_to_string(url) {
+        Ok(u) => string_to_c(media_head_json(&u, max_bytes, timeout_ms)),
         Err(e) => string_to_c(err_json("arg", e)),
     }
 }
@@ -3143,6 +3650,31 @@ pub extern "C" fn ostmac_message_files(
     };
     match cstr_to_string(message_id) {
         Ok(m) => string_to_c(message_files_json(&chat, &m)),
+        Err(e) => string_to_c(err_json("arg", e)),
+    }
+}
+
+/// A chat's server-side pins. See [`chat_pinned_messages_json`]. Caller frees.
+#[no_mangle]
+pub extern "C" fn ostmac_chat_pinned_messages(chat_id: *const c_char) -> *mut c_char {
+    match cstr_to_string(chat_id) {
+        Ok(id) => string_to_c(chat_pinned_messages_json(&id)),
+        Err(e) => string_to_c(err_json("arg", e)),
+    }
+}
+
+/// Unpin one Graph-sourced pin. See [`chat_unpin_message_json`]. Caller frees.
+#[no_mangle]
+pub extern "C" fn ostmac_chat_unpin_message(
+    chat_id: *const c_char,
+    pin_id: *const c_char,
+) -> *mut c_char {
+    let chat = match cstr_to_string(chat_id) {
+        Ok(s) => s,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    match cstr_to_string(pin_id) {
+        Ok(p) => string_to_c(chat_unpin_message_json(&chat, &p)),
         Err(e) => string_to_c(err_json("arg", e)),
     }
 }
@@ -3214,6 +3746,23 @@ pub extern "C" fn ostmac_files_upload(
     };
     match cstr_to_string(path) {
         Ok(p) => string_to_c(files_upload_json(&id, &p)),
+        Err(e) => string_to_c(err_json("arg", e)),
+    }
+}
+
+/// §106: idempotent chat file send. See [`files_upload_idem_json`].
+#[no_mangle]
+pub extern "C" fn ostmac_files_upload_idem(
+    chat_id: *const c_char,
+    path: *const c_char,
+    client_message_id: *const c_char,
+    verify_first: c_int,
+) -> *mut c_char {
+    let args = (|| -> Result<(String, String, String), String> {
+        Ok((cstr_to_string(chat_id)?, cstr_to_string(path)?, cstr_to_string(client_message_id)?))
+    })();
+    match args {
+        Ok((id, p, c)) => string_to_c(files_upload_idem_json(&id, &p, &c, verify_first != 0)),
         Err(e) => string_to_c(err_json("arg", e)),
     }
 }
@@ -3554,18 +4103,6 @@ pub extern "C" fn ostmac_sign_out_for(profile: *const c_char) -> *mut c_char {
     }
 }
 
-/// Set own preferred presence. `status` is one of: available, busy,
-/// dnd (donotdisturb), brb (berightback), away, offline
-/// (case-insensitive). See [`set_presence_json`]. Caller frees with
-/// [`ostmac_free`].
-#[no_mangle]
-pub extern "C" fn ostmac_presence_set(status: *const c_char) -> *mut c_char {
-    match cstr_to_string(status) {
-        Ok(s) => string_to_c(set_presence_json(&s)),
-        Err(e) => string_to_c(err_json("arg", e)),
-    }
-}
-
 /// OneNote notebooks JSON (requires sign-in). `group_id` null/empty reads
 /// the user's own; otherwise the M365 group (team) notebooks. See
 /// [`notes_json`]. Caller frees with [`ostmac_free`].
@@ -3649,16 +4186,6 @@ pub extern "C" fn ostmac_call_place(
 ) -> *mut c_char {
     match cstr_to_string(thread_id) {
         Ok(t) => string_to_c(calls::call_place_json(&t, timeout_secs as i32)),
-        Err(e) => string_to_c(err_json("arg", e)),
-    }
-}
-
-/// One other user's presence JSON (`user_id` = Entra ID or UPN).
-/// See [`user_presence_json`]. Caller frees with [`ostmac_free`].
-#[no_mangle]
-pub extern "C" fn ostmac_presence_user(user_id: *const c_char) -> *mut c_char {
-    match cstr_to_string(user_id) {
-        Ok(id) => string_to_c(user_presence_json(&id)),
         Err(e) => string_to_c(err_json("arg", e)),
     }
 }
@@ -3960,6 +4487,32 @@ mod tests {
     }
 
     #[test]
+    fn channel_update_and_delete_reject_bad_args_without_network() {
+        for (team_id, channel_id) in [
+            ("", "19:a@thread.tacv2"),
+            ("team-1", ""),
+            ("team/1", "19:a@thread.tacv2"),
+            ("team-1", "19:a/b@thread.tacv2"),
+        ] {
+            for out in [
+                channel_delete_json(team_id, channel_id),
+                channel_update_json(team_id, channel_id, Some("New"), None),
+            ] {
+                let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+                assert_eq!(v["ok"], false, "team {:?} channel {:?}", team_id, channel_id);
+                assert_eq!(v["error"], "arg");
+            }
+        }
+        // An empty change never reaches the network.
+        let v: serde_json::Value = serde_json::from_str(&channel_update_json(
+            "team-1", "19:a@thread.tacv2", Some("  "), None,
+        ))
+        .unwrap();
+        assert_eq!(v["ok"], false);
+        assert_eq!(v["error"], "arg");
+    }
+
+    #[test]
     fn team_create_rejects_bad_args_without_network() {
         for (name, desc) in [("", None), ("   ", None), ("   ", Some("d"))] {
             let v: serde_json::Value =
@@ -4079,6 +4632,7 @@ mod tests {
             raw: "<p>hi</p>".to_string(),
             reactions: vec![],
             reply_to: None,
+            client_message_id: None,
         };
         let v = message_to_json(&m);
         assert_eq!(v["id"], "m1");
@@ -4101,6 +4655,7 @@ mod tests {
             raw: "<quote guid=\"m1\">hi</quote><p>On it!</p>".to_string(),
             reactions: vec![],
             reply_to: Some("m1".to_string()),
+            client_message_id: None,
         };
         let v = message_to_json(&m);
         assert_eq!(v["reply_to"], "m1");
@@ -4151,7 +4706,7 @@ mod tests {
 
     #[test]
     fn core_a_group_chat_body_and_member_normalization() {
-        use ost::api::{group_chat_create_body, group_chat_create_path, group_chat_members};
+        use ost::api::{created_thread_id, group_chat_create_body, group_chat_members, thread_create_url};
         let users = vec![
             " b@x.com ".to_string(),
             "".to_string(),
@@ -4161,17 +4716,27 @@ mod tests {
         ];
         let peers = group_chat_members("ME-OID", &users);
         assert_eq!(peers, vec!["b@x.com".to_string(), "c-oid".to_string()]);
-        assert_eq!(group_chat_create_path(), "/chats");
-        let b = group_chat_create_body("me-oid", &peers, Some("  Launch  "));
-        assert_eq!(b["chatType"], "group");
-        assert_eq!(b["topic"], "Launch");
+        // GRAPHSWEEP: chat-service thread create (Graph POST /chats is 403
+        // without Chat.Create on the Teams token).
+        assert_eq!(thread_create_url("https://h/"), "https://h/v1/threads");
+        let oids = vec!["B-OID".to_string(), "c-oid".to_string()];
+        let b = group_chat_create_body("me-oid", &oids, Some("  Launch  "));
+        assert_eq!(b["properties"]["threadType"], "chat");
+        assert_eq!(b["properties"]["topic"], "Launch");
+        assert!(b.get("chatType").is_none(), "no Graph body fields");
         let m = b["members"].as_array().unwrap();
         assert_eq!(m.len(), 3);
-        assert_eq!(m[0]["user@odata.bind"], "https://graph.microsoft.com/v1.0/users('me-oid')");
-        assert_eq!(m[2]["user@odata.bind"], "https://graph.microsoft.com/v1.0/users('c-oid')");
-        assert!(m.iter().all(|x| x["roles"][0] == "owner"));
-        assert!(group_chat_create_body("me", &peers, Some("  ")).get("topic").is_none());
-        assert!(group_chat_create_body("me", &peers, None).get("topic").is_none());
+        assert_eq!(m[0]["id"], "8:orgid:me-oid");
+        assert_eq!(m[1]["id"], "8:orgid:b-oid");
+        assert!(m.iter().all(|x| x["role"] == "Admin"));
+        assert!(group_chat_create_body("me", &oids, Some("  ")).pointer("/properties/topic").is_none());
+        assert!(group_chat_create_body("me", &oids, None).pointer("/properties/topic").is_none());
+        assert_eq!(
+            created_thread_id(Some("https://h/v1/threads/19%3Aabc%40thread.v2?x=1")).as_deref(),
+            Some("19:abc@thread.v2")
+        );
+        assert_eq!(created_thread_id(Some("https://h/v1/threads/")), None);
+        assert_eq!(created_thread_id(None), None);
     }
 
     #[test]
@@ -4559,8 +5124,15 @@ mod tests {
             content_url: Some("https://example.com/app".to_string()),
             website_url: None,
             entity_id: None,
+            app_name: Some("Dashboard".to_string()),
+            teams_url: None,
         };
         let v = tab_to_json(&t);
+        assert_eq!(v["app_name"], "Dashboard");
+        assert!(v["teams_url"].is_null());
+        let self_chat: serde_json::Value = serde_json::from_str(&chat_tabs_json("48:notes")).unwrap();
+        assert_eq!(self_chat["ok"], true);
+        assert_eq!(self_chat["tabs"].as_array().unwrap().len(), 0);
         assert_eq!(v["id"], "tab-1");
         assert_eq!(v["name"], "Dashboard");
         assert_eq!(v["app_id"], "com.example.dashboard");
@@ -4614,6 +5186,25 @@ mod tests {
             assert_eq!(v["ok"], false);
             assert_eq!(v["error"], "arg");
         }
+    }
+
+    #[test]
+    fn chatmenu_empty_args_and_folder_json() {
+        for s in [set_chat_muted_json(" ", true), set_chat_hidden_json("", false)] {
+            let v: serde_json::Value = serde_json::from_str(&s).unwrap();
+            assert_eq!(v["ok"], false);
+            assert_eq!(v["error"], "arg");
+        }
+        let f = ost::api::ConversationFolder {
+            id: "f1".into(),
+            name: "Work".into(),
+            folder_type: "UserCreated".into(),
+            item_ids: vec!["19:a@thread.v2".into()],
+        };
+        let v: serde_json::Value = serde_json::from_str(&chat_folders_to_json(&[f])).unwrap();
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["folders"][0]["name"], "Work");
+        assert_eq!(v["folders"][0]["item_ids"][0], "19:a@thread.v2");
     }
 
     #[test]
@@ -4775,6 +5366,7 @@ mod tests {
                     }],
                 }],
                 reply_to: None,
+                client_message_id: None,
             }],
             backward_link: Some(
                 "https://h/v1/conversations/19:x/messages?page=2".to_string(),
@@ -5093,134 +5685,9 @@ mod tests {
     }
 
     #[test]
-    fn presence_status_table_matches_teams() {
-        // Graph setUserPreferredPresence combos (fid-presence D1/D3/D4):
-        // busy/dnd carry their own activity, brb included.
-        for (input, avail, act) in [
-            ("available", "Available", "Available"),
-            ("busy", "Busy", "Busy"),
-            ("dnd", "DoNotDisturb", "DoNotDisturb"),
-            ("donotdisturb", "DoNotDisturb", "DoNotDisturb"),
-            ("brb", "BeRightBack", "BeRightBack"),
-            ("berightback", "BeRightBack", "BeRightBack"),
-            ("away", "Away", "Away"),
-            ("offline", "Offline", "OffWork"),
-            ("Available", "Available", "Available"),
-            ("DND", "DoNotDisturb", "DoNotDisturb"),
-            ("BRB", "BeRightBack", "BeRightBack"),
-            ("  busy  ", "Busy", "Busy"),
-        ] {
-            assert_eq!(
-                presence_status_pair(input.trim()),
-                Some((avail, act)),
-                "input {:?}",
-                input
-            );
-        }
-        for bad in ["", "online", "invisible", "be right back", "avail able"] {
-            assert_eq!(presence_status_pair(bad), None, "input {:?}", bad);
-        }
-    }
-
-    #[test]
-    fn presence_set_body_pins_graph_expirations() {
-        // Graph defaults (fid-presence D5): Busy/DND 1 day, rest 7 days.
-        for avail in ["Busy", "DoNotDisturb"] {
-            let b = presence_set_body(avail, avail);
-            assert_eq!(b["availability"], avail);
-            assert_eq!(b["activity"], avail);
-            assert_eq!(b["expirationDuration"], "P1D", "avail {}", avail);
-        }
-        for (avail, act) in [
-            ("Available", "Available"),
-            ("BeRightBack", "BeRightBack"),
-            ("Away", "Away"),
-            ("Offline", "OffWork"),
-        ] {
-            let b = presence_set_body(avail, act);
-            assert_eq!(b["expirationDuration"], "P7D", "avail {}", avail);
-        }
-        let b = presence_set_body("Busy", "Busy");
-        assert_eq!(b["sessionId"], "teams-cli");
-    }
-
-    #[test]
     fn ffi_call_place_null_is_arg_error() {
         unsafe {
             let p = ostmac_call_place(std::ptr::null(), 30);
-            assert!(!p.is_null());
-            let s = CStr::from_ptr(p).to_string_lossy().into_owned();
-            ostmac_free(p);
-            let v: serde_json::Value = serde_json::from_str(&s).unwrap();
-            assert_eq!(v["ok"], false);
-            assert_eq!(v["error"], "arg");
-        }
-    }
-
-    #[test]
-    fn presence_envelope_shape() {
-        let v: serde_json::Value =
-            serde_json::from_str(&presence_envelope("Busy", "InACall")).unwrap();
-        assert_eq!(v["ok"], true);
-        assert_eq!(v["availability"], "Busy");
-        assert_eq!(v["activity"], "InACall");
-    }
-
-    #[test]
-    fn set_presence_rejects_bad_status_without_network() {
-        for bad in ["", "   ", "online", "invisible"] {
-            let v: serde_json::Value =
-                serde_json::from_str(&set_presence_json(bad)).unwrap();
-            assert_eq!(v["ok"], false, "status {:?}", bad);
-            assert_eq!(v["error"], "arg");
-        }
-        // Unknown-status detail mirrors the ost CLI message.
-        let v: serde_json::Value =
-            serde_json::from_str(&set_presence_json("online")).unwrap();
-        assert!(v["detail"].as_str().unwrap().contains("Unknown status: online"));
-    }
-
-    #[test]
-    fn user_presence_rejects_bad_ids_without_network() {
-        for bad in ["", "   ", "a/b", "a b", "x\ty", "../me"] {
-            let v: serde_json::Value =
-                serde_json::from_str(&user_presence_json(bad)).unwrap();
-            assert_eq!(v["ok"], false, "id {:?}", bad);
-            assert_eq!(v["error"], "arg");
-        }
-    }
-
-    #[test]
-    fn ffi_presence_set_null_is_arg_error() {
-        unsafe {
-            let p = ostmac_presence_set(std::ptr::null());
-            assert!(!p.is_null());
-            let s = CStr::from_ptr(p).to_string_lossy().into_owned();
-            ostmac_free(p);
-            let v: serde_json::Value = serde_json::from_str(&s).unwrap();
-            assert_eq!(v["ok"], false);
-            assert_eq!(v["error"], "arg");
-        }
-    }
-
-    #[test]
-    fn ffi_presence_user_null_is_arg_error() {
-        unsafe {
-            let p = ostmac_presence_user(std::ptr::null());
-            assert!(!p.is_null());
-            let s = CStr::from_ptr(p).to_string_lossy().into_owned();
-            ostmac_free(p);
-            let v: serde_json::Value = serde_json::from_str(&s).unwrap();
-            assert_eq!(v["ok"], false);
-            assert_eq!(v["error"], "arg");
-        }
-    }
-
-    #[test]
-    fn ffi_presence_set_empty_roundtrip() {
-        let st = CString::new("").unwrap();
-        unsafe {
-            let p = ostmac_presence_set(st.as_ptr());
             assert!(!p.is_null());
             let s = CStr::from_ptr(p).to_string_lossy().into_owned();
             ostmac_free(p);
@@ -6090,5 +6557,54 @@ mod tests {
             assert_eq!(v["ok"], false);
             assert_eq!(v["error"], "arg");
         }
+    }
+}
+
+#[cfg(test)]
+mod pinned_ffi_tests {
+    use super::*;
+    use std::ffi::{CStr, CString};
+
+    fn is_arg(s: &str) {
+        let v: serde_json::Value = serde_json::from_str(s).unwrap();
+        assert_eq!(v["ok"], false, "{}", s);
+        assert_eq!(v["error"], "arg", "{}", s);
+    }
+
+    #[test]
+    fn pinned_ffi_rejects_bad_args_without_network() {
+        is_arg(&chat_pinned_messages_json("  "));
+        is_arg(&chat_pinned_messages_json("19:a@thread.v2/../x"));
+        is_arg(&chat_unpin_message_json("19:a@thread.v2", " "));
+        is_arg(&chat_unpin_message_json("", "pin-1"));
+        is_arg(&chat_unpin_message_json("19:a@thread.v2", "pin?x"));
+        let c = CString::new("19:a@thread.v2").unwrap();
+        unsafe {
+            for p in [
+                ostmac_chat_pinned_messages(std::ptr::null()),
+                ostmac_chat_unpin_message(c.as_ptr(), std::ptr::null()),
+                ostmac_chat_unpin_message(std::ptr::null(), c.as_ptr()),
+            ] {
+                assert!(!p.is_null());
+                let s = CStr::from_ptr(p).to_string_lossy().into_owned();
+                ostmac_free(p);
+                is_arg(&s);
+            }
+        }
+    }
+
+    #[test]
+    fn pinned_ref_json_shape() {
+        let p = ost::api::PinnedRef {
+            message_id: "1727000000100".into(),
+            preview: Some("Ship Friday".into()),
+            graph_pin_id: Some("pin-1".into()),
+            ..Default::default()
+        };
+        let v = pinned_ref_to_json(&p);
+        assert_eq!(v["message_id"], "1727000000100");
+        assert_eq!(v["preview"], "Ship Friday");
+        assert_eq!(v["graph_pin_id"], "pin-1");
+        assert!(v["sender"].is_null() && v["pinned_at"].is_null());
     }
 }

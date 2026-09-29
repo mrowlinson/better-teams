@@ -61,6 +61,35 @@ struct Recap: Identifiable, Equatable {
     }
 }
 
+/// A meeting chat's recap (chat Recap tab): the newest recap whose
+/// meeting title is the chat's name. Teams names the recording and the
+/// transcript after the meeting (`<title>-<yyyyMMdd_HHmmss>-Meeting
+/// Recording.mp4`), and the meeting chat after the meeting too.
+enum ChatRecapMatch {
+    static func recap(forChatNamed name: String, in recaps: [Recap]) -> Recap? {
+        let want = key(name)
+        guard !want.isEmpty else { return nil }
+        return recaps.first { r in
+            [r.recording?.name, r.transcript?.name, r.title].compactMap { $0 }.contains { meetingKey($0) == want }
+        }
+    }
+
+    /// The meeting-title part of a recording/transcript file name or a
+    /// recap title: extension, ` · date`, and the Teams
+    /// `-<date>_<time>-Meeting Recording|Transcript` tail dropped.
+    static func meetingKey(_ raw: String) -> String {
+        var s = raw
+        if let dot = s.range(of: ".", options: .backwards), s[dot.upperBound...].count <= 4 { s = String(s[..<dot.lowerBound]) }
+        if let mid = s.range(of: " \u{00B7} ") { s = String(s[..<mid.lowerBound]) }
+        if let tail = s.range(of: #"-\d{8}_\d{6}.*$"#, options: .regularExpression) { s = String(s[..<tail.lowerBound]) }
+        return key(s)
+    }
+
+    private static func key(_ s: String) -> String {
+        s.lowercased().unicodeScalars.filter(CharacterSet.alphanumerics.contains).map(String.init).joined()
+    }
+}
+
 /// What the recaps list shows. Titles state the condition (R18).
 enum RecapsListState: Equatable {
     case loading

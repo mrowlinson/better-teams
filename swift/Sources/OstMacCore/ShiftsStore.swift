@@ -272,7 +272,7 @@ public final class ShiftsStore: ObservableObject {
         let fetcher = weekFetcher
         Task {
             do {
-                let resp = try await Task.detached { try fetcher(id, start) }.value
+                let resp = try await Task.blocking { try fetcher(id, start) }.value
                 weekCache[Self.cacheKey(id, start)] = (resp, Date())
                 saveSnapshot()
                 guard gen == openGeneration else { return }
@@ -309,7 +309,7 @@ public final class ShiftsStore: ObservableObject {
             guard weekCache[key] == nil, prefetching.insert(key).inserted else { continue }
             let fetcher = weekFetcher
             Task {
-                if let resp = try? await Task.detached(operation: { try fetcher(team, s) }).value {
+                if let resp = try? await Task.blocking(operation: { try fetcher(team, s) }).value {
                     weekCache[key] = (resp, Date())
                     saveSnapshot()
                 }
@@ -353,7 +353,7 @@ public final class ShiftsStore: ObservableObject {
     private func loadMembers(teamID: String, generation gen: Int) {
         guard let fetcher = membersFetcher else { return }
         Task {
-            guard let resp = try? await Task.detached(operation: { try fetcher(teamID) }).value,
+            guard let resp = try? await Task.blocking(operation: { try fetcher(teamID) }).value,
                   gen == openGeneration
             else { return }
             var names: [String: String] = [:]
@@ -424,7 +424,7 @@ public final class ShiftsStore: ObservableObject {
     private nonisolated static func fetchResult(
         _ fetcher: @escaping RangeFetcher, _ team: String, _ start: Date
     ) async -> Result<ShiftWeekResponse, Error> {
-        await Task.detached { Result { try fetcher(team, start) } }.value
+        await Task.blocking { Result { try fetcher(team, start) } }.value
     }
 
     /// Open a team: fetch its week via core, replace the grid. Stale

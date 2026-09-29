@@ -50,6 +50,9 @@ public struct RealtimeMessage: Decodable, Sendable, Identifiable {
     /// (back-compat: old payloads and live events omit it). Never
     /// trusted from the wire alone — the poller stamps what it polled.
     public let accountID: String?
+    /// §106: sender's `clientmessageid`; an own send's echo reconciles
+    /// the pending bubble by it. Nil on old core builds.
+    public let clientMessageID: String?
 
     enum CodingKeys: String, CodingKey {
         case chatID = "chat_id"
@@ -60,6 +63,7 @@ public struct RealtimeMessage: Decodable, Sendable, Identifiable {
         case raw, reactions
         case messageType = "message_type"
         case accountID = "account_id"
+        case clientMessageID = "client_message_id"
     }
 
     /// Host-side construction (tests, mock feeds). `senderID`/`raw`/
@@ -71,7 +75,8 @@ public struct RealtimeMessage: Decodable, Sendable, Identifiable {
         isEdit: Bool, editedID: String? = nil, raw: String? = nil,
         reactions: [ReactionCount]? = nil,
         messageType: String? = nil,
-        accountID: String? = nil
+        accountID: String? = nil,
+        clientMessageID: String? = nil
     ) {
         self.chatID = chatID
         self.msgId = msgId
@@ -85,6 +90,7 @@ public struct RealtimeMessage: Decodable, Sendable, Identifiable {
         self.reactions = reactions
         self.messageType = messageType
         self.accountID = accountID
+        self.clientMessageID = clientMessageID
     }
 
     /// Copy stamped with the owning account (producers tag what they
@@ -95,7 +101,7 @@ public struct RealtimeMessage: Decodable, Sendable, Identifiable {
             senderID: senderID, text: text, time: time,
             isEdit: isEdit, editedID: editedID, raw: raw,
             reactions: reactions, messageType: messageType,
-            accountID: accountID)
+            accountID: accountID, clientMessageID: clientMessageID)
     }
 
     public init(from decoder: Decoder) throws {
@@ -112,6 +118,7 @@ public struct RealtimeMessage: Decodable, Sendable, Identifiable {
         reactions = try c.decodeIfPresent([ReactionCount].self, forKey: .reactions)
         messageType = try c.decodeIfPresent(String.self, forKey: .messageType)
         accountID = try c.decodeIfPresent(String.self, forKey: .accountID)
+        clientMessageID = try c.decodeIfPresent(String.self, forKey: .clientMessageID)
     }
 
     /// True when this event belongs to the given open chat.
@@ -130,7 +137,8 @@ public struct RealtimeMessage: Decodable, Sendable, Identifiable {
         if isEdit, let edited = editedID {
             return ChatMessage(id: edited, sender: sender, timestamp: time, content: text, raw: raw, reactions: r)
         }
-        return ChatMessage(id: msgId, sender: sender, timestamp: time, content: text, raw: raw, reactions: r)
+        return ChatMessage(id: msgId, sender: sender, timestamp: time, content: text, raw: raw, reactions: r,
+                           clientMessageID: clientMessageID)
     }
 }
 
@@ -176,8 +184,11 @@ public struct RealtimePoll: Decodable, Sendable {
     public let calls: [CallEvent]?
     public let typing: [TypingEvent]?
     public let roster: [MeetingRosterEvent]?
+    /// Thread ids with a membership/property update (team, channel,
+    /// thread tree changes). nil on old core builds — no events.
+    public let threads: [String]?
 
-    public init(ok: Bool, messages: [RealtimeMessage], resync: Bool, skipped: Int, calls: [CallEvent]? = nil, typing: [TypingEvent]? = nil, roster: [MeetingRosterEvent]? = nil) {
+    public init(ok: Bool, messages: [RealtimeMessage], resync: Bool, skipped: Int, calls: [CallEvent]? = nil, typing: [TypingEvent]? = nil, roster: [MeetingRosterEvent]? = nil, threads: [String]? = nil) {
         self.ok = ok
         self.messages = messages
         self.resync = resync
@@ -185,6 +196,7 @@ public struct RealtimePoll: Decodable, Sendable {
         self.calls = calls
         self.typing = typing
         self.roster = roster
+        self.threads = threads
     }
 }
 
@@ -222,6 +234,7 @@ public final class RealtimeFeed: @unchecked Sendable {
     private var callSubs: [UUID: @Sendable (CallEvent) -> Void] = [:]
     private var typingSubs: [UUID: @Sendable (TypingEvent) -> Void] = [:]
     private var rosterSubs: [UUID: @Sendable (MeetingRosterEvent) -> Void] = [:]
+    private var threadSubs: [UUID: @Sendable ([String]) -> Void] = [:]
     private var attempt = 0
     private var pollCountValue = 0
     private var lastErrorValue: String?
@@ -315,6 +328,15 @@ public final class RealtimeFeed: @unchecked Sendable {
     public func onRoster(_ h: @escaping @Sendable (MeetingRosterEvent) -> Void) -> UUID {
         let t = UUID()
         lock.lock(); rosterSubs[t] = h; lock.unlock()
+        return t
+    }
+
+    /// Subscribe to thread-tree updates (TEAMSYNC): one call per poll
+    /// carrying every updated thread id; never touches the chat list.
+    @discardableResult
+    public func onThreadUpdate(_ h: @escaping @Sendable ([String]) -> Void) -> UUID {
+        let t = UUID()
+        lock.lock(); threadSubs[t] = h; lock.unlock()
         return t
     }
 
@@ -464,6 +486,8 @@ public final class RealtimeFeed: @unchecked Sendable {
         let typingEvents = p.typing ?? []
         let rosterHandlers = Array(rosterSubs.values)
         let rosterEvents = p.roster ?? []
+        let threadHandlers = Array(threadSubs.values)
+        let threadIDs = p.threads ?? []
         lock.unlock()
         if notify {
             for m in fresh { for h in msgHandlers { h(m) } }
@@ -471,6 +495,7 @@ public final class RealtimeFeed: @unchecked Sendable {
             for e in callEvents { for h in callHandlers { h(e) } }
             for e in typingEvents { for h in typingHandlers { h(e) } }
             for e in rosterEvents { for h in rosterHandlers { h(e) } }
+            if !threadIDs.isEmpty { for h in threadHandlers { h(threadIDs) } }
         }
         return (fresh.count, p.resync)
     }

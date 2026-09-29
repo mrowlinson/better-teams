@@ -152,11 +152,14 @@ enum RecapDetailState {
 struct RecapDetailPane: View {
     @ObservedObject var recordings: RecordingsViewModel
     @ObservedObject var transcripts: TranscriptsViewModel
+    /// A fixed recap (a meeting chat's Recap tab) instead of the Recaps
+    /// selection.
+    var pinned: Recap?
     @Environment(\.windowModel) private var model
 
     var body: some View {
         if let model {
-            if model.forced(.native(.recaps)) == nil, let recap = RecapsSection.current(model) {
+            if let recap = pinned ?? (model.forced(.native(.recaps)) == nil ? RecapsSection.current(model) : nil) {
                 VStack(spacing: 0) {
                     if let r = recap.recording {
                         player(r)
@@ -164,6 +167,9 @@ struct RecapDetailPane: View {
                     }
                     turns(recap)
                 }
+                // Idempotent: re-opens this recap when the shared stores
+                // were pointed elsewhere (a meeting chat's Recap tab).
+                .task(id: recap.id) { RecapsSection.open(recap.id, recordings, transcripts) }
             } else {
                 NoSelectionPane(RecapDetailState.noSelectionTitle)
             }
@@ -304,11 +310,13 @@ struct RecapInspector: View {
     @ObservedObject var recordings: RecordingsViewModel
     @ObservedObject var transcripts: TranscriptsViewModel
     @ObservedObject var actionItems: ActionItemsStore
+    /// A fixed recap (a meeting chat's Recap tab).
+    var pinned: Recap?
     @Environment(\.windowModel) private var model
     @Environment(\.contentTextScale) private var scale
 
     var body: some View {
-        if let model, model.forced(.native(.recaps)) == nil, let recap = RecapsSection.current(model) {
+        if let recap = pinned ?? model.flatMap({ $0.forced(.native(.recaps)) == nil ? RecapsSection.current($0) : nil }) {
             detail(recap)
         } else {
             NoSelectionPane(RecapDetailState.noSelectionTitle)

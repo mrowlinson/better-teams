@@ -105,6 +105,9 @@
 #   teams?sheet=joinTeam&q=zzqx                No Teams Found
 #   teams?sheet=joinTeam&q=re&search=loading   searching
 #   teams?sheet=joinTeam&q=re&search=error     Couldn't Search Teams + Try Again
+# Demo routes, channel/team menus + tree sync (TEAMSYNC):
+#   teams/demo-team-eng/demo-chan-shipping?sheet=editChannel   Edit Channel sheet
+#   teams/demo-team-eng/demo-chan-shipping?deleted=1           This channel was deleted
 # Demo routes, Files (P3c, UI-SPEC §6.6):
 #   files/recent                               Recent (all sources), Location links
 #   files/onedrive                             My Files (OneDrive)
@@ -120,6 +123,8 @@
 #   files/recent/demo-file?inspector=1         inspector: info + Versions
 #   files/recent/demo-file?quicklook=1         Quick Look panel
 #   chat/demo-rich?tab=files                   a chat's Files tab (same table)
+#   chat/demo?apptab=demo-tab-plan             a chat's pinned tab (file tab: placeholder; CHATTABS)
+#   chat/demo-3?tab=recap                      a meeting chat's Recap tab (placeholder)
 # Settings and presentation=window routes order the main window out, so
 # the app's largest window is the one captured.
 #

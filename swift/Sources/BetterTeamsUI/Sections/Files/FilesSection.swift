@@ -357,11 +357,23 @@ final class FilesSection: SectionProvider, InspectorCapable {
     /// (live). Demo never launches another app: it previews.
     private func open(_ it: FileItem, _ app: AppState, _ m: WindowModel) {
         if m.options.demo { return quickLook(it, app, m) }
+        if let doc = Self.documentApp(it, m) {
+            // An Office document in SharePoint / OneDrive: its web page,
+            // read-only, in this window (R9), not a desktop app.
+            m.navigator?.select(section: .web(doc.id))
+            return
+        }
         if let path = localPath(it, app, m) {
             NSWorkspace.shared.open(URL(fileURLWithPath: path))
         } else if let row = it.row {
             download(row, it, app, to: nil) { path in NSWorkspace.shared.open(URL(fileURLWithPath: path)) }
         }
+    }
+
+    /// The in-window pane for a stored Office document (nil: any other file).
+    static func documentApp(_ it: FileItem, _ m: WindowModel) -> FrameApp? {
+        guard !it.isFolder, let raw = it.row?.file.web_url, let url = URL(string: raw) else { return nil }
+        return m.frameHost.library.document(name: it.name, webURL: url)
     }
 
     /// Download (to ~/Downloads, never overwriting: Finder-style " 2"

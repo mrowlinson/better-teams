@@ -55,6 +55,7 @@ private struct CallPeopleList: View {
                 ForEach(people) { p in
                     HStack(spacing: 8) {
                         Avatar(name: p.name)
+                            .contactHover(name: p.name, arrowEdge: .leading)
                         Text(p.kind == .selfView ? "\(p.name) (You)" : p.name)
                             .font(AppFont.body(scale))
                             .lineLimit(1)

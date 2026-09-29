@@ -282,6 +282,88 @@ struct CreateChannelSheet: View {
     }
 }
 
+/// Edit channel (TEAMSYNC): rename and re-describe one channel. The
+/// row changes at once; a failed save rolls back and shows the error.
+struct EditChannelSheet: View {
+    @ObservedObject var teams: TeamsViewModel
+    let channelID: String
+
+    var body: some View {
+        // The sheet can open before the list loads (launch routes): the
+        // form appears once the channel resolves, seeded from it.
+        if let (team, ch) = TeamsListPane.locate(channelID, in: teams.teams) {
+            EditChannelForm(teams: teams, teamID: team.teamId, channel: ch)
+        } else {
+            TeamsSheetFrame(title: "Edit Channel", action: "Save", enabled: false,
+                            busy: teams.state == .loading ? "Loading…" : nil,
+                            error: teams.state == .loading ? nil : "This channel is no longer available.",
+                            perform: {}) {
+                // Same fields, disabled, so the sheet keeps its size.
+                Form {
+                    TextField("Name", text: .constant(""), prompt: prompt("Channel name"))
+                    TextField("Description", text: .constant(""), prompt: prompt("Optional"), axis: .vertical)
+                        .lineLimit(2...4)
+                }
+                .formStyle(.columns)
+                .disabled(true)
+            }
+        }
+    }
+}
+
+private struct EditChannelForm: View {
+    @ObservedObject var teams: TeamsViewModel
+    let teamID: String
+    let channel: TeamChannel
+    @State private var name: String
+    @State private var about: String
+    @State private var saving = false
+    @State private var submitted = false
+    @Environment(\.windowModel) private var model
+
+    init(teams: TeamsViewModel, teamID: String, channel: TeamChannel) {
+        self.teams = teams
+        self.teamID = teamID
+        self.channel = channel
+        _name = State(initialValue: channel.name)
+        _about = State(initialValue: channel.description ?? "")
+    }
+
+    private var changed: Bool {
+        (trimmed(name) != channel.name && !trimmed(name).isEmpty)
+            || trimmed(about) != (channel.description ?? "")
+    }
+
+    var body: some View {
+        TeamsSheetFrame(title: "Edit Channel", action: "Save",
+                        enabled: changed && !trimmed(name).isEmpty,
+                        busy: saving ? "Saving…" : nil,
+                        error: submitted ? teams.actionError : nil, perform: save) {
+            Form {
+                TextField("Name", text: $name, prompt: prompt("Channel name"))
+                TextField("Description", text: $about, prompt: prompt("Optional"), axis: .vertical)
+                    .lineLimit(2...4)
+            }
+            .formStyle(.columns)
+        }
+    }
+
+    private func save() {
+        let n = trimmed(name)
+        let d = trimmed(about)
+        let newName = n == channel.name ? nil : n
+        let newAbout = d == (channel.description ?? "") ? nil : d
+        let id = channel.channelId
+        submitted = true
+        saving = true
+        Task { @MainActor in
+            let ok = await teams.updateChannel(teamID: teamID, channelID: id, name: newName, description: newAbout)
+            saving = false
+            if ok { model?.dismissSheet() }
+        }
+    }
+}
+
 struct AddMemberSheet: View {
     @ObservedObject var roster: TeamRosterViewModel
     @State private var user = ""

@@ -285,7 +285,7 @@ public final class SharedFilesStore: ObservableObject {
         Task {
             let fetcher = listFetcher
             do {
-                let resp = try await Task.detached { try fetcher(chatID, limit) }.value
+                let resp = try await Task.blocking { try fetcher(chatID, limit) }.value
                 guard gen == openGeneration else { return }
                 cache[Self.rootKey] = resp.files
                 chatCache[chatID] = resp.files
@@ -384,7 +384,7 @@ public final class SharedFilesStore: ObservableObject {
         Task {
             let fetcher = childrenFetcher
             do {
-                let resp = try await Task.detached {
+                let resp = try await Task.blocking {
                     try fetcher(crumb.driveID, crumb.itemID, limit)
                 }.value
                 guard gen == openGeneration else { return }
@@ -430,7 +430,7 @@ public final class SharedFilesStore: ObservableObject {
         guard lookedUp.count < Self.maxAttachmentLookups, lookedUp.insert(messageID).inserted else { return }
         let fetcher = messageFilesFetcher
         Task {
-            guard let resp = try? await Task.detached(operation: { try fetcher(chatID, messageID) }).value,
+            guard let resp = try? await Task.blocking(operation: { try fetcher(chatID, messageID) }).value,
                   attachmentsChatID == chatID
             else { return }
             let known = Set(attachmentFiles.map(\.id))
@@ -525,7 +525,7 @@ public final class SharedFilesStore: ObservableObject {
             }
             let fetcher = uploadFetcher
             do {
-                let resp = try await Task.detached { try fetcher(id, path) }.value
+                let resp = try await Task.blocking { try fetcher(id, path) }.value
                 files = Self.upsert(resp.file, into: files)
                 cache[currentKey] = files
                 state = .loaded
@@ -543,7 +543,7 @@ public final class SharedFilesStore: ObservableObject {
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 200_000_000)
                 if Task.isCancelled { break }
-                if let p = try? await Task.detached(operation: { try fetcher() }).value {
+                if let p = try? await Task.blocking(operation: { try fetcher() }).value {
                     onTick(Self.progressFraction(uploaded: p.uploaded, total: p.total))
                 }
             }
@@ -590,7 +590,7 @@ public final class SharedFilesStore: ObservableObject {
             Task {
                 defer { savingIDs.remove(itemID) }
                 do {
-                    let resp = try await Task.detached {
+                    let resp = try await Task.blocking {
                         try fetcher(drive, itemID, dest)
                     }.value
                     savedPath = resp.path
@@ -636,7 +636,7 @@ public final class SharedFilesStore: ObservableObject {
         Task {
             defer { linkingIDs.remove(itemID) }
             do {
-                let resp = try await Task.detached {
+                let resp = try await Task.blocking {
                     try fetcher(drive, itemID, scope)
                 }.value
                 links[itemID] = resp.link
@@ -666,7 +666,7 @@ public final class SharedFilesStore: ObservableObject {
         Task {
             defer { managingIDs.remove(itemID) }
             do {
-                let resp = try await Task.detached {
+                let resp = try await Task.blocking {
                     try fetcher(drive, itemID, name)
                 }.value
                 files = Self.upsert(resp.file, into: files)
@@ -699,7 +699,7 @@ public final class SharedFilesStore: ObservableObject {
         Task {
             defer { managingIDs.remove(itemID) }
             do {
-                let resp = try await Task.detached {
+                let resp = try await Task.blocking {
                     try fetcher(drive, itemID, folder)
                 }.value
                 if folder == openFolderID {
@@ -738,7 +738,7 @@ public final class SharedFilesStore: ObservableObject {
         Task {
             defer { managingIDs.remove(itemID) }
             do {
-                _ = try await Task.detached {
+                _ = try await Task.blocking {
                     try fetcher(drive, itemID, folder, name)
                 }.value
             } catch {
@@ -763,7 +763,7 @@ public final class SharedFilesStore: ObservableObject {
         Task {
             defer { managingIDs.remove(itemID) }
             do {
-                let resp = try await Task.detached {
+                let resp = try await Task.blocking {
                     try fetcher(drive, itemID)
                 }.value
                 files = Self.removed(resp.id, from: files)
@@ -776,8 +776,7 @@ public final class SharedFilesStore: ObservableObject {
 
     /// ~/Downloads/<filename> (pure, testable).
     public static func downloadDestination(filename: String) -> String {
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        return (home as NSString).appendingPathComponent("Downloads/\(filename)")
+        return UserFolders.downloads().appendingPathComponent(filename).path
     }
 
     /// Gauge bytes → 0...1 fraction (nil while the total is unknown;
@@ -789,8 +788,7 @@ public final class SharedFilesStore: ObservableObject {
 
     /// Save-as panel default directory: ~/Downloads (pure, testable).
     public static func saveAsDirectory() -> URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Downloads")
+        UserFolders.downloads()
     }
 
     /// Save-as panel default filename: the shared name, verbatim.

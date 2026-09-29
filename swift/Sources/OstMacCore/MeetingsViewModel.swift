@@ -34,6 +34,8 @@ public final class MeetingsViewModel: ObservableObject {
     public typealias ParseFetcher = @Sendable (String) throws -> JoinParseResponse
     public typealias JoinRunner = @Sendable (String) throws -> CallResult
     public typealias Opener = (URL) -> Void
+    /// FIXPACK F12: short-link resolver (start URL -> thread-bearing URL).
+    public typealias LinkResolver = @Sendable (URL) async -> String?
     /// Meeting ID + passcode → resolution (core-c; runs off-main).
     public typealias MeetingIDResolver = @Sendable (String, String) throws -> MeetingIDResolution
 
@@ -61,18 +63,22 @@ public final class MeetingsViewModel: ObservableObject {
     @Published public private(set) var joinCount = 0
     /// Join-by-ID lookup in flight (core-c).
     @Published public private(set) var resolvingMeetingID = false
-    /// Join-by-ID failure (bad input, passcode mismatch). Nil when clear.
+    /// Join-by-ID failure (bad input, not found, lookup failed, passcode mismatch). Nil when clear.
     @Published public private(set) var meetingIDError: String?
-    /// Where the last join-by-ID went: in-app (resolved) or web fallback.
+    /// Where the last join-by-ID went: in-app when it resolved; nil when it
+    /// didn't (the reason is `meetingIDError`). There is no web route.
     @Published public private(set) var lastMeetingIDRoute: MeetingIDRoute?
 
     public enum MeetingIDRoute: Equatable, Sendable {
         case inApp
-        case web
     }
 
+    /// FIXPACK F12: why a pasted Microsoft Teams link could not be joined
+    /// (shown instead of the hint; never a browser hand-off). Nil when clear.
+    @Published public private(set) var joinLinkError: String?
+
     /// Hint for the current target (nil = ready). Unknown never dials.
-    public var joinHint: String? { MeetJoin.hint(for: target) }
+    public var joinHint: String? { joinLinkError ?? MeetJoin.hint(for: target) }
 
     /// Join-button label for the current target.
     public var joinLabel: String { MeetJoin.buttonLabel(for: target) }
@@ -92,6 +98,7 @@ public final class MeetingsViewModel: ObservableObject {
     private let videoJoinRunner: JoinRunner
     private let opener: Opener
     private let meetingIDResolver: MeetingIDResolver
+    private let linkResolver: LinkResolver
     private var meetingIDGeneration = 0
     private let lobbyGraceSecs: Double
     private var lobbyGeneration = 0
@@ -105,8 +112,10 @@ public final class MeetingsViewModel: ObservableObject {
         lobbyGraceSecs: Double = 8,
         meetingIDResolver: @escaping MeetingIDResolver = {
             try RustCore.meetingResolveID(meetingID: $0, passcode: $1)
-        }
+        },
+        linkResolver: @escaping LinkResolver = { await MeetLinkResolver.resolve($0, hop: MeetLinkResolver.liveHop) }
     ) {
+        self.linkResolver = linkResolver
         self.meetingIDResolver = meetingIDResolver
         self.meetingsFetcher = meetingsFetcher
         self.parseFetcher = parseFetcher
@@ -121,7 +130,7 @@ public final class MeetingsViewModel: ObservableObject {
         state = .loading
         let fetcher = meetingsFetcher
         do {
-            let response = try await Task.detached { try fetcher() }.value
+            let response = try await Task.blocking { try fetcher() }.value
             meetings = response.meetings
             fetchedCount = response.meetings.count
             state = response.meetings.isEmpty ? .empty : .loaded
@@ -137,60 +146,82 @@ public final class MeetingsViewModel: ObservableObject {
 
     /// Parse the join box (Join submit). Thread targets arm the pre-join
     /// sheet; link kinds open externally; unknown shows a hint.
-    public func submitJoin() {
+    /// `viaMeetingID`: the paste came from join-by-ID, which never hands
+    /// off to a browser (a resolved link that is not a thread is an error).
+    public func submitJoin(viaMeetingID: Bool = false) {
+        joinLinkError = nil
         let text = joinText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, !parsing else { return }
+        guard !text.isEmpty, !parsing else {
+            if viaMeetingID {
+                lastMeetingIDRoute = nil
+                meetingIDError = "Another join is still being checked. Try again in a moment."
+                resolvingMeetingID = false
+            }
+            return
+        }
         parsing = true
         let fetcher = parseFetcher
         Task {
             do {
-                let response = try await Task.detached { try fetcher(text) }.value
+                let response = try await Task.blocking { try fetcher(text) }.value
                 self.target = response.target
                 self.parsing = false
-                self.route(target: response.target)
+                self.route(target: response.target, viaMeetingID: viaMeetingID)
             } catch {
                 self.parsing = false
                 self.target = JoinTarget(kind: "unknown", url: text)
+                if viaMeetingID { self.notJoinableByID() }
             }
+            // The by-ID lookup stays "busy" until routing is decided, so the
+            // sheet never closes before a not-joinable error is set.
+            if viaMeetingID { self.resolvingMeetingID = false }
         }
     }
 
-    /// Join by meeting ID + passcode (core-c). Resolves the ID via Graph
-    /// (`onlineMeetings` joinMeetingId) to the meeting's join URL and joins
-    /// in-app through the normal paste path (thread → pre-join sheet).
-    /// Not found (outside meeting, not signed in, missing scope, network
-    /// error) falls back to the web meet link in the browser, as before.
-    /// A passcode that Graph shows to differ sets `meetingIDError` and
-    /// does not join. Malformed input sets `meetingIDError` pre-network.
+    /// Join by meeting ID + passcode (core-c). Resolves the ID to the
+    /// meeting's join URL and joins in-app through the normal paste path
+    /// (thread -> pre-join sheet). §GRAPH2: this path never opens a
+    /// browser or the Teams web app. The lookup (Graph `onlineMeetings`
+    /// joinMeetingId) needs OnlineMeetings.Read, which the Teams sign-in
+    /// lacks, and Teams has no other code-to-meeting lookup, so an ID that
+    /// can't be resolved is shown as an error (`meetingIDError`: not
+    /// found / lookup failed / passcode mismatch) pointing at the invite
+    /// link, which does join in-app. Malformed input errors pre-network.
     public func joinByMeetingID(_ meetingID: String, passcode: String) {
         meetingIDError = nil
-        guard let digits = MeetJoin.meetingIDDigits(meetingID),
-              let web = MeetJoin.webMeetURL(meetingID: digits, passcode: passcode)
-        else {
+        lastMeetingIDRoute = nil
+        let pass = passcode.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let digits = MeetJoin.meetingIDDigits(meetingID), !pass.isEmpty else {
             meetingIDError = "Enter a 9–15 digit meeting ID and its passcode."
             return
         }
-        let pass = passcode.trimmingCharacters(in: .whitespacesAndNewlines)
         meetingIDGeneration += 1
         let gen = meetingIDGeneration
         resolvingMeetingID = true
         let resolver = meetingIDResolver
         Task {
-            let resolution = try? await Task.detached { try resolver(digits, pass) }.value
+            let outcome = await Task.blocking { Result { try resolver(digits, pass) } }.value
             guard gen == self.meetingIDGeneration else { return } // superseded
-            self.resolvingMeetingID = false
-            switch resolution {
-            case .found(let url, _):
+            switch outcome {
+            case .success(.found(let url, _)):
                 self.lastMeetingIDRoute = .inApp
-                self.joinText = url
-            case .passcodeMismatch:
+                self.joinText = url // busy until submitJoin has routed it
+            case .success(.passcodeMismatch):
+                self.resolvingMeetingID = false
                 self.meetingIDError = "The passcode doesn't match this meeting ID."
                 return
-            case .notFound, nil:
-                self.lastMeetingIDRoute = .web
-                self.joinText = web
+            case .success(.notFound):
+                self.resolvingMeetingID = false
+                self.meetingIDError = "Teams couldn't find a meeting with that ID. Check the ID and passcode, "
+                    + "or use Join with link and paste the invitation."
+                return
+            case .failure:
+                self.resolvingMeetingID = false
+                self.meetingIDError = "Couldn't look up that meeting ID with your Teams sign-in. "
+                    + "Try again, or use Join with link and paste the invitation."
+                return
             }
-            self.submitJoin()
+            self.submitJoin(viaMeetingID: true)
         }
     }
 
@@ -201,14 +232,61 @@ public final class MeetingsViewModel: ObservableObject {
         submitJoin()
     }
 
-    /// Route a parsed target: thread -> pre-join sheet, links -> browser.
-    private func route(target: JoinTarget) {
+    /// Route a parsed target: thread -> pre-join sheet. FIXPACK F12: a
+    /// Microsoft Teams link (teams.microsoft.com, teams.live.com,
+    /// teams.cloud.microsoft, any subdomain) NEVER opens a browser: a short
+    /// `/meet/` link resolves natively to its thread (read-only redirect
+    /// follow), anything else is an error that says so. Other https links
+    /// (Zoom, Webex, Google Meet) open in the default browser, but not for
+    /// a join-by-ID paste (that is an error instead).
+    private func route(target: JoinTarget, viaMeetingID: Bool = false) {
         if target.canJoinInApp {
             pendingJoin = target
             showPreJoin = true
+        } else if viaMeetingID {
+            notJoinableByID()
         } else if target.canOpenExternally, let url = URL(string: target.url) {
-            opener(url)
+            if MeetLinkResolver.isMicrosoftTeamsURL(url) {
+                resolveTeamsLink(url)
+            } else {
+                opener(url)
+            }
         }
+    }
+
+    /// A Microsoft Teams link that is not itself a thread link.
+    private func resolveTeamsLink(_ url: URL) {
+        guard MeetLinkResolver.isShortMeetLink(url) else {
+            joinLinkError = "That Teams link isn\u{2019}t a meeting this app can join. "
+                + "Paste the meeting invitation link, or the meeting ID and passcode."
+            return
+        }
+        parsing = true
+        let resolver = linkResolver
+        let parser = parseFetcher
+        Task {
+            let resolved = await resolver(url)
+            var joinTarget: JoinTarget?
+            if let resolved, let response = try? await Task.blocking(operation: { try parser(resolved) }).value,
+               response.target.canJoinInApp {
+                joinTarget = response.target
+            }
+            self.parsing = false
+            if let joinTarget {
+                self.target = joinTarget
+                self.route(target: joinTarget)
+            } else {
+                self.joinLinkError = "Couldn\u{2019}t find the meeting behind this link without opening Teams in a browser. "
+                    + "Paste the full invitation link instead."
+            }
+        }
+    }
+
+    /// A join-by-ID lookup that resolved to something this app can't join.
+    private func notJoinableByID() {
+        lastMeetingIDRoute = nil
+        meetingIDError = "Teams found that meeting but not a way to join it in this app. "
+            + "Use Join with link and paste the invitation."
     }
 
     /// Cancel the pre-join sheet (no dial).
@@ -262,7 +340,7 @@ public final class MeetingsViewModel: ObservableObject {
         let runner = Self.joinLeg(video: video) == .liveVideo ? videoJoinRunner : joinRunner
         Task {
             do {
-                let result = try await Task.detached { try runner(threadID) }.value
+                let result = try await Task.blocking { try runner(threadID) }.value
                 guard gen == self.lobbyGeneration else { return } // superseded
                 if result.accepted == true || result.call?.state == "connected" {
                     self.lobby = LobbyMachine.next(self.lobby, .placed)

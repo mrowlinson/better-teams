@@ -9,6 +9,9 @@
 //   chat/<id>?catchup=always&window=catchup[&digest=updating]
 //       Window ▸ Open Catch Up in New Window (mentions + several chats);
 //       `digest=updating` re-summarizes one chat in place
+//   …&period=24h|3d|5d|2w      the Catch Up period tab (CATCHTABS; the
+//       demo Catch Up clock is fixed at DemoData.catchUpNow)
+//   …&mentions=collapsed|expanded   the Mentions You disclosure
 //
 // Demo only: the canned `CatchUpDemoTransport` (held open for the
 // streaming / updating states), the demo in-memory settings.
@@ -24,6 +27,14 @@ enum CatchUpEvidence {
         case "off": app.catchUp.mode = .off
         case "onclick": app.catchUp.mode = .onClick
         case "always": app.catchUp.mode = .alwaysUpToDate
+        default: break
+        }
+        if let raw = route.query["period"], let p = CatchUpPeriod(rawValue: raw) {
+            app.catchUpDigest.select(p)
+        }
+        switch route.query["mentions"] {
+        case "collapsed": app.catchUpDigest.mentionsCollapsed = true
+        case "expanded": app.catchUpDigest.mentionsCollapsed = false
         default: break
         }
         switch route.query["ai"] {
@@ -56,7 +67,9 @@ enum CatchUpEvidence {
                     demo?.holdPartial = nil
                     // A new message arrived since: the re-run misses the
                     // summary cache and keeps the old text on screen.
-                    await app.catchUp.summarize(messages: m.graph.conv.messages + [arrival], chatID: id)
+                    await app.catchUp.summarize(messages: m.graph.conv.messages + [arrival], chatID: id,
+                                                period: app.catchUpDigest.period,
+                                                filter: app.catchUpDigest.filterContext(chatID: id))
                 default:
                     CatchUpRunner.run(m, chatID: id)
                 }

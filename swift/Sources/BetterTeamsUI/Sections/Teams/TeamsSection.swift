@@ -82,6 +82,19 @@ final class TeamsSection: SectionProvider, InspectorCapable {
         // Notifications Off on an unread channel: the muted glyph beside
         // the unread dot and bold name.
         prefs(m).setLevel("demo-chan-general", .muted)
+        // Evidence: `teams/<team>/<channel>?deleted=1` deletes the open
+        // channel through the (in-memory) demo path: the deleted state.
+        if m.options.route.flatMap(Route.init(string:))?.query["deleted"] == "1",
+           let sel = current(m), let ch = sel.channelID {
+            let teams = app.teams
+            Task { @MainActor in
+                // Once the list holds the team (first load), delete.
+                for await rows in teams.$teams.values where rows.contains(where: { $0.teamId == sel.teamID }) {
+                    await teams.deleteChannel(teamID: sel.teamID, channelID: ch)
+                    break
+                }
+            }
+        }
     }
 
     // MARK: panes
@@ -104,7 +117,7 @@ final class TeamsSection: SectionProvider, InspectorCapable {
         guard let app = m.app else { return AnyView(Self.unavailable) }
         seedDemoIfNeeded(m)
         return AnyView(TeamsListPane(teams: app.teams, unread: app.unread, mentions: app.mentions,
-                                     prefs: prefs(m), state: state(m)))
+                                     prefs: prefs(m), folders: m.graph.chats.folders, state: state(m)))
     }
 
     func detailPane(_ m: WindowModel) -> AnyView {
@@ -191,6 +204,9 @@ final class TeamsSection: SectionProvider, InspectorCapable {
         case TeamsCommands.addMemberSheet:
             guard let team = r.arg ?? current(m)?.teamID else { return nil }
             return AnyView(AddMemberSheet(roster: roster(team, m)))
+        case TeamsCommands.editChannelSheet:
+            guard let id = r.arg ?? current(m)?.channelID else { return nil }
+            return AnyView(EditChannelSheet(teams: app.teams, channelID: id))
         default: return nil
         }
     }
@@ -257,6 +273,64 @@ final class TeamsSection: SectionProvider, InspectorCapable {
         case TeamsCommands.hideChannel:
             guard let ch = channelTarget(arg, m) else { return false }
             prefs(m).setHidden(ch, !prefs(m).isHidden(ch))
+        case TeamsCommands.manageChannel:
+            // Standard channels share the team roster: open it.
+            guard let ch = channelTarget(arg, m),
+                  let (team, _) = TeamsListPane.locate(ch, in: app.teams.teams) else { return false }
+            return perform(TeamsCommands.manageMembers, arg: team.teamId, m)
+        case TeamsCommands.channelEmail:
+            guard let ch = channelTarget(arg, m),
+                  let email = TeamsListPane.locate(ch, in: app.teams.teams)?.1.email, !email.isEmpty else {
+                return false
+            }
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(email, forType: .string)
+        case TeamsCommands.editChannel:
+            guard let ch = channelTarget(arg, m),
+                  let (team, _) = TeamsListPane.locate(ch, in: app.teams.teams),
+                  app.teams.permission(.edit, teamID: team.teamId, channelID: ch).isAllowed else { return false }
+            m.presentSheet(SheetRequest(TeamsCommands.editChannelSheet, in: .teams, arg: ch))
+        case TeamsCommands.deleteChannel:
+            guard let ch = channelTarget(arg, m),
+                  let (team, channel) = TeamsListPane.locate(ch, in: app.teams.teams),
+                  app.teams.permission(.delete, teamID: team.teamId, channelID: ch).isAllowed else { return false }
+            let teams = app.teams
+            m.confirm(title: "Delete \u{201C}\(channel.name)\u{201D}?",
+                      message: "The channel and its conversations are deleted for everyone in \(team.name).",
+                      action: "Delete",
+                      perform: { Task { await teams.deleteChannel(teamID: team.teamId, channelID: ch) } })
+        case TeamsCommands.openChannelWindow:
+            guard let ch = channelTarget(arg, m),
+                  let (team, channel) = TeamsListPane.locate(ch, in: app.teams.teams) else { return false }
+            ChannelWindowController.show(m, team: team, channel: channel)
+        case TeamsCommands.moveChannelToSection:
+            // arg = "<sectionID|none>" (menu bar) or "<sectionID|none>|<channel>" (row menu).
+            let parts = (arg ?? "").split(separator: "|", maxSplits: 1).map(String.init)
+            guard let target = parts.first, !target.isEmpty,
+                  let ch = channelTarget(parts.count > 1 ? parts[1] : nil, m) else { return false }
+            m.graph.chats.folders.assign(chatID: ch, folderID: target == "none" ? nil : target)
+        case TeamsCommands.channelWorkflows:
+            guard channelTarget(arg, m) != nil else { return false }
+            // Teams' Workflows are Power Automate flows; that site is the entry.
+            if !m.options.demo, let url = Self.workflowsURL { NSWorkspace.shared.open(url) }
+        case TeamsCommands.hideTeam:
+            guard let team = teamTarget(arg, m) else { return false }
+            prefs(m).setHidden(team, !prefs(m).isHidden(team))
+        case TeamsCommands.teamLink:
+            guard let team = teamTarget(arg, m), let link = Self.teamLink(teamID: team, teams: app.teams.teams) else {
+                return false
+            }
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(link, forType: .string)
+        case TeamsCommands.leaveTeam:
+            guard let id = teamTarget(arg, m), let team = app.teams.teams.first(where: { $0.teamId == id }) else {
+                return false
+            }
+            let teams = app.teams
+            m.confirm(title: "Leave \u{201C}\(team.name)\u{201D}?",
+                      message: "You'll lose access to its channels until someone adds you back.",
+                      action: "Leave",
+                      perform: { Task { await teams.leaveTeam(teamID: id) } })
         default:
             return false
         }
@@ -282,6 +356,28 @@ final class TeamsSection: SectionProvider, InspectorCapable {
         case TeamsCommands.hideChannel:
             guard let ch else { return .disabled }
             return CommandValidation(enabled: true, title: prefs(m).isHidden(ch) ? "Show Channel" : "Hide Channel")
+        case TeamsCommands.manageChannel:
+            return CommandValidation(enabled: ch != nil)
+        case TeamsCommands.channelEmail:
+            let email = ch.flatMap { TeamsListPane.locate($0, in: m.app?.teams.teams ?? [])?.1.email }
+            return CommandValidation(enabled: !(email ?? "").isEmpty)
+        case TeamsCommands.editChannel, TeamsCommands.deleteChannel:
+            guard let ch, let team = TeamsListPane.locate(ch, in: m.app?.teams.teams ?? [])?.0,
+                  let teams = m.app?.teams else { return .disabled }
+            let allowed = teams.permission(c == TeamsCommands.editChannel ? .edit : .delete,
+                                           teamID: team.teamId, channelID: ch).isAllowed
+            return CommandValidation(enabled: allowed && m.connection != .offline)
+        case TeamsCommands.openChannelWindow, TeamsCommands.channelWorkflows:
+            return CommandValidation(enabled: ch != nil)
+        case TeamsCommands.moveChannelToSection:
+            return CommandValidation(enabled: ch != nil && !m.graph.chats.folders.folders.isEmpty)
+        case TeamsCommands.hideTeam:
+            guard let team else { return .disabled }
+            return CommandValidation(enabled: true, title: prefs(m).isHidden(team) ? "Show Team" : "Hide Team")
+        case TeamsCommands.teamLink:
+            return CommandValidation(enabled: team != nil)
+        case TeamsCommands.leaveTeam:
+            return CommandValidation(enabled: team != nil && m.connection != .offline)
         default:
             return .disabled
         }
@@ -300,10 +396,22 @@ final class TeamsSection: SectionProvider, InspectorCapable {
             return ChatNotifyLevel.allCases.map {
                 SubmenuItem(Self.levelTitle($0), arg: $0.rawValue, checked: $0 == current)
             }
+        case TeamsCommands.moveChannelToSection:
+            let folders = m.graph.chats.folders
+            guard let ch = channelTarget(nil, m) else {
+                return folders.folders.map { SubmenuItem($0.name, arg: $0.id, symbol: "folder", enabled: false) }
+            }
+            let current = folders.overrides[ch]
+            var out = folders.folders.map { SubmenuItem($0.name, arg: $0.id, symbol: "folder", checked: current == $0.id) }
+            if current != nil { out.append(SubmenuItem("Remove from Section", arg: "none", separatorBefore: true)) }
+            return out
         default:
             return []
         }
     }
+
+    /// Power Automate: where channel workflows are made.
+    static let workflowsURL = URL(string: "https://make.powerautomate.com/")
 
     // MARK: ⌥⌘1–3 (View ▸ Posts / Files / Notes in Teams)
 
@@ -357,6 +465,17 @@ final class TeamsSection: SectionProvider, InspectorCapable {
             }
         }
         return nil
+    }
+
+    /// Team link: the Teams deep-link form on the team's General
+    /// channel (`/l/team/<general>/conversations?groupId=<team>`).
+    static func teamLink(teamID: String, teams: [TeamItem]) -> String? {
+        guard let t = teams.first(where: { $0.teamId == teamID }),
+              let general = t.channels.first(where: { $0.name == "General" }) ?? t.channels.first else { return nil }
+        let allowed = CharacterSet.urlPathAllowed.subtracting(CharacterSet(charactersIn: ":@/"))
+        let id = general.channelId.addingPercentEncoding(withAllowedCharacters: allowed) ?? general.channelId
+        let team = t.teamId.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? t.teamId
+        return "https://teams.microsoft.com/l/team/\(id)/conversations?groupId=\(team)"
     }
 
     /// Channel link: the Graph `webUrl` when present, else the Teams

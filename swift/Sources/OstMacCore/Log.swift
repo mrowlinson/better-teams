@@ -1,5 +1,9 @@
 // Log.swift — NOLOAD: unified-log channels + friendly network errors.
 //
+// Read after the fact (zsh's builtin `log` shadows the tool; use the
+// full path): /usr/bin/log show --last 30m --predicate
+//   'subsystem == "dev.ostmac.OstMac" AND category == "network"'
+//
 // Subsystem = the bundle id; categories: network (one line per HTTP
 // request from core: method, path template, status, ms), store (disk
 // snapshot load/save durations) and launch (section time-to-content).
@@ -19,6 +23,14 @@ public enum Log {
     public static let network = Logger(subsystem: subsystem, category: "network")
     public static let store = Logger(subsystem: subsystem, category: "store")
     public static let launch = Logger(subsystem: subsystem, category: "launch")
+    /// §106 (SENDFIX): own-send lifecycle + open-chat delivery path
+    /// (phase, route, ms, counts only — never text, names or ids).
+    public static let send = Logger(subsystem: subsystem, category: "send")
+    /// FIXPACK F2: pinned-message source outcomes (reason class only —
+    /// never ids, names or message text).
+    public static let pins = Logger(subsystem: subsystem, category: "pins")
+    /// HWACCEL: one line per video codec session (hw, codec, path, size).
+    public static let media = Logger(subsystem: subsystem, category: "media")
 
     /// Milliseconds since `start` (DispatchTime uptime).
     public static func ms(since start: UInt64) -> Int {
@@ -47,7 +59,10 @@ public enum Log {
         if status >= 400 || status == 0 {
             network.error("\(method, privacy: .public) \(path, privacy: .public) status=\(status, privacy: .public) \(ms, privacy: .public)ms")
         } else {
-            network.info("\(method, privacy: .public) \(path, privacy: .public) status=\(status, privacy: .public) \(ms, privacy: .public)ms")
+            // Notice, not info: info lines are memory-only unless a fault
+            // flushes them, so `log show` found nothing after the fact
+            // (CHATTABS). Notice is persisted and shown by default.
+            network.notice("\(method, privacy: .public) \(path, privacy: .public) status=\(status, privacy: .public) \(ms, privacy: .public)ms")
         }
     }
 

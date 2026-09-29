@@ -65,7 +65,12 @@ public enum SidebarIngest {
         }
         let typeRaw = (message.messageType ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         if typeRaw.contains("Media_") { return .skip }
-        if isBot(message) { return .refresh }
+        if isBot(message) {
+            // A bot's own 1:1 chat (Workflows, Polly…) is a conversation
+            // like any other: Teams moves it to the top on a new post.
+            let botMRI = message.senderID?.hasPrefix("28:") == true
+            return botMRI && isBotChat(message.chatID) && !message.isEdit && !isSystem(message) ? .bubble : .refresh
+        }
         if isSystem(message) { return .refresh }
         if message.isEdit { return .refresh }
         if MeetingSignal.isMeetingThread(message.chatID), isMixedCard(message.text) {
@@ -79,6 +84,15 @@ public enum SidebarIngest {
     public static func isBot(_ message: RealtimeMessage) -> Bool {
         if let id = message.senderID, id.hasPrefix("28:") { return true }
         return MeetingSignal.isFacilitator(message.sender)
+    }
+
+    /// A 1:1 chat with a bot: the legacy bare bot MRI id (`28:…`) or a
+    /// 1:1 id (`19:…@unq.gbl.spaces`) whose pair names a bot app. The
+    /// bot sender check (`isBot`) decides the rest: in a 1:1 id the only
+    /// bot poster is the mate.
+    public static func isBotChat(_ chatID: String) -> Bool {
+        let id = chatID.trimmingCharacters(in: .whitespaces)
+        return id.hasPrefix("28:") || (id.hasPrefix("19:") && id.hasSuffix("@unq.gbl.spaces"))
     }
 
     /// Known non-text types (`ThreadActivity`, `Control`, …): first

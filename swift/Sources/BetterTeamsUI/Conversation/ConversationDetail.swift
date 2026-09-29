@@ -13,12 +13,17 @@ struct ConversationDetail: View {
     @ObservedObject var conv: ConversationStore
     @ObservedObject var chats: ChatListViewModel
     @Environment(\.windowModel) private var model
+    /// CHATTABS: the chat's pinned tabs (cached per chat, read-only).
+    @StateObject private var chatTabs = ChatTabsStore()
 
     var body: some View {
         if let model {
             let row = chats.chat(id: ref)
-            let name = row?.name ?? (conv.chatID == ref ? conv.headerTitle : DemoData.name(for: ref) ?? "Conversation")
+            let name = row?.name ?? (conv.chatID == ref ? conv.headerTitle : DemoFixture.name(for: ref, demo: model.options.demo) ?? "Conversation")
             let isGroup = row?.is_group ?? false
+            let pinned = chatTabs.tabs(for: ref)
+            let layout = ChatTabLayout(kind: ChatKind.of(chatID: ref, isGroup: isGroup), tabs: pinned)
+            let selected = layout.resolve(builtin: model.nav.tab(for: ref), pinned: model.nav.detailAppTab[ref])
             VStack(spacing: 0) {
                 RosterBound(chatID: ref, roster: model.app?.chatRoster, loads: !ChannelTabsStore.isChannelID(ref)) { count in
                     ConversationHeader(
@@ -26,20 +31,43 @@ struct ConversationDetail: View {
                         subtitle: isGroup ? Self.subtitle(isGroup: true, messages: conv.chatID == ref ? conv.messages : [],
                                                           rosterCount: count)
                             : PresenceLine(presence: model.app?.presence, chatID: ref).text,
-                        tab: Binding(get: { model.nav.tab(for: ref) },
-                                     set: { model.navigator?.setDetailTab($0, for: ref) }))
+                        layout: layout,
+                        tab: Binding(get: { selected }, set: { key in
+                            switch key {
+                            case .builtin(let t): model.navigator?.setDetailTab(t, for: ref)
+                            case .pinned(let id): model.navigator?.setDetailAppTab(id, for: ref)
+                            }
+                        }),
+                        opened: model.nav.detailOpenedTab[ref].map(ChatTabKey.pinned),
+                        open: { key in
+                            if case .pinned(let id) = key { model.navigator?.openDetailAppTab(id, for: ref) }
+                        },
+                        close: { model.navigator?.closeOpenedTab(for: ref) })
                 }
                 Divider()
                 // The tab body fills the pane, so the header stays pinned
                 // to the top whatever the tab shows.
                 Group {
-                    switch model.nav.tab(for: ref) {
-                    case .chat: chatTab(name: name, services: ConversationServices.of(model))
-                    case .files: FileTable(scope: .conversation(ref))
-                    case .notes: NotesTab(scope: .conversation(ref))
+                    switch selected {
+                    case .builtin(.chat): chatTab(name: name, services: ConversationServices.of(model))
+                    case .builtin(.files): FileTable(scope: .conversation(ref))
+                    case .builtin(.notes): NotesTab(scope: .conversation(ref))
+                    case .builtin(.recap):
+                        if let app = model.app {
+                            ChatRecapTab(chatID: ref, chatName: name, recordings: app.recordings,
+                                         transcripts: app.transcripts)
+                        } else {
+                            ChatTabPlaceholder(title: "Recap", symbol: ChatTabLayout.symbol(.recap),
+                                               message: "Meeting recordings, transcripts and notes show here once the meeting has them.")
+                        }
+                    case .pinned(let id):
+                        if let t = pinned.first(where: { $0.id == id }) {
+                            ChatPinnedTabPane(tab: t, chatID: ref)
+                        }
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .task(id: ref) { await chatTabs.load(chatID: ref, demo: model.app?.isDemo ?? false) }
             }
         }
     }
