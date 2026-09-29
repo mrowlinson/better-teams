@@ -110,7 +110,7 @@ final class SignInViewController: NSViewController {
         if asSheet { model.dismissSheet() }
         let model = self.model
         let added = self.added
-        let sheet = WebAuthSheet(web: model.frameHost.makeSignInWebView(ephemeral: adding != nil), start: url,
+        let sheet = WebAuthSheet(web: model.frameHost.makeSignInWebView(addingProfile: adding?.profile), start: url,
                                  redirectURI: info.redirectURI) { [weak self] callback in
             self?.webSheetOpen = false
             model.dismissSheet()

@@ -482,7 +482,49 @@ public final class CatchUpDemoTransport: CatchUpStreamingTransport, @unchecked S
             if let holdPartial { onPartial(holdPartial) }
             try await Task.sleep(for: .seconds(3600))
         }
-        return DemoData.catchUpSummaries.first { prompt.contains($0.marker) }?.text ?? DemoData.catchUpSummary
+        if prompt.hasPrefix(CatchUpRating.promptLead) { return Self.demoRatings(prompt) }
+        if let canned = DemoData.catchUpSummaries.first(where: { prompt.contains($0.marker) })?.text { return canned }
+        return Self.extractive(prompt) ?? DemoData.catchUpSummary
+    }
+
+    /// Demo summary built from the prompt's own message lines (so each
+    /// period tab shows what it actually read): who spoke, then the most
+    /// salient lines as points. Never a model.
+    static func extractive(_ prompt: String) -> String? {
+        let lines = prompt.components(separatedBy: "\n").filter { l in
+            guard let r = l.range(of: ": "), !l.hasPrefix(" ") else { return false }
+            let sender = l[..<r.lowerBound]
+            return !sender.isEmpty && sender.count <= 40 && sender.first?.isUppercase == true
+                && !sender.contains(".") && !["SUMMARY", "POINTS", "ACTIONS", "Messages, oldest first, one per line as \"Sender"].contains(String(sender))
+        }
+        guard !lines.isEmpty else { return nil }
+        var senders: [String] = []
+        for l in lines {
+            let s = String(l[..<l.range(of: ": ")!.lowerBound])
+            if !senders.contains(s) { senders.append(s) }
+        }
+        let ctx = CatchUpFilterContext(now: DemoData.catchUpNow)
+        let ranked = lines.enumerated().sorted { a, b in
+            let sa = CatchUpNoise.salience(ChatMessage(id: "", sender: "", timestamp: "", content: a.element), ctx)
+            let sb = CatchUpNoise.salience(ChatMessage(id: "", sender: "", timestamp: "", content: b.element), ctx)
+            return sa != sb ? sa > sb : a.offset > b.offset
+        }.prefix(4).sorted { $0.offset < $1.offset }.map(\.element)
+        let who = senders.prefix(3).joined(separator: ", ")
+        return "SUMMARY: \(lines.count) message\(lines.count == 1 ? "" : "s") from \(who).\nPOINTS:\n"
+            + ranked.map { "- \($0)" }.joined(separator: "\n") + "\nACTIONS:\n- None"
+    }
+
+    /// Demo rating pass: social points 0, strong cues 3, the rest 2.
+    static func demoRatings(_ prompt: String) -> String {
+        guard let r = prompt.range(of: "Points:\n") else { return "" }
+        let ctx = CatchUpFilterContext(now: DemoData.catchUpNow)
+        return prompt[r.upperBound...].components(separatedBy: "\n").compactMap { line -> String? in
+            guard let dot = line.range(of: ". "), let n = Int(line[..<dot.lowerBound]) else { return nil }
+            let text = String(line[dot.upperBound...])
+            if CatchUpNoise.reason(text: text) != nil { return "\(n): 0" }
+            let s = CatchUpNoise.salience(ChatMessage(id: "", sender: "", timestamp: "", content: text), ctx)
+            return "\(n): \(s >= 3 ? 3 : 2)"
+        }.joined(separator: "\n")
     }
 }
 
@@ -846,6 +888,10 @@ public final class CatchUpStore: ObservableObject {
     /// when nothing streams. The previous summary for the same chat
     /// stays in `previousText` while a new one runs (no blank pane).
     @Published public private(set) var partial: String?
+    /// Period of `state` (nil = unbounded, the legacy path).
+    @Published public private(set) var statePeriod: CatchUpPeriod?
+    /// Last text per "chatID|period" (shown while that period refreshes).
+    private var periodTexts: [String: String] = [:]
     @Published public private(set) var previousText: String?
 
     /// True when the hidden deprecated-provider key is set (Settings
@@ -935,13 +981,25 @@ public final class CatchUpStore: ObservableObject {
     /// the local model only (no key, no URL, no CLI) and consults the
     /// per-thread cache first. Every failure lands in `.failed` with
     /// a Retry path — never stuck in `.loading`.
-    public func summarize(messages: [ChatMessage], chatID: String? = nil) async {
-        if stateChatID != chatID {
+    /// `period` + `filter` (CATCHTABS, the inspector): input is bounded
+    /// to the period, noise-filtered and salience-ranked, and the result
+    /// gets the bullet rating pass; each (conversation, period) keeps its
+    /// last text, which stays on screen while that period refreshes.
+    public func summarize(messages rawMessages: [ChatMessage], chatID: String? = nil,
+                          period: CatchUpPeriod? = nil, filter: CatchUpFilterContext? = nil) async {
+        let periodKey = period.map { "\(chatID ?? "")|\($0.rawValue)" }
+        if let periodKey {
+            previousText = periodTexts[periodKey]
+        } else if stateChatID != chatID {
             previousText = nil
         } else if case let .loaded(text) = state {
             previousText = text
         }
         stateChatID = chatID
+        statePeriod = period
+        // A newer run supersedes any in flight (tab or chat switch).
+        generation += 1
+        let gen = generation
         partial = nil
         defer { partial = nil }
         guard config.enabled else {
@@ -961,6 +1019,23 @@ public final class CatchUpStore: ObservableObject {
             state = .failed(CatchUpError.missingKey.message)
             return
         }
+        var messages = rawMessages
+        var cacheChatID = chatID
+        if let period, let filter {
+            guard !CatchUpBound.messages(rawMessages, period: period, now: filter.now).isEmpty else {
+                lastError = nil
+                state = .loaded("SUMMARY: No messages in the last \(period.title.lowercased()).")
+                return
+            }
+            messages = CatchUpPipeline.prepare(rawMessages, period: period, filter)
+            guard !messages.isEmpty else {
+                lastError = nil
+                state = .loaded("SUMMARY: Nothing in the last \(period.title.lowercased()) needs your attention.")
+                if let periodKey { periodTexts[periodKey] = nil }
+                return
+            }
+            cacheChatID = "\(chatID ?? "")|\(period.rawValue)|\(filter.feedback.dismissals.count)"
+        }
         let transcript = CatchUp.transcript(from: messages)
         guard !transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             lastError = nil
@@ -970,15 +1045,14 @@ public final class CatchUpStore: ObservableObject {
         // On-device cache: an unchanged thread replays without a new
         // model session. Cloud/CLI providers always run fresh.
         if config.provider == .onDevice,
-           let hit = summaryCache.lookup(chatID: chatID, messages: messages)
+           let hit = summaryCache.lookup(chatID: cacheChatID, messages: messages)
         {
             lastError = nil
             state = .loaded(hit)
+            if let periodKey { periodTexts[periodKey] = hit }
             return
         }
         state = .loading
-        generation += 1
-        let gen = generation
         do {
             // Exclusive routing: CLI-selected => CLI ONLY, on-device
             // => local model ONLY (never HTTP, never a cloud fallback).
@@ -986,8 +1060,13 @@ public final class CatchUpStore: ObservableObject {
             if config.provider == .onDevice {
                 // 4096-token window: chunked map-reduce, streamed.
                 let engine = OnDeviceCatchUpEngine(transport: onDeviceTransport)
-                text = try await engine.summarize(messages: messages) { [weak self] snapshot in
+                let raw = try await engine.summarize(messages: messages) { [weak self] snapshot in
                     Task { @MainActor [weak self] in self?.applyPartial(snapshot, gen: gen) }
+                }
+                if let filter {
+                    text = await CatchUpPipeline.refine(raw, filter, rater: onDeviceTransport)
+                } else {
+                    text = raw
                 }
             } else {
                 let active: any CatchUpTransport = config.provider == .openCodeCLI ? cliTransport : transport
@@ -995,20 +1074,28 @@ public final class CatchUpStore: ObservableObject {
                     baseURL: config.baseURL, apiKey: config.apiKey,
                     model: config.model, prompt: CatchUp.prompt(transcript: transcript))
             }
+            guard gen == generation else {
+                // Superseded: keep the text for its period, show nothing.
+                if let periodKey, !text.isEmpty { periodTexts[periodKey] = text }
+                return
+            }
             if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 lastError = .empty
                 state = .failed(CatchUpError.empty.message)
             } else {
                 if config.provider == .onDevice {
-                    summaryCache.store(chatID: chatID, messages: messages, text: text)
+                    summaryCache.store(chatID: cacheChatID, messages: messages, text: text)
                 }
                 lastError = nil
                 state = .loaded(text)
+                if let periodKey { periodTexts[periodKey] = text }
             }
         } catch let e as CatchUpError {
+            guard gen == generation else { return }
             lastError = e
             state = .failed(e.message)
         } catch {
+            guard gen == generation else { return }
             lastError = nil
             state = .failed(String(describing: error))
         }
@@ -1019,6 +1106,7 @@ public final class CatchUpStore: ObservableObject {
         state = .idle
         lastError = nil
         stateChatID = nil
+        statePeriod = nil
         partial = nil
         previousText = nil
     }

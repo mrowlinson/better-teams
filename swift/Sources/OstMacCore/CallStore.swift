@@ -142,7 +142,7 @@ public final class CallStore: ObservableObject {
         Task {
             let fetched: CallInfo?
             do {
-                fetched = try await Task.detached { try fetch() }.value
+                fetched = try await Task.blocking { try fetch() }.value
             } catch {
                 fetched = nil
             }
@@ -334,7 +334,7 @@ public final class CallStore: ObservableObject {
         }
         Task {
             do {
-                let r = try await Task.detached { try RustCore.callMute(muted: on) }.value
+                let r = try await Task.blocking { try RustCore.callMute(muted: on) }.value
                 await MainActor.run {
                     self.muted = r.muted
                     self.controlsError = nil
@@ -364,7 +364,7 @@ public final class CallStore: ObservableObject {
         UserDefaults.standard.set(name, forKey: AvPanelModel.speakerKey)
         Task {
             do {
-                _ = try await Task.detached { try RustCore.callSpeaker(name: name) }.value
+                _ = try await Task.blocking { try RustCore.callSpeaker(name: name) }.value
                 await MainActor.run { self.controlsError = nil }
             } catch {
                 await MainActor.run {
@@ -383,7 +383,7 @@ public final class CallStore: ObservableObject {
         }
         Task {
             do {
-                let d = try await Task.detached { try RustCore.audioDevices() }.value
+                let d = try await Task.blocking { try RustCore.audioDevices() }.value
                 await MainActor.run {
                     self.speakerDevices = d.outputs
                     self.speakersLoaded = true
@@ -421,7 +421,7 @@ public final class CallStore: ObservableObject {
             mediaGeneration += 1
             let gen = mediaGeneration
             let fetch = mediaFetcher
-            Task.detached(priority: .utility) { [weak self] in
+            Task.blocking(priority: .utility) { [weak self] in
                 while self?.mediaPolling == true, self?.mediaGeneration == gen {
                     try? await Task.sleep(nanoseconds: 1_000_000_000)
                     guard self?.mediaPolling == true, self?.mediaGeneration == gen else { return }
@@ -527,7 +527,7 @@ public final class CallStore: ObservableObject {
         Task {
             let result: Result<CallResult, Error>
             do {
-                result = try .success(await Task.detached { try work() }.value)
+                result = try .success(await Task.blocking { try work() }.value)
             } catch {
                 result = .failure(error)
             }

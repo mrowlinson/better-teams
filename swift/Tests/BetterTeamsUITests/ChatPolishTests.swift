@@ -47,13 +47,16 @@ final class ChatPolishTests: XCTestCase {
     }
 
     func testLeavingOnlyClearsOwnHoverInEitherOrder() {
-        let h = MessageHover()
+        let clock = ManualHoverScheduler()
+        let h = MessageHover(scheduler: clock)
         h.pointer(true, id: "a")
         h.pointer(true, id: "b")    // enter next before leaving previous
         h.pointer(false, id: "a")
-        XCTAssertEqual(h.hoveredID, "b")
+        clock.fire()
+        XCTAssertEqual(h.shownID, "b")
         h.pointer(false, id: "b")
-        XCTAssertNil(h.hoveredID)
+        clock.fire()
+        XCTAssertNil(h.shownID)
         h.focus(true, id: "x")
         h.focus(false, id: "y")
         XCTAssertEqual(h.focusedID, "x")
@@ -87,7 +90,7 @@ final class ChatPolishTests: XCTestCase {
         let full = try DemoMedia.data(for: DemoMedia.photo1Full)
         let bubble = NSImage(size: NSSize(width: 520, height: 347))
         let original = FullResImageModel(thumbURL: "https://h/v1/objects/0/views/imgt1", messageID: "m1",
-                                         cache: RichMediaCache(diskDir: nil), fetcher: { _ in full })
+                                         cache: RichMediaCache(diskDir: nil, memory: .pinned), fetcher: { _ in full })
         let saved = await ImageSave.bytes(original: original, fallback: bubble)
         let (data, type) = try XCTUnwrap(saved)
         XCTAssertEqual(data, full)                          // byte-identical original
@@ -98,16 +101,9 @@ final class ChatPolishTests: XCTestCase {
         struct Down: Error {}
         let decoded = try XCTUnwrap(NSImage(data: DemoMedia.data(for: DemoMedia.photo1)))
         let original = FullResImageModel(thumbURL: "https://h/v1/objects/0/views/imgt2", messageID: "m2",
-                                         cache: RichMediaCache(diskDir: nil), fetcher: { _ in throw Down() })
+                                         cache: RichMediaCache(diskDir: nil, memory: .pinned), fetcher: { _ in throw Down() })
         let saved = await ImageSave.bytes(original: original, fallback: decoded)
         XCTAssertEqual(saved?.1, .png)
         XCTAssertNotNil(saved.flatMap { NSImage(data: $0.0) })
-    }
-
-    func testToolbarStaysInsideItsRowAndGrowsIntoFreeSide() {
-        XCTAssertEqual(HoverToolbarRules.lift(showsHeader: false), -2)   // 2 pt top padding
-        XCTAssertLessThan(HoverToolbarRules.lift(showsHeader: true), -2)
-        XCTAssertEqual(HoverToolbarRules.alignment(ownTrailing: true), .topTrailing)
-        XCTAssertEqual(HoverToolbarRules.alignment(ownTrailing: false), .topLeading)
     }
 }

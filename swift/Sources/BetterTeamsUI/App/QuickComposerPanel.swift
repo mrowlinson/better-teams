@@ -41,13 +41,6 @@ final class QuickComposerController {
     func show() {
         guard let m = shell?.model, let app = m.app else { return }
         panel?.close()
-        let p = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 420, height: 160),
-                        styleMask: [.titled, .closable, .utilityWindow], backing: .buffered, defer: true)
-        p.title = "Quick Message"
-        p.isFloatingPanel = true
-        p.hidesOnDeactivate = false
-        p.isRestorable = false
-        p.becomesKeyOnlyIfNeeded = false
         let chats = Array(m.graph.chats.chats.prefix(20)).map { (id: $0.id, name: $0.name) }
         let view = QuickComposerView(chats: chats) { [weak self, weak app] id, name, text in
             app?.quickSend(targetID: id, targetName: name, text: text)
@@ -55,11 +48,32 @@ final class QuickComposerController {
         } cancel: { [weak self] in
             self?.panel?.close()
         }
-        p.contentViewController = Hosting.controller(view, role: .sheet, model: m)
-        p.center()
+        let p = Self.makePanel(view, model: m)
         panel = p
         NSApp.activate()
         p.makeKeyAndOrderFront(nil)
+    }
+
+    /// The panel at its final size, centered, BEFORE it is ordered in
+    /// (IMGWIN2): the hosting controller's fitting size is applied now,
+    /// not on its first layout pass after showing (which ordered the
+    /// panel in at zero height, then grew it off-center).
+    /// `make` builds the panel (tests pass one that never goes on screen).
+    static func makePanel<V: View>(_ view: V, model: WindowModel?,
+                                   make: (NSRect, NSWindow.StyleMask) -> NSPanel = {
+                                       NSPanel(contentRect: $0, styleMask: $1, backing: .buffered, defer: true)
+                                   }) -> NSPanel {
+        let p = make(NSRect(x: 0, y: 0, width: 420, height: 160), [.titled, .closable, .utilityWindow])
+        p.title = "Quick Message"
+        p.isFloatingPanel = true
+        p.hidesOnDeactivate = false
+        p.isRestorable = false
+        p.becomesKeyOnlyIfNeeded = false
+        let host = Hosting.controller(view, role: .sheet, model: model)
+        p.contentViewController = host
+        p.setContentSize(host.view.fittingSize)
+        p.center()
+        return p
     }
 }
 

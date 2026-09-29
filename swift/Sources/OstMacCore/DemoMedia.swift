@@ -13,6 +13,9 @@ public enum DemoMedia {
     /// Full-res viewer variants (om-imgfull): same scene at 2×.
     public static let photo1Full = "demo://photo-1-full"
     public static let photo2Full = "demo://photo-2-full"
+    /// Portrait fixture (IMGWIN viewer sizing evidence; no demo message).
+    public static let photo3 = "demo://photo-3"
+    public static let photo3Full = "demo://photo-3-full"
     /// Animated GIF fixture (om-gif-playback): 4-frame looping sunset,
     /// disc arcs left→right as the sky cools. No binary blobs, like PNGs.
     public static let gif1 = "demo://gif-1"
@@ -28,6 +31,8 @@ public enum DemoMedia {
         case photo2: return render(seed: 2)
         case photo1Full: return render(seed: 1, width: 960, height: 640)
         case photo2Full: return render(seed: 2, width: 960, height: 640)
+        case photo3: return render(seed: 2, width: 240, height: 480)
+        case photo3Full: return render(seed: 2, width: 720, height: 1440)
         case gif1: return renderGif()
         case gif1Full: return renderGif(width: 960, height: 640)
         default: throw MediaFetchError.failed("unknown demo media: \(url)")

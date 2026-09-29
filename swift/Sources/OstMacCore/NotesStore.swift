@@ -173,10 +173,10 @@ public final class NotesStore: ObservableObject {
         let group = groupID
         Task {
             do {
-                _ = try await Task.detached {
+                _ = try await Task.blocking {
                     try fetchers.append(id, body, group)
                 }.value
-                let resp = try await Task.detached {
+                let resp = try await Task.blocking {
                     try fetchers.page(id, group)
                 }.value
                 guard gen == generation else { return }
@@ -200,7 +200,7 @@ public final class NotesStore: ObservableObject {
         let group = groupID
         Task {
             do {
-                let resp = try await Task.detached {
+                let resp = try await Task.blocking {
                     try fetchers.notebooks(group)
                 }.value
                 guard gen == generation else { return }
@@ -221,7 +221,7 @@ public final class NotesStore: ObservableObject {
         let group = groupID
         Task {
             do {
-                let resp = try await Task.detached {
+                let resp = try await Task.blocking {
                     try fetchers.sections(notebookID, group)
                 }.value
                 guard gen == generation else { return }
@@ -243,7 +243,7 @@ public final class NotesStore: ObservableObject {
         let group = groupID
         Task {
             do {
-                let resp = try await Task.detached {
+                let resp = try await Task.blocking {
                     try fetchers.page(pageID, group)
                 }.value
                 guard gen == generation else { return }

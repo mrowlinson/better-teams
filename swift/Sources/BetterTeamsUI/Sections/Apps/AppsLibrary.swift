@@ -1,8 +1,9 @@
 // AppsLibrary.swift — the app library for one account window (UI-SPEC
-// §7.2): Built-in (native apps + Teams on the Web, always present),
-// Channel Tabs (teams-cli `tabs-all` scan, cached), Personal Apps (gap
-// G2), Web Links (user-added, per account). Demo: deterministic
-// fixtures, no CLI, no user defaults.
+// §7.2): Built-in (native apps, always present), Personal Apps (gap
+// G2), Web Links (user-added, per account). Apps only: a channel's tabs
+// live in that channel's tab bar, never here. Demo: deterministic
+// fixtures, no user defaults.
+import CryptoKit
 import Foundation
 import Observation
 import OstMacCore
@@ -55,8 +56,27 @@ struct LibraryItem: Identifiable, Equatable {
 @Observable
 @MainActor
 final class AppsLibrary {
-    private(set) var channelTabs: [FrameApp] = []
     private(set) var webLinks: [FrameApp] = []
+    /// Office documents opened from Files this session (R9): each opens
+    /// read-only in its own pane, shown as the rail's transient item.
+    private(set) var documents: [FrameApp] = []
+
+    static let documentPrefix = "doc."
+
+    /// The pane app for an Office document's web page (nil: not an
+    /// Office document stored in SharePoint or OneDrive).
+    func document(name: String, webURL: URL) -> FrameApp? {
+        guard OfficeDocumentView.isOfficeDocument(name: name),
+              let view = OfficeDocumentView.viewURL(webURL) else { return nil }
+        let digest = SHA256.hash(data: Data(webURL.absoluteString.utf8)).prefix(8)
+        let id = Self.documentPrefix + digest.map { String(format: "%02x", $0) }.joined()
+        if let open = documents.first(where: { $0.id == id }) { return open }
+        let app = FrameApp(id: id, label: name, symbol: OfficeDocumentView.symbol(name: name),
+                           source: .webLink, launch: .direct(view))
+        documents.append(app)
+        FrameAppDirectory.register([app])
+        return app
+    }
     /// Personal apps from the Teams app catalog (APPHOST): hosted
     /// natively over TeamsJS. App bar (userpinned) order first.
     private(set) var personalApps: [FrameApp] = []
@@ -68,12 +88,6 @@ final class AppsLibrary {
     private(set) var catalogPinned: [FrameAppID] = []
     /// Called once per successful catalog fetch with `catalogPinned`.
     @ObservationIgnored var onCatalogPinned: (([FrameAppID]) -> Void)?
-    private(set) var scanning = false
-    private(set) var scanError: String?
-    /// A scan result (or cache) exists.
-    private(set) var scanned = false
-    /// "Scanning 12 of 22 channels" is not reported by teams-cli; the
-    /// scan is one call, so progress is indeterminate.
     @ObservationIgnored let demo: Bool
     @ObservationIgnored private let accountKey: String
     /// The Apps store (APPHOST-B2): browse, search, detail, install.
@@ -86,26 +100,22 @@ final class AppsLibrary {
         demo = accountKey == "demo"
         store = AppStoreModel(accountKey: accountKey)
         if demo {
-            channelTabs = DemoFrameApps.channelTabs
             webLinks = DemoFrameApps.webLinks
             let installed = DemoAppStore.apps.filter { DemoAppStore.installedIDs.contains($0.id) }
             personalApps = DemoTeamsJSApp.apps + installed.compactMap(DemoAppStore.hosted)
             catalogManifests = installed + DemoAppStore.apps.filter { $0.id == DemoTeamsJSApp.appID }
-            scanned = true
             FrameAppDirectory.register(DemoFrameApps.seeded)
         } else {
-            let cache = TeamsFrameLibrary.loadCache(defaults: .standard)
-            channelTabs = Self.apps(from: cache)
-            scanned = !cache.isEmpty
             webLinks = Self.loadLinks(accountKey).compactMap(Self.app(from:))
             if let cached = TeamsAppCatalogCache.load(account: accountKey) {
                 personalApps = Self.apps(from: cached)
                 catalogPinned = Self.pinnedIDs(cached)
                 catalogManifests = cached.apps
+                AppIconCache.shared.register(cached.apps, appID: Self.appID(forCatalogApp:))
             }
         }
         store.setInstalled(catalogManifests)
-        FrameAppDirectory.register([FrameBuiltIns.teamsWeb] + channelTabs + webLinks + personalApps)
+        FrameAppDirectory.register(webLinks + personalApps)
         store.onDemoInstall = { [weak self] m in self?.demoInstall(m) }
         store.onInstalled = { [weak self] in self?.refreshCatalog() }
         if !demo {
@@ -132,13 +142,12 @@ final class AppsLibrary {
     }
 
     var builtIns: [LibraryItem] {
-        NativeAppID.allCases.map(LibraryItem.init(native:)) + [LibraryItem(FrameBuiltIns.teamsWeb)]
+        NativeAppID.allCases.map(LibraryItem.init(native:))
     }
 
     func app(_ id: FrameAppID) -> FrameApp? {
-        if id == FrameBuiltIns.teamsWebID { return FrameBuiltIns.teamsWeb }
-        if let a = channelTabs.first(where: { $0.id == id }) ?? webLinks.first(where: { $0.id == id })
-            ?? personalApps.first(where: { $0.id == id }) {
+        if let a = webLinks.first(where: { $0.id == id })
+            ?? personalApps.first(where: { $0.id == id }) ?? documents.first(where: { $0.id == id }) {
             return a
         }
         return demo ? DemoFrameApps.seeded.first { $0.id == id } : nil
@@ -156,55 +165,16 @@ final class AppsLibrary {
         }
     }
 
-    // MARK: channel tab scan (teams-cli, absolute path only)
+    // MARK: refresh (toolbar Refresh Library)
 
-    /// Refresh Library (toolbar) and the inline Retry share this answer.
-    func canRefresh(offline: Bool) -> Bool { !demo && !scanning && !offline }
+    /// Refresh Library (toolbar, Settings ▸ Apps) re-fetches the catalog
+    /// and the store.
+    func canRefresh(offline: Bool) -> Bool { !demo && !catalogLoading && !offline }
 
     func refresh() {
-        guard !demo, !scanning else { return }
+        guard !demo else { return }
         refreshCatalog()
         store.refresh()
-        scanning = true
-        scanError = nil
-        Task { @MainActor [weak self] in
-            let result = await Task.detached(priority: .utility) { () -> Result<String, Error> in
-                guard let cli = TeamsFrameLibrary.resolveCLI() else {
-                    return .failure(TeamsFrameLibraryError.cliNotFound)
-                }
-                return Result { try TeamsFrameLibrary.runTabsAll(cli: cli) }
-            }.value
-            self?.finish(result.map(TeamsFrameLibrary.parseTabsAll))
-        }
-    }
-
-    private func finish(_ result: Result<[TeamsFrameLibraryEntry], Error>) {
-        scanning = false
-        switch result {
-        case .success(let entries):
-            TeamsFrameLibrary.saveCache(entries, defaults: .standard)
-            channelTabs = Self.apps(from: entries)
-            scanned = true
-            FrameAppDirectory.register(channelTabs)
-        case .failure(let e):
-            if case TeamsFrameLibraryError.cliNotFound = e {
-                scanError = "The channel scanner isn't included in this build."
-            } else if case TeamsFrameLibraryError.cliFailed(let msg) = e, !msg.isEmpty {
-                scanError = msg
-            } else {
-                scanError = e.localizedDescription
-            }
-        }
-    }
-
-    static func apps(from entries: [TeamsFrameLibraryEntry]) -> [FrameApp] {
-        entries.compactMap { e in
-            guard let launch = FramePolicy.launch(url: e.url, label: e.label) else { return nil }
-            let id = "ct." + e.id.replacingOccurrences(of: "|", with: ".").replacingOccurrences(of: " ", with: "-")
-            return FrameApp(id: id, label: e.label, symbol: "globe",
-                            source: .channelTab(team: e.team, channel: e.channel), launch: launch)
-        }
-        .sorted { ($0.sourceLine, $0.label) < ($1.sourceLine, $1.label) }
     }
 
     // MARK: Teams app catalog (APPHOST; read-only)
@@ -228,6 +198,7 @@ final class AppsLibrary {
                 self.catalogPinned = Self.pinnedIDs(entry)
                 self.catalogError = nil
                 self.catalogManifests = r.apps
+                AppIconCache.shared.register(r.apps, appID: Self.appID(forCatalogApp:))
                 self.store.setInstalled(r.apps)
                 FrameAppDirectory.register(apps)
                 self.onCatalogPinned?(self.catalogPinned)

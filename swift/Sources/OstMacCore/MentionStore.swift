@@ -2,7 +2,8 @@
 //
 // Membership accrues ONLY on owner mentions mined from the event's
 // unstripped raw (Mention spans + `<at>` tags, MRI preferred with a
-// display-name backup — same gate as the noisy-chat rules). Own
+// display-name backup — same gate as the noisy-chat rules), plus
+// @everyone in chats (never channel blasts). Own
 // messages never accrue (self-mentions notify nobody); the open chat
 // never accrues (its bubbles are already visible); opening a chat
 // clears it. The sidebar's Mentions row filters to these ids.
@@ -17,10 +18,10 @@
 //   mentions.markRead(chatID: id) // on open
 //
 // Threading: @MainActor (ObservableObject for the sidebar + NSApp dock).
-// History is NOT scanned: like UnreadStore (which accrues live-only),
-// threads mentioned before launch surface on the next mentioning
-// event — `noteThread(chatID:messages:ownName:)` is the explicit seam
-// for callers that already hold history (tests, future lanes).
+// Mentions made before launch come from the activity feed: every chat
+// list fetch reads it and `seed(_:)` adopts its unreviewed chat
+// mentions (ChatListSeed). `noteThread(chatID:messages:ownName:)` stays
+// the seam for callers that already hold history.
 // The dock sink is injectable for tests (FakeDockBadge records labels).
 import Foundation
 
@@ -29,6 +30,13 @@ import Foundation
 public final class MentionStore: ObservableObject {
     /// Mentioning chat ids. Cleared ids are absent, never stored empty.
     @Published public private(set) var mentionedIDs: Set<String> = []
+
+    /// Ids flagged by a server seed (activity feed), not a live event:
+    /// a later seed that no longer lists one clears only these.
+    private var seededIDs: Set<String> = []
+    /// When each chat was last opened here: a seed never re-flags a
+    /// mention the owner already saw in this app.
+    private var readAt: [String: Date] = [:]
 
     private let dock: any DockBadging
 
@@ -74,8 +82,12 @@ public final class MentionStore: ObservableObject {
         if visibleChatIDs.contains(message.chatID) { return false }
         if let open = openChatID, open == message.chatID { return false }
         if isOwnMessage(message, ownerMRI: ownerMRI, ownName: own) { return false }
-        return Mentions.mentionsOwner(
-            message.mentions, ownerMRI: ownerMRI, ownerDisplayName: own)
+        if Mentions.mentionsOwner(
+            message.mentions, ownerMRI: ownerMRI, ownerDisplayName: own) { return true }
+        // @everyone in a chat is a mention too (Teams files it in the
+        // activity feed as mentionInChat/everyone, which seeds this
+        // store); channel/team blasts stay out.
+        return isChat(message.chatID) && Mentions.mentionsChannelOrEveryone(message.mentions)
     }
 
     /// Flag one live event's chat when it mentions the owner. Own
@@ -91,6 +103,7 @@ public final class MentionStore: ObservableObject {
             ownerMRI: ownerMRI, openChatID: openChatID,
             visibleChatIDs: visibleChatIDs)
         else { return }
+        seededIDs.remove(message.chatID)
         if mentionedIDs.insert(message.chatID).inserted {
             syncDock()
         }
@@ -110,12 +123,16 @@ public final class MentionStore: ObservableObject {
     /// Opening a chat clears its flag (mentions now visible).
     /// Unknown ids are a no-op (no dock write).
     public func markRead(chatID: String) {
+        readAt[chatID] = Date()
+        seededIDs.remove(chatID)
         guard mentionedIDs.remove(chatID) != nil else { return }
         syncDock()
     }
 
     /// Clear every flag (sign-out). Empty is a no-op (no dock write).
     public func markAllRead() {
+        seededIDs.removeAll()
+        readAt.removeAll()
         guard !mentionedIDs.isEmpty else { return }
         mentionedIDs.removeAll()
         syncDock()
@@ -127,6 +144,34 @@ public final class MentionStore: ObservableObject {
         guard mentionedIDs != ids else { return }
         mentionedIDs = ids
         syncDock()
+    }
+
+    /// Adopt the activity feed's unreviewed chat mentions (chat id →
+    /// newest mention time, ChatListSeed.mentionedChats) so the Mentions
+    /// filter is right after launch. Seeded flags the feed no longer
+    /// lists clear; live flags and chats opened here since the mention
+    /// stay as they are. Publishes and writes the dock only on a change.
+    public func seed(_ flagged: [String: Date]) {
+        var next = mentionedIDs
+        var seeded = seededIDs
+        for (id, at) in flagged where !id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            if let opened = readAt[id], opened >= at { continue }
+            if next.insert(id).inserted { seeded.insert(id) }
+        }
+        for id in seeded where flagged[id] == nil {
+            next.remove(id)
+            seeded.remove(id)
+        }
+        seededIDs = seeded
+        guard next != mentionedIDs else { return }
+        mentionedIDs = next
+        syncDock()
+    }
+
+    /// Chat (not channel) thread id: channel @team/@channel blasts
+    /// never flag.
+    nonisolated static func isChat(_ id: String) -> Bool {
+        !id.hasSuffix("@thread.tacv2") && !id.hasSuffix("@thread.skype")
     }
 
     private func syncDock() {

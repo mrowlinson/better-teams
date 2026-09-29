@@ -114,10 +114,9 @@ struct MessageRowView: View {
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
             if row.ownTrailing {
-                Spacer(minLength: 78)
+                Spacer(minLength: Self.ownGutter)
                 VStack(alignment: .trailing, spacing: 4) {
-                    if row.showsHeader { ownHeader }
-                    card
+                    lane(ownHeader, slack: Self.ownGutter)
                     bubbleReactions
                     sendStatus
                     if row.receipt.isVisible { receipt }
@@ -127,17 +126,17 @@ struct MessageRowView: View {
                     // Own posts (channels, threads): initials from the owner's name.
                     if row.showsHeader {
                         Avatar(name: message.isOwn ? (model?.ownDisplayName ?? message.sender) : message.sender)
+                            .contactHover(name: message.isOwn ? (model?.ownDisplayName ?? message.sender) : message.sender)
                     } else { Color.clear }
                 }
                 .frame(width: 28, height: row.showsHeader ? 28 : 1)
                 VStack(alignment: .leading, spacing: 4) {
-                    if row.showsHeader { header }
-                    card
+                    lane(header, slack: Self.otherGutter)
                     bubbleReactions
                     sendStatus
                     if row.receipt.isVisible { receipt }
                 }
-                Spacer(minLength: 40)
+                Spacer(minLength: Self.otherGutter)
             }
         }
         .padding(.horizontal, 16)
@@ -157,6 +156,7 @@ struct MessageRowView: View {
             Text(message.isOwn ? "You" : message.sender)
                 .font(AppFont.headline(scale))
                 .lineLimit(1)
+                .contactHover(name: message.isOwn ? (model?.ownDisplayName ?? message.sender) : message.sender)
             Text(Self.time(message.timestamp))
                 .font(AppFont.caption(scale))
                 .foregroundStyle(.secondary)
@@ -216,9 +216,24 @@ struct MessageRowView: View {
                 RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(.separator)
             }
         }
-        // Hover toolbar over the bubble's top edge; an overlay, so no layout shift.
-        .overlay(alignment: HoverToolbarRules.alignment(ownTrailing: row.ownTrailing)) {
-            if let actions { HoverToolbarSlot(row: row, actions: actions) }
+    }
+
+    /// Empty row width beside own / others' bubbles (the free side).
+    static let ownGutter: CGFloat = 78
+    static let otherGutter: CGFloat = 40
+
+    /// Header + bubble, with the hover toolbar's slot in empty space of
+    /// this row (beside the bubble, in the header line, or a reserved
+    /// strip). The slot is laid out whether or not the bar shows, so it
+    /// never covers content and nothing moves when it appears.
+    private func lane(_ head: some View, slack: CGFloat) -> some View {
+        let toolbar = actions != nil && HoverToolbarRules.isAvailable(row)
+            ? HoverToolbarRules.size(scale: scale) : nil
+        return BubbleLane(ownTrailing: row.ownTrailing, hasHeader: row.showsHeader, toolbar: toolbar,
+                          slack: slack, topPadding: row.showsHeader ? 8 : 2) {
+            if row.showsHeader { head }
+            card
+            if let actions, toolbar != nil { HoverToolbarSlot(row: row, actions: actions) }
         }
     }
 
@@ -255,6 +270,8 @@ struct MessageRowView: View {
                             .font(AppFont.body(scale))
                             .textSelection(.enabled)
                             .fixedSize(horizontal: false, vertical: true)
+                            .mentionHover(seg.text, scale: scale) // hover card on @mentions
+                            .environment(\.openURL, OpenURLAction { url in ContactLinks.open(url, model) })
                     }
                 }
             }
@@ -436,6 +453,10 @@ struct MessageRowView: View {
                 piece.swiftUI.font = AppFont.bodyEmphasized(scale)
                 piece.appKit.foregroundColor = Palette.mentionNS
                 setAppKitFont(AppFont.nsBodyEmphasized(scale), on: &piece)
+                if m != .own {
+                    // Click a mention: that person's contact card.
+                    piece.link = ContactLinks.url(name: String(piece.characters))
+                }
                 if m == .own {
                     piece.swiftUI.foregroundColor = Palette.ownMentionText
                     piece.appKit.foregroundColor = Palette.ownMentionTextNS

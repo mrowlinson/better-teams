@@ -118,7 +118,7 @@ public final class ContactsStore: ObservableObject {
         isSearching = true
         error = nil
         let searcher = peopleSearcher
-        let result: Result<[TeamMember], Error> = await Task.detached {
+        let result: Result<[TeamMember], Error> = await Task.blocking {
             do {
                 return try .success(searcher(q, FilePeopleSearchStore.pageSize).people)
             } catch {

@@ -14,6 +14,10 @@ cd swift && swift build -c release --product ostmac-mcp
 
 `ostmac-mcp --version` prints the version; `--help` prints usage.
 
+`scripts/build-app.sh` bundles this binary into the app at
+`Better Teams.app/Contents/MacOS/ostmac-mcp` — Settings ▸ Advanced ▸ MCP
+shows "Installed" and that path when it's present.
+
 ## Claude Desktop config
 
 Edit `~/Library/Application Support/Claude/claude_desktop_config.json`

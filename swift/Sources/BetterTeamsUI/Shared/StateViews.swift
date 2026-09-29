@@ -143,17 +143,31 @@ struct RefreshStatus: ViewModifier {
     @State private var visible = false
     @State private var delay = Debounce(milliseconds: LoadingPane.delayMilliseconds)
 
+    /// The visible caption beside the spinner: "Updating Chats" reads
+    /// "Updating Chats\u{2026}" (same style as LoadingPane's labels).
+    static func caption(_ label: String) -> String {
+        label.hasSuffix("\u{2026}") ? label : label + "\u{2026}"
+    }
+
     func body(content: Content) -> some View {
         content
             .overlay(alignment: alignment) {
                 Group {
                     if refreshing {
-                        ProgressView()
-                            .controlSize(.small)
-                            .opacity(visible ? 1 : 0)
-                            .help(label)
-                            .accessibilityLabel(label)
-                            .accessibilityHidden(!visible)
+                        // Spinner + visible caption (R22.4: never a bare glyph).
+                        HStack(spacing: 6) {
+                            ProgressView()
+                                .controlSize(.small)
+                            Text(Self.caption(label))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .fixedSize()
+                        }
+                        .opacity(visible ? 1 : 0)
+                        .help(label)
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel(label)
+                        .accessibilityHidden(!visible)
                     } else if let failure {
                         Button {
                             retry?()

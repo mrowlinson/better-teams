@@ -115,9 +115,22 @@ async fn connect_and_run_inner() -> Result<DisconnectReason> {
     // 5. Register with registrar
     let registrar_ttl_secs: u64 = 86400;
     if let Some(ref reg_url) = session.registrar_url {
-        if let Err(e) = registrar::register(&http, skype_token_str, reg_url, &session.surl).await {
+        if let Err(e) = registrar::register_with_endpoint(
+            &http, skype_token_str, reg_url, &session.surl, Some(&epid),
+        )
+        .await
+        {
             tracing::warn!("Initial registrar registration failed: {:#}", e);
         }
+    }
+    // OstMac §106: mark the endpoint active (Teams clients send this
+    // right after the handshake; the server acks with `6:1+::`).
+    let activity = serde_json::json!({
+        "name": "user.activity",
+        "args": [{"state": "active", "cv": format!("{}.0.1", uuid::Uuid::new_v4().simple())}],
+    });
+    if let Err(e) = ws.send_text(&format!("5:1+::{}", activity)).await {
+        tracing::warn!("user.activity send failed: {:#}", e);
     }
 
     // 6. Event loop: recv frames, send heartbeat, re-register before TTL,
@@ -142,11 +155,30 @@ async fn connect_and_run_inner() -> Result<DisconnectReason> {
 
     println!("Trouter connected. Listening for events... (Ctrl-C to stop)");
 
+    let mut cdl_reregistered = false;
     let disconnect_reason = loop {
         tokio::select! {
             frame = ws.recv_frame() => {
                 match frame {
-                    Ok(Some(text)) => handle_frame(&text, &http, skype_token_str).await,
+                    Ok(Some(text)) => {
+                        // OstMac §106: first message_loss after connect →
+                        // re-register the chat (CDL) entry with the 1.9
+                        // template, as the Teams clients do.
+                        if !cdl_reregistered && text.contains("trouter.message_loss") {
+                            cdl_reregistered = true;
+                            if let Some(ref reg_url) = session.registrar_url {
+                                let (h, tok, reg, surl, ep) = (http.clone(), skype_token_str.to_string(),
+                                    reg_url.clone(), session.surl.clone(), epid.clone());
+                                tokio::spawn(async move {
+                                    if let Err(e) = registrar::register_cdl(&h, &tok, &reg, &surl, &ep,
+                                        "TeamsCDLWebWorker_1.9").await {
+                                        tracing::warn!("CDL re-registration failed: {:#}", e);
+                                    }
+                                });
+                            }
+                        }
+                        handle_frame(&text, &http, skype_token_str).await
+                    }
                     Ok(None) => {
                         break DisconnectReason::Error(anyhow::anyhow!("WebSocket closed by server"));
                     }
@@ -167,8 +199,9 @@ async fn connect_and_run_inner() -> Result<DisconnectReason> {
                     let tok = skype_token_str.to_string();
                     let surl = session.surl.clone();
                     let reg = reg_url.clone();
+                    let ep = epid.clone();
                     tokio::spawn(async move {
-                        if let Err(e) = registrar::register(&http2, &tok, &reg, &surl).await {
+                        if let Err(e) = registrar::register_with_endpoint(&http2, &tok, &reg, &surl, Some(&ep)).await {
                             tracing::warn!("Re-registration failed: {:#}", e);
                         }
                     });
@@ -261,7 +294,91 @@ async fn handle_frame(frame: &str, http: &reqwest::Client, skype_token: &str) {
         return;
     }
 
+    // OstMac §106: chat-service pushes arrive as HTTP-over-WS data frames
+    // (`3:::`); embedders get the decoded event (was: printed, dropped).
+    if let Some(payload) = frame.strip_prefix("3:::") {
+        if let Some(ev) = data_frame_event(payload) {
+            crate::event_hub::publish(ev); // OstMac: feed embedders
+        }
+    }
+
     println!("Frame: {}", frame);
+}
+
+/// OstMac §106: decode one Trouter `3:::` data frame payload
+/// (`{id, method, url, headers, body}`) into the pushed chat-service
+/// event JSON. `body` is the event itself, or base64 + gzip
+/// (`X-Microsoft-Skype-Content-Encoding: gzip`, also tried when the
+/// plain body isn't JSON). Only chat-service events (`resourceType` /
+/// `resource` / `eventMessages`) are returned; anything else (calls,
+/// other services) is None and keeps its existing path.
+pub fn data_frame_event(payload: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(payload).ok()?;
+    let obj = v.as_object()?;
+    // `body` sits top-level or under `data` depending on the Trouter
+    // version (same two shapes the call path reads); an object body is
+    // the event itself.
+    let find_body = |m: &serde_json::Map<String, serde_json::Value>| {
+        m.iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("body"))
+            .map(|(_, v)| v.clone())
+    };
+    let body_val = find_body(obj).or_else(|| {
+        obj.iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("data"))
+            .and_then(|(_, d)| d.as_object())
+            .and_then(|d| find_body(d))
+    })?;
+    if body_val.is_object() {
+        return chat_event_json(&body_val.to_string());
+    }
+    let body = body_val.as_str()?;
+    let gzip_header = obj
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("headers"))
+        .and_then(|(_, h)| h.as_object())
+        .map(|h| {
+            h.iter().any(|(k, v)| {
+                k.eq_ignore_ascii_case("X-Microsoft-Skype-Content-Encoding")
+                    && v.as_str().map_or(false, |s| s.to_ascii_lowercase().contains("gzip"))
+            })
+        })
+        .unwrap_or(false);
+    let plain = if gzip_header { None } else { chat_event_json(body) };
+    plain.or_else(|| gunzip_base64(body).and_then(|t| chat_event_json(&t)))
+}
+
+fn chat_event_json(text: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(text).ok()?;
+    // Wrapped payloads (as the Teams clients unwrap them): `cp` = base64 +
+    // gzip JSON, `gp` = base64 JSON.
+    if let Some(cp) = v.get("cp").and_then(|c| c.as_str()) {
+        return gunzip_base64(cp).and_then(|t| chat_event_json(&t));
+    }
+    if let Some(gp) = v.get("gp").and_then(|c| c.as_str()) {
+        use base64::Engine;
+        let raw = base64::engine::general_purpose::STANDARD.decode(gp.trim()).ok()?;
+        return chat_event_json(&String::from_utf8(raw).ok()?);
+    }
+    let is_chat = v.as_object()?.keys().any(|k| {
+        k.eq_ignore_ascii_case("resourceType")
+            || k.eq_ignore_ascii_case("resource")
+            || k.eq_ignore_ascii_case("eventMessages")
+    });
+    is_chat.then(|| text.to_string())
+}
+
+fn gunzip_base64(body: &str) -> Option<String> {
+    use base64::Engine;
+    use std::io::Read;
+    let raw = base64::engine::general_purpose::STANDARD
+        .decode(body.trim())
+        .ok()?;
+    let mut out = String::new();
+    flate2::read::GzDecoder::new(&raw[..])
+        .read_to_string(&mut out)
+        .ok()?;
+    Some(out)
 }
 
 /// Handle a call event from Trouter — parse invitation and auto-answer.
@@ -553,5 +670,68 @@ async fn handle_call_event(json_str: &str, http: &reqwest::Client, skype_token: 
     // Send acceptance.
     if let Err(e) = calling::signaling::accept_call(http, skype_token, &notification).await {
         tracing::warn!("Failed to accept call: {:#}", e);
+    }
+}
+
+#[cfg(test)]
+mod sendfix_tests {
+    use super::data_frame_event;
+
+    fn frame(body: &str, headers: serde_json::Value) -> String {
+        serde_json::json!({"id": 7, "method": "POST", "url": "/v4/f/x/messaging",
+            "headers": headers, "body": body})
+        .to_string()
+    }
+
+    #[test]
+    fn sendfix_data_frame_plain_chat_event_is_published() {
+        let ev = r#"{"resourceType":"NewMessage","resource":{"id":"1","clientmessageid":"9"}}"#;
+        let got = data_frame_event(&frame(ev, serde_json::json!({}))).unwrap();
+        assert_eq!(got, ev);
+    }
+
+    #[test]
+    fn sendfix_data_frame_gzip_body_is_decoded() {
+        use base64::Engine;
+        use std::io::Write;
+        let ev = r#"{"eventMessages":[{"resourceType":"NewMessage","resource":{"id":"2"}}]}"#;
+        let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        enc.write_all(ev.as_bytes()).unwrap();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(enc.finish().unwrap());
+        let hdr = serde_json::json!({"X-Microsoft-Skype-Content-Encoding": "gzip"});
+        assert_eq!(data_frame_event(&frame(&b64, hdr)).as_deref(), Some(ev));
+        // Header missing: the base64+gzip fallback still decodes.
+        assert_eq!(data_frame_event(&frame(&b64, serde_json::json!({}))).as_deref(), Some(ev));
+    }
+
+    #[test]
+    fn sendfix_data_frame_body_under_data_or_as_object() {
+        let ev = r#"{"resourceType":"NewMessage","resource":{"id":"3"}}"#;
+        let nested = serde_json::json!({"id": 9, "data": {"body": ev}}).to_string();
+        assert_eq!(data_frame_event(&nested).as_deref(), Some(ev));
+        let obj = serde_json::json!({"id": 9, "body": {"resourceType": "NewMessage"}}).to_string();
+        assert!(data_frame_event(&obj).unwrap().contains("NewMessage"));
+    }
+
+    #[test]
+    fn sendfix_data_frame_cp_and_gp_wrappers_are_unwrapped() {
+        use base64::Engine;
+        use std::io::Write;
+        let ev = r#"{"type":"EventMessage","resourceType":"NewMessage","resource":{"id":"4"}}"#;
+        let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        enc.write_all(ev.as_bytes()).unwrap();
+        let cp = base64::engine::general_purpose::STANDARD.encode(enc.finish().unwrap());
+        let body = serde_json::json!({"cp": cp}).to_string();
+        assert_eq!(data_frame_event(&frame(&body, serde_json::json!({}))).as_deref(), Some(ev));
+        let gp = base64::engine::general_purpose::STANDARD.encode(ev);
+        let body = serde_json::json!({"gp": gp}).to_string();
+        assert_eq!(data_frame_event(&frame(&body, serde_json::json!({}))).as_deref(), Some(ev));
+    }
+
+    #[test]
+    fn sendfix_data_frame_non_chat_payloads_are_skipped() {
+        assert!(data_frame_event(&frame(r#"{"callNotification":{}}"#, serde_json::json!({}))).is_none());
+        assert!(data_frame_event("not json").is_none());
+        assert!(data_frame_event(r#"{"id":1,"status":200}"#).is_none());
     }
 }

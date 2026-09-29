@@ -60,6 +60,7 @@ public final class AccountWindowGraph: ObservableObject {
         self.account = account
         self.chats = chats ?? ChatListViewModel(
             fetcher: { try RustCore.chats(limit: $0, profile: account.id) },
+            pageFetcher: { try RustCore.chats(limit: 50, profile: account.id, pageLink: $0) },
             blocked: BlockedStore(key: BlockedStore.key(for: account.id)),
             folders: FolderStore(accountID: account.id))
         self.unread = UnreadStore(dock: NullDockBadge())
@@ -100,7 +101,7 @@ public final class AccountWindowGraph: ObservableObject {
         chats.ingest(realtime: message)
         unread.ingest(
             decision: decision, chatID: message.chatID,
-            openChatID: openChatID)
+            openChatID: openChatID, messageAt: ChatListFormat.parse(message.time))
         if message.isFor(chatID: openChatID) {
             conv.ingest(realtime: message)
         }

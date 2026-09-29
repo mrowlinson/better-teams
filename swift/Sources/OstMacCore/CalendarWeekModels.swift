@@ -88,17 +88,27 @@ public enum CalWeek {
         _ meetings: [MeetingItem], weekStart: Date,
         calendar: Calendar = .current
     ) -> [[MeetingItem]] {
-        let keys = dayKeys(weekStart: weekStart, calendar: calendar)
-        var byDay: [String: [MeetingItem]] = [:]
-        for m in meetings {
-            guard let key = dayKey(of: m) else { continue }
-            byDay[key, default: []].append(m)
-        }
-        return keys.map { key in
-            (byDay[key] ?? []).sorted {
-                ($0.start ?? "~") < ($1.start ?? "~")
+        bucket(meetings, keys: dayKeys(weekStart: weekStart, calendar: calendar))
+    }
+
+    /// Bucket rows into one column per `keys` day. An all-day event
+    /// lands on every day it covers (`end` is the exclusive midnight);
+    /// timed rows on their start day. Each column sorted by start.
+    public static func bucket(_ meetings: [MeetingItem], keys: [String]) -> [[MeetingItem]] {
+        keys.map { key in
+            meetings.filter { occurs($0, on: key) }.sorted {
+                if $0.isAllDay != $1.isAllDay { return $0.isAllDay }
+                return ($0.start ?? "~") < ($1.start ?? "~")
             }
         }
+    }
+
+    /// `meeting` shows on day `key` (`"yyyy-MM-dd"`).
+    public static func occurs(_ meeting: MeetingItem, on key: String) -> Bool {
+        guard let start = dayKey(of: meeting) else { return false }
+        guard meeting.isAllDay, let end = meeting.end, end.count >= 10 else { return start == key }
+        let endKey = String(end.prefix(10))
+        return key == start || (key > start && key < endKey)
     }
 
     /// `Date` -> Graph datetime `"yyyy-MM-dd'T'HH:mm:ss"` in `timeZone`.

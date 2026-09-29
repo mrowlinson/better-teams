@@ -27,13 +27,17 @@ enum EvidenceHarness {
 
     static func settle(_ wc: ShellWindowController, options: LaunchOptions) {
         // `hover=<messageID>`: pin that message's hover toolbar for the capture.
-        MessageHover.evidence.hoveredID = options.route.flatMap(Route.init(string:))?.query["hover"]
+        MessageHover.evidence.shownID = options.route.flatMap(Route.init(string:))?.query["hover"]
+        // `contact=<name>`: pin that person's hover card (also inside the
+        // New Chat sheet); with `sheet=contactCard` it names the full card.
+        let query = options.route.flatMap(Route.init(string:))?.query
+        if query?["sheet"] != ContactActions.sheetName { ContactHover.shared.pinnedName = query?["contact"] }
         let deadline = Date().addingTimeInterval(10)
         let earliest = Date().addingTimeInterval(0.8)
         var quiet = 0
         func tick() {
             guard let window = wc.window else { return }
-            let ready = storesReady(wc.model)
+            let ready = storesReady(wc.model) && ImageViewerEvidence.ready(wc, route: options.route)
             if ready {
                 window.displayIfNeeded()
                 quiet += 1
@@ -94,6 +98,29 @@ enum EvidenceHarness {
 
     private static func ready(_ wc: ShellWindowController, options: LaunchOptions, settled: Bool,
                               main: NSWindow?, win: Int) {
+        // A text field in a sheet/popover that takes first responder makes
+        // the system draw its input-source badge (a bright white rounded
+        // square, undimmed by the sheet scrim) over the composer: capture
+        // with no field editing anywhere in the app.
+        for w in NSApp.windows { w.makeFirstResponder(nil) }
+        // The text-input UI hosts (TUINSWindow, NSCampoLightweightUIHostWindow)
+        // draw the input-source badge at the composer caret once a
+        // popover/sheet is up, above the scrim: keep them ordered out
+        // while the capture settles.
+        let hideBadge = {
+            for w in NSApp.windows {
+                let name = String(describing: type(of: w))
+                if name.hasPrefix("TUI") || name.contains("Campo") { w.orderOut(nil) }
+            }
+        }
+        hideBadge()
+        let until = Date().addingTimeInterval(8)
+        Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { t in
+            MainActor.assumeIsolated {
+                hideBadge()
+                if Date() > until { t.invalidate() }
+            }
+        }
         EvidenceGeometry.append(wc, route: options.route, appearance: options.appearance)
         if options.dumpMenus, let bar = NSApp.mainMenu {
             print("EVIDENCE MENUS BEGIN\n\(MainMenu.dump(bar))EVIDENCE MENUS END")

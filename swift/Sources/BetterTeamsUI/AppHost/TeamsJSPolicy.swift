@@ -70,35 +70,37 @@ public enum TeamsJSPolicy {
     // MARK: manifest URL placeholders
 
     /// Placeholders filled from SharePoint (the host looks them up).
-    static let siteKeys: Set<String> = ["teamsiteurl", "teamsitedomain", "teamsitepath", "mysitedomain", "mysitepath"]
+    static let siteKeys: Set<String> = ["teamsiteurl", "teamsitedomain", "teamsitepath", "mysitedomain", "mysitepath",
+                                        "sharepointsite.teamsiteurl", "sharepointsite.teamsitedomain",
+                                        "sharepointsite.teamsitepath", "sharepointsite.mysitedomain",
+                                        "sharepointsite.mysitepath", "sharepointdomains"]
 
     /// Fills the documented tab placeholders (`{locale}`, `{tid}`,
     /// `{entityId}`, `{userObjectId}`, `{upn}`, `{theme}`, `{teamName}`,
     /// `{teamSiteDomain}`…) in one forward pass. Values are
     /// percent-encoded, except site values before the query (they are
     /// the URL's host/path); unknown placeholders become "". A `{` with
-    /// no closing `}` is kept verbatim. `encode: false` = raw values
-    /// (manifest domains and resources).
+    /// no closing `}` is kept verbatim, and so is a brace that is not a
+    /// placeholder name (OneDrive's query carries a JSON literal).
+    /// TeamsJS v2 dotted names (`{user.id}`, `{app.host.name}`…) map to
+    /// the same values. `encode: false` = raw values (manifest domains
+    /// and resources).
     public static func expand(_ template: String, _ c: TeamsJSAppContext, encode: Bool = true) -> String {
-        let values: [String: String] = [
-            "locale": c.locale, "theme": c.theme, "tid": c.tenantId, "entityid": c.entityId,
-            "subentityid": c.subEntityId, "sessionid": c.sessionId, "appsessionid": c.appSessionId,
-            "hostclienttype": c.hostClientType, "ringid": "general", "userprincipalname": c.userPrincipalName,
-            "loginhint": c.userPrincipalName, "upn": c.userPrincipalName, "userobjectid": c.userObjectId,
-            "groupid": c.groupId ?? "", "channelid": c.channelId ?? "", "teamid": c.teamId ?? "",
-            "frameContext".lowercased(): c.frameContext, "hostname": c.hostName,
-            "teamname": c.teamName ?? "", "channelname": c.channelName ?? "",
-            "channeltype": c.channelId == nil ? "" : "Regular",
-            "teamsiteurl": c.teamSiteUrl, "teamsitedomain": c.teamSiteDomain, "teamsitepath": c.teamSitePath,
-            "mysitedomain": c.mySiteDomain, "mysitepath": c.mySitePath,
-        ]
+        let values = placeholderValues(c)
         var allowed = CharacterSet.urlQueryAllowed
         allowed.remove(charactersIn: "&=+#?/")
         var out = ""
-        var rest = Substring(template)
+        // Zero-width spaces inside a manifest (Visio) would hide a key.
+        var rest = Substring(template.replacingOccurrences(of: "\u{200B}", with: ""))
         while let open = rest.firstIndex(of: "{"), let close = rest[open...].firstIndex(of: "}") {
             out += rest[..<open]
-            let key = rest[rest.index(after: open)..<close].lowercased()
+            let name = rest[rest.index(after: open)..<close]
+            guard isPlaceholderName(name) else {
+                out += "{"
+                rest = rest[rest.index(after: open)...]
+                continue
+            }
+            let key = name.lowercased()
             let v = values[key] ?? ""
             if !encode {
                 out += v
@@ -109,7 +111,48 @@ public enum TeamsJSPolicy {
             }
             rest = rest[rest.index(after: close)...]
         }
-        return (out + rest).replacingOccurrences(of: "\u{200B}", with: "")
+        return out + rest
+    }
+
+    /// `{name}` with letters, digits, `.` or `_` only.
+    static func isPlaceholderName(_ s: Substring) -> Bool {
+        !s.isEmpty && s.allSatisfy { ($0.isASCII && ($0.isLetter || $0.isNumber)) || $0 == "." || $0 == "_" }
+    }
+
+    /// The Teams web origin apps may be told they are hosted by
+    /// (`{sourceOrigin}`: Office and SharePoint post back to it).
+    public static let hostOrigin = "https://teams.microsoft.com"
+
+    /// Lowercased placeholder name → value, v1 and v2 (dotted) names.
+    static func placeholderValues(_ c: TeamsJSAppContext) -> [String: String] {
+        let v1: [String: String] = [
+            "locale": c.locale, "theme": c.theme, "tid": c.tenantId, "entityid": c.entityId,
+            "subentityid": c.subEntityId, "sessionid": c.sessionId, "appsessionid": c.appSessionId,
+            "hostclienttype": c.hostClientType, "ringid": "general", "userprincipalname": c.userPrincipalName,
+            "loginhint": c.userPrincipalName, "upn": c.userPrincipalName, "userobjectid": c.userObjectId,
+            "groupid": c.groupId ?? "", "channelid": c.channelId ?? "", "teamid": c.teamId ?? "",
+            "frameContext".lowercased(): c.frameContext, "hostname": c.hostName,
+            "teamname": c.teamName ?? "", "channelname": c.channelName ?? "",
+            "channeltype": c.channelId == nil ? "" : "Regular",
+            "teamsiteurl": c.teamSiteUrl, "teamsitedomain": c.teamSiteDomain, "teamsitepath": c.teamSitePath,
+            "mysitedomain": c.mySiteDomain, "mysitepath": c.mySitePath,
+            "sourceorigin": hostOrigin, "tenantsku": "enterprise", "userlicensetype": "Unknown",
+        ]
+        // TeamsJS v2 context names (app.Context) for the same values.
+        let v2: [String: String] = [
+            "user.id": c.userObjectId, "user.tenant.id": c.tenantId, "user.loginhint": c.userPrincipalName,
+            "user.userprincipalname": c.userPrincipalName, "user.displayname": c.userDisplayName,
+            "app.locale": c.locale, "app.theme": c.theme, "app.sessionid": c.appSessionId,
+            "app.host.name": c.hostName, "app.host.clienttype": c.hostClientType, "app.host.ringid": "general",
+            "app.host.sessionid": c.sessionId, "page.id": c.entityId, "page.subpageid": c.subEntityId,
+            "page.framecontext": c.frameContext, "page.renderingsurface": "",
+            "team.internalid": c.teamId ?? "", "team.groupid": c.groupId ?? "", "team.displayname": c.teamName ?? "",
+            "channel.id": c.channelId ?? "", "channel.displayname": c.channelName ?? "",
+            "sharepointsite.teamsiteurl": c.teamSiteUrl, "sharepointsite.teamsitedomain": c.teamSiteDomain,
+            "sharepointsite.teamsitepath": c.teamSitePath, "sharepointsite.mysitedomain": c.mySiteDomain,
+            "sharepointsite.mysitepath": c.mySitePath,
+        ]
+        return v1.merging(v2) { a, _ in a }
     }
 
     /// Whether a launch uses SharePoint placeholders (the host must look
@@ -126,7 +169,11 @@ public enum TeamsJSPolicy {
     public static func resolved(_ l: TeamsAppLaunch, _ c: TeamsJSAppContext) -> TeamsAppLaunch {
         var r = l
         r.resource = l.resource.map { expand($0, c, encode: false) }
-        r.validDomains = l.validDomains.map { expand($0, c, encode: false) }.filter { !$0.isEmpty }
+        r.validDomains = l.validDomains.flatMap { d -> [String] in
+            // `{sharePointDomains}`: the tenant's SharePoint hosts.
+            if d.lowercased().contains("{sharepointdomains}") { return [c.teamSiteDomain, c.mySiteDomain] }
+            return [expand(d, c, encode: false)]
+        }.filter { !$0.isEmpty }
         return r
     }
 
@@ -194,6 +241,12 @@ public enum TeamsJSPolicy {
     static let authHosts = ["login.microsoftonline.com", "login.microsoft.com", "login.live.com",
                             "login.windows.net"]
 
+    /// Microsoft 365's own web hosts (Office, SharePoint, OneDrive, Loop):
+    /// an app page that opens a file or site keeps it in the pane, as
+    /// Teams does, whatever the app's validDomains list.
+    static let microsoft365Hosts = ["office.com", "office.net", "sharepoint.com", "sharepoint.us",
+                                    "onedrive.com", "cloud.microsoft", "microsoft365.com", "office365.com"]
+
     /// Manifest `validDomains` entry match: `contoso.com`,
     /// `*.contoso.com` (subdomains only), optional scheme/port/path.
     public static func domainMatches(host: String, pattern raw: String) -> Bool {
@@ -212,18 +265,30 @@ public enum TeamsJSPolicy {
 
     /// Main-frame navigation stays in the app frame only for the app's
     /// own content host, its manifest validDomains, Microsoft sign-in,
-    /// and (iframe transport) the host page origin. Everything else
-    /// opens in the default browser.
+    /// Microsoft 365 pages, and (iframe transport) the host page origin.
+    /// Everything else opens in the default browser.
     public static func allowsNavigation(_ url: URL, launch: TeamsAppLaunch, signInHosts: [String] = []) -> Bool {
         let scheme = url.scheme?.lowercased() ?? ""
         if ["about", "data", "blob"].contains(scheme) { return true }
         guard scheme == "https" || scheme == "http", let host = url.host?.lowercased() else { return false }
         if FramePolicy.hostMatches(host, authHosts) { return true }
+        if scheme == "https", FramePolicy.hostMatches(host, microsoft365Hosts) { return true }
         // The tenant's own federated sign-in host (exact, https only).
         if scheme == "https", signInHosts.contains(host) { return true }
         if launch.transport == .iframe, host == "teams.microsoft.com" { return true }
         if let content = contentHost(launch), host == content { return true }
         return launch.validDomains.contains { domainMatches(host: host, pattern: $0) }
+    }
+
+    /// The app's own web page (manifest / tab websiteUrl) as a stand-in
+    /// for its blank Teams-embedded page: https, on the content page's
+    /// host (so the same app and session), and a different page. Nil
+    /// otherwise (a vendor or help site is no stand-in).
+    public static func websiteURL(_ l: TeamsAppLaunch, _ c: TeamsJSAppContext) -> URL? {
+        guard let t = l.websiteTemplate, let u = URL(string: expand(t, c)), u.scheme?.lowercased() == "https",
+              let h = u.host?.lowercased(), let content = URL(string: expand(l.contentTemplate, c)),
+              content.host?.lowercased() == h, u != content else { return nil }
+        return u
     }
 
     /// The content page's host (placeholders do not affect it).

@@ -236,41 +236,8 @@ final class FfiLaterB4Tests: XCTestCase {
         XCTAssertEqual(http.calls[0].headers["Authorization"], "Bearer FIXTURE-GRAPH2")
     }
 
-    // MARK: - presence (port: presence_envelope_shape)
-
-    func testPresenceDecodes() throws {
-        signIn()
-        http.routes[Self.graph + "/me/presence"] = (200, #"{"availability":"Available","activity":"Available"}"#)
-        let p = try CoreReads.presence(ctx: ctx())
-        XCTAssertTrue(p.ok)
-        XCTAssertEqual(p.availability, "Available")
-        XCTAssertEqual(p.activity, "Available")
-    }
-
-    func testPresence401Message() {
-        signIn()
-        http.routes[Self.graph + "/me/presence"] = (401, "")
-        XCTAssertThrowsError(try CoreReads.presence(ctx: ctx())) { e in
-            guard case let CoreCallError.failed(msg) = e else {
-                return XCTFail("wrong error \(e)")
-            }
-            XCTAssertTrue(msg.hasPrefix("presence: 401 Unauthorized for "), msg)
-        }
-    }
-
-    func testPresenceServerErrorCarriesBody() {
-        signIn()
-        http.routes[Self.graph + "/me/presence"] = (503, "try later")
-        XCTAssertThrowsError(try CoreReads.presence(ctx: ctx())) { e in
-            guard case let CoreCallError.failed(msg) = e else {
-                return XCTFail("wrong error \(e)")
-            }
-            XCTAssertEqual(
-                msg,
-                "presence: HTTP 503 for \(Self.graph)/me/presence: try later"
-            )
-        }
-    }
+    // presence: moved to the Teams presence service (GRAPHSWEEP) — see
+    // GraphSweepTests (UnifiedPresence.own / one / setOwn on a fake).
 
     // MARK: - teams (ports: team_json_shape, channel_json_detail_shape, team_json_empty_channels)
 

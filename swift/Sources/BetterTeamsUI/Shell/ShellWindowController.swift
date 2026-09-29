@@ -474,9 +474,9 @@ public final class ShellWindowController: NSWindowController, NSWindowDelegate, 
                 guard let t = teams.channelTab(model) else { return CommandValidation(enabled: false, title: title) }
                 return CommandValidation(enabled: true, checked: t == mine, title: title)
             }
-            let title = id == ShellCommand.tabChat ? "Chat" : id == ShellCommand.tabFiles ? "Files" : "Notes"
+            let title = id == ShellCommand.tabChat ? "Chat" : id == ShellCommand.tabFiles ? "Shared" : "Notes"
             guard let ref = currentConversation else { return CommandValidation(enabled: false, title: title) }
-            let t = nav.tab(for: ref)
+            let t: ConversationTab? = nav.detailAppTab[ref] == nil ? nav.tab(for: ref) : nil
             let mine: ConversationTab = id == ShellCommand.tabChat ? .chat : id == ShellCommand.tabFiles ? .files : .notes
             return CommandValidation(enabled: true, checked: t == mine, title: title)
         case _ where ShellCommand.pageZoom.contains(id) && currentWebApp != nil:
@@ -506,6 +506,16 @@ public final class ShellWindowController: NSWindowController, NSWindowDelegate, 
         ].map { status, title in
             SubmenuItem(title, arg: "presence:\(status.rawValue)", symbol: PresenceGlyph.symbol(status),
                         checked: own == status, enabled: live)
+        }
+        // Own status note and automatic reply (unified presence), read-only.
+        if let mine = model.app?.presence.own {
+            var first = true
+            for (text, symbol) in [(mine.statusMessage, "text.bubble"), (mine.outOfOfficeNote, "airplane")] {
+                guard let text, !text.isEmpty else { continue }
+                out.append(SubmenuItem(text.count > 60 ? String(text.prefix(59)) + "…" : text, arg: "note",
+                                       symbol: symbol, enabled: false, separatorBefore: first))
+                first = false
+            }
         }
         if let app = model.app {
             var first = true
@@ -548,14 +558,18 @@ public final class ShellWindowController: NSWindowController, NSWindowDelegate, 
         sheets.present(vc, request: SheetRequest("addAccount", in: model.nav.section))
     }
 
-    /// Sign In to Web Apps… (§9.4 Accounts, §7.3 SSO): Teams on the web in
-    /// the account's store; the sheet closes once Teams loads signed in.
+    /// Sign In to Web Apps… (§9.4 Accounts, §7.3 SSO): Microsoft sign-in
+    /// only, in the account's store (never the Teams web app,
+    /// APPNATIVE4); the sheet closes once sign-in returns.
     private func presentWebAppsSignIn() {
-        guard !model.options.demo, let url = URL(string: TeamsFrameConfig.defaultURL) else { return }
+        guard !model.options.demo, let url = model.frameHost.webSessionSignInURL() else { return }
         bringForward()
         let model = self.model
         let sheet = WebAuthSheet(web: model.frameHost.makeSignInWebView(), start: url,
-                                 redirectURI: FrameHost.webAppsSignedInPrefix) { _ in model.dismissSheet() }
+                                 redirectURI: FrameHost.webAppsSignedInPrefix) { _ in
+            model.dismissSheet()
+            model.frameHost.keepWebSession()
+        }
         sheets.present(sheet, request: SheetRequest("webAppsSignIn", in: model.nav.section))
     }
 

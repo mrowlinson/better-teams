@@ -139,11 +139,22 @@ public struct ChatItem: Codable, Sendable, Identifiable, Equatable {
     public let last_message_time: String?
     public let last_message_sender: String?
     public let last_message_preview: String?
+    /// Teams mute state from the chat list (`properties.alerts`); nil
+    /// when the server did not say (demo, snapshots, other reads).
+    public let muted: Bool?
+    /// Teams read state from the chat list (ChatListSeed.isUnread): nil
+    /// when the server gave no read horizon (demo, live-updated rows).
+    public let unread: Bool?
+    /// Raw per-user read horizon (`properties.consumptionhorizon`).
+    public let read_horizon: String?
+    /// Raw Teams "Mark as unread" bookmark
+    /// (`properties.consumptionHorizonBookmark`), nil when absent.
+    public let read_bookmark: String?
 
     enum CodingKeys: String, CodingKey {
         case chatId = "id"
         case name, is_group, last_message_time
-        case last_message_sender, last_message_preview
+        case last_message_sender, last_message_preview, muted, unread, read_horizon, read_bookmark
     }
 
     /// Host-side construction (demo data, previews). Wire decoding is untouched.
@@ -151,7 +162,11 @@ public struct ChatItem: Codable, Sendable, Identifiable, Equatable {
         chatId: String, name: String, is_group: Bool = false,
         last_message_time: String? = nil,
         last_message_sender: String? = nil,
-        last_message_preview: String? = nil
+        last_message_preview: String? = nil,
+        muted: Bool? = nil,
+        unread: Bool? = nil,
+        read_horizon: String? = nil,
+        read_bookmark: String? = nil
     ) {
         self.chatId = chatId
         self.name = name
@@ -159,17 +174,24 @@ public struct ChatItem: Codable, Sendable, Identifiable, Equatable {
         self.last_message_time = last_message_time
         self.last_message_sender = last_message_sender
         self.last_message_preview = last_message_preview
+        self.muted = muted
+        self.unread = unread
+        self.read_horizon = read_horizon
+        self.read_bookmark = read_bookmark
     }
 }
 
 public struct ChatsResponse: Decodable, Sendable {
     public let ok: Bool
     public let chats: [ChatItem]
+    /// Link to the next (older) page of the chat list; nil = last page.
+    public let next_link: String?
 
     /// Host-side construction (demo data, previews). Wire decoding is untouched.
-    public init(ok: Bool, chats: [ChatItem]) {
+    public init(ok: Bool, chats: [ChatItem], next_link: String? = nil) {
         self.ok = ok
         self.chats = chats
+        self.next_link = next_link
     }
 }
 
@@ -180,19 +202,23 @@ public struct ChatsResponse: Decodable, Sendable {
 /// The id opens as a conversation through the same messages/send path
 /// as chat ids (ost TUI parity). Detail fields are nil on pre-H1
 /// payloads and when Graph omits them.
-public struct TeamChannel: Codable, Sendable, Identifiable {
+public struct TeamChannel: Codable, Sendable, Identifiable, Equatable {
     public var id: String { channelId }
     public let channelId: String
     public let name: String
     public let description: String?
     public let membershipType: String?
     public let webUrl: String?
+    /// Channel posting address (Graph `email`); nil when the tenant
+    /// has none or the row came from an older snapshot.
+    public let email: String?
 
     enum CodingKeys: String, CodingKey {
         case channelId = "id"
         case name, description
         case membershipType = "membership_type"
         case webUrl = "web_url"
+        case email
     }
 
     /// Host-side construction (demo data, previews). Wire decoding is untouched.
@@ -200,18 +226,20 @@ public struct TeamChannel: Codable, Sendable, Identifiable {
         channelId: String, name: String,
         description: String? = nil,
         membershipType: String? = nil,
-        webUrl: String? = nil
+        webUrl: String? = nil,
+        email: String? = nil
     ) {
         self.channelId = channelId
         self.name = name
         self.description = description
         self.membershipType = membershipType
         self.webUrl = webUrl
+        self.email = email
     }
 }
 
 /// One joined team with its channels.
-public struct TeamItem: Codable, Sendable, Identifiable {
+public struct TeamItem: Codable, Sendable, Identifiable, Equatable {
     public var id: String { teamId }
     public let teamId: String
     public let name: String
@@ -358,6 +386,10 @@ public struct ChannelTab: Decodable, Sendable, Identifiable, Equatable {
     public let websiteURL: String?
     /// Tab configuration entityId (APPHOST-B2 native hosting context).
     public let entityID: String?
+    /// Expanded catalog app name ("Whiteboard", "Excel"), if any.
+    public let appName: String?
+    /// The tab's own Teams web deep link (Graph `webUrl`), if any.
+    public let teamsURL: String?
 
     enum CodingKeys: String, CodingKey {
         case id, name
@@ -365,6 +397,8 @@ public struct ChannelTab: Decodable, Sendable, Identifiable, Equatable {
         case contentURL = "content_url"
         case websiteURL = "website_url"
         case entityID = "entity_id"
+        case appName = "app_name"
+        case teamsURL = "teams_url"
     }
 
     /// Teams Files-tab app id (SharePoint file browser).
@@ -376,7 +410,8 @@ public struct ChannelTab: Decodable, Sendable, Identifiable, Equatable {
     /// Wire decoding is untouched.
     public init(
         id: String, name: String, appID: String? = nil,
-        contentURL: String? = nil, websiteURL: String? = nil, entityID: String? = nil
+        contentURL: String? = nil, websiteURL: String? = nil, entityID: String? = nil,
+        appName: String? = nil, teamsURL: String? = nil
     ) {
         self.id = id
         self.name = name
@@ -384,6 +419,8 @@ public struct ChannelTab: Decodable, Sendable, Identifiable, Equatable {
         self.contentURL = contentURL
         self.websiteURL = websiteURL
         self.entityID = entityID
+        self.appName = appName
+        self.teamsURL = teamsURL
     }
 
     /// Deep-link target: well-known tabs by app id (name fallback for
@@ -597,9 +634,11 @@ public struct ReminderTaskResult: Decodable, Sendable {
 public struct MeetingItem: Codable, Sendable, Identifiable, Equatable {
     public var id: String { meetingId }
     public let meetingId: String
-    public let subject: String
-    public let start: String?
-    public let end: String?
+    public internal(set) var subject: String
+    /// Local wall clock (`TimeZone.current`) for Graph rows once
+    /// `CalendarTime.localize` ran; demo/local rows are local already.
+    public internal(set) var start: String?
+    public internal(set) var end: String?
     public let joinURL: String?
     public let organizer: String?
     /// Organizer SMTP address (Graph `organizer.emailAddress.address`).
@@ -611,10 +650,24 @@ public struct MeetingItem: Codable, Sendable, Identifiable, Equatable {
     public let isOnline: Bool
     /// Graph `categories` (Outlook color categories); empty when absent.
     public let categories: [String]
+    /// Graph `isAllDay`: `start`/`end` are floating dates (never shifted
+    /// between time zones; `end` is the exclusive next midnight).
+    public let isAllDay: Bool
+    /// Graph instants as fetched (UTC wall clock). The source for
+    /// re-localizing `start`/`end` when the system time zone changes;
+    /// nil for demo/local rows.
+    public let utcStart: String?
+    public let utcEnd: String?
+    /// Graph event fields past the join basics (location, RSVP,
+    /// attendees, recurrence kind, time zone); nil for old rows.
+    public internal(set) var info: CalendarEventInfo?
 
     enum CodingKeys: String, CodingKey {
         case meetingId = "id"
-        case subject, start, end, organizer, categories
+        case subject, start, end, organizer, categories, info
+        case isAllDay = "is_all_day"
+        case utcStart = "utc_start"
+        case utcEnd = "utc_end"
         case organizerEmail = "organizer_email"
         case isOrganizer = "is_organizer"
         case joinURL = "join_url"
@@ -633,6 +686,10 @@ public struct MeetingItem: Codable, Sendable, Identifiable, Equatable {
         isOrganizer = try c.decodeIfPresent(Bool.self, forKey: .isOrganizer) ?? false
         isOnline = try c.decode(Bool.self, forKey: .isOnline)
         categories = try c.decodeIfPresent([String].self, forKey: .categories) ?? []
+        isAllDay = try c.decodeIfPresent(Bool.self, forKey: .isAllDay) ?? false
+        utcStart = try c.decodeIfPresent(String.self, forKey: .utcStart)
+        utcEnd = try c.decodeIfPresent(String.self, forKey: .utcEnd)
+        info = try c.decodeIfPresent(CalendarEventInfo.self, forKey: .info)
     }
 
     /// Host-side construction (demo data, previews).
@@ -641,9 +698,15 @@ public struct MeetingItem: Codable, Sendable, Identifiable, Equatable {
         end: String? = nil, joinURL: String? = nil,
         organizer: String? = nil, organizerEmail: String? = nil,
         isOrganizer: Bool = false, isOnline: Bool = false,
-        categories: [String] = []
+        categories: [String] = [], isAllDay: Bool = false,
+        utcStart: String? = nil, utcEnd: String? = nil,
+        info: CalendarEventInfo? = nil
     ) {
         self.categories = categories
+        self.isAllDay = isAllDay
+        self.utcStart = utcStart
+        self.utcEnd = utcEnd
+        self.info = info
         self.meetingId = meetingId
         self.subject = subject
         self.start = start
@@ -796,9 +859,14 @@ public struct ChatMessage: Codable, Sendable, Identifiable, Equatable {
     /// "This message has been deleted." bubble instead of removing the
     /// row. Host-side only (never decoded — the wire drops deletes).
     public var deleted: Bool
+    /// §106: the sender's `clientmessageid` (idempotency key). Own sends
+    /// stamp it on the pending bubble; server rows and echoes carry it,
+    /// so the pending bubble reconciles by it. Nil on old payloads.
+    public var clientMessageID: String?
 
     enum CodingKeys: String, CodingKey {
         case id, sender, timestamp, content, raw, reactions, reply_to
+        case clientMessageID = "client_message_id"
     }
 
     public init(
@@ -806,7 +874,8 @@ public struct ChatMessage: Codable, Sendable, Identifiable, Equatable {
         content: String, isOwn: Bool = false,
         raw: String? = nil, edited: Bool = false,
         reactions: [ReactionCount] = [],
-        reply_to: String? = nil, deleted: Bool = false
+        reply_to: String? = nil, deleted: Bool = false,
+        clientMessageID: String? = nil
     ) {
         self.id = id
         self.sender = sender
@@ -818,6 +887,7 @@ public struct ChatMessage: Codable, Sendable, Identifiable, Equatable {
         self.reactions = reactions
         self.reply_to = reply_to
         self.deleted = deleted
+        self.clientMessageID = clientMessageID
     }
 
     public init(from decoder: Decoder) throws {
@@ -829,6 +899,7 @@ public struct ChatMessage: Codable, Sendable, Identifiable, Equatable {
         raw = try c.decodeIfPresent(String.self, forKey: .raw)
         reactions = try c.decodeIfPresent([ReactionCount].self, forKey: .reactions) ?? []
         reply_to = try c.decodeIfPresent(String.self, forKey: .reply_to)
+        clientMessageID = try c.decodeIfPresent(String.self, forKey: .clientMessageID)
         isOwn = false
         edited = false
         deleted = false
@@ -925,14 +996,28 @@ public struct MessagesResponse: Decodable, Sendable {
     }
 }
 
+/// §106 verify answer (`ostmac_find_client_message`).
+public struct FindClientMessageResponse: Decodable, Sendable {
+    public let ok: Bool
+    public let found: Bool
+    public let message: ChatMessage?
+}
+
 public struct SendResponse: Decodable, Sendable {
     public let ok: Bool
     public let chat_id: String?
+    /// §106: server id of the posted message (idempotent posts only, and
+    /// only when the answer named it).
+    public let id: String?
+    /// §106: the client message id the post carried.
+    public let client_message_id: String?
 
     /// Host-side construction (MCP mocks). Wire decoding is untouched.
-    public init(ok: Bool, chat_id: String?) {
+    public init(ok: Bool, chat_id: String?, id: String? = nil, client_message_id: String? = nil) {
         self.ok = ok
         self.chat_id = chat_id
+        self.id = id
+        self.client_message_id = client_message_id
     }
 }
 
@@ -1502,33 +1587,55 @@ public struct UploadProgressResponse: Decodable, Sendable {
 /// Own presence from `CoreReads.presence` / `ostmac_presence_set`
 /// (Graph /me/presence): availability ∈ Available, Busy, DoNotDisturb,
 /// Away, Offline, PresenceUnknown (+ future server values, passed through).
-public struct PresenceResponse: Decodable, Sendable {
+public struct PresenceResponse: Decodable, Sendable, Equatable {
     public let ok: Bool
     public let availability: String
     public let activity: String
+    /// Own status note (unified presence); nil when unset.
+    public let statusMessage: String?
+    public let outOfOffice: Bool?
+    public let outOfOfficeNote: String?
 
     /// Host-side construction (demo data, previews, mock fetchers).
-    public init(ok: Bool, availability: String, activity: String) {
+    public init(ok: Bool, availability: String, activity: String, statusMessage: String? = nil,
+                outOfOffice: Bool? = nil, outOfOfficeNote: String? = nil) {
         self.ok = ok
         self.availability = availability
         self.activity = activity
+        self.statusMessage = statusMessage
+        self.outOfOffice = outOfOffice
+        self.outOfOfficeNote = outOfOfficeNote
     }
 }
 
 /// One other user's presence from core `ostmac_presence_user`
 /// (Graph /users/{id}/presence). Same shape as own, plus the echoed id.
-public struct UserPresenceResponse: Decodable, Sendable {
+public struct UserPresenceResponse: Decodable, Sendable, Equatable {
     public let ok: Bool
     public let id: String
     public let availability: String
     public let activity: String
+    /// Status note (unified presence); nil when unset or expired.
+    public let statusMessage: String?
+    public let outOfOffice: Bool?
+    public let outOfOfficeNote: String?
 
     /// Host-side construction (demo data, previews, mock fetchers).
-    public init(ok: Bool, id: String, availability: String, activity: String) {
+    public init(ok: Bool, id: String, availability: String, activity: String, statusMessage: String? = nil,
+                outOfOffice: Bool? = nil, outOfOfficeNote: String? = nil) {
         self.ok = ok
         self.id = id
         self.availability = availability
         self.activity = activity
+        self.statusMessage = statusMessage
+        self.outOfOffice = outOfOffice
+        self.outOfOfficeNote = outOfOfficeNote
+    }
+
+    /// Card form (note + out-of-office).
+    public var contactPresence: ContactPresence {
+        ContactPresence(availability: availability, activity: activity, statusMessage: statusMessage,
+                        outOfOffice: outOfOffice ?? false, outOfOfficeNote: outOfOfficeNote)
     }
 }
 

@@ -36,8 +36,11 @@ private struct CalendarSheetFrame<Content: View>: View {
                 // frame on empty content does not render, which pinned the
                 // buttons leading. Buttons trail (HIG).
                 Spacer(minLength: 0)
-                Button("Cancel", role: .cancel) { model?.dismissSheet() }
-                    .keyboardShortcut(.cancelAction)
+                Button("Cancel", role: .cancel) {
+                    model?.app?.calWeek.clearUpdateError()
+                    model?.dismissSheet()
+                }
+                .keyboardShortcut(.cancelAction)
                 Button(action, action: perform)
                     .keyboardShortcut(.defaultAction)
                     .disabled(!enabled || busy != nil)
@@ -106,8 +109,8 @@ struct NewMeetingSheet: View {
 /// Join with ID or Link (§6.4): a meeting ID + passcode, or a pasted
 /// Teams link / meeting thread. An ID resolves through Graph
 /// (`MeetingsViewModel.joinByMeetingID`) to the meeting's join link and
-/// joins in-app; an ID Graph can't see falls back to the web
-/// `meet/<id>?p=<passcode>` link in the browser.
+/// joins in-app; an ID that can't be resolved shows an error (never a
+/// browser hand-off).
 struct JoinMeetingSheet: View {
     enum Mode: String, CaseIterable, Identifiable {
         case meetingID = "Meeting ID"
@@ -193,12 +196,171 @@ struct JoinMeetingSheet: View {
     }
 
     /// Meeting ID lookup finished without error: close the sheet. Found →
-    /// the call opens on its pre-join; not found → the web link already
-    /// went to the browser, so no call window.
+    /// the call opens on its pre-join. Not found / failed keep the sheet
+    /// open with the error (never a browser hand-off).
     private func resolved() {
         guard let m = model else { return }
         m.dismissSheet()
         guard meetings.lastMeetingIDRoute == .inApp else { return }
         _ = m.beginCall(.meeting(id: meetings.joinText, subject: "Meeting"))
+    }
+}
+
+/// Meet now (Teams calendar): name the meeting, then start it at once
+/// or get a link to share. Creates an online meeting from now in the
+/// signed-in user's calendar with no one else invited.
+struct MeetNowSheet: View {
+    @ObservedObject var week: CalendarWeekStore
+    @State private var name = ""
+    @State private var created: MeetingItem?
+    @State private var copied = false
+    @Environment(\.windowModel) private var model
+
+    private var defaultName: String { "Meeting with \(model?.ownDisplayName ?? "You")" }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Start a meeting now").font(.headline)
+            Form {
+                TextField("Meeting name", text: $name, prompt: prompt(defaultName))
+                    .disabled(created != nil)
+            }
+            .formStyle(.columns)
+            if let created, let link = created.joinURL {
+                HStack(spacing: 6) {
+                    Image(systemName: copied ? "checkmark.circle.fill" : "link").foregroundStyle(.tint)
+                    Text(copied ? "Meeting link copied" : "Meeting link").foregroundStyle(.secondary)
+                    Text(link).lineLimit(1).truncationMode(.middle).textSelection(.enabled).help(link)
+                }
+                .font(.caption)
+            }
+            HStack(spacing: 8) {
+                HStack(spacing: 6) {
+                    if week.meetingNow {
+                        ProgressView().controlSize(.small)
+                        Text("Creating meeting\u{2026}").foregroundStyle(.secondary)
+                    } else if let error = week.meetNowError {
+                        Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Palette.failed)
+                        Text(error).foregroundStyle(.secondary)
+                    }
+                }
+                .font(.caption)
+                .lineLimit(2)
+                Spacer(minLength: 0)
+                Button("Cancel", role: .cancel) { close() }
+                    .keyboardShortcut(.cancelAction)
+                if created == nil {
+                    Button("Get a link to share") { Task { await create(start: false) } }
+                        .disabled(week.meetingNow)
+                }
+                Button("Start meeting") {
+                    if let created { start(created) } else { Task { await create(start: true) } }
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(week.meetingNow)
+            }
+        }
+        .padding(20)
+        .frame(width: 460)
+    }
+
+    private func close() {
+        week.clearMeetNowError()
+        model?.dismissSheet()
+    }
+
+    private func create(start now: Bool) async {
+        let subject = trimmed(name).isEmpty ? defaultName : trimmed(name)
+        guard let row = await week.meetNow(subject: subject) else { return }
+        created = row
+        if now {
+            start(row)
+        } else {
+            CalendarSection.copyJoinLink(row)
+            copied = row.joinURL != nil
+        }
+    }
+
+    private func start(_ row: MeetingItem) {
+        guard let m = model else { return }
+        m.dismissSheet()
+        CalendarSection.join(row, m)
+    }
+}
+
+/// Edit an event you organize: title, time, location. A series
+/// occurrence edits this event or (title/location) the whole series.
+struct EditEventSheet: View {
+    @ObservedObject var week: CalendarWeekStore
+    let meeting: MeetingItem
+    @State private var subject: String
+    @State private var start: Date
+    @State private var end: Date
+    @State private var location: String
+    @State private var wholeSeries = false
+    @Environment(\.windowModel) private var model
+
+    init(week: CalendarWeekStore, meeting: MeetingItem) {
+        self.week = week
+        self.meeting = meeting
+        let s = CalendarFormat.date(meeting.start) ?? RelativeClock.shared.now
+        _subject = State(initialValue: meeting.subject)
+        _start = State(initialValue: s)
+        _end = State(initialValue: CalendarFormat.date(meeting.end) ?? s.addingTimeInterval(1800))
+        _location = State(initialValue: meeting.info?.location ?? "")
+    }
+
+    private var patch: CalendarEventPatch {
+        var p = CalendarEventPatch()
+        if trimmed(subject) != meeting.subject { p.subject = trimmed(subject) }
+        if trimmed(location) != (meeting.info?.location ?? "") { p.location = trimmed(location) }
+        if !wholeSeries, !meeting.isAllDay {
+            let s = CalWeek.graphDateTime(start), e = CalWeek.graphDateTime(end)
+            if s != meeting.start.map({ String($0.prefix(19)) }) { p.start = s }
+            if e != meeting.end.map({ String($0.prefix(19)) }) { p.end = e }
+            // A moved meeting always sends both ends.
+            if p.start != nil || p.end != nil { p.start = s; p.end = e }
+        }
+        return p
+    }
+
+    var body: some View {
+        CalendarSheetFrame(title: "Edit Meeting", action: "Save",
+                           enabled: !trimmed(subject).isEmpty && end > start && !patch.isEmpty,
+                           busy: week.updating ? "Saving\u{2026}" : nil,
+                           error: week.updateError, perform: save) {
+            Form {
+                if meeting.isSeries {
+                    Picker("Apply to", selection: $wholeSeries) {
+                        Text("This event").tag(false)
+                        Text("All events in the series").tag(true)
+                    }
+                    .pickerStyle(.segmented)
+                }
+                TextField("Title", text: $subject, prompt: prompt("Add a title"))
+                if !meeting.isAllDay {
+                    DatePicker("Starts", selection: $start)
+                        .disabled(wholeSeries)
+                    DatePicker("Ends", selection: $end)
+                        .disabled(wholeSeries)
+                }
+                TextField("Location", text: $location, prompt: prompt("Add a location"))
+            }
+            .formStyle(.columns)
+            if wholeSeries {
+                Text("Series times stay as they are; title and location change for every event.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func save() {
+        let p = patch
+        Task {
+            if await week.update(meeting, patch: p, series: wholeSeries) {
+                model?.dismissSheet()
+            }
+        }
     }
 }

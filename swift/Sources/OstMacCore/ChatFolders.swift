@@ -204,13 +204,102 @@ public final class FolderStore: ObservableObject {
 
     /// Folder id for one chat (override first, then first matching
     /// rule). Nil = unassigned.
+    /// A chat moved here wins over its Teams folder, which wins over
+    /// the auto-rules.
     public func folderID(for chat: ChatItem) -> String? {
-        FolderResolve.folderFor(chat: chat, rules: rules, overrides: overrides)
+        if let manual = overrides[chat.id] { return manual }
+        if let server = serverAssignments[chat.id] { return server }
+        return FolderResolve.folderFor(chat: chat, rules: rules, overrides: [:])
     }
 
     /// Folder name for one id (nil when unknown).
     public func name(for folderID: String) -> String? {
-        folders.first(where: { $0.id == folderID })?.name
+        allFolders.first(where: { $0.id == folderID })?.name
+    }
+
+    // MARK: Teams folders (chatmenu)
+
+    /// Folders read from Teams (Favorites + folders made in Teams), in
+    /// Teams order. Read-only here: chats move into this app's folders.
+    @Published public private(set) var serverFolders: [ChatFolder] = []
+    /// chatID → Teams folder id (first folder listing the chat wins).
+    @Published public private(set) var serverAssignments: [String: String] = [:]
+    /// Chats in the Teams Favorites folder (the list's Favorites section).
+    @Published public private(set) var favoriteIDs: [String] = []
+
+    /// The Teams Favorites folder id (nil until a read returns one).
+    public private(set) var favoritesFolderID: String?
+
+    /// Teams folder write: chat id, target folder id ("" = out of every
+    /// Teams folder) → the folders after the move. Nil = local only
+    /// (demo, tests without a server).
+    public var serverMover: (@Sendable (String, String) throws -> ChatFoldersResponse)?
+    /// Chats whose Teams folder move is in flight.
+    @Published public private(set) var movingIDs: Set<String> = []
+    /// Last refused Teams folder move (the move was undone); nil = clear.
+    @Published public private(set) var serverSyncError: String?
+
+    public func clearServerSyncError() { serverSyncError = nil }
+
+    /// Move a chat into a Teams folder (nil = out of every Teams folder).
+    /// The list shows the move at once; Teams' answer replaces the
+    /// folders, and a refusal puts everything back and sets
+    /// `serverSyncError`. A local override for the chat is dropped (it
+    /// would hide the Teams folder) and restored on refusal.
+    public func moveOnServer(chatID: String, to folderID: String?) async {
+        let id = chatID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let mover = serverMover, !id.isEmpty, !movingIDs.contains(id) else { return }
+        if let folderID, !isServerFolder(folderID) { return }
+        let saved = (serverAssignments, favoriteIDs, overrides[id])
+        var assign = serverAssignments
+        assign[id] = folderID
+        var favs = favoriteIDs.filter { $0 != id }
+        if let folderID, folderID == favoritesFolderID { favs.append(id) }
+        serverAssignments = assign
+        if favs != favoriteIDs { favoriteIDs = favs }
+        if saved.2 != nil {
+            overrides.removeValue(forKey: id)
+            saveOverrides()
+        }
+        movingIDs.insert(id)
+        serverSyncError = nil
+        defer { movingIDs.remove(id) }
+        do {
+            let resp = try await ChatListViewModel.offPool { try mover(id, folderID ?? "") }
+            guard resp.ok else { throw CoreCallError.failed("Teams didn't accept the move.") }
+            applyServer(resp.folders)
+        } catch {
+            serverAssignments = saved.0
+            if favoriteIDs != saved.1 { favoriteIDs = saved.1 }
+            if let old = saved.2 {
+                overrides[id] = old
+                saveOverrides()
+            }
+            serverSyncError = ChatListViewModel.message(for: error)
+        }
+    }
+
+    /// Teams folders, then this app's folders (Filter menu order).
+    public var allFolders: [ChatFolder] { serverFolders + folders }
+
+    /// True for a folder read from Teams.
+    public func isServerFolder(_ id: String) -> Bool {
+        serverFolders.contains { $0.id == id }
+    }
+
+    /// Replace the Teams folders from a read. Unchanged input publishes
+    /// nothing (no list churn on refresh).
+    public func applyServer(_ list: [ServerChatFolder]) {
+        let next = list.map { ChatFolder(id: $0.id, name: $0.name) }
+        var assign: [String: String] = [:]
+        for f in list {
+            for id in f.item_ids where assign[id] == nil { assign[id] = f.id }
+        }
+        let favs = list.filter { $0.folder_type == "Favorites" }.flatMap(\.item_ids)
+        favoritesFolderID = list.first { $0.folder_type == "Favorites" }?.id
+        if next != serverFolders { serverFolders = next }
+        if assign != serverAssignments { serverAssignments = assign }
+        if favs != favoriteIDs { favoriteIDs = favs }
     }
 
     /// Create a folder. Empty/blank and duplicate (case-insensitive,

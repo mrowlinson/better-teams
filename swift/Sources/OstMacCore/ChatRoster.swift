@@ -154,7 +154,7 @@ public final class ChatRosterStore: ObservableObject {
         state = .loading
         let fetch = fetcher
         do {
-            let resp = try await Task.detached { try fetch(chat) }.value
+            let resp = try await Task.blocking { try fetch(chat) }.value
             guard gen == generation else { return }
             members = Self.sorted(resp.members)
             source = resp.source

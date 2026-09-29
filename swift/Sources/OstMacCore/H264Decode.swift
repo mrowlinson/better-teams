@@ -104,19 +104,12 @@ public enum H264Decode {
         }
 
         let box = ResultBox()
-        var session: VTDecompressionSession?
-        status = VTDecompressionSessionCreate(
-            allocator: kCFAllocatorDefault,
-            formatDescription: formatDesc,
-            decoderSpecification: nil,
-            imageBufferAttributes: [
-                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
-            ] as CFDictionary,
-            outputCallback: nil,
-            decompressionSessionOut: &session)
-        guard status == noErr, let session else {
-            throw H264DecodeError.session(status)
-        }
+        // HWACCEL: hardware decoder required (logged software fallback);
+        // IOSurface BGRA out, wrapped into a CGImage without a copy.
+        guard let made = HWVideo.makeDecompressionSession(
+            format: formatDesc, path: "oneshot-decode")
+        else { throw H264DecodeError.session(-1) }
+        let session = made.session
 
         var flagsOut = VTDecodeInfoFlags()
         let sema = DispatchSemaphore(value: 0)

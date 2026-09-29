@@ -2,7 +2,7 @@
 // memory (Low 1 / Balanced 3 / High 6: the `FrameHost` LRU cap on
 // non-visible web views), Suspend after (0/5/15/30/60 min: the keep-alive
 // before a warm view is suspended), the apps in memory with Unload, the
-// downloads folder, Teams chrome hiding with per-app crops (Reset Crops)
+// downloads folder
 // and Refresh Library. Values apply to the window's `FrameHost` at once
 // (its next attach, detach or memory event evicts or suspends by them)
 // and persist under the keys FrameHost reads at launch; demo keeps them
@@ -14,15 +14,9 @@ import SwiftUI
 struct AppsPane: View {
     let host: FrameHost
     let defaults: UserDefaults
-    /// Pinned Teams-hosted apps: the ones chrome hiding and crops apply to.
-    let teamsApps: [FrameApp]
     @State private var keep: Int
     @State private var suspendMinutes: Int
     @State private var downloads: URL
-    @State private var hideChrome: Bool
-    @State private var cropApp: FrameAppID?
-    @State private var crop: TeamsFrameCrop
-    @State private var hasCrops: Bool
     /// Bumped after Unload so the resident list re-reads the host.
     @State private var residentsTick = 0
 
@@ -35,25 +29,15 @@ struct AppsPane: View {
     static func make(_ m: WindowModel?) -> AnyView {
         guard let m else { return AnyView(SettingsUnavailable(text: "Open a window to set up apps.")) }
         let host = m.frameHost
-        let teamsApps: [FrameApp] = m.rail.pinned.compactMap { e in
-            guard case .web(let id) = e, let a = host.library.app(id), case .teamsHosted = a.launch else { return nil }
-            return a
-        }
-        return AnyView(AppsPane(host: host, defaults: AppSettings.shared.defaults, teamsApps: teamsApps))
+        return AnyView(AppsPane(host: host, defaults: AppSettings.shared.defaults))
     }
 
-    init(host: FrameHost, defaults: UserDefaults, teamsApps: [FrameApp] = []) {
+    init(host: FrameHost, defaults: UserDefaults) {
         self.host = host
         self.defaults = defaults
-        self.teamsApps = teamsApps
         _keep = State(initialValue: host.keepInMemory)
         _suspendMinutes = State(initialValue: Int(host.keepAlive / 60))
         _downloads = State(initialValue: host.downloadsFolder)
-        _hideChrome = State(initialValue: host.hideChrome)
-        let first = teamsApps.first?.id
-        _cropApp = State(initialValue: first)
-        _crop = State(initialValue: first.map { host.crop(.app($0)) } ?? .none)
-        _hasCrops = State(initialValue: !host.crops.isEmpty)
     }
 
     var body: some View {
@@ -105,28 +89,6 @@ struct AppsPane: View {
                 }
             }
             Section {
-                Toggle("Hide the Teams header and app bar", isOn: $hideChrome)
-                if let cropApp {
-                    Picker("Crop", selection: Binding(get: { cropApp }, set: { select($0) })) {
-                        ForEach(teamsApps) { a in Text(a.label).tag(a.id) }
-                    }
-                    Stepper("Left: \(Int(crop.left)) pt", value: $crop.left, in: 0...400, step: 4)
-                    Stepper("Top: \(Int(crop.top)) pt", value: $crop.top, in: 0...400, step: 4)
-                }
-                LabeledContent("Crops") {
-                    Button("Reset Crops") { resetCrops() }
-                        .disabled(!hasCrops)
-                }
-            } header: {
-                Text("Teams Apps")
-            } footer: {
-                Text(teamsApps.isEmpty
-                     ? "Pin an app that runs in Teams to set its crop."
-                     : "A crop trims edges of Teams that stay visible in an app.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            Section {
                 LabeledContent("Apps library") {
                     Button("Refresh Library") { host.library.refresh() }
                 }
@@ -144,32 +106,6 @@ struct AppsPane: View {
             host.keepAlive = TimeInterval(v * 60)
             defaults.set(v, forKey: TeamsFrameConfig.keepAliveMinutesKey)
         }
-        .onChange(of: crop) { _, c in
-            if let cropApp { saveCrop(c, for: cropApp) }
-        }
-        .onChange(of: hideChrome) { _, on in
-            host.hideChrome = on
-            defaults.set(on, forKey: FrameChromeStyle.hideKey)
-        }
-    }
-
-    private func select(_ id: FrameAppID?) {
-        cropApp = id
-        crop = id.map { host.crop(.app($0)) } ?? .none
-    }
-
-    private func saveCrop(_ c: TeamsFrameCrop, for id: FrameAppID) {
-        guard host.crop(.app(id)) != c else { return }
-        host.setCrop(c, for: .app(id))
-        FrameChromeStyle.saveCrops(host.crops, defaults: defaults)
-        hasCrops = !host.crops.isEmpty
-    }
-
-    private func resetCrops() {
-        host.resetCrops()
-        FrameChromeStyle.saveCrops(host.crops, defaults: defaults)
-        hasCrops = false
-        crop = .none
     }
 
     private func chooseDownloads() {

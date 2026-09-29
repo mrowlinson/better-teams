@@ -118,6 +118,7 @@ public enum CatchUpPrompts {
         A line that starts with SUMMARY: followed by one or two sentences on what the conversation is about and where it stands.
         A line that says POINTS: followed by up to five lines, each starting with "- ", covering decisions, questions and news, oldest first.
         A line that says ACTIONS: followed by one line per task, each starting with "- ", naming who owns it when the messages say so. If there are no tasks, write "- None".
+        Leave out social chat: food or drink orders, greetings, thanks, jokes, celebrations, and plans whose moment has passed.
         Write nothing else.
         """
 
@@ -138,7 +139,7 @@ public enum CatchUpPrompts {
     /// Map step: notes for one part of a long conversation.
     public static func notes(chunk: String) -> String {
         """
-        Below is one part of a longer work conversation. Write up to six short lines, each starting with "- ", that record the decisions, questions, requests and tasks in this part and who is involved. Use only facts written in the messages. Write nothing else.
+        Below is one part of a longer work conversation. Write up to six short lines, each starting with "- ", that record the decisions, questions, requests and tasks in this part and who is involved. Skip social chat such as food orders, greetings and thanks. Use only facts written in the messages. Write nothing else.
 
         \(messagesHeader)
         \(chunk)
@@ -270,7 +271,8 @@ public enum CatchUpSummaryParser {
 
     static func bullet(_ line: String) -> (Bool, String) {
         for g in ["- ", "• ", "* ", "– ", "— "] where line.hasPrefix(g) {
-            return (true, String(line.dropFirst(g.count)).trimmingCharacters(in: .whitespaces))
+            // Doubled glyphs ("- - text", seen from the model) strip too.
+            return (true, bullet(String(line.dropFirst(g.count)).trimmingCharacters(in: .whitespaces)).1)
         }
         if let r = line.range(of: #"^\d+[.)]\s+"#, options: .regularExpression) {
             return (true, String(line[r.upperBound...]).trimmingCharacters(in: .whitespaces))
@@ -394,6 +396,8 @@ public struct CatchUpMention: Identifiable, Equatable, Sendable {
         case you
         /// @everyone / @channel / @team.
         case everyone
+        /// A Teams tag (@tag) whose members include the signed-in user.
+        case tag
     }
 
     public let kind: Kind
@@ -423,7 +427,8 @@ public enum CatchUpMentions {
     /// unstripped markup's `<at>` tags / Mention spans), never from
     /// text guesses or the model. Own and deleted messages never flag.
     /// A message that names the user AND the whole chat reads `.you`.
-    public static func kind(of m: ChatMessage, ownerMRI: String?, ownerDisplayName: String) -> CatchUpMention.Kind? {
+    public static func kind(of m: ChatMessage, ownerMRI: String?, ownerDisplayName: String,
+                            ownerTags: Set<String> = []) -> CatchUpMention.Kind? {
         guard !m.deleted, !m.isOwn else { return nil }
         let own = ownerDisplayName.trimmingCharacters(in: .whitespacesAndNewlines)
         if !own.isEmpty, m.sender == own { return nil }
@@ -432,14 +437,16 @@ public enum CatchUpMentions {
         guard !mentions.isEmpty else { return nil }
         if Mentions.mentionsOwner(mentions, ownerMRI: ownerMRI, ownerDisplayName: own) { return .you }
         if Mentions.mentionsChannelOrEveryone(mentions) { return .everyone }
+        if CatchUpTags.mentionsTag(mentions, ownerTags: ownerTags) { return .tag }
         return nil
     }
 
     /// Flagged messages in `messages`, oldest first.
     public static func flag(_ messages: [ChatMessage], chatID: String, chatName: String,
-                            ownerMRI: String?, ownerDisplayName: String) -> [CatchUpMention] {
+                            ownerMRI: String?, ownerDisplayName: String,
+                            ownerTags: Set<String> = []) -> [CatchUpMention] {
         messages.compactMap { m in
-            kind(of: m, ownerMRI: ownerMRI, ownerDisplayName: ownerDisplayName).map {
+            kind(of: m, ownerMRI: ownerMRI, ownerDisplayName: ownerDisplayName, ownerTags: ownerTags).map {
                 CatchUpMention(kind: $0, chatID: chatID, chatName: chatName, messageID: m.id,
                                sender: m.sender, timestamp: m.timestamp,
                                preview: String(m.content.replacingOccurrences(of: "\n", with: " ").prefix(200)))

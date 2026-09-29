@@ -35,7 +35,7 @@ final class CatchUpWindowController: NSWindowController, NSWindowDelegate {
 
     private init(model m: WindowModel, app: AppState) {
         model = m
-        let root = CatchUpDigestView(digest: app.catchUpDigest, catchUp: app.catchUp,
+        let root = CatchUpDigestView(digest: app.catchUpDigest, catchUp: app.catchUp, feedback: app.catchUpFeedback,
                                      chatName: { [weak app] in app?.chatNameOrNil(for: $0) }) { [weak m] mention in
             guard let m else { return }
             CatchUpWindowController.jump(mention, in: m)
@@ -79,28 +79,32 @@ final class CatchUpWindowController: NSWindowController, NSWindowDelegate {
 struct CatchUpDigestView: View {
     @ObservedObject var digest: CatchUpDigestStore
     @ObservedObject var catchUp: CatchUpStore
+    @ObservedObject var feedback: CatchUpFeedbackStore
     /// Live conversation name: a thread ingested before the chat list
     /// loaded carries no name, and a rename shows up here.
     let chatName: (String) -> String?
     let jump: (CatchUpMention) -> Void
 
     var body: some View {
-        content
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .safeAreaInset(edge: .bottom, spacing: 0) {
-                if catchUp.mode != .off { statusBar }
-            }
+        VStack(spacing: 0) {
+            if catchUp.mode != .off { CatchUpPeriodBar(digest: digest) }
+            content
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if catchUp.mode != .off { statusBar }
+        }
     }
 
     @ViewBuilder private var content: some View {
         if catchUp.mode == .off {
             EmptyPane("Catch Up Is Off", systemImage: "sparkles", message: CatchUpError.off.message)
         } else if digest.entries.isEmpty, digest.mentions.isEmpty, digest.working == nil || digest.streamingText == nil {
-            if digest.working != nil, !digest.hasRunOnce {
+            if digest.working != nil, !digest.hasRunOnce || digest.isFilling {
                 LoadingPane("Catching up\u{2026}", rows: false)
             } else {
                 EmptyPane("You\u{2019}re All Caught Up", systemImage: "checkmark.circle",
-                          message: "New messages are summarized here.")
+                          message: "Nothing needs your attention in the last \(digest.period.title.lowercased()).")
             }
         } else {
             list
@@ -109,12 +113,18 @@ struct CatchUpDigestView: View {
 
     private var list: some View {
         Form {
-            Section("Mentions You") {
-                if digest.mentions.isEmpty {
-                    Text("No one has mentioned you.").foregroundStyle(.secondary)
-                } else {
-                    ForEach(digest.mentions) { m in
-                        CatchUpMentionRow(mention: m, chatName: name(m.chatID, m.chatName)) { jump(m) }
+            CatchUpMentionsSection(mentions: digest.mentions, collapsed: $digest.mentionsCollapsed,
+                                   chatName: { name($0.chatID, $0.chatName) },
+                                   emptyText: "No one has mentioned you in the last \(digest.period.title.lowercased()).",
+                                   open: jump)
+            // A period being filled for the first time: a small progress
+            // row under the mentions (they are ready already).
+            if digest.isFilling, digest.entries.isEmpty, digest.streamingText == nil {
+                Section {
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text("Catching up on the last \(digest.period.title.lowercased())\u{2026}")
+                            .foregroundStyle(.secondary)
                     }
                 }
             }
@@ -134,7 +144,9 @@ struct CatchUpDigestView: View {
                     if parsed.isEmpty {
                         Text(e.text).textSelection(.enabled)
                     } else {
-                        CatchUpSummaryBody(parsed: parsed, includeActions: true)
+                        CatchUpSummaryBody(parsed: parsed, includeActions: true,
+                                           isHidden: { feedback.isHidden($0, chatID: e.chatID) },
+                                           dismiss: { feedback.dismiss($0, chatID: e.chatID) })
                     }
                 } header: {
                     header(title: name(e.chatID, e.chatName), working: digest.working == e.chatID)
@@ -178,6 +190,10 @@ struct CatchUpDigestView: View {
                 .lineLimit(1)
                 .truncationMode(.tail)
             Spacer()
+            if digest.tagsError != nil, let retry = digest.retryTags {
+                Button("Retry", action: retry)
+                    .help("Read your Teams tags again")
+            }
             if catchUp.mode == .onClick || digest.pending > 0 {
                 Button("Update Now") { digest.updateNow() }
                     .disabled(digest.working != nil || digest.pending == 0)
@@ -188,16 +204,25 @@ struct CatchUpDigestView: View {
     }
 
     private var status: String {
-        if digest.working != nil { return "Updating\u{2026}" }
-        switch digest.paused {
+        Self.statusLine(working: digest.working != nil, paused: digest.paused, lastError: digest.lastError,
+                        tagsError: digest.tagsError, pending: digest.pending)
+    }
+
+    /// The status bar text. A failed tag read is said in words (with the
+    /// Retry beside it), never left looking like "Up to date".
+    static func statusLine(working: Bool, paused: CatchUpDigestStore.Pause?, lastError: String?,
+                           tagsError: String?, pending: Int) -> String {
+        if working { return "Updating\u{2026}" }
+        switch paused {
         case .lowPower?: return "Paused in Low Power Mode"
         case .thermal?: return "Paused while this Mac cools down"
         case nil: break
         }
-        if let e = digest.lastError { return e }
-        if digest.pending > 0 {
-            return digest.pending == 1 ? "1 conversation has new messages"
-                : "\(digest.pending) conversations have new messages"
+        if let e = lastError { return e }
+        if let e = tagsError { return "Tag mentions unavailable \u{2014} \(e)" }
+        if pending > 0 {
+            return pending == 1 ? "1 conversation has new messages"
+                : "\(pending) conversations have new messages"
         }
         return "Up to date"
     }

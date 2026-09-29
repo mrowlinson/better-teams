@@ -172,6 +172,29 @@ public final class PresenceStore: ObservableObject {
     private let resolveFetcher: ResolveFetcher
     private var lastResolve: [String: Date] = [:]
 
+    // MARK: unified presence (batch + poll)
+
+    /// Batch presence by user id (keys = ids as given). When set (live:
+    /// `UnifiedPresence`), own + peer + chat reads go through it in one
+    /// request instead of one Graph call per person.
+    public typealias BatchFetcher = @Sendable ([String]) async throws -> [String: UserPresenceResponse]
+    public var batchFetcher: BatchFetcher?
+    /// Own object id (token claims) — included in every batch.
+    public var ownIDProvider: (@MainActor () -> String?)?
+    /// Current chat ids: 1:1 chats are pinned to their peer on each poll.
+    public var chatIDsProvider: (@MainActor () -> [String])?
+    /// Seconds between polls (Teams web refreshes on a similar cadence).
+    public var pollInterval: TimeInterval = 60
+    /// Max people kept on the poll list (most recent first out).
+    public var watchLimit = 400
+    /// People whose presence is wanted (cards, rosters, search), oldest first.
+    public private(set) var watched: [String] = []
+    /// 1:1 chat id → peer user id (row/header dot source).
+    public private(set) var chatPins: [String: String] = [:]
+    /// Batch requests made (tests, diagnostics).
+    public private(set) var batchCount = 0
+    private var pollTask: Task<Void, Never>?
+
     /// Nonisolated so views can take a default `PresenceStore()` in
     /// their (nonisolated) inits; all members stay main-actor-isolated.
     public nonisolated init(
@@ -188,9 +211,13 @@ public final class PresenceStore: ObservableObject {
 
     /// Refresh own presence. Failure keeps the stale value (ost parity).
     public func refreshOwn() async {
+        if batchFetcher != nil, let me = ownIDProvider?() {
+            await fetchBatch([me])
+            return
+        }
         let fetcher = ownFetcher
         do {
-            let resp = try await Task.detached { try fetcher() }.value
+            let resp = try await Task.blocking { try fetcher() }.value
             own = resp
             error = nil
         } catch {
@@ -219,7 +246,7 @@ public final class PresenceStore: ObservableObject {
         Task {
             defer { setting = false }
             do {
-                let resp = try await Task.detached { try fetcher(want) }.value
+                let resp = try await Task.blocking { try fetcher(want) }.value
                 own = resp
                 error = nil
             } catch {
@@ -254,7 +281,7 @@ public final class PresenceStore: ObservableObject {
     public func refreshChatPeer(chatID: String, userID: String) async {
         let fetcher = userFetcher
         do {
-            let resp = try await Task.detached { try fetcher(userID) }.value
+            let resp = try await Task.blocking { try fetcher(userID) }.value
             peers[resp.id] = resp
             chatPeers[chatID] = resp
             error = nil
@@ -266,10 +293,15 @@ public final class PresenceStore: ObservableObject {
     /// Refresh chatmates by user id. Unknown ids keep stale entries;
     /// per-id failure records `error` but keeps the rest.
     public func refreshPeers(ids: [String]) async {
+        if batchFetcher != nil {
+            watch(ids)
+            await fetchBatch(ids)
+            return
+        }
         let fetcher = userFetcher
         for id in ids {
             do {
-                let resp = try await Task.detached { try fetcher(id) }.value
+                let resp = try await Task.blocking { try fetcher(id) }.value
                 peers[resp.id] = resp
             } catch {
                 self.error = String(describing: error)
@@ -290,6 +322,13 @@ public final class PresenceStore: ObservableObject {
             return
         }
         lastResolve[chatID] = Date()
+        // Unified presence keys on the MRI's object id: no directory hop.
+        if batchFetcher != nil, let oid = Mri.oid(from: mri) {
+            mriByChat[chatID] = mri
+            chatPins[chatID] = oid
+            await fetchBatch([oid])
+            return
+        }
         let resolve = resolveFetcher
         let fetch = userFetcher
         do {
@@ -297,11 +336,11 @@ public final class PresenceStore: ObservableObject {
             if let hit = resolved[mri] {
                 user = hit
             } else {
-                user = try await Task.detached { try resolve(mri) }.value
+                user = try await Task.blocking { try resolve(mri) }.value
                 resolved[mri] = user
             }
             mriByChat[chatID] = mri
-            let resp = try await Task.detached { try fetch(user.id) }.value
+            let resp = try await Task.blocking { try fetch(user.id) }.value
             peers[resp.id] = resp
             chatPeers[chatID] = resp
             error = nil
@@ -315,8 +354,106 @@ public final class PresenceStore: ObservableObject {
         resolved[mri] = response
     }
 
+    /// Add people to the poll list (dedup, case-insensitive; capped).
+    public func watch(_ ids: [String]) {
+        var seen = Set(watched.map { $0.lowercased() })
+        for id in ids where !id.isEmpty && seen.insert(id.lowercased()).inserted {
+            watched.append(id)
+        }
+        if watched.count > watchLimit { watched.removeFirst(watched.count - watchLimit) }
+    }
+
+    /// Pin every 1:1 chat to its peer (ids come from the chat id itself).
+    /// Returns the peers that had no presence yet.
+    @discardableResult
+    public func pinOneOnOneChats(_ chatIDs: [String], ownUserID: String?) -> [String] {
+        var fresh: [String] = []
+        for chat in chatIDs {
+            guard let peer = UnifiedPresence.peerUserID(chatID: chat, ownUserID: ownUserID) else { continue }
+            if chatPins[chat] != peer { chatPins[chat] = peer }
+            if chatPeers[chat] == nil { fresh.append(peer) }
+        }
+        return fresh
+    }
+
+    /// One poll: own + watched + every 1:1 chat peer, one batch.
+    public func pollOnce() async {
+        guard batchFetcher != nil else { return }
+        let me = ownIDProvider?()
+        if let chatIDs = chatIDsProvider?() { pinOneOnOneChats(chatIDs, ownUserID: me) }
+        var ids = [String]()
+        var seen = Set<String>()
+        for id in [me].compactMap({ $0 }) + watched + chatPins.keys.sorted().compactMap({ chatPins[$0] })
+        where seen.insert(id.lowercased()).inserted {
+            ids.append(id)
+        }
+        guard !ids.isEmpty else { return }
+        await fetchBatch(ids)
+    }
+
+    /// Poll every `pollInterval` until `stopPolling`/`clear` (first poll now).
+    public func startPolling() {
+        guard batchFetcher != nil, pollTask == nil else { return }
+        let interval = pollInterval
+        pollTask = Task { [weak self] in
+            while !Task.isCancelled {
+                await self?.pollOnce()
+                try? await Task.sleep(nanoseconds: UInt64(max(1, interval) * 1_000_000_000))
+            }
+        }
+    }
+
+    public func stopPolling() {
+        pollTask?.cancel()
+        pollTask = nil
+    }
+
+    /// One batch read, applied as a diff: only changed entries publish.
+    func fetchBatch(_ ids: [String]) async {
+        guard let batch = batchFetcher, !ids.isEmpty else { return }
+        batchCount += 1
+        do {
+            let map = try await batch(ids)
+            apply(map)
+        } catch {
+            self.error = String(describing: error)
+        }
+    }
+
+    /// Diffed apply of one batch (keys = user ids). Unchanged values
+    /// never republish; ids missing from the reply keep their last value.
+    public func apply(_ map: [String: UserPresenceResponse]) {
+        var nextPeers = peers
+        var peersChanged = false
+        for (id, r) in map where nextPeers[id] != r {
+            nextPeers[id] = r
+            peersChanged = true
+        }
+        if peersChanged { peers = nextPeers }
+        var lower: [String: UserPresenceResponse] = [:]
+        for (id, r) in map { lower[id.lowercased()] = r }
+        var nextChats = chatPeers
+        var chatsChanged = false
+        for (chat, peer) in chatPins {
+            guard let r = lower[peer.lowercased()], nextChats[chat] != r else { continue }
+            nextChats[chat] = r
+            chatsChanged = true
+        }
+        if chatsChanged { chatPeers = nextChats }
+        if let me = ownIDProvider?(), let r = lower[me.lowercased()] {
+            let mine = PresenceResponse(ok: true, availability: r.availability, activity: r.activity,
+                                        statusMessage: r.statusMessage, outOfOffice: r.outOfOffice,
+                                        outOfOfficeNote: r.outOfOfficeNote)
+            if own != mine { own = mine }
+        }
+        if error != nil { error = nil }
+    }
+
     /// Drop everything after sign-out (fail closed; stale dots vanish).
     public func clear() {
+        stopPolling()
+        watched = []
+        chatPins = [:]
         own = nil
         peers = [:]
         chatPeers = [:]

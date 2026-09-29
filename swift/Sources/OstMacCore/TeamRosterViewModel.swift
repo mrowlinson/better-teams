@@ -118,7 +118,7 @@ public final class TeamRosterViewModel: ObservableObject {
         let fetcher = listFetcher
         let teamID = teamID
         do {
-            let response = try await Task.detached {
+            let response = try await Task.blocking {
                 try fetcher(teamID)
             }.value
             members = response.members
@@ -140,7 +140,7 @@ public final class TeamRosterViewModel: ObservableObject {
         let fetcher = addFetcher
         let teamID = teamID
         do {
-            let response = try await Task.detached {
+            let response = try await Task.blocking {
                 try fetcher(teamID, user, owner)
             }.value
             members.append(response.member)
@@ -157,7 +157,7 @@ public final class TeamRosterViewModel: ObservableObject {
         let fetcher = removeFetcher
         let teamID = teamID
         do {
-            let response = try await Task.detached {
+            let response = try await Task.blocking {
                 try fetcher(teamID, memberID)
             }.value
             members.removeAll { $0.id == response.memberId }

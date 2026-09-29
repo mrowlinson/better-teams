@@ -142,42 +142,87 @@ final class CoreCTests: XCTestCase {
         XCTAssertEqual(MeetJoin.meetingIDDigits("123 456 789 012"), "123456789012")
         XCTAssertNil(MeetJoin.meetingIDDigits("12345678"))
         XCTAssertNil(MeetJoin.meetingIDDigits("１２３４５６７８９"))
-        XCTAssertEqual(MeetJoin.webMeetURL(meetingID: "123 456 789 012", passcode: " aB&3 "),
-                       "https://teams.microsoft.com/meet/123456789012?p=aB%263")
-        XCTAssertNil(MeetJoin.webMeetURL(meetingID: "123456789012", passcode: " "))
     }
 
-    func testJoinByMeetingIDRoutesInAppWebOrPasscodeError() async {
+    /// §GRAPH2: join-by-ID never opens a browser. Resolved -> in-app
+    /// pre-join; not found, lookup failure and passcode mismatch -> a
+    /// visible error; a "resolved" link that is not a thread -> error.
+    func testJoinByMeetingIDRoutesInAppOrShowsAnErrorNeverBrowser() async {
         let opened = CoreCBox<[URL]>([])
         let answer = CoreCBox<MeetingIDResolution>(.found(
             joinURL: "https://teams.microsoft.com/l/meetup-join/19%3ameeting_X%40thread.v2/0", subject: "S"))
+        let failure = CoreCBox<Bool>(false)
         let vm = MeetingsViewModel(
             meetingsFetcher: { MeetingsResponse(ok: true, meetings: []) },
             opener: { opened.v.append($0) },
             lobbyGraceSecs: -1,
-            meetingIDResolver: { _, _ in answer.v })
+            meetingIDResolver: { _, _ in
+                if failure.v { throw CoreCallError.failed("meetid: HTTP 403 for https://graph.example/x: secret-detail") }
+                return answer.v
+            })
         vm.joinByMeetingID("123 456 789 012", passcode: "aB3")
         await spinUntil({ vm.showPreJoin })
         XCTAssertEqual(vm.lastMeetingIDRoute, .inApp)
-        XCTAssertTrue(vm.showPreJoin)
         XCTAssertEqual(vm.pendingJoin?.threadID, "19:meeting_X@thread.v2")
+        XCTAssertNil(vm.meetingIDError)
+        await spinUntil({ !vm.resolvingMeetingID })
+        XCTAssertFalse(vm.resolvingMeetingID, "busy ends once the thread is routed to pre-join")
         XCTAssertTrue(opened.v.isEmpty)
         vm.cancelPreJoin()
 
+        // Not found: an error, no browser, no pre-join.
         answer.v = .notFound
         vm.joinByMeetingID("123456789012", passcode: "aB3")
-        await spinUntil({ !opened.v.isEmpty })
-        XCTAssertEqual(vm.lastMeetingIDRoute, .web)
-        XCTAssertEqual(opened.v.first?.absoluteString, "https://teams.microsoft.com/meet/123456789012?p=aB3")
+        await spinUntil({ vm.meetingIDError != nil })
+        XCTAssertTrue(vm.meetingIDError?.contains("couldn't find") == true, vm.meetingIDError ?? "nil")
+        XCTAssertNil(vm.lastMeetingIDRoute)
+        XCTAssertFalse(vm.showPreJoin)
+        XCTAssertTrue(opened.v.isEmpty, "join-by-ID must not open a browser: \(opened.v)")
+
+        // Lookup failure: its own error; the raw failure text (URL, body) never shown.
+        failure.v = true
+        vm.joinByMeetingID("123456789012", passcode: "aB3")
+        await spinUntil({ vm.meetingIDError?.contains("look up") == true })
+        XCTAssertFalse(vm.meetingIDError?.contains("secret-detail") == true)
+        XCTAssertFalse(vm.meetingIDError?.contains("graph.example") == true)
+        XCTAssertTrue(opened.v.isEmpty)
+        failure.v = false
 
         answer.v = .passcodeMismatch
         vm.joinByMeetingID("123456789012", passcode: "nope")
-        await spinUntil({ vm.meetingIDError != nil })
-        XCTAssertNotNil(vm.meetingIDError)
-        XCTAssertEqual(opened.v.count, 1)
+        await spinUntil({ vm.meetingIDError?.contains("passcode") == true })
+        XCTAssertTrue(opened.v.isEmpty)
 
+        // Resolved to a link with no thread in it: still no browser.
+        answer.v = .found(joinURL: "https://teams.microsoft.com/meet/123456789012?p=aB3", subject: nil)
+        vm.joinByMeetingID("123456789012", passcode: "aB3")
+        await spinUntil({ !vm.resolvingMeetingID })
+        // The lookup only stops being busy once the error is set, so the
+        // sheet (which closes when busy ends without an error) stays open.
+        XCTAssertEqual(vm.meetingIDError?.contains("found that meeting"), true, vm.meetingIDError ?? "nil")
+        XCTAssertNil(vm.lastMeetingIDRoute)
+        XCTAssertTrue(opened.v.isEmpty, "\(opened.v)")
+        XCTAssertFalse(vm.showPreJoin)
+
+        // Bad input is refused before the resolver.
         vm.joinByMeetingID("123", passcode: "x")
         XCTAssertNotNil(vm.meetingIDError)
+        vm.joinByMeetingID("123456789012", passcode: "  ")
+        XCTAssertNotNil(vm.meetingIDError)
+        XCTAssertTrue(opened.v.isEmpty)
+    }
+
+    /// The paste-a-link path (not join-by-ID) still opens non-thread links,
+    /// so the by-ID rule above is specific to that path.
+    func testPastedNonThreadLinkStillOpensExternallyOutsideJoinByID() async {
+        let opened = CoreCBox<[URL]>([])
+        let vm = MeetingsViewModel(
+            meetingsFetcher: { MeetingsResponse(ok: true, meetings: []) },
+            opener: { opened.v.append($0) }, lobbyGraceSecs: -1)
+        vm.joinText = "https://example.com/x"
+        vm.submitJoin()
+        await spinUntil({ !opened.v.isEmpty })
+        XCTAssertEqual(opened.v.first?.absoluteString, "https://example.com/x")
     }
 
     // MARK: 5. Create-chat-then-call

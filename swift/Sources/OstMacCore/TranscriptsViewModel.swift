@@ -137,7 +137,7 @@ public final class TranscriptsViewModel: ObservableObject {
         state = .loading
         let fetcher = listFetcher
         do {
-            let response = try await Task.detached { try fetcher() }.value
+            let response = try await Task.blocking { try fetcher() }.value
             listed = response.transcripts
             snapshots?.save(response.transcripts, key: Self.snapshotKey)
             if !isSearchResults {
@@ -174,7 +174,7 @@ public final class TranscriptsViewModel: ObservableObject {
         isSearching = true
         searchError = nil
         let fetcher = searchFetcher
-        let result = await Task.detached { () -> Result<[TranscriptItem], Error> in
+        let result = await Task.blocking { () -> Result<[TranscriptItem], Error> in
             do {
                 return .success(try fetcher(q).transcripts)
             } catch {
@@ -219,7 +219,7 @@ public final class TranscriptsViewModel: ObservableObject {
         Task {
             let fetcher = downloadFetcher
             do {
-                let turns = try await Task.detached {
+                let turns = try await Task.blocking {
                     try Self.downloadTurns(for: item, download: fetcher)
                 }.value
                 guard gen == generation else { return } // superseded
@@ -276,7 +276,7 @@ public final class TranscriptsViewModel: ObservableObject {
         let fetcher = downloadFetcher
         Task {
             do {
-                let path = try await Task.detached {
+                let path = try await Task.blocking {
                     try fetcher(
                         item.drive_id ?? "", item.id,
                         Self.downloadsDest(for: item))
@@ -324,8 +324,7 @@ public final class TranscriptsViewModel: ObservableObject {
 
     /// Save destination mirroring the Shared tab default.
     public nonisolated static func downloadsDest(for item: TranscriptItem) -> String {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Downloads")
+        UserFolders.downloads()
             .appendingPathComponent(item.name).path
     }
 

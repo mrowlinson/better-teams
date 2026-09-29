@@ -76,9 +76,11 @@ public enum MeetJoin {
         guard let target else { return "Paste a Teams meeting link or thread id" }
         return switch target.kind {
         case "thread": nil
-        case "meeting-id": "Opens in your browser — personal meeting link"
-        case "url": "Opens in your browser — not a Teams call link"
-        default: "Not a Teams meeting link — check the paste"
+        case "meeting-id": "Personal meeting link \u{2014} joined in this app"
+        case "url": isMicrosoftLink(target)
+            ? "A short Teams link \u{2014} checked in this app, never in a browser"
+            : "Opens in your browser \u{2014} not a Teams call link"
+        default: "Not a Teams meeting link \u{2014} check the paste"
         }
     }
 
@@ -87,9 +89,15 @@ public enum MeetJoin {
         guard let target else { return "Join" }
         return switch target.kind {
         case "thread": "Join"
-        case "meeting-id", "url": "Open"
+        case "meeting-id": "Join"
+        case "url": isMicrosoftLink(target) ? "Join" : "Open"
         default: "Join"
         }
+    }
+
+    /// The target is a link on a Microsoft Teams host (never a browser hand-off).
+    static func isMicrosoftLink(_ target: JoinTarget) -> Bool {
+        URL(string: target.url).map(MeetLinkResolver.isMicrosoftTeamsURL) ?? false
     }
 }
 
@@ -140,18 +148,6 @@ public extension MeetJoin {
               digits.unicodeScalars.allSatisfy({ ("0" ... "9").contains($0) })
         else { return nil }
         return digits
-    }
-
-    /// Web join link `https://teams.microsoft.com/meet/<digits>?p=<pass>`
-    /// (the browser fallback when the ID does not resolve in-app). Nil
-    /// for a malformed ID or blank passcode.
-    static func webMeetURL(meetingID: String, passcode: String) -> String? {
-        let pass = passcode.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let digits = meetingIDDigits(meetingID), !pass.isEmpty,
-              let p = pass.addingPercentEncoding(
-                  withAllowedCharacters: .urlQueryAllowed.subtracting(["&", "=", "+", "#"]))
-        else { return nil }
-        return "https://teams.microsoft.com/meet/\(digits)?p=\(p)"
     }
 }
 
@@ -242,7 +238,7 @@ public final class PreJoinModel: ObservableObject {
         }
         micDenied = false
         levelSampling = true
-        Task.detached { [weak self] in
+        Task.blocking { [weak self] in
             let result: Result<MicLevel, Error>
             do { result = try .success(RustCore.micLevel(input: nil)) } catch { result = .failure(error) }
             await MainActor.run { [weak self] in

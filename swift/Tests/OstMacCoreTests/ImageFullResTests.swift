@@ -75,7 +75,7 @@ final class ImageFullResTests: XCTestCase {
         let fullData = DemoMedia.render(seed: 1, width: 960, height: 640)
         let model = FullResImageModel(
             thumbURL: "https://h/v1/objects/0/views/imgt1", messageID: "m1", thumb: thumb,
-            cache: RichMediaCache(diskDir: nil), fetcher: { _ in fullData }, maxPixels: 480)
+            cache: RichMediaCache(diskDir: nil, memory: .pinned), fetcher: { _ in fullData }, maxPixels: 480)
         // Before the fetch lands: thumbnail placeholder, loading, nothing to save.
         XCTAssertTrue(model.isLoadingFull)
         XCTAssertTrue(model.displayImage === thumb)
@@ -95,7 +95,7 @@ final class ImageFullResTests: XCTestCase {
         let thumb = try XCTUnwrap(NSImage(data: DemoMedia.data(for: DemoMedia.photo1)))
         let model = FullResImageModel(
             thumbURL: "https://h/v1/objects/0/views/imgt1", messageID: "m1", thumb: thumb,
-            cache: RichMediaCache(diskDir: nil),
+            cache: RichMediaCache(diskDir: nil, memory: .pinned),
             fetcher: { _ in throw MediaFetchError.failed("nope") })
         await model.reload()
         guard case .failed = model.phase else { return XCTFail("expected failed") }
@@ -154,7 +154,7 @@ final class ImageFullResTests: XCTestCase {
         let thumbData = try DemoMedia.data(for: DemoMedia.photo1) // 480x320
         let fullData = DemoMedia.render(seed: 1, width: 960, height: 640)
         let thumb = try XCTUnwrap(NSImage(data: thumbData))
-        let cache = RichMediaCache(diskDir: nil)
+        let cache = RichMediaCache(diskDir: nil, memory: .pinned)
         let seen = URLLog()
         let model = FullResImageModel(
             thumbURL: "https://h/v1/objects/0/views/imgt1", messageID: "m1",
@@ -180,7 +180,7 @@ final class ImageFullResTests: XCTestCase {
         let calls = Counter()
         let model = FullResImageModel(
             thumbURL: "https://h/v1/objects/0/views/imgt1", messageID: "m1",
-            thumb: thumb, cache: RichMediaCache(diskDir: nil),
+            thumb: thumb, cache: RichMediaCache(diskDir: nil, memory: .pinned),
             fetcher: { _ in
                 calls.inc()
                 throw MediaFetchError.failed("nope")
@@ -197,7 +197,7 @@ final class ImageFullResTests: XCTestCase {
 
     func testViewerFullResServedFromCache() async throws {
         let fullData = DemoMedia.render(seed: 2, width: 960, height: 640)
-        let cache = RichMediaCache(diskDir: nil)
+        let cache = RichMediaCache(diskDir: nil, memory: .pinned)
         let thumbURL = "https://h/v1/objects/0/views/imgt1"
         let primer = FullResImageModel(
             thumbURL: thumbURL, messageID: "m1", thumb: nil,
@@ -220,7 +220,7 @@ final class ImageFullResTests: XCTestCase {
         let bytes = try DemoMedia.data(for: DemoMedia.gif1Full)
         let model = FullResImageModel(
             thumbURL: DemoMedia.gif1, messageID: "m1", thumb: nil,
-            cache: RichMediaCache(diskDir: nil),
+            cache: RichMediaCache(diskDir: nil, memory: .pinned),
             fetcher: { _ in bytes })
         await model.reload()
         XCTAssertEqual(model.phase, .loaded)
@@ -234,7 +234,7 @@ final class ImageFullResTests: XCTestCase {
         let bytes = try DemoMedia.data(for: DemoMedia.photo1Full)
         let model = FullResImageModel(
             thumbURL: DemoMedia.photo1, messageID: "m1", thumb: nil,
-            cache: RichMediaCache(diskDir: nil),
+            cache: RichMediaCache(diskDir: nil, memory: .pinned),
             fetcher: { _ in bytes })
         await model.reload()
         XCTAssertEqual(model.phase, .loaded)

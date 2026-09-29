@@ -129,7 +129,7 @@ public final class MessageSearchStore: ObservableObject {
         }
         let searcher = searcher
         do {
-            let response = try await Task.detached {
+            let response = try await Task.blocking {
                 try searcher(q, 0, Self.pageSize)
             }.value
             guard gen == generation else { return } // superseded
@@ -181,7 +181,7 @@ public final class MessageSearchStore: ObservableObject {
         let query = lastQuery
         let searcher = searcher
         do {
-            let response = try await Task.detached {
+            let response = try await Task.blocking {
                 try searcher(query, Int32(cursor), Self.pageSize)
             }.value
             guard gen == generation else { return } // superseded

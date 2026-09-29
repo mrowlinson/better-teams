@@ -100,7 +100,7 @@ public final class RecordingsViewModel: ObservableObject {
         downloadFetcher: @escaping DownloadFetcher = { drive, item, dest in
             try RustCore.sharedDownload(driveID: drive, itemID: item, dest: dest).path
         },
-        playerFactory: @escaping PlayerFactory = { AVPlayer(url: $0) },
+        playerFactory: @escaping PlayerFactory = { HWVideo.makePlayer(url: $0, path: "recordings") },
         openURL: @escaping OpenURLFn = SharedFilesStore.defaultOpenURL
     ) {
         self.listFetcher = listFetcher
@@ -132,7 +132,7 @@ public final class RecordingsViewModel: ObservableObject {
         state = .loading
         let fetcher = listFetcher
         do {
-            let response = try await Task.detached { try fetcher() }.value
+            let response = try await Task.blocking { try fetcher() }.value
             listed = response.recordings
             snapshots?.save(response.recordings.map(\.withoutDownloadURL), key: Self.snapshotKey)
             if !isSearchResults {
@@ -169,7 +169,7 @@ public final class RecordingsViewModel: ObservableObject {
         isSearching = true
         searchError = nil
         let fetcher = searchFetcher
-        let result = await Task.detached { () -> Result<[RecordingItem], Error> in
+        let result = await Task.blocking { () -> Result<[RecordingItem], Error> in
             do {
                 return .success(try fetcher(q).recordings)
             } catch {
@@ -240,7 +240,7 @@ public final class RecordingsViewModel: ObservableObject {
         Task {
             let fetcher = downloadFetcher
             do {
-                let url = try await Task.detached {
+                let url = try await Task.blocking {
                     try Self.resolveURL(for: item, download: fetcher)
                 }.value
                 guard gen == generation else { return } // superseded
@@ -294,7 +294,7 @@ public final class RecordingsViewModel: ObservableObject {
         let fetcher = downloadFetcher
         Task {
             do {
-                let path = try await Task.detached {
+                let path = try await Task.blocking {
                     try fetcher(
                         item.drive_id ?? "", item.id,
                         Self.downloadsDest(for: item))
@@ -359,8 +359,7 @@ public final class RecordingsViewModel: ObservableObject {
 
     /// Save destination mirroring the Shared tab default.
     public nonisolated static func downloadsDest(for item: RecordingItem) -> String {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Downloads")
+        UserFolders.downloads()
             .appendingPathComponent(item.name).path
     }
 

@@ -162,7 +162,7 @@ public final class PlannerViewModel: ObservableObject {
         boardError = nil
         let fetcher = teamsFetcher
         do {
-            let response = try await Task.detached {
+            let response = try await Task.blocking {
                 try fetcher()
             }.value
             teams = response.teams
@@ -296,7 +296,7 @@ public final class PlannerViewModel: ObservableObject {
         }
         let fetcher = addFetcher
         boardError = nil
-        Task.detached { [weak self] in
+        Task.blocking { [weak self] in
             do {
                 let created = try fetcher(planID, bucketID, trimmed)
                 await MainActor.run { [weak self] in
@@ -337,7 +337,7 @@ public final class PlannerViewModel: ObservableObject {
         let fetcher = complete ? doneFetcher : reopenFetcher
         let etag = tasks[idx].etag
         boardError = nil
-        Task.detached { [weak self] in
+        Task.blocking { [weak self] in
             do {
                 let updated = try fetcher(taskID, etag)
                 await MainActor.run { [weak self] in
@@ -376,7 +376,7 @@ public final class PlannerViewModel: ObservableObject {
         let fetcher = assignFetcher
         let etag = tasks[idx].etag
         boardError = nil
-        Task.detached { [weak self] in
+        Task.blocking { [weak self] in
             do {
                 let updated = try fetcher(taskID, etag, userID, assigned)
                 await MainActor.run { [weak self] in
@@ -403,7 +403,7 @@ public final class PlannerViewModel: ObservableObject {
         membersTeamID = teamID
         members = []
         Task {
-            guard let resp = try? await Task.detached(operation: { try fetcher(teamID) }).value,
+            guard let resp = try? await Task.blocking(operation: { try fetcher(teamID) }).value,
                   teamID == membersTeamID
             else { return }
             members = resp.members.map {
@@ -418,7 +418,7 @@ public final class PlannerViewModel: ObservableObject {
         clearBoard(keepLoading: true)
         let fetcher = plansFetcher
         do {
-            let response = try await Task.detached {
+            let response = try await Task.blocking {
                 try fetcher(teamID)
             }.value
             // Selection may have moved while fetching; only adopt when fresh.
@@ -447,10 +447,10 @@ public final class PlannerViewModel: ObservableObject {
         let bFetcher = bucketsFetcher
         let tFetcher = tasksFetcher
         do {
-            async let bResponse = Task.detached {
+            async let bResponse = Task.blocking {
                 try bFetcher(planID)
             }.value
-            async let tResponse = Task.detached {
+            async let tResponse = Task.blocking {
                 try tFetcher(planID)
             }.value
             let (buckets, tasks) = try await (bResponse, tResponse)

@@ -800,7 +800,7 @@ public final class PresenceTruthStore: ObservableObject {
         Task {
             defer { inflight = false }
             do {
-                let resp = try await Task.detached { try fetcher(want) }.value
+                let resp = try await Task.blocking { try fetcher(want) }.value
                 error = nil
                 presence?.adoptOwn(resp)
             } catch {

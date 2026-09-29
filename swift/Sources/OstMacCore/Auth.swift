@@ -203,7 +203,7 @@ public final class AuthViewModel: ObservableObject {
         if isDemo { return }
         let fn = statusFn
         do {
-            let st = try await Task.detached { try fn() }.value
+            let st = try await Task.blocking { try fn() }.value
             status = st
             state = Self.classify(st)
         } catch {
@@ -232,7 +232,7 @@ public final class AuthViewModel: ObservableObject {
         copied = false
         let fn = startFn
         do {
-            let d = try await Task.detached { try fn() }.value
+            let d = try await Task.blocking { try fn() }.value
             state = .code(AuthCodeInfo(d))
         } catch {
             errorRetry = .signIn
@@ -279,7 +279,7 @@ public final class AuthViewModel: ObservableObject {
         guard case let .polling(info, attempts) = state else { return }
         let fn = pollFn
         do {
-            let p = try await Task.detached { try fn(info.session) }.value
+            let p = try await Task.blocking { try fn(info.session) }.value
             if p.status == "complete" {
                 stopPolling()
                 await refreshStatus()
@@ -311,7 +311,7 @@ public final class AuthViewModel: ObservableObject {
         state = .refreshing
         let fn = refreshFn
         do {
-            let r = try await Task.detached { try fn() }.value
+            let r = try await Task.blocking { try fn() }.value
             if r.refreshed {
                 await refreshStatus()
             } else {
@@ -329,7 +329,7 @@ public final class AuthViewModel: ObservableObject {
         state = .signingOut
         let fn = signOutFn
         do {
-            _ = try await Task.detached { try fn() }.value
+            _ = try await Task.blocking { try fn() }.value
             status = nil
             state = .signedOut
         } catch {
@@ -370,7 +370,7 @@ public final class AuthViewModel: ObservableObject {
         state = .starting
         let fn = browserStartFn
         do {
-            let d = try await Task.detached { try fn() }.value
+            let d = try await Task.blocking { try fn() }.value
             state = .browser(AuthBrowserInfo(d))
         } catch {
             errorRetry = .browser
@@ -387,7 +387,7 @@ public final class AuthViewModel: ObservableObject {
         state = .browserWorking(info)
         let fn = browserCompleteFn
         do {
-            let r = try await Task.detached { try fn(info.session, callbackURL) }.value
+            let r = try await Task.blocking { try fn(info.session, callbackURL) }.value
             if r.status == "complete" {
                 await refreshStatus()
             } else {
@@ -407,7 +407,7 @@ public final class AuthViewModel: ObservableObject {
         case let .browser(info), let .browserWorking(info):
             let fn = browserCancelFn
             let session = info.session
-            Task.detached { _ = try? fn(session) }
+            Task.blocking { _ = try? fn(session) }
             state = stateBeforeSignIn ?? .signedOut
             stateBeforeSignIn = nil
         default: break

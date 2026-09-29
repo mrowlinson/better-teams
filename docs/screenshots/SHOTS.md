@@ -20,20 +20,25 @@ Files over 1 MB are converted with `cwebp -q 85` and the PNG dropped.
 | File | Demo route | Appearance |
 | --- | --- | --- |
 | chat-light.png | `chat/demo-showcase` | light |
-| chat-dark.png | `chat/demo-showcase` | dark |
+| chat-dark.png | `chat/demo-showcase?hover=sc-7` | dark |
+| catchup-inspector.png | `chat/demo-3?inspector=catchup&catchup=onclick&summary=loaded&period=3d` | dark |
+| catchup-window.png | `chat/demo-3?catchup=always&window=catchup&period=5d` (`SIZE=420x592`) | dark |
 | teams-thread.png | `teams/demo-team/demo-channel?tab=posts&thread=demo-thread` | light |
-| calendar-week.png | `calendar?view=week` | light |
+| calendar-week.png | `calendar?view=week` (`SIZE=1440x640`) | light |
 | call-video.png | `call?state=presenting&presentation=main` | dark |
 | files.png | `files/recent/demo-file?inspector=1` | light |
 | planner.png | `app/planner/demo-plan-sprint/demo-ptask-2?inspector=1` | light |
 | shifts.png | `app/shifts` | dark |
+| contact-card.png | `chat/demo-showcase?sheet=contactCard&contact=Megan%20Harper` | light |
 | activity.png | `activity/mention:demo-showcase:sc-1` | light |
+| apps-home.png | `apps` | light |
 | app-pinned.png | `app/onenote` | dark |
 | settings.png | `settings/general` | light |
 
-## Apps store and native app hosting routes (evidence, not in the README set)
+## Apps store and native app hosting routes
 
-Same capture command. The demo store is local (no network); installed demo
+Part of the README set: `apps` is `apps-home.png` above. Same capture
+command for the rest. The demo store is local (no network); installed demo
 apps and the channel app tab host the local TeamsJS sample page.
 
 | Demo route | Shows |

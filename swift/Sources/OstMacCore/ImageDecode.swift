@@ -53,7 +53,7 @@ public enum ImageDecode {
 
     /// Downsampled decode off the caller's actor.
     public static func decodeOffMain(data: Data, maxPixels: CGFloat) async -> NSImage? {
-        await Task.detached(priority: .userInitiated) {
+        await Task.blocking(priority: .userInitiated) {
             thumbnail(data: data, maxPixels: maxPixels)
         }.value
     }
@@ -79,7 +79,7 @@ public enum ImageDecode {
 
     /// One-source still-or-clip decode off the caller's actor.
     public static func decodedOffMain(data: Data, maxPixels: CGFloat) async -> DecodedImage? {
-        await Task.detached(priority: .userInitiated) {
+        await Task.blocking(priority: .userInitiated) {
             decoded(data: data, maxPixels: maxPixels)
         }.value
     }
@@ -111,7 +111,7 @@ public enum DecodedImage: Sendable {
     }
 }
 
-/// NSObject box for the decoded memo (NSCache needs class values).
+/// NSObject box for the decoded memo (the memory store needs class values).
 final class DecodedImageBox: NSObject {
     let value: DecodedImage
     init(_ value: DecodedImage) { self.value = value }
@@ -131,12 +131,13 @@ public actor DecodedImageCache {
         public var misses = 0
     }
 
-    private let memory = NSCache<NSString, DecodedImageBox>()
+    private let memory: MediaMemoryStore<DecodedImageBox>
     private var hits = 0
     private var misses = 0
 
-    public init(memoryLimitMB: Int = 64) {
-        memory.totalCostLimit = memoryLimitMB * 1024 * 1024
+    public init(memoryLimitMB: Int = 64, memory memoryPolicy: MediaMemoryPolicy = .system) {
+        memory = MediaMemoryStore(
+            policy: memoryPolicy, costLimit: memoryLimitMB * 1024 * 1024)
     }
 
     public func stats() -> Stats { Stats(hits: hits, misses: misses) }

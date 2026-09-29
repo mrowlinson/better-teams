@@ -15,13 +15,13 @@
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/chat-dark.png">
     <source media="(prefers-color-scheme: light)" srcset="docs/screenshots/chat-light.png">
-    <img src="docs/screenshots/chat-light.png" width="92%" alt="Better Teams showing a team chat with quotes, reactions, bot cards and an image">
+    <img src="docs/screenshots/chat-light.png" width="92%" alt="Better Teams showing a team chat in Teams-style bubbles, with quotes, reactions, a bot card and an image">
   </picture>
 </p>
 
 <p align="center">
   A truly native Teams client, written in AppKit and SwiftUI over a Rust core. No Electron, no browser tab in disguise.<br>
-  Chat, meetings, calendar, files and your team's apps, with private AI summaries that never leave your Mac.
+  Chats open instantly, meetings get a real window, your team's apps run right inside it, and Catch Up summaries never leave your Mac.
 </p>
 
 <p align="center">
@@ -41,7 +41,7 @@
       <br>
       <sub>01</sub>
       <h2>Catch Up, privately on your Mac</h2>
-      <p>Back from a week off? One click turns a long thread into a summary, key points and action items.<br>
+      <p>Back from a week off? One click turns a long thread into a summary, key points and action items, right beside the chat.<br>
       It runs on Apple Intelligence, on this Mac. Your messages are never sent anywhere to be summarized.</p>
       <table>
         <tr>
@@ -50,66 +50,70 @@
           <td align="center" width="33%"><b>Always up to date</b><br><sub>A live Catch Up window that refreshes as messages arrive.</sub></td>
         </tr>
       </table>
-      <sub>Background updates pause in Low Power Mode and while your Mac is running hot.</sub>
+      <sub>Pick the last day, three days, five days or two weeks. Background updates pause in Low Power Mode and while your Mac is running hot.</sub>
       <br><br>
+      <table>
+        <tr>
+          <td width="70%" valign="top"><img src="docs/screenshots/catchup-inspector.png" alt="Catch Up in the inspector beside a group chat, with a summary, key points and action items"></td>
+          <td width="30%" valign="top"><img src="docs/screenshots/catchup-window.png" alt="The Catch Up window, with mentions of you listed first and a summary for each chat"></td>
+        </tr>
+      </table>
+      <br>
     </td>
   </tr>
   <tr>
-    <td width="58%"><img src="docs/screenshots/activity.png" alt="Activity feed with mentions, replies and missed calls, and the mentioned message highlighted"></td>
+    <td width="58%"><img src="docs/screenshots/apps-home.png" alt="The Apps store: installed apps, apps built by Microsoft and apps popular with your team, each with its own icon"></td>
     <td width="42%">
       <sub>02</sub>
-      <h3>Mentions of you, never buried</h3>
-      <p>Mentions, replies, reactions and missed calls land in one Activity feed. Click one and you're on the exact message, highlighted.</p>
-      <p>With Catch Up on, anything that names you, <code>@everyone</code> or <code>@channel</code> goes to the top. The mention itself decides that, not an AI guess.</p>
+      <h3>Teams apps, running natively</h3>
+      <p>Most Teams apps run right in the window, hosted by Better Teams itself. Never the Teams web app, and never a browser tab.</p>
+      <p>Pin the ones you use and they sit in the sidebar with their real icons. A few apps still ask for a one-time sign-in, and some don't load yet.</p>
     </td>
   </tr>
   <tr>
     <td width="42%">
       <sub>03</sub>
-      <h3>Meetings and video calls in a real Mac window</h3>
-      <p>Join from your calendar or a link, check your camera and mic in the pre-join preview, then run the call in its own window or inside the main one.</p>
-      <p>One-to-one audio and video calls, speed dial and a test call are built in.</p>
+      <h3>Mentions of you, never buried</h3>
+      <p>Mentions, replies, reactions and missed calls land in one Activity feed. Click one and you're on the exact message, highlighted.</p>
+      <p>With Catch Up on, anything that names you, <code>@everyone</code>, <code>@channel</code>, <code>@team</code> or one of your tags goes to the top. The mention itself decides that, not an AI guess.</p>
     </td>
-    <td width="58%"><img src="docs/screenshots/call-video.png" alt="A meeting in progress with participant tiles along the bottom"></td>
+    <td width="58%"><img src="docs/screenshots/activity.png" alt="Activity feed with mentions, replies and missed calls, and the mentioned message highlighted"></td>
   </tr>
   <tr>
-    <td width="58%"><img src="docs/screenshots/teams-thread.png" alt="A Teams channel with a reply thread open in the inspector"></td>
+    <td width="58%"><img src="docs/screenshots/call-video.png" alt="A meeting in progress with participant tiles along the bottom"></td>
     <td width="42%">
       <sub>04</sub>
-      <h3>Channels with threads that stay put</h3>
-      <p>Every team in a tidy outline. Open a thread beside the channel and keep reading while you reply.</p>
-      <p>Channel files, notes and tabs are one click away, and the team roster sits in the inspector.</p>
+      <h3>Meetings in a real Mac window</h3>
+      <p>Check your camera and mic in the pre-join preview, then run the call in its own window or inside the main one.</p>
+      <p>Video is decoded and encoded in hardware on the Mac's own media engine, for your camera, screen sharing and everyone else's video.</p>
     </td>
   </tr>
   <tr>
     <td width="42%">
       <sub>05</sub>
-      <h3>Your week at a glance</h3>
-      <p>A proper week grid, plus an agenda view for the day. The Join button shows up as a meeting gets close.</p>
-      <p>Schedule a new meeting, or join any meeting with its ID or link.</p>
+      <h3>Channels, the way Teams does them</h3>
+      <p>General comes first, the channel menu follows Teams' own order, and threads open beside the channel so you can keep reading while you reply.</p>
+      <p>Pop a busy channel into its own window, or file channels into sections of your own.</p>
     </td>
-    <td width="58%"><img src="docs/screenshots/calendar-week.png" alt="Calendar week view with meetings laid out across the days"></td>
+    <td width="58%"><img src="docs/screenshots/teams-thread.png" alt="A Teams channel with a reply thread open in the inspector"></td>
   </tr>
   <tr>
-    <td width="58%"><img src="docs/screenshots/files.png" alt="Files table with the inspector showing file details"></td>
+    <td width="58%"><img src="docs/screenshots/calendar-week.png" alt="Calendar week view with meetings laid out across the days"></td>
     <td width="42%">
       <sub>06</sub>
-      <h3>Files that feel like Finder</h3>
-      <p>OneDrive, files shared with you, and channel files in a real, sortable table. Select several, then move, copy or rename them.</p>
-      <p>Press Space for Quick Look, drop files in to upload, and big uploads resume where they left off.</p>
+      <h3>A calendar that knows what time it is</h3>
+      <p>Day, work week, week, month and list views, with meetings always in your time zone, even when you travel.</p>
+      <p>Reply to invites, start a Meet now, and the Join button appears as a meeting gets close.</p>
     </td>
   </tr>
   <tr>
     <td width="42%">
       <sub>07</sub>
-      <h3>Planner, To Do and Shifts, built in</h3>
-      <p>Not a web page in a frame: native screens for Planner buckets and assignees, your To Do lists, and your team's Shifts schedule.</p>
-      <p>Pin the ones you use to the sidebar.</p>
+      <h3>Files that feel like Finder</h3>
+      <p>OneDrive, files shared with you and channel files in a real, sortable table. Press Space for Quick Look, drop files in to upload.</p>
+      <p>Word, Excel and PowerPoint files open for reading right in the window, with no download.</p>
     </td>
-    <td width="58%">
-      <img src="docs/screenshots/planner.png" alt="Planner board with a task open in the inspector">
-      <img src="docs/screenshots/shifts.png" alt="Shifts schedule for the week">
-    </td>
+    <td width="58%"><img src="docs/screenshots/files.png" alt="Files table with the inspector showing file details"></td>
   </tr>
 </table>
 
@@ -117,13 +121,13 @@
   <tr>
     <td width="33%" valign="top">
       <sub>08</sub>
-      <h3>Native to the last pixel</h3>
-      <p>AppKit and SwiftUI throughout, Liquid Glass where macOS puts it, a real menu bar and a real Settings window.</p>
+      <h3>Everyone, one hover away</h3>
+      <p>Rest on a name to see their photo, title, presence and local time, with a quick message box. Open the full card to chat, call or start a video call from right there.</p>
     </td>
     <td width="33%" valign="top">
       <sub>09</sub>
-      <h3>Calm, steady screens</h3>
-      <p>Updates arrive in the background and slot into place. Lists never flash, jump, or fall back to a spinner once they have content.</p>
+      <h3>Chats that keep up</h3>
+      <p>Your chat list and recent messages are kept on your Mac, so a chat paints the moment you open it. Replies appear as they're sent, and a message that fails to send says so, with Retry.</p>
     </td>
     <td width="33%" valign="top">
       <sub>10</sub>
@@ -139,42 +143,79 @@
 
 ### Chat
 
-- Pinned and recent chats, with filters to narrow the list
+- Pinned, favorite and recent chats, with Teams folders and filters you can clear in one click
+- Unread chats in bold, muted chats marked, and read state that stays in step with Teams
+- Right-click a chat to mark it unread, pin, mute, snooze, move it to a folder, hide or leave it
+- Chat, Shared and Notes tabs, a Recap tab on meeting chats, and pinned app tabs; the tab row always fits, with extra tabs in an overflow menu
+- Chats open instantly from a copy kept on your Mac; older messages load as you scroll up
+- New replies appear in the open chat as they arrive; a failed message shows Retry on its own bubble
+- Hover a message for six quick reactions, more reactions, Reply and the full message menu
 - Reply with quotes, react, edit, delete, forward, save and pin messages
 - Send Later with a queue of scheduled messages, plus reusable templates
 - Attach files or drop them onto a conversation; GIF search with your own key
 - Typing indicators, "Seen by", and a Jump to Latest button with a count
+- Images open in a viewer at their final size, in light or dark
 - Translate messages into your language
 - Ghost mode: hold back read receipts, presence and typing
+
+### People
+
+- Hover cards with photo, title, department, presence, local time and working hours
+- Email and phone links, and a quick message box right on the card
+- Full contact card with Overview, Organization and Profile tabs
+- Chat, audio call or video call from any card
+- Presence that updates live
+
+<details>
+<summary>See a contact card</summary>
+<br>
+<img src="docs/screenshots/contact-card.png" alt="A contact card with photo, presence, the Overview, Organization and Profile tabs, a quick message box, contact details and manager">
+</details>
 
 ### Teams and channels
 
 - Join or create teams; create channels
-- Posts, Files, Notes and web tabs for every channel
+- General listed first, and the channel menu in the same order as Teams
+- Edit and Delete follow each team's member permissions
+- Open a channel in its own window, or move channels into sections
+- Hide teams you don't need; changes made elsewhere show up quickly
+- Posts, Files, Notes and app tabs for every channel
 - Threads open beside the channel in the inspector
 - Team roster with Add Member and Remove
 
 ### Meetings and calls
 
-- Join meetings from the calendar, a link, or a meeting ID
+- Join meetings from the calendar or a pasted Teams link, right in the app
 - Pre-join preview with camera, mic and device choice
+- Hardware-accelerated video decoding and encoding for calls and screen sharing, with a software fallback
 - One-to-one audio and video calls, speed dial, recents and missed calls
 - Calls ring with a notification you can accept or decline
 - Test call to check your setup
-- Recaps: recordings with a transcript you can click to seek, plus action items
+- Recap tab on meeting chats with the recording and its transcript
 
 ### Calendar
 
-- Week grid and agenda views
+- Day, work week, week, month and list views, with your choice remembered
+- Events always shown in your Mac's time zone, following it when it changes; the organizer's zone when it differs
+- Event details with time, location and recurring series; accept, tentative or decline
+- Meet now, New meeting, and join from the event
 - Join, copy the join link, or cancel from the event detail
-- New meeting, and join with an ID or link
 
 ### Files
 
 - OneDrive, shared with you, channel files and downloads in one place
 - Sort, multi-select, move, copy, rename and delete
 - Quick Look with Space, drag-and-drop upload, upload progress
+- Word, Excel and PowerPoint files open read-only in the window instead of downloading
 - File details and version history in the inspector
+
+### Apps
+
+- App store with categories and search; add apps and open them from the library
+- Most Teams apps run natively in the window, never the Teams web app; some need a one-time sign-in, and a few don't load yet
+- Pin apps to the sidebar, where they show their real icons
+- App library with filters, plus your own web links
+- Teams links inside apps open in Better Teams, never a browser
 
 ### Planner, To Do, Shifts and OneNote
 
@@ -184,9 +225,21 @@
 - **OneNote:** browse notebooks natively and append to a page
 
 <details>
+<summary>See Planner</summary>
+<br>
+<img src="docs/screenshots/planner.png" alt="Planner board with a task open in the inspector">
+</details>
+
+<details>
 <summary>See OneNote</summary>
 <br>
 <img src="docs/screenshots/app-pinned.png" alt="OneNote notebook open natively in Better Teams">
+</details>
+
+<details>
+<summary>See Shifts</summary>
+<br>
+<img src="docs/screenshots/shifts.png" alt="Shifts schedule for the week">
 </details>
 
 ### Search
@@ -199,7 +252,10 @@
 ### Catch Up (on-device AI)
 
 - Summary, key points and action items for any conversation
-- Mentions of you, <code>@everyone</code>, <code>@channel</code> and <code>@team</code> listed first
+- Choose the window: the last day, three days, five days or two weeks
+- Mentions of you, <code>@everyone</code>, <code>@channel</code>, <code>@team</code> and your tags listed first
+- Chatter that doesn't need you is filtered out, and you can mark more as Not Important
+- Catch Up in the inspector beside the chat you're reading
 - A dedicated Catch Up window that stays current in the background
 - Click a mention in Catch Up to jump straight to the message
 - Everything stays on your Mac; off by default
@@ -220,7 +276,7 @@
 - Customize the sidebar: pin, reorder and remove sections and apps
 - Larger or smaller text with <kbd>⌘</kbd><kbd>+</kbd> and <kbd>⌘</kbd><kbd>−</kbd>
 - VoiceOver labels on icon-only controls
-- Light and dark appearance
+- Light and dark appearance, with updates that slot in quietly and no flashing lists
 
 <details>
 <summary>See the Settings window</summary>
@@ -234,12 +290,6 @@
 - Multiple accounts, switched in place
 - Sign-in tokens live in the macOS keychain
 - Export your chat archive, and rebuild the local search index
-
-### Apps
-
-- App library with filters, plus your own web links
-- Pin apps to the sidebar
-- **Coming soon:** Teams apps hosted natively, without loading the Teams web app
 
 ### For developers: MCP
 

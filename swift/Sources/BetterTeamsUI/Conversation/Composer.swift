@@ -587,6 +587,11 @@ final class ComposerNSTextView: NSTextView {
     /// Focus asked for before the view had a window, or while its window
     /// was not key.
     var wantsFocus = false
+    /// Evidence captures: the field never becomes first responder (a
+    /// window restoring focus under a sheet drew the system input-source
+    /// badge over the composer, undimmed by the sheet's scrim).
+    var refusesFocus = false
+    override var acceptsFirstResponder: Bool { refusesFocus ? false : super.acceptsFirstResponder }
     private var keyObserver: NSObjectProtocol?
 
     override func viewDidMoveToWindow() {
@@ -682,6 +687,7 @@ struct ComposerTextView: NSViewRepresentable {
         tv.allowsUndo = true
         tv.drawsBackground = false
         tv.focusRingType = .none // §10
+        tv.refusesFocus = context.environment.windowModel?.options.evidence == true
         tv.textContainerInset = .zero
         tv.textContainer?.lineFragmentPadding = 0
         tv.isVerticallyResizable = true
@@ -707,6 +713,7 @@ struct ComposerTextView: NSViewRepresentable {
         tv.onSubmit = onSubmit
         tv.onCommand = onCommand
         tv.onPasteFiles = onPasteFiles
+        tv.refusesFocus = context.environment.windowModel?.options.evidence == true
         var changed = false
         let f = Self.font(scale)
         if tv.font != f { tv.font = f; changed = true }

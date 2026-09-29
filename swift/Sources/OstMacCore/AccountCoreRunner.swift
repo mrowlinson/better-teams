@@ -16,7 +16,7 @@
 //     the CURRENT active even when a switch interleaves mid-op.
 //
 // Locking: one NSLock, held across flip+op+unflip. Ops run off-main
-// (the stores call inside Task.detached); switches block MainActor
+// (the stores call inside Task.blocking); switches block MainActor
 // only while an op is in flight (one blocking read, ~a second worst
 // case). The gate never hops to MainActor, so no deadlock.
 import Foundation

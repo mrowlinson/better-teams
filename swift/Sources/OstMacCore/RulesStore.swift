@@ -37,14 +37,17 @@ public final class RulesStore: ObservableObject {
 
     /// Mute or unmute one chat, persisting immediately. No-ops (same
     /// value) skip the write.
-    public func setMuted(chatID: String, muted: Bool) {
-        guard !chatID.isEmpty, config.mutedChatIDs.contains(chatID) != muted else { return }
+    @discardableResult
+    public func setMuted(chatID: String, muted: Bool) -> Task<Void, Never>? {
+        guard !chatID.isEmpty, config.mutedChatIDs.contains(chatID) != muted else { return nil }
+        let before = config.level(chatID: chatID)
         if muted {
             config.mutedChatIDs.insert(chatID)
         } else {
             config.mutedChatIDs.remove(chatID)
         }
         try? config.save(to: path)
+        return pushMute(chatID: chatID, muted: muted, rollbackTo: before)
     }
 
     /// True when the chat is hidden from the sidebar list.
@@ -55,8 +58,20 @@ public final class RulesStore: ObservableObject {
     /// Hide or unhide one chat, persisting immediately. No-ops (same
     /// value) skip the write. Visibility only — banners and unread are
     /// untouched (see RulesConfig.hiddenChatIDs).
-    public func setHidden(chatID: String, hidden: Bool) {
-        guard !chatID.isEmpty, config.hiddenChatIDs.contains(chatID) != hidden else { return }
+    @discardableResult
+    public func setHidden(chatID: String, hidden: Bool) -> Task<Void, Never>? {
+        guard !chatID.isEmpty, config.hiddenChatIDs.contains(chatID) != hidden else { return nil }
+        applyHidden(chatID: chatID, hidden: hidden)
+        guard let remote, Self.syncsToTeams(chatID) else { return nil }
+        return push(chatID: chatID, failure: hidden ? "Couldn't hide the chat in Teams." : "Couldn't show the chat in Teams.",
+                    call: { try remote.setHidden(chatID, hidden) },
+                    rollback: { [weak self] in
+                        guard let self, self.isHidden(chatID: chatID) == hidden else { return }
+                        self.applyHidden(chatID: chatID, hidden: !hidden)
+                    })
+    }
+
+    private func applyHidden(chatID: String, hidden: Bool) {
         if hidden {
             config.hiddenChatIDs.insert(chatID)
         } else {
@@ -75,8 +90,16 @@ public final class RulesStore: ObservableObject {
     /// Set one chat's level, persisting immediately. No-ops (same
     /// level) skip the write. Levels are mutually exclusive: setting
     /// one clears the other set.
-    public func setLevel(chatID: String, level: ChatNotifyLevel) {
-        guard !chatID.isEmpty, config.level(chatID: chatID) != level else { return }
+    @discardableResult
+    public func setLevel(chatID: String, level: ChatNotifyLevel) -> Task<Void, Never>? {
+        guard !chatID.isEmpty, config.level(chatID: chatID) != level else { return nil }
+        let before = config.level(chatID: chatID)
+        applyLevel(chatID: chatID, level: level)
+        guard (before == .muted) != (level == .muted) else { return nil }
+        return pushMute(chatID: chatID, muted: level == .muted, rollbackTo: before)
+    }
+
+    private func applyLevel(chatID: String, level: ChatNotifyLevel, save: Bool = true) {
         config.mutedChatIDs.remove(chatID)
         config.mentionOnlyChatIDs.remove(chatID)
         switch level {
@@ -87,7 +110,74 @@ public final class RulesStore: ObservableObject {
         case .muted:
             config.mutedChatIDs.insert(chatID)
         }
-        try? config.save(to: path)
+        if save { try? config.save(to: path) }
+    }
+
+    // MARK: Teams sync (chatmenu)
+
+    /// Server side of mute and hide; nil = local only (demo, tests).
+    public var remote: ChatRemoteSync?
+    /// Last refused server change (quiet inline error; nil = clear).
+    @Published public private(set) var syncError: String?
+    /// Chats with a server change in flight (a list refresh must not
+    /// overwrite their optimistic state).
+    @Published public private(set) var syncingIDs: Set<String> = []
+
+    public func clearSyncError() { syncError = nil }
+
+    /// Chats sync; channels (`@thread.tacv2`/`@thread.skype`) keep
+    /// their mute and hide in this app only.
+    nonisolated public static func syncsToTeams(_ id: String) -> Bool {
+        let lower = id.lowercased()
+        return lower.hasPrefix("19:") && !lower.hasSuffix("@thread.tacv2") && !lower.hasSuffix("@thread.skype")
+    }
+
+    private func pushMute(chatID: String, muted: Bool, rollbackTo before: ChatNotifyLevel) -> Task<Void, Never>? {
+        guard let remote, Self.syncsToTeams(chatID) else { return nil }
+        return push(chatID: chatID, failure: muted ? "Couldn't mute the chat in Teams." : "Couldn't unmute the chat in Teams.",
+                    call: { try remote.setMuted(chatID, muted) },
+                    rollback: { [weak self] in
+                        guard let self, (self.level(chatID: chatID) == .muted) == muted else { return }
+                        self.applyLevel(chatID: chatID, level: before)
+                    })
+    }
+
+    /// Optimistic server write: the local change is already applied;
+    /// a refusal undoes it (unless changed again since) and sets
+    /// `syncError`.
+    private func push(chatID: String, failure: String,
+                      call: @escaping @Sendable () throws -> Void,
+                      rollback: @escaping @MainActor () -> Void) -> Task<Void, Never> {
+        syncingIDs.insert(chatID)
+        syncError = nil
+        return Task { @MainActor [weak self] in
+            let ok = await Task.blocking { (try? call()) != nil }.value
+            guard let self else { return }
+            self.syncingIDs.remove(chatID)
+            if !ok {
+                rollback()
+                self.syncError = failure
+            }
+        }
+    }
+
+    /// Adopt the Teams mute state from a chat list (`ChatItem.muted`).
+    /// Mentions Only survives an unmuted server state; chats with a
+    /// write in flight keep their optimistic state. One save.
+    public func adoptServerMutes(_ chats: [ChatItem]) {
+        var changed = false
+        for c in chats where !syncingIDs.contains(c.id) {
+            guard let muted = c.muted else { continue }
+            let level = config.level(chatID: c.id)
+            if muted, level != .muted {
+                applyLevel(chatID: c.id, level: .muted, save: false)
+                changed = true
+            } else if !muted, level == .muted {
+                applyLevel(chatID: c.id, level: .all, save: false)
+                changed = true
+            }
+        }
+        if changed { try? config.save(to: path) }
     }
 
     // MARK: keyword alerts (d2-alerts)

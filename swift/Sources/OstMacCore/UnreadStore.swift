@@ -13,6 +13,9 @@
 //   unread.ingest(decision: decision, chatID: msg.chatID, openChatID: openChatID)
 //   unread.markRead(chatID: id) // on open
 //
+// Launch state: every chat list fetch seeds counts from the Teams read
+// horizon (`seed(_:)`, ChatListSeed); live events keep them current.
+//
 // om-markunread: manual mark-as-unread/read rides a per-thread read
 // horizon override (`overrides`). `markUnread` pins a thread unread at
 // its current tail (badge shows at least 1); the sidebar badge reads
@@ -80,6 +83,20 @@ public final class UnreadStore: ObservableObject {
     /// .notify proves unmute and drops the flag; `markRead`/
     /// `markAllRead` clear it with the counts.
     @Published public private(set) var mutedUnreadIDs: Set<String> = []
+    /// Ids whose count came from a server seed (ChatListSeed), not a
+    /// live accrual: a later seed saying "read" clears only these.
+    private var seededIDs: Set<String> = []
+    /// When each chat was last opened here: a seed never re-marks a chat
+    /// whose last message the owner already saw in this app (read
+    /// receipts may be off or lag behind the next list fetch).
+    private var readAt: [String: Date] = [:]
+    /// Send time of the newest live-accrued message per chat: a later
+    /// seed whose last message is at or past it proves the chat was
+    /// read elsewhere (another client), so the live count clears too.
+    private var accruedAt: [String: Date] = [:]
+    /// When each override was set here (CHATSYNC): a list fetch that
+    /// started before it cannot clear it (stale answer).
+    private var overrideAt: [String: Date] = [:]
 
     private let dock: any DockBadging
 
@@ -183,12 +200,14 @@ public final class UnreadStore: ObservableObject {
     /// the first point) also skip the dock write.
     public func ingest(
         decision: ChatFilter.Decision, chatID: String, openChatID: String?,
-        visibleChatIDs: Set<String> = []
+        visibleChatIDs: Set<String> = [], messageAt: Date? = nil
     ) {
         guard Self.shouldCount(
             decision: decision, chatID: chatID, openChatID: openChatID,
             visibleChatIDs: visibleChatIDs) else { return }
         let before = total
+        seededIDs.remove(chatID)
+        if let messageAt { accruedAt[chatID] = max(messageAt, accruedAt[chatID] ?? messageAt) }
         counts[chatID, default: 0] += 1
         if Self.isMutedSkip(decision) {
             mutedUnreadIDs.insert(chatID)
@@ -222,7 +241,7 @@ public final class UnreadStore: ObservableObject {
             snoozedChatIDs: snoozedChatIDs)
         ingest(
             decision: decision, chatID: message.chatID, openChatID: openChatID,
-            visibleChatIDs: visibleChatIDs)
+            visibleChatIDs: visibleChatIDs, messageAt: ChatListFormat.parse(message.time))
         return decision
     }
 
@@ -258,6 +277,7 @@ public final class UnreadStore: ObservableObject {
         guard !overrides.contains(id) else { return }
         let before = total
         overrides.insert(id)
+        overrideAt[id] = Date()
         if muted {
             mutedUnreadIDs.insert(id)
         }
@@ -290,8 +310,12 @@ public final class UnreadStore: ObservableObject {
     /// (counts already drained) also clears silently with no dock
     /// write — the flag alone never moved the badge.
     public func markRead(chatID: String) {
+        readAt[chatID] = Date()
+        seededIDs.remove(chatID)
+        accruedAt.removeValue(forKey: chatID)
         let hadCount = counts.removeValue(forKey: chatID) != nil
         let hadOverride = overrides.remove(chatID) != nil
+        overrideAt.removeValue(forKey: chatID)
         mutedUnreadIDs.remove(chatID)
         guard hadCount || hadOverride else { return }
         syncDock()
@@ -300,14 +324,78 @@ public final class UnreadStore: ObservableObject {
     /// Clear every chat (sign-out): counts, overrides, muted flags.
     /// Empty is a no-op (no dock write).
     public func markAllRead() {
+        seededIDs.removeAll()
+        readAt.removeAll()
+        accruedAt.removeAll()
         guard !counts.isEmpty || !overrides.isEmpty else {
             mutedUnreadIDs.removeAll()
             return
         }
         counts.removeAll()
         overrides.removeAll()
+        overrideAt.removeAll()
         mutedUnreadIDs.removeAll()
         syncDock()
+    }
+
+    /// Adopt the Teams read state from a fetched chat list (Unread
+    /// filter after launch). An unread chat with no count gains 1 (Teams
+    /// gives no exact number); a chat Teams now calls read drops a count
+    /// only when the seed put it there. Live accruals, manual
+    /// mark-unread overrides and chats opened here since their last
+    /// message are never touched. Publishes and writes the dock only on
+    /// a change.
+    /// `asOf` = when the list fetch started (CHATSYNC): Teams "Mark as
+    /// unread" bookmarks pin a chat unread here (even one opened here
+    /// before the fetch), and an override older than the fetch clears
+    /// once Teams says the chat is neither marked nor unread (read or
+    /// cleared on another client). Overrides set after the fetch
+    /// started stay (the answer predates them).
+    public func seed(_ seeds: [UnreadSeed], asOf: Date = .distantPast) {
+        var next = counts
+        var muted = mutedUnreadIDs
+        var seeded = seededIDs
+        var marks = overrides
+        for s in seeds where !s.chatID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            if s.markedUnread {
+                if !marks.contains(s.chatID), (readAt[s.chatID] ?? .distantPast) < asOf {
+                    marks.insert(s.chatID)
+                    overrideAt[s.chatID] = asOf
+                    if s.muted { muted.insert(s.chatID) }
+                }
+                continue
+            }
+            if !s.unread, marks.contains(s.chatID), (overrideAt[s.chatID] ?? .distantPast) < asOf {
+                marks.remove(s.chatID)
+                overrideAt.removeValue(forKey: s.chatID)
+                if next[s.chatID] == nil { muted.remove(s.chatID) }
+            }
+            if s.unread {
+                guard next[s.chatID] == nil else { continue }
+                if let opened = readAt[s.chatID], opened >= (s.lastMessageAt ?? .distantFuture) { continue }
+                next[s.chatID] = 1
+                seeded.insert(s.chatID)
+                if s.muted { muted.insert(s.chatID) }
+            } else if seeded.contains(s.chatID) {
+                next.removeValue(forKey: s.chatID)
+                seeded.remove(s.chatID)
+                if !overrides.contains(s.chatID) { muted.remove(s.chatID) }
+            } else if let at = accruedAt[s.chatID], let last = s.lastMessageAt, last >= at,
+                      !overrides.contains(s.chatID) {
+                // Read elsewhere: Teams' horizon covers the newest
+                // message counted live here.
+                next.removeValue(forKey: s.chatID)
+                accruedAt.removeValue(forKey: s.chatID)
+                muted.remove(s.chatID)
+            }
+        }
+        seededIDs = seeded
+        guard next != counts || muted != mutedUnreadIDs || marks != overrides else { return }
+        let before = total
+        if marks != overrides { overrides = marks }
+        if next != counts { counts = next }
+        if muted != mutedUnreadIDs { mutedUnreadIDs = muted }
+        if total != before { syncDock() }
     }
 
     private func syncDock() {

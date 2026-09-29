@@ -1,0 +1,120 @@
+# Microsoft Graph allowlist (GRAPHSWEEP, 09-28).
+#
+# The app signs in with the Teams web client's token. Its Graph scopes (decoded
+# `scp`, 35 names) include Calendars.ReadWrite(.Shared), Files.ReadWrite.All,
+# Sites.ReadWrite.All, Notes.ReadWrite.All, Tasks.ReadWrite, Group.Read.All,
+# Team.ReadBasic.All, Channel.ReadBasic.All, Channel.Create,
+# ChannelMessage.Read.All, ChannelMessage.Send, ChatMessage.Send,
+# TeamMember.ReadWrite.All, TeamsTab.ReadWrite.All, AppCatalog.Read.All,
+# TeamsAppInstallation.ReadForTeam, People.Read, User.ReadBasic.All.
+# It has NO Presence.*, Chat.Read/ReadBasic/ReadWrite/Create, ChatMember.*,
+# OnlineMeetings.*, Team.Create, ChannelSettings.*, Channel.Delete.All,
+# TeamsAppInstallation.*ForUser, People.Read.All, TeamworkTag.*, User.Read.All.
+# Teams tags (Catch Up @tag mentions) are therefore NOT a Graph call: they are read
+# from the Teams CSA service (rust/ost/src/api/tags.rs, §GRAPH2; not yet proven
+# live), and GraphAllowlistLintTests.testTagReadNeverTouchesGraph keeps them off Graph.
+#
+# Every function that sends a Graph request must be listed here
+# (GraphAllowlistLintTests fails otherwise, and on stale entries).
+#   key      = <repo path>::<enclosing function>
+#   status   = works        proven live (probe / app log) or by a granted scope
+#              blocked      refused before any network (client.rs graph_denied)
+#              unproven     cannot be proven under the live-account rules; needs owner OK
+#              tui-only     vendored ost CLI/TUI code the app never links
+#   proof    = probeA = live GET 09-28 (GraphSweepLiveProbeTests); applog = owner app
+#              unified network log, 72h, status counts; scope = decoded scp claim.
+#
+# key | endpoints | status | proof
+rust/ost/src/api/apps.rs::get | GET /sites/root, /groups/{id}/sites/root, /me/drive (SharePoint site URLs for tabs) | works | live applog /sites/root 200, /me/drive 200; scope Sites.ReadWrite.All
+rust/ost/src/api/apps.rs::team_app_definitions_data | GET /teams/{id}/installedApps?$expand=teamsAppDefinition | works | scope TeamsAppInstallation.ReadForTeam granted
+rust/ost/src/api/calendar.rs::list_upcoming_meetings_data | GET /me/calendarView | works | live probeA calendarView 200; applog 200
+rust/ost/src/api/calendar.rs::resolve_join_meeting_id_data | GET /me/onlineMeetings?$filter=joinMeetingIdSettings/joinMeetingId | blocked | scope OnlineMeetings.Read not granted; live probeB 403 Forbidden; no Teams REST equivalent (Teams web builds a /meet/{id}?p= link); the app refuses the lookup and shows an error, it never opens that link (§GRAPH2)
+rust/ost/src/api/calweek.rs::cancel_meeting_data | DELETE /me/calendar/events/{id} | works | scope Calendars.ReadWrite granted
+rust/ost/src/api/calweek.rs::list_week_meetings_data | GET /me/calendar/calendarView | works | live applog 200 (11x); probeA calendarView 200
+rust/ost/src/api/calweek.rs::schedule_meeting_data | POST /me/calendar/events | works | scope Calendars.ReadWrite granted
+rust/ost/src/api/chat.rs::aad_object_id | GET /me?$select=id, /users/{upn}?$select=id | works | live probeA /me 200, /users/{upn} 200
+rust/ost/src/api/chat.rs::fill_member_names | GET /users/{oid}?$select=displayName,mail,userPrincipalName (chat-service roster names) | works | live probeA /users/{upn} 200; applog /users 200; scope User.ReadBasic.All
+rust/ost/src/api/files.rs::copy_file_data | POST /drives/{d}/items/{i}/copy | works | scope Files.ReadWrite.All granted
+rust/ost/src/api/files.rs::create_link_data | POST /drives/{d}/items/{i}/createLink | works | scope Files.ReadWrite.All granted
+rust/ost/src/api/files.rs::delete_file_data | DELETE /drives/{d}/items/{i} | works | scope Files.ReadWrite.All granted
+rust/ost/src/api/files.rs::download_file_data | GET /drives/{d}/items/{i}/content | works | scope Files.ReadWrite.All granted; applog drive item GETs 200
+rust/ost/src/api/files.rs::download_file_version_data | GET /drives/{d}/items/{i}/versions/{v}/content | works | scope Files.ReadWrite.All granted
+rust/ost/src/api/files.rs::list_drive_recents_data | GET /me/drive/recent | works | live probeA 200; applog 200
+rust/ost/src/api/files.rs::list_file_versions_data | GET /drives/{d}/items/{i}/versions | works | scope Files.ReadWrite.All granted
+rust/ost/src/api/files.rs::list_folder_children_data | GET /drives/{d}/items/{i}/children | works | live applog 200 (266x)
+rust/ost/src/api/files.rs::list_message_files_data | GET /teams/{t}/channels/{c}/messages/{m} (channel messages only; chats use the chat service) | works | scope ChannelMessage.Read.All granted
+rust/ost/src/api/files.rs::list_via_channel_folder | GET /teams/{t}/channels/{c}/filesFolder, /drives/{d}/items/{i}/children | works | live applog filesFolder 200 (256x), children 200
+rust/ost/src/api/files.rs::move_file_data | PATCH /drives/{d}/items/{i} (parentReference) | works | scope Files.ReadWrite.All granted
+rust/ost/src/api/files.rs::post_reference_message | POST /me/chats/{id}/messages (fallback after the chat service), /teams/{t}/channels/{c}/messages | works | scope ChatMessage.Send + ChannelMessage.Send granted
+rust/ost/src/api/files.rs::reference_files | GET /shares/{id}/driveItem | works | live applog 200 (390x; per-file 403/404 = that file's sharing)
+rust/ost/src/api/files.rs::rename_file_data | PATCH /drives/{d}/items/{i} (name) | works | scope Files.ReadWrite.All granted
+rust/ost/src/api/files.rs::resolve_file_refs | GET /shares/{id}/driveItem | works | live applog 200
+rust/ost/src/api/files.rs::resolve_folder_id | GET /drives/{d}/root | works | live applog /drives/{id}/root 200
+rust/ost/src/api/files.rs::restore_file_version_data | POST /drives/{d}/items/{i}/versions/{v}/restoreVersion | works | scope Files.ReadWrite.All granted
+rust/ost/src/api/files.rs::upload_to_channel | GET /teams/{t}/channels/{c}/filesFolder, PUT /drives/{d}/items/{i}:/{name}:/content | works | live applog filesFolder 200; scope Files.ReadWrite.All
+rust/ost/src/api/files.rs::upload_to_chat | PUT /me/drive/root:/{folder}/{name}:/content | works | scope Files.ReadWrite.All granted
+rust/ost/src/api/files.rs::upload_via_session | POST .../createUploadSession | works | scope Files.ReadWrite.All granted
+rust/ost/src/api/filesearch.rs::search_files_data | GET /me/drive/root/search(q=) | works | scope Files.ReadWrite.All granted
+rust/ost/src/api/filesearch.rs::search_people_data | GET /me/people?$search | works | live probeA /me/people 200; scope People.Read
+rust/ost/src/api/graph.rs::list_chats | GET /me/chats (ost TUI) | tui-only | not linked by ostmac-core; would 403 (Chat.ReadBasic not granted)
+rust/ost/src/api/graph.rs::send_message | POST /chats/{id}/messages (ost TUI) | tui-only | not linked by ostmac-core
+rust/ost/src/api/me.rs::whoami_data | GET /me | works | live probeA 200
+rust/ost/src/api/notes.rs::append_note_paragraph_data | PATCH /onenote/pages/{id}/content | works | scope Notes.ReadWrite.All granted
+rust/ost/src/api/notes.rs::list_notebook_sections_data | GET /…/onenote/notebooks/{id}/sections, pages | works | live probeA onenote 200; scope Notes.ReadWrite.All
+rust/ost/src/api/notes.rs::list_notebooks_data | GET /groups/{id}/onenote/notebooks | works | live applog 200
+rust/ost/src/api/notes.rs::read_note_page_data | GET /onenote/pages/{id}/content | works | scope Notes.ReadWrite.All granted
+rust/ost/src/api/planner.rs::create_task_data | POST /planner/tasks | works | scope Tasks.ReadWrite granted
+rust/ost/src/api/planner.rs::list_buckets_data | GET /planner/plans/{id}/buckets | works | scope Tasks.ReadWrite granted; probeA planner 200
+rust/ost/src/api/planner.rs::list_plans_data | GET /groups/{id}/planner/plans | works | live applog 200 (49x)
+rust/ost/src/api/planner.rs::list_tasks_data | GET /planner/plans/{id}/tasks | works | live probeA /me/planner/tasks 200; scope Tasks.ReadWrite
+rust/ost/src/api/planner.rs::patch_task | PATCH /planner/tasks/{id} (If-Match) | works | scope Tasks.ReadWrite granted
+rust/ost/src/api/presence.rs::get_presence_data | GET /me/presence (ost TUI) | tui-only | not linked by ostmac-core; live probeA 403 — the app uses the Teams presence service
+rust/ost/src/api/presence.rs::set_presence | POST /me/presence/setUserPreferredPresence (ost TUI) | tui-only | not linked by ostmac-core; the app uses the Teams presence service
+rust/ost/src/api/recordings.rs::channel_drives | GET /teams/{t}/channels/{c}/filesFolder | works | live applog filesFolder 200
+rust/ost/src/api/recordings.rs::list_recordings_data | GET /me/drive/root:/Recordings:/children, /drives/{d}/items/{i}/children | works | live applog drive children 200; scope Files.ReadWrite.All
+rust/ost/src/api/recordings.rs::search_recordings_data | GET /me/drive/search(q=), /drives/{d}/root/search(q=) | works | scope Files.ReadWrite.All granted
+rust/ost/src/api/schedule.rs::fetch_pages | GET /teams/{id}/schedule/{shifts|timesOff} (+ nextLink) | works | live applog published 200 (draft filter 403 is expected and handled); scope Group.Read.All
+rust/ost/src/api/schedule.rs::list_schedule_data | GET /teams/{id}/schedule | works | live applog 200
+rust/ost/src/api/schedule.rs::list_shifts_data | GET /teams/{id}/schedule/shifts | works | live applog 200
+rust/ost/src/api/schedule.rs::list_timeoff_reasons_data | GET /teams/{id}/schedule/timeOffReasons | works | live applog 200
+rust/ost/src/api/schedule.rs::list_timesoffs_data | GET /teams/{id}/schedule/timesOff | works | live applog 200
+rust/ost/src/api/search.rs::search_messages_data | POST /search/query (chatMessage) | unproven | Chat.Read not granted (ChannelMessage.Read.All is); read-only POST, not probed under the GET-only live rule — needs owner OK for one live search
+rust/ost/src/api/tabs.rs::list_chat_tabs_data | GET /chats/{id}/tabs?$expand=teamsApp | works | live applog 200 (35x); scope TeamsTab.ReadWrite.All
+rust/ost/src/api/tabs.rs::list_tabs_all | GET channel tabs, all teams (ost TUI) | tui-only | not linked by ostmac-core
+rust/ost/src/api/tabs.rs::list_tabs_data | GET /teams/{t}/channels/{c}/tabs | works | scope TeamsTab.ReadWrite.All granted
+rust/ost/src/api/teams.rs::add_team_member_data | POST /teams/{id}/members | works | scope TeamMember.ReadWrite.All granted (server still requires team-owner rights)
+rust/ost/src/api/teams.rs::create_channel_data | POST /teams/{id}/channels | works | scope Channel.Create granted
+rust/ost/src/api/teams.rs::fetch_team_with_channels | GET /teams/{id}, /teams/{id}/channels | works | live applog channels 200 (522x)
+rust/ost/src/api/teams.rs::join_team_data | POST /teams/{id}/members (self) | works | scope TeamMember.ReadWrite.All granted (server may refuse non-owners)
+rust/ost/src/api/teams.rs::list_team_members_data | GET /teams/{id}/members | works | live applog 200 (34x)
+rust/ost/src/api/teams.rs::list_teams_data | GET /me/joinedTeams, /teams/{id}/channels | works | live probeA 200; applog 200
+rust/ost/src/api/team_settings.rs::team_settings_data | GET /teams/{id} (memberSettings) and GET /teams/{id}/primaryChannel | unproven | scopes Group.Read.All (full team resource) and Channel.ReadBasic.All granted, but the stored Graph token was stale so no live GET ran — needs owner OK (sign-in) for one read-only check; each read stands alone, a failure leaves the fact unknown and the menu lets Teams decide
+rust/ost/src/api/teams.rs::remove_team_member_data | DELETE /teams/{id}/members/{m} | works | scope TeamMember.ReadWrite.All granted (owner-only server side)
+rust/ost/src/api/teams.rs::search_public_teams_data | GET /groups?$filter (ConsistencyLevel), /teams?$filter | works | scope Group.Read.All + Team.ReadBasic.All granted
+rust/ost/src/api/teams.rs::set_channel_reaction_data | POST /teams/{t}/channels/{c}/messages/{m}/setReaction (ost TUI) | tui-only | not linked by ostmac-core (app reacts via the chat service)
+rust/ost/src/api/teams.rs::team_thread_id | GET /teams/{id}?$select=internalId (team thread id for middle-tier channel edit/delete) | works | scope Team.ReadBasic.All granted
+rust/ost/src/api/teams.rs::unset_channel_reaction_data | POST …/unsetReaction (ost TUI) | tui-only | not linked by ostmac-core
+rust/ost/src/api/todo.rs::create_todo_task_data | POST /me/todo/lists/{id}/tasks | works | scope Tasks.ReadWrite granted
+rust/ost/src/api/todo.rs::list_todo_lists_data | GET /me/todo/lists | works | live probeA 200; applog 200
+rust/ost/src/api/todo.rs::list_todo_tasks_data | GET /me/todo/lists/{id}/tasks | works | live applog 200
+rust/ost/src/api/todo.rs::set_todo_task_status | PATCH /me/todo/lists/{l}/tasks/{t} | works | scope Tasks.ReadWrite granted
+rust/ost/src/api/transcripts.rs::channel_drives | GET /teams/{t}/channels/{c}/filesFolder | works | live applog filesFolder 200
+rust/ost/src/api/transcripts.rs::list_transcripts_data | GET /me/drive/root:/Recordings (folder, children), /drives/{d}/items/{i}/children | works | live applog drive children 200; scope Files.ReadWrite.All
+rust/ost/src/api/transcripts.rs::search_transcripts_data | GET /me/drive/search(q=), /drives/{d}/root/search(q=) | works | scope Files.ReadWrite.All granted
+rust/ostmac-core/src/lib.rs::resolve_mri_json | GET /users/{oid}?$select=id,mail,displayName | works | live probeA /users 200; applog /users 200
+swift/Sources/OstMacCore/CalendarGraph.swift::create | POST /me/events (+ GET re-read) | works | scope Calendars.ReadWrite granted
+swift/Sources/OstMacCore/CalendarGraph.swift::delete | DELETE /me/events/{id} | works | scope Calendars.ReadWrite granted
+swift/Sources/OstMacCore/CalendarGraph.swift::detail | GET /me/events/{id}, recurrence, attachments | works | scope Calendars.ReadWrite granted; probeA calendarView 200
+swift/Sources/OstMacCore/CalendarGraph.swift::range | GET /me/calendarView (+ nextLink) | works | live probeA 200
+swift/Sources/OstMacCore/CalendarGraph.swift::respond | POST /me/events/{id}/{accept|tentativelyAccept|decline} | works | scope Calendars.ReadWrite granted
+swift/Sources/OstMacCore/CalendarGraph.swift::update | PATCH /me/events/{id} | works | scope Calendars.ReadWrite granted
+swift/Sources/OstMacCore/ContactCard.swift::card | GET /users/{key}?$select=profile, /users/{id}/directReports | works | live probeA /users 200; scope User.ReadBasic.All; /directReports rests on the granted scope only: live proof BLOCKED (needs owner sign-in) and a failed read shows on the card with Retry (§GRAPH2)
+swift/Sources/OstMacCore/ContactCard.swift::managerChain | GET /users/{id}/manager | works | live probeB 404 ResourceNotFound for a user without a manager (authorized, not 403); scope User.ReadBasic.All
+swift/Sources/OstMacCore/ContactCardExtras.swift::about | GET /users/{id}?$select=aboutMe,birthday,hireDate,skills,… | works | live CARD3 probe 09-28 (answered; fields unset); scope User.ReadBasic.All (profile-detail fields may stay empty without User.Read.All)
+swift/Sources/OstMacCore/ContactCardExtras.swift::files | GET /me/insights/shared?$filter | works | live probeA insights 200
+swift/Sources/OstMacCore/ContactCardExtras.swift::schedule | POST /me/calendar/getSchedule | works | scope Calendars.Read.Shared granted
+swift/Sources/OstMacCore/ProfilePhotoStore.swift::fetch | GET /users/{id}/photo/$value | works | scope User.ReadBasic.All granted
+swift/Sources/OstMacCore/ReadCore.swift::meetings | GET /me/calendarView | works | live probeA 200
+swift/Sources/OstMacCore/ReadCore.swift::teams | GET /me/joinedTeams, /teams/{id}/channels | works | live probeA 200; applog 200
+swift/Sources/OstMacCore/ReadCore.swift::whoami | GET /me | works | live probeA 200
+swift/Sources/OstMacCore/ReadCore.swift::mateDisplayName | GET /users/{oid}?$select=displayName (1:1 chat title when the mate has not written in the newest page, CHATSYNC S2) | works | same endpoint as fill_member_names: live probeA /users/{upn} 200; applog /users 200; scope User.ReadBasic.All

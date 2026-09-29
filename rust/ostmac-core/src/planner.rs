@@ -5,7 +5,6 @@
 //! `{ok,task}`. Complete/reopen round-trip the task `etag` for the
 //! required `If-Match` header (see `ost::api::planner`).
 
-use std::ffi::CStr;
 use std::os::raw::{c_char, c_int};
 
 use serde_json::json;
@@ -345,7 +344,7 @@ pub extern "C" fn ostmac_planner_assign(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::CString;
+    use std::ffi::{CStr, CString};
 
     fn read_and_free(p: *mut c_char) -> serde_json::Value {
         assert!(!p.is_null());

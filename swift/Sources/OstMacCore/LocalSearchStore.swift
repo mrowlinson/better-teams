@@ -141,6 +141,28 @@ public final class LocalSearchStore: ObservableObject {
         }
     }
 
+    /// DEMOLEAK: drop docs an old demo run indexed into the account's
+    /// real index (demo fixture chat/message ids). Returns the count;
+    /// the next regular save persists the clean index.
+    @discardableResult
+    public func removeFixtureDocs() -> Int {
+        let bad = Set(snapshot.docs.compactMap { key, doc in
+            DemoFixture.isFixtureID(doc.chatID) || DemoFixture.isFixtureID(doc.messageID) ? key : nil
+        })
+        guard !bad.isEmpty else { return 0 }
+        for key in bad { snapshot.docs.removeValue(forKey: key) }
+        for (tok, keys) in snapshot.postings {
+            let kept = keys.filter { !bad.contains($0) }
+            if kept.isEmpty {
+                snapshot.postings.removeValue(forKey: tok)
+            } else if kept.count != keys.count {
+                snapshot.postings[tok] = kept
+            }
+        }
+        if !lastQuery.isEmpty { runQuery(lastQuery) }
+        return bad.count
+    }
+
     // MARK: - Query (MessageSearchStore shape)
 
     /// Fresh search; replaces hits. Blank queries clear without indexing work.

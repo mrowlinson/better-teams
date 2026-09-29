@@ -37,13 +37,9 @@ final class AppsSection: SectionProvider {
         }
     }
 
-    func selectionDidChange(_ sel: SectionSelection?, _ m: WindowModel) {
-        // First visit on a live account with no cache: scan once (never
-        // from evidence or tests: the scan runs teams-cli with real tokens).
-        let lib = m.frameHost.library
-        guard !m.options.evidence else { return }
-        if !lib.demo, !lib.scanned, !lib.scanning, lib.scanError == nil { lib.refresh() }
-    }
+    /// The library loads itself (catalog + store on window open); a
+    /// selection change fetches nothing.
+    func selectionDidChange(_ sel: SectionSelection?, _ m: WindowModel) {}
 
     // MARK: commands
 

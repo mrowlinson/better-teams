@@ -251,13 +251,13 @@ public final class ConversationStore: ObservableObject {
         Task {
             // Best-effort identity (core-cached after first call); a stale
             // stored name still stamps when refresh fails.
-            let own: String? = try? await Task.detached {
+            let own: String? = try? await Task.blocking(priority: .userInitiated) {
                 try hop.run { try RustCore.whoami().display_name }
             }.value
             guard gen == self.openGeneration else { return } // superseded
             if let own { self.ownDisplayName = own }
             do {
-                let resp = try await Task.detached {
+                let resp = try await Task.blocking(priority: .userInitiated) {
                     try hop.run { try RustCore.messages(chatID: chatID, limit: limit) }
                 }.value
                 guard gen == self.openGeneration else { return }
@@ -266,7 +266,8 @@ public final class ConversationStore: ObservableObject {
                 if let cached {
                     let restamped = self.ownDisplayName == nil
                         ? self.messages : Self.stampOwnership(self.messages, ownName: self.ownDisplayName)
-                    let fresh = Self.mergedFresh(stamped, into: restamped)
+                    let fresh = Self.mergedFresh(stamped, into: restamped, keeping: self.unseenSentIDs)
+                    self.noteSeen(stamped)
                     if fresh.messages != self.messages { self.messages = fresh.messages }
                     if fresh.contiguous {
                         // Snapshot cursor stays (it continues before the
@@ -297,7 +298,7 @@ public final class ConversationStore: ObservableObject {
                 {
                     guard let tok = self.pageToken else { break }
                     do {
-                        let next = try await Task.detached {
+                        let next = try await Task.blocking(priority: .userInitiated) {
                             try hop.run { try RustCore.messagesPage(chatID: chatID, pageToken: tok, limit: limit) }
                         }.value
                         guard gen == self.openGeneration else { return }
@@ -328,7 +329,7 @@ public final class ConversationStore: ObservableObject {
                     {
                         guard let tok = self.pageToken else { break }
                         do {
-                            let next = try await Task.detached {
+                            let next = try await Task.blocking(priority: .userInitiated) {
                                 try hop.run { try RustCore.messagesPage(chatID: chatID, pageToken: tok, limit: limit) }
                             }.value
                             guard gen == self.openGeneration else { return }
@@ -387,21 +388,42 @@ public final class ConversationStore: ObservableObject {
     /// gap is wider than one page: the page replaces the snapshot (plus
     /// local pending rows) and paging restarts from the fresh cursor.
     public static func mergedFresh(
-        _ page: [ChatMessage], into cached: [ChatMessage]
+        _ page: [ChatMessage], into cached: [ChatMessage], keeping unseen: Set<String> = []
     ) -> (messages: [ChatMessage], contiguous: Bool) {
         guard let first = page.first else { return (cached, true) }
         if cached.contains(where: { $0.id == first.id }) {
-            return (mergedNewest(page, into: cached), true)
+            return (mergedNewest(page, into: cached, keeping: unseen), true)
         }
+        return (page + localTail(cached[...], notIn: page, keeping: unseen), false)
+    }
+
+    /// §106: own-send rows the page can't replace yet — local rows
+    /// (`pending-`/`sent-`) and confirmed sends not yet seen in a page
+    /// (`unseen`: a GET that left before the POST landed must not drop
+    /// the just-sent bubble). A row whose id OR client message id is in
+    /// the page is the page's (settled): dropped here, the page row wins.
+    static func localTail(
+        _ rows: ArraySlice<ChatMessage>, notIn page: [ChatMessage], keeping unseen: Set<String>
+    ) -> [ChatMessage] {
         let pageIDs = Set(page.map(\.id))
-        let pending = cached.filter { $0.id.hasPrefix("pending-") && !pageIDs.contains($0.id) }
-        return (page + pending, false)
+        let pageCmids = Set(page.compactMap(\.clientMessageID))
+        // Server rows newer than the page's newest (chat-service ids are
+        // arrival ms) arrived after the GET was served — a live push or an
+        // echo racing a poll. They stay; the page can't have known them.
+        let pageNewest = page.compactMap { Int64($0.id) }.max()
+        return rows.filter { m in
+            let newer = pageNewest.map { newest in Int64(m.id).map { $0 > newest } ?? false } ?? false
+            guard SendReconcile.isLocalRow(m) || unseen.contains(m.id) || newer else { return false }
+            if pageIDs.contains(m.id) { return false }
+            if let c = m.clientMessageID, pageCmids.contains(c) { return false }
+            return true
+        }
     }
 
     /// Snapshot the open chat into `historyCache` (server rows only).
     private func persistHistory() {
         guard !isDemo, didLoad, let cache = historyCache, let id = chatID else { return }
-        let rows = messages.filter { !$0.id.hasPrefix("pending-") }
+        let rows = messages.filter { !SendReconcile.isLocalRow($0) }
         cache.store(chatID: id, messages: rows, pageToken: pageToken)
     }
 
@@ -410,36 +432,61 @@ public final class ConversationStore: ObservableObject {
     /// the timeline keeps its rows, scroll and older pages. A failure
     /// keeps the bubbles (`refreshError`, quiet). Nothing on screen yet
     /// falls back to `open`; an open already running is left to land.
-    public func refresh(limit: Int32 = 50) {
+    public func refresh(limit: Int32 = 50, quiet: Bool = false) {
         guard !isDemo, let id = chatID else { return }
         guard !messages.isEmpty else {
-            if !loading { open(chatID: id, limit: limit) }
+            if !loading, !quiet { open(chatID: id, limit: limit) }
             return
         }
         let gen = openGeneration
-        refreshGeneration += 1
-        let rgen = refreshGeneration
-        refreshing = true
+        // §106: `quiet` = the open-chat fallback poll. It never publishes
+        // `refreshing` (no spinner every few seconds), never shows a
+        // failure, never supersedes a loud refresh, and runs one at a time.
+        var rgen = 0
+        if quiet {
+            guard !pollInFlight else { return }
+            pollInFlight = true
+        } else {
+            refreshGeneration += 1
+            rgen = refreshGeneration
+            refreshing = true
+        }
         let hop = coreHop
         Task {
+            defer { if quiet { self.pollInFlight = false } }
             do {
-                let resp = try await Task.detached {
+                let resp = try await Task.blocking(priority: .userInitiated) {
                     try hop.run { try RustCore.messages(chatID: id, limit: limit) }
                 }.value
-                guard gen == self.openGeneration, rgen == self.refreshGeneration else { return }
+                guard gen == self.openGeneration, quiet || rgen == self.refreshGeneration else { return }
                 let stamped = Self.stampOwnership(resp.messages, ownName: self.ownDisplayName)
-                let next = Self.mergedNewest(stamped, into: self.messages)
-                if next != self.messages { self.messages = next }
-                self.onHistory?(id, stamped)
-                self.refreshError = nil
-                self.persistHistory()
+                let before = Set(self.messages.map(\.id))
+                let next = Self.mergedNewest(stamped, into: self.messages, keeping: self.unseenSentIDs)
+                self.noteSeen(stamped)
+                let changed = next != self.messages
+                if changed { self.messages = next }
+                let arrived = stamped.filter { !before.contains($0.id) }
+                if !arrived.isEmpty {
+                    Log.send.info("open chat rows arrived n=\(arrived.count, privacy: .public) via=\(quiet ? "poll" : "refresh", privacy: .public)")
+                    self.onNewRows?(id, arrived)
+                }
+                if !quiet || changed { self.onHistory?(id, stamped) }
+                if self.refreshError != nil { self.refreshError = nil }
+                if !quiet || changed { self.persistHistory() }
             } catch {
-                guard gen == self.openGeneration, rgen == self.refreshGeneration else { return }
+                guard !quiet, gen == self.openGeneration, rgen == self.refreshGeneration else { return }
                 self.refreshError = String(describing: error)
             }
-            self.refreshing = false
+            if !quiet { self.refreshing = false }
         }
     }
+
+    /// §106: a quiet poll is in flight (one at a time).
+    private var pollInFlight = false
+    /// §106: rows a refresh/poll brought that weren't on screen (new
+    /// arrivals, settled own sends). AppState updates the chat list row
+    /// (preview/order) from them.
+    public var onNewRows: ((String, [ChatMessage]) -> Void)?
 
     private var refreshGeneration = 0
 
@@ -448,14 +495,18 @@ public final class ConversationStore: ObservableObject {
     /// page stay, and local rows the server can't know yet (pending
     /// sends) stay at the end. Without overlap (a gap wider than one
     /// page) the loaded rows stay ahead of the page. Empty page = no-op.
-    public static func mergedNewest(_ page: [ChatMessage], into list: [ChatMessage]) -> [ChatMessage] {
+    public static func mergedNewest(
+        _ page: [ChatMessage], into list: [ChatMessage], keeping unseen: Set<String> = []
+    ) -> [ChatMessage] {
         guard let first = page.first else { return list }
-        let pageIDs = Set(page.map(\.id))
         guard let i = list.firstIndex(where: { $0.id == first.id }) else {
-            return prepend(list, to: page)
+            // §106: a local row the page already carries (by client id)
+            // must not survive beside its server copy.
+            let cmids = Set(page.compactMap(\.clientMessageID))
+            let kept = list.filter { !(SendReconcile.isLocalRow($0) && $0.clientMessageID.map(cmids.contains) == true) }
+            return prepend(kept, to: page)
         }
-        let pending = list[i...].filter { $0.id.hasPrefix("pending-") && !pageIDs.contains($0.id) }
-        return Array(list[..<i]) + page + pending
+        return Array(list[..<i]) + page + localTail(list[i...], notIn: page, keeping: unseen)
     }
 
     /// Re-run `open` for the current chat (empty-state Try Again).
@@ -482,6 +533,8 @@ public final class ConversationStore: ObservableObject {
         error = nil
         didLoad = false
         failedIDs = []
+        outgoing = [:]
+        unseenSentIDs = []
         replyTarget = nil
         jumpTargetID = nil
         jumpMissedID = nil
@@ -522,7 +575,7 @@ public final class ConversationStore: ObservableObject {
             while pages < Self.seekMaxPages, self.pageToken != nil {
                 guard let tok = self.pageToken else { break }
                 do {
-                    let resp = try await Task.detached {
+                    let resp = try await Task.blocking(priority: .userInitiated) {
                         try hop.run { try RustCore.messagesPage(chatID: chat, pageToken: tok, limit: limit) }
                     }.value
                     guard gen == self.openGeneration else { return } // superseded
@@ -601,6 +654,8 @@ public final class ConversationStore: ObservableObject {
         error = nil
         didLoad = false
         failedIDs = []
+        outgoing = [:]
+        unseenSentIDs = []
         replyTarget = nil
         jumpTargetID = nil
         jumpMissedID = nil
@@ -651,7 +706,7 @@ public final class ConversationStore: ObservableObject {
             var current: Bool { gen == self.openGeneration && epoch == self.historyEpoch }
             while pages < Self.dayLoadMaxPages, let tok = self.pageToken {
                 do {
-                    let resp = try await Task.detached {
+                    let resp = try await Task.blocking(priority: .userInitiated) {
                         try hop.run { try RustCore.messagesPage(chatID: id, pageToken: tok, limit: limit) }
                     }.value
                     guard current else { return } // superseded
@@ -731,6 +786,14 @@ public final class ConversationStore: ObservableObject {
         if message.text.isEmpty, let r = message.reactions {
             applyReactions(id: targetID, reactions: r)
             return
+        }
+        if !message.isEdit {
+            var echo = message.asChatMessage
+            echo.isOwn = ownDisplayName.map { echo.sender == $0 } ?? false
+            if reconcileEcho(echo) {
+                if let r = message.reactions { applyReactions(id: targetID, reactions: r) }
+                return
+            }
         }
         ingest(message.asChatMessage)
         if let r = message.reactions {
@@ -831,41 +894,143 @@ public final class ConversationStore: ObservableObject {
             return
         }
         guard let id = chatID else { return }
-        let pendingID = "pending-\(UUID().uuidString)"
+        // §106: the client message id is the idempotency key for this
+        // logical send (every retry reuses it; the echo carries it).
+        let cmid = SendReconcile.newClientMessageID()
+        let pendingID = SendReconcile.pendingID(for: cmid)
         let bubble = ChatMessage(
             id: pendingID,
             sender: "Me", timestamp: Self.nowISO(), content: body, isOwn: true,
-            reply_to: replyTo)
+            reply_to: replyTo, clientMessageID: cmid)
         messages.append(bubble)
         onLocalSend?(bubble)
-        let hop = coreHop
-        Task {
-            do {
-                if case .thread(let rootID) = route {
-                    _ = try await Task.detached {
-                        try hop.run {
-                            try RustCore.threadReply(channelID: id, rootID: rootID, text: body)
-                        }
-                    }.value
-                } else if let parent {
-                    let p = parent
-                    _ = try await Task.detached {
-                        try hop.run {
-                            try RustCore.reply(
-                                chatID: id, parentID: p.id,
-                                parentSender: p.sender, parentText: p.content, text: body)
-                        }
-                    }.value
-                } else {
-                    _ = try await Task.detached {
-                        try hop.run { try RustCore.send(chatID: id, text: body) }
-                    }.value
-                }
-            } catch {
-                self.noteSendFailed(id: pendingID)
-                self.error = "send failed: \(error)"
+        let wireRoute: OutgoingSend.Route
+        switch route {
+        case .thread(let rootID)?:
+            wireRoute = .thread(rootID: rootID)
+        default:
+            if let p = parent {
+                wireRoute = .reply(parentID: p.id, parentSender: p.sender, parentText: p.content)
+            } else {
+                wireRoute = .plain
             }
         }
+        let request = OutgoingSend(chatID: id, text: body, route: wireRoute, clientMessageID: cmid)
+        outgoing[pendingID] = request
+        deliver(localID: pendingID, request: request, verifyFirst: false)
+    }
+
+    // MARK: - Send reconcile (§106)
+
+    /// Send wire (tests inject a fake; `--send-timeout-shim` wraps it).
+    public var sendTransport: SendTransport = .live
+    /// In-flight or failed own sends by local row id (Retry re-uses the
+    /// request, so the client message id never changes).
+    private var outgoing: [String: OutgoingSend] = [:]
+    /// Server ids of confirmed own sends no page has carried yet: page
+    /// merges keep them (a GET that left before the POST landed must not
+    /// drop the bubble). Cleared as pages/echoes carry them.
+    private(set) var unseenSentIDs: Set<String> = []
+    /// Settle tap: (chatID, settled row, via) once an own send settles.
+    /// AppState refreshes the chat list preview/order from it.
+    public var onSendSettled: ((String, ChatMessage) -> Void)?
+
+    /// Run one delivery attempt off-main and settle the bubble on-main.
+    private func deliver(localID: String, request: OutgoingSend, verifyFirst: Bool) {
+        let hop = coreHop
+        let transport = sendTransport
+        let started = DispatchTime.now().uptimeNanoseconds
+        Log.send.info("send start retry=\(verifyFirst, privacy: .public)")
+        Task {
+            let outcome = await Task.blocking {
+                SendPipeline.run(
+                    request,
+                    transport: SendTransport(
+                        post: { r in try hop.run { try transport.post(r) } },
+                        find: { c, m in try hop.run { try transport.find(c, m) } }),
+                    verifyFirst: verifyFirst)
+            }.value
+            self.settle(localID: localID, request: request, outcome: outcome, started: started)
+        }
+    }
+
+    private func settle(localID: String, request: OutgoingSend, outcome: SendOutcome, started: UInt64) {
+        let ms = Log.ms(since: started)
+        switch outcome {
+        case .sent(let serverID, let row, let via):
+            outgoing.removeValue(forKey: localID)
+            failedIDs.remove(localID)
+            Log.send.info("send settled via=\(via.rawValue, privacy: .public) ms=\(ms, privacy: .public) named=\(serverID != nil, privacy: .public)")
+            confirmSent(localID: localID, cmid: request.clientMessageID, serverID: serverID, row: row)
+        case .failed(let err):
+            Log.send.error("send failed after verify ms=\(ms, privacy: .public)")
+            // An echo may have settled the row meanwhile — only a row
+            // still local can fail.
+            guard messages.contains(where: { $0.id == localID }) else {
+                outgoing.removeValue(forKey: localID)
+                return
+            }
+            noteSendFailed(id: localID)
+            error = "send failed: \(err)"
+        }
+    }
+
+    /// The local row becomes the server message (in place). No-op when
+    /// an echo/page already settled it.
+    private func confirmSent(localID: String, cmid: String, serverID: String?, row: ChatMessage?) {
+        guard let local = messages.first(where: { $0.id == localID }) else { return }
+        var settled: ChatMessage
+        if var r = row {
+            r.isOwn = true
+            settled = r
+        } else {
+            settled = ChatMessage(
+                id: serverID ?? SendReconcile.settledID(for: cmid),
+                sender: ownDisplayName ?? local.sender, timestamp: local.timestamp,
+                content: local.content, isOwn: true, raw: local.raw,
+                reactions: local.reactions, reply_to: local.reply_to,
+                clientMessageID: cmid)
+        }
+        if settled.clientMessageID == nil { settled.clientMessageID = cmid }
+        if !SendReconcile.isLocalRow(settled) { unseenSentIDs.insert(settled.id) }
+        let next = SendReconcile.replacing(localID, with: settled, in: messages)
+        if next != messages { messages = next }
+        if let chat = chatID { onSendSettled?(chat, settled) }
+    }
+
+    /// Pages that carry confirmed sends end their `unseen` hold.
+    private func noteSeen(_ page: [ChatMessage]) {
+        guard !unseenSentIDs.isEmpty else { return }
+        unseenSentIDs.subtract(page.map(\.id))
+    }
+
+    /// §106 echo: a pushed/polled server row carrying the client id of a
+    /// row on screen (pending, failed, `sent-`, or confirmed) settles that
+    /// row in place — never a second bubble, never an "edited" mark.
+    /// Returns false when no row carries the id (normal upsert path).
+    @discardableResult
+    func reconcileEcho(_ incoming: ChatMessage) -> Bool {
+        guard let cmid = incoming.clientMessageID, !cmid.isEmpty,
+              let local = messages.first(where: { $0.clientMessageID == cmid })
+        else { return false }
+        var row = incoming
+        row.isOwn = local.isOwn || row.isOwn
+        row.reactions = row.reactions.isEmpty ? local.reactions : row.reactions
+        if local.id == row.id {
+            // Already settled with this id: refresh content quietly.
+            guard let i = messages.firstIndex(where: { $0.id == row.id }) else { return true }
+            row.edited = messages[i].edited
+            if messages[i] != row { messages[i] = row }
+        } else {
+            let next = SendReconcile.replacing(local.id, with: row, in: messages)
+            if next != messages { messages = next }
+        }
+        if outgoing.removeValue(forKey: local.id) != nil || failedIDs.contains(local.id) {
+            Log.send.info("send settled via=echo")
+        }
+        failedIDs.remove(local.id)
+        unseenSentIDs.remove(row.id)
+        return true
     }
 
     /// Last forward from this store (om-msgactions). Set in demo mode
@@ -896,8 +1061,10 @@ public final class ConversationStore: ObservableObject {
         let hop = coreHop
         Task {
             do {
-                _ = try await Task.detached {
-                    try hop.run { try RustCore.send(chatID: dest, text: body) }
+                _ = try await Task.blocking {
+                    // §106: idempotent + verified (a lost answer never
+                    // turns into a second forwarded copy).
+                    try hop.run { try SendPipeline.postVerified(chatID: dest, text: body) }
                 }.value
                 self.lastForward = MessageActions.ForwardRecord(messageID: message.id, destChatID: dest, body: body)
                 self.lastForwardDestName = destName
@@ -905,6 +1072,17 @@ public final class ConversationStore: ObservableObject {
                 self.error = "forward failed: \(error)"
             }
         }
+    }
+
+    /// Test seam (§106): a live-mode store on `chatID` with rows already
+    /// on screen — no core call (tests inject `sendTransport`).
+    func attachLiveForTesting(chatID: String, messages: [ChatMessage] = [], ownName: String? = nil) {
+        self.chatID = chatID
+        self.messages = messages
+        ownDisplayName = ownName
+        isDemo = false
+        didLoad = true
+        loading = false
     }
 
     /// Record a failed optimistic send (test seam + retry bookkeeping).
@@ -920,6 +1098,7 @@ public final class ConversationStore: ObservableObject {
         guard failedIDs.contains(id), let i = messages.firstIndex(where: { $0.id == id }) else { return nil }
         let text = messages[i].content
         failedIDs.remove(id)
+        outgoing.removeValue(forKey: id)
         messages.remove(at: i)
         return text
     }
@@ -932,6 +1111,14 @@ public final class ConversationStore: ObservableObject {
               let msg = messages.first(where: { $0.id == id })
         else { return nil }
         failedIDs.remove(id)
+        // §106: same bubble, same client message id; verify first (a copy
+        // that landed late settles without a second post).
+        if let request = outgoing[id] {
+            deliver(localID: id, request: request, verifyFirst: true)
+            return msg.content
+        }
+        // No request on record (demo / restored row): plain re-send.
+        messages.removeAll { $0.id == id }
         send(text: msg.content)
         return msg.content
     }
@@ -985,7 +1172,7 @@ public final class ConversationStore: ObservableObject {
         let hop = coreHop
         Task {
             do {
-                _ = try await Task.detached {
+                _ = try await Task.blocking {
                     try hop.run { try RustCore.react(chatID: id, messageID: messageID, emoji: emoji) }
                 }.value
             } catch {
@@ -1013,7 +1200,7 @@ public final class ConversationStore: ObservableObject {
         let hop = coreHop
         Task {
             do {
-                _ = try await Task.detached {
+                _ = try await Task.blocking {
                     try hop.run { try RustCore.edit(chatID: id, messageID: messageID, text: body) }
                 }.value
             } catch {
@@ -1042,7 +1229,7 @@ public final class ConversationStore: ObservableObject {
         let hop = coreHop
         Task {
             do {
-                _ = try await Task.detached {
+                _ = try await Task.blocking {
                     try hop.run { try RustCore.removeReaction(chatID: id, messageID: messageID, emoji: emoji) }
                 }.value
             } catch {
@@ -1133,7 +1320,7 @@ public final class ConversationStore: ObservableObject {
         let hop = coreHop
         Task {
             do {
-                _ = try await Task.detached {
+                _ = try await Task.blocking {
                     try hop.run { try RustCore.deleteMessage(chatID: chat, messageID: id) }
                 }.value
                 self.onDelete?(chat, id)

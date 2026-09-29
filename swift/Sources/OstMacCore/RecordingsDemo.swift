@@ -37,6 +37,14 @@ public enum RecordingsDemo {
                 created: "2026-09-15T16:00:00Z",
                 modified: "2026-09-15T16:30:00Z",
                 duration_ms: 1_800_000, source: "OneDrive"),
+            // The demo meeting chat's recap (chat Recap tab).
+            RecordingItem(
+                id: "demo-rec-5", name: "Platform Standup-20260912_093000-Meeting Recording.mp4",
+                size: 31_402_600, mime: "video/mp4",
+                web_url: "https://example.com/rec5", drive_id: "demo-drive",
+                created: "2026-09-12T09:30:00Z",
+                modified: "2026-09-12T09:50:00Z",
+                duration_ms: 1_200_000, source: "OneDrive"),
         ])
     }
 

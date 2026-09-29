@@ -89,6 +89,7 @@ final class ActivitySection: SectionProvider, InspectorCapable {
     static func retry(_ m: WindowModel) {
         m.setForced(nil, for: .activity)
         m.navigator?.applyAll()
+        if let a = m.app?.activity { Task { await a.refresh() } }
     }
 
     /// True when the listed feed has anything the filter can narrow
@@ -195,7 +196,9 @@ struct ActivityListPane: View {
 
     var body: some View {
         if let model {
-            content(model)
+            // Opening Activity re-reads the Teams feed in the background
+            // (live only; rows merge in place, nothing clears).
+            content(model).task { await activity.refresh() }
         }
     }
 
@@ -205,8 +208,10 @@ struct ActivityListPane: View {
         let feed = showsFeed(m)
         let rows = !feed ? [] : ActivityRowModel.rows(
             activity.items, saved: saved.saves, filter: state.filter,
-            place: { m.app?.chatNameOrNil(for: $0) ?? DemoData.name(for: $0) ?? "Conversation" },
-            isGroup: { id in m.graph.chats.chat(id: id)?.is_group ?? DemoData.chats.first { $0.id == id }?.is_group ?? false })
+            place: { m.app?.chatNameOrNil(for: $0) ?? DemoFixture.name(for: $0, demo: m.options.demo) ?? "Conversation" },
+            isGroup: { id in
+                m.graph.chats.chat(id: id)?.is_group ?? DemoFixture.isGroup(id, demo: m.options.demo) ?? false
+            })
         if forced == .loading {
             LoadingPane("Loading Activity\u{2026}")
         } else if forced == .error, !feed {
@@ -214,7 +219,7 @@ struct ActivityListPane: View {
                       message: m.connection == .offline ? "You\u{2019}re offline." : "Something went wrong.") {
                 ActivitySection.retry(m)
             }
-        } else if forced == .error {
+        } else if forced == .error || activity.lastError != nil {
             // R12: a failed refresh keeps the cached feed on screen under
             // an inline notice (ConversationDetail's jump-miss strip idiom)
             // with Try Again (R18, §6 pane states).
@@ -294,8 +299,16 @@ struct ActivityDetailPane: View {
     var body: some View {
         if let model, let id = model.nav.selection(in: .activity)?.id, showsFeed(model) {
             if let item = activity.item(id: id) {
-                if item.kind == .missedCall || item.chatID.isEmpty {
+                if item.kind == .missedCall {
                     missedCall(item, model)
+                } else if item.chatID.isEmpty {
+                    // A feed notification with no source conversation
+                    // (app / system items): the item itself.
+                    let when = ActivityRow.time(Date(timeIntervalSince1970: TimeInterval(item.at)),
+                                                now: RelativeClock.shared.now)
+                    PersonCard(name: item.actor.isEmpty ? item.kind.label : item.actor,
+                               detail: "\(item.kind.label) \u{00B7} \(when)", detailSymbol: item.kind.systemImage,
+                               note: item.snippet.isEmpty ? nil : item.snippet) { EmptyView() }
                 } else {
                     ConversationDetail(ref: item.chatID, conv: conv, chats: chats)
                 }

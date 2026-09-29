@@ -37,6 +37,9 @@ public final class FullResImageModel: ObservableObject {
     public let thumb: NSImage?
     private let cache: RichMediaCache
     private let fetcher: RichMediaCache.Fetcher
+    /// FIXPACK F7: header-bytes source (url, maxBytes, timeoutMs).
+    public typealias HeadFetcher = @Sendable (String, Int, Int) async throws -> Data
+    private let headFetcher: HeadFetcher
     private let decodedCache: DecodedImageCache
 
     public init(
@@ -44,6 +47,7 @@ public final class FullResImageModel: ObservableObject {
         thumb: NSImage? = nil,
         cache: RichMediaCache = .shared,
         fetcher: RichMediaCache.Fetcher? = nil,
+        headFetcher: HeadFetcher? = nil,
         decodedCache: DecodedImageCache = .shared,
         maxPixels: CGFloat = ImageDecode.viewerMaxPixels
     ) {
@@ -53,6 +57,9 @@ public final class FullResImageModel: ObservableObject {
         self.thumb = thumb
         self.cache = cache
         self.fetcher = fetcher ?? { try await RichMediaCache.defaultFetch(url: $0) }
+        self.headFetcher = headFetcher ?? { url, n, ms in
+            try await Task.blocking { try RustCore.mediaHead(url: url, maxBytes: UInt32(n), timeoutMs: UInt32(ms)) }.value
+        }
         self.decodedCache = decodedCache
         self.maxPixels = maxPixels
     }
@@ -95,6 +102,56 @@ public final class FullResImageModel: ObservableObject {
         } catch {
             phase = .failed(String(describing: error))
         }
+    }
+
+    /// IMGWIN2: the original's pixel size when its bytes are already
+    /// cached (memory or disk) — header only, no fetch, no decode.
+    public func cachedPixelSize() async -> CGSize? {
+        await cache.cached(url: fullURL, messageID: messageID).flatMap { Self.probe($0).0 }
+    }
+
+    /// FIXPACK F7: the original's pixel size from its first bytes (an HTTP
+    /// range GET through the authenticated media path), for an image that
+    /// is not cached yet. Gives up at `timeout` (default 300 ms) and on any
+    /// failure with nil, so the caller falls back to its current sizing.
+    /// Only https originals are probed (demo fixtures and others are not).
+    public func headPixelSize(maxBytes: Int = 131_072, timeout: Duration = .milliseconds(300)) async -> CGSize? {
+        guard fullURL.hasPrefix("https://") else { return nil }
+        let url = fullURL, fetch = headFetcher
+        let ms = Int(timeout.components.seconds * 1000 + timeout.components.attoseconds / 1_000_000_000_000_000)
+        return await withTaskGroup(of: CGSize?.self) { group in
+            group.addTask {
+                guard let data = try? await fetch(url, maxBytes, ms) else { return nil }
+                return Self.headerSize(data)
+            }
+            group.addTask {
+                try? await Task.sleep(for: timeout)
+                return nil
+            }
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            return first
+        }
+    }
+
+    /// Pixel size from a PREFIX of an image file: ImageIO when it can read
+    /// the truncated data, else the fixed-offset header of PNG (IHDR) and
+    /// GIF (logical screen), which ImageIO will not report before pixel
+    /// data arrives.
+    nonisolated static func headerSize(_ data: Data) -> CGSize? {
+        if let s = probe(data).0 { return s }
+        let b = [UInt8](data.prefix(26))
+        func be32(_ i: Int) -> Int { Int(b[i]) << 24 | Int(b[i + 1]) << 16 | Int(b[i + 2]) << 8 | Int(b[i + 3]) }
+        if b.count >= 24, Array(b[0 ..< 8]) == [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A],
+           Array(b[12 ..< 16]) == Array("IHDR".utf8) {
+            let w = be32(16), h = be32(20)
+            return w > 0 && h > 0 ? CGSize(width: w, height: h) : nil
+        }
+        if b.count >= 10, Array(b[0 ..< 3]) == Array("GIF".utf8) {
+            let w = Int(b[6]) | Int(b[7]) << 8, h = Int(b[8]) | Int(b[9]) << 8
+            return w > 0 && h > 0 ? CGSize(width: w, height: h) : nil
+        }
+        return nil
     }
 
     /// Original pixel size + type from the image header (no decode).

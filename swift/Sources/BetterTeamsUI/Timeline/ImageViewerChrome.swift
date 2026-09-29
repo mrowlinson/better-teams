@@ -7,21 +7,31 @@ import OstMacCore
 
 @MainActor
 enum ImageViewerChrome {
-    /// Dark viewer window; the image runs up under a transparent titlebar
-    /// like Quick Look (R1 exception: a media window, not the main window).
-    static func makeWindow() -> NSWindow {
-        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 640),
-                         styleMask: [.titled, .closable, .resizable, .miniaturizable, .fullSizeContentView],
-                         backing: .buffered, defer: true)
+    /// Themed viewer window (follows the system appearance live); the
+    /// transparent titlebar sits over the themed background, the image
+    /// below it (R1 exception: a media window, not the main window).
+    /// `make` builds the window (tests pass one that never goes on screen).
+    static func makeWindow(_ make: (NSRect, NSWindow.StyleMask) -> NSWindow = {
+        NSWindow(contentRect: $0, styleMask: $1, backing: .buffered, defer: true)
+    }) -> NSWindow {
+        let w = make(NSRect(x: 0, y: 0, width: 900, height: 640),
+                     [.titled, .closable, .resizable, .miniaturizable, .fullSizeContentView])
         w.titlebarAppearsTransparent = true
+        w.backgroundColor = Palette.viewerBackgroundNS
         return w
     }
 
-    /// HUD control bar over the image (R15 exception: a media overlay,
-    /// the material AVKit's own playback controls use).
+    /// Titlebar height the window adds around the image (sizing chrome).
+    static var titlebarHeight: CGFloat {
+        let r = NSRect(x: 0, y: 0, width: 100, height: 100)
+        return NSWindow.frameRect(forContentRect: r, styleMask: [.titled]).height - r.height
+    }
+
+    /// Control bar over the image (R15 exception: a media overlay). The
+    /// popover material adapts to light/dark, unlike the always-dark HUD.
     static func makeBar() -> NSView {
         let bar = NSVisualEffectView()
-        bar.material = .hudWindow
+        bar.material = .popover
         bar.blendingMode = .withinWindow
         bar.state = .active
         bar.wantsLayer = true

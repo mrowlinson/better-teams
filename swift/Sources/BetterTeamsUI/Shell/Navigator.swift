@@ -48,6 +48,9 @@ public final class Navigator {
     public let model: WindowModel
     weak var host: ShellHost?
     private let token = NavigationWriteToken()
+    /// Per chat, the pinned tab shown before the temporary one opened
+    /// (nil = the built-in tab); closing it returns there (TABS2).
+    private var openedReturn: [ConversationRef: String] = [:]
 
     public init(model: WindowModel) {
         self.model = model
@@ -58,6 +61,18 @@ public final class Navigator {
     // MARK: sections and selection
 
     public func select(section s: SectionID) {
+        // A channel tab pinned before the Apps list stopped listing them
+        // opens that channel + tab; any app that names a Teams location
+        // opens its native view. Never a web pane.
+        if case .web(let id) = s {
+            if ChannelTabPins.open(id, model) { return }
+            // No native view for it: the section's own pane says where it
+            // goes (never the browser, where it is the Teams web app).
+            if case .teamsLink(let url)? = FrameAppDirectory.app(id)?.launch,
+               model.frameHost.openTeamsLink(url) {
+                return
+            }
+        }
         endPageFind()
         if nav.search != nil { exitSearchState(restore: false) }
         noteTransient(s)
@@ -77,6 +92,34 @@ public final class Navigator {
     public func setDetailTab(_ t: ConversationTab, for ref: ConversationRef) {
         nav.setTab(t, for: ref, token)
         persist()
+    }
+
+    /// Shows one of a chat's pinned tabs (Graph tab id); UI-only.
+    public func setDetailAppTab(_ id: String, for ref: ConversationRef) {
+        nav.setAppTab(id, for: ref, token)
+    }
+
+    /// Opens a pinned tab picked from "+N" as the chat's temporary tab.
+    /// Replaces any earlier one; closing returns to the tab shown before.
+    public func openDetailAppTab(_ id: String, for ref: ConversationRef) {
+        let shown = nav.detailAppTab[ref]
+        if shown != nav.detailOpenedTab[ref] { openedReturn[ref] = shown }
+        nav.setOpenedTab(id, for: ref, token)
+        nav.setAppTab(id, for: ref, token)
+    }
+
+    /// Closes the temporary tab (back into "+N"); if it was showing, the
+    /// tab shown before it opened shows again (Teams).
+    public func closeOpenedTab(for ref: ConversationRef) {
+        guard let id = nav.detailOpenedTab[ref] else { return }
+        let back = openedReturn.removeValue(forKey: ref)
+        nav.setOpenedTab(nil, for: ref, token)
+        guard nav.detailAppTab[ref] == id else { return }
+        if let back, back != id {
+            nav.setAppTab(back, for: ref, token)
+        } else {
+            setDetailTab(nav.tab(for: ref), for: ref)
+        }
     }
 
     // MARK: pinned apps (§5.2)
@@ -224,7 +267,7 @@ public final class Navigator {
         if name == nil { name = model.app?.chatNameOrNil(for: id) }
         // Demo names before the header title: at launch the header is
         // still the "Conversation" placeholder (the list has not loaded).
-        if name == nil { name = DemoData.name(for: id) }
+        if name == nil { name = DemoFixture.name(for: id, demo: model.options.demo) }
         if name == nil, conv.chatID == id, !conv.headerTitle.isEmpty { name = conv.headerTitle }
         return SearchConversationScope(id: id, name: name ?? "Conversation")
     }
@@ -264,6 +307,12 @@ public final class Navigator {
         nav.setSelection(sel, in: s, token)
         if let raw = route.query["tab"], let t = ConversationTab(rawValue: raw), let ref = sel?.id {
             nav.setTab(t, for: ref, token)
+        }
+        // CHATTABS evidence: `?apptab=<pinned tab id>` opens a chat's pinned
+        // tab, as if picked from "+N" (TABS2: temporary, closable).
+        if let id = route.query["apptab"], !id.isEmpty, let ref = sel?.id {
+            nav.setOpenedTab(id, for: ref, token)
+            nav.setAppTab(id, for: ref, token)
         }
         if let insp = route.inspector {
             nav.setInspector(insp != "0", in: s, token)

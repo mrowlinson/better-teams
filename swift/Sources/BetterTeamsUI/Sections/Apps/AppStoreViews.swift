@@ -121,8 +121,9 @@ private struct AppStoreCard: View {
     }
 }
 
-/// App icon: the manifest's color icon (live), else an SF Symbol on the
-/// app's accent color (demo, or while the icon loads).
+/// App icon: the manifest's color icon (live, cached by AppIconCache),
+/// else an SF Symbol on the app's accent color (demo, or while the icon
+/// loads).
 struct AppIconTile: View {
     let app: TeamsAppManifest
     let size: CGFloat
@@ -131,12 +132,8 @@ struct AppIconTile: View {
         let shape = RoundedRectangle(cornerRadius: size * 0.22, style: .continuous)
         ZStack {
             shape.fill(Palette.manifestAccent(app.accentColor) ?? Color.accentColor)
-            if let s = app.colorIcon, s.hasPrefix("https://"), let url = URL(string: s) {
-                AsyncImage(url: url) { img in
-                    img.resizable().scaledToFit().padding(size * 0.12)
-                } placeholder: {
-                    symbol
-                }
+            if let url = AppIconCache.iconURL(app) {
+                AppIconImage(url: url, size: size * 0.76, rounded: false) { symbol }
             } else {
                 symbol
             }
@@ -255,26 +252,22 @@ struct AppStoreDetail: View {
     private func hostStatus(_ app: TeamsAppManifest, _ hosted: FrameApp, _ m: WindowModel) -> some View {
         let _ = hostTick
         let demo = store.demo
-        let failure = TeamsJSTransportChoice.failure(app.id, demo: demo)
-        let verified = if case .teamsApp(let l) = hosted.launch { TeamsJSNativeAllowlist.contains(l) } else { false }
-        let text: String = switch hostMode {
-        case .automatic where failure != nil:
-            "This app runs in its Teams web page: it didn't work without it (\(failure ?? ""))."
-        case .automatic where verified:
-            "Automatic runs this app without the Teams web page, and switches to it if the app fails."
-        case .automatic:
-            "Automatic runs this app in its Teams web page. Direct and In a Frame run it without the Teams page, which isn't verified for this app yet."
-        case .frameless, .iframe:
-            m.frameHost.nativeHostFailed(appID: app.id)
-                ? "The app couldn't sign in without the Teams web page, so it runs there until you quit."
-                : "This app runs without the Teams web page."
+        let failure = m.frameHost.hostFailure(appID: app.id)
+        let text: String = if let failure {
+            "This app couldn't load (\(FrameHost.failureMessage(failure))). Its pane shows why, with Retry."
+        } else {
+            switch hostMode {
+            case .automatic: "Runs directly in its pane, signed in with your account, and picks the way it loads."
+            case .frameless: "Runs directly as the pane's page, signed in with your account."
+            case .iframe: "Runs in a frame inside its pane, signed in with your account."
+            }
         }
         Text(text)
             .font(.callout)
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
-        if hostMode == .automatic, failure != nil {
-            Button("Try Without the Teams Page") {
+        if failure != nil {
+            Button("Try Again") {
                 TeamsJSTransportChoice.forgetFailure(app: app.id, demo: demo)
                 m.frameHost.hostModeChanged(appID: app.id)
                 hostTick += 1

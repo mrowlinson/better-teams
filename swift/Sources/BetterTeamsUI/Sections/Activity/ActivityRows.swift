@@ -119,6 +119,13 @@ struct ActivityRowModel: Identifiable, Equatable {
             let inChat = i.chatName.isEmpty ? "" : " in \(i.chatName)"
             return i.actor.isEmpty ? "Reactions to your message\(inChat)" : "\(i.actor) reacted to your message\(inChat)"
         case .missedCall: return "Missed call from \(actor)"
+        case .channelPost:
+            return i.chatName.isEmpty ? "\(actor) posted in a channel you follow" : "\(actor) posted in \(i.chatName)"
+        case .meeting:
+            let inChat = i.chatName.isEmpty ? "" : " in \(i.chatName)"
+            return i.actor.isEmpty ? "Meeting update\(inChat)" : "\(i.actor) \u{00B7} meeting\(inChat)"
+        case .app:
+            return i.actor.isEmpty ? "Notification" : i.actor
         }
     }
 
@@ -216,6 +223,7 @@ struct ActivityRow: View {
     /// trailing letter (at 5 pt it clipped "AL").
     private var avatar: some View {
         Avatar(name: row.person.isEmpty ? row.headline : row.person, isGroup: row.groupAvatar)
+            .contactHover(name: row.groupAvatar ? "" : row.person, arrowEdge: .bottom)
             .overlay(alignment: .bottomTrailing) {
                 Image(systemName: row.symbol)
                     .symbolVariant(.fill)

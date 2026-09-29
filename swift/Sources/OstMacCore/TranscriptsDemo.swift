@@ -37,6 +37,13 @@ public enum TranscriptsDemo {
                 created: "2026-09-15T16:00:00Z",
                 modified: "2026-09-15T16:30:00Z",
                 source: "OneDrive"),
+            TranscriptItem(
+                id: "demo-tr-5", name: "Platform Standup-20260912_093000-Meeting Recording.vtt",
+                size: 4_210, mime: "text/vtt",
+                web_url: "https://example.com/tr5", drive_id: "demo-drive",
+                created: "2026-09-12T09:30:00Z",
+                modified: "2026-09-12T09:50:00Z",
+                source: "OneDrive"),
         ])
     }
 

@@ -51,12 +51,70 @@ public enum DemoTeams {
             defer { lock.unlock() }
             return added
         }
+
+        // TEAMSYNC: menu writes stay in memory so a tree refresh keeps
+        // them (created channels, edits, deletes, leaves).
+        private var newChannels: [String: [TeamChannel]] = [:]
+        private var edits: [String: (name: String?, description: String?)] = [:]
+        private var deletedChannels: Set<String> = []
+        private var leftTeams: Set<String> = []
+
+        public func addChannel(_ channel: TeamChannel, teamID: String) {
+            lock.lock()
+            defer { lock.unlock() }
+            newChannels[teamID, default: []].append(channel)
+        }
+
+        public func editChannel(_ channelID: String, name: String?, description: String?) {
+            lock.lock()
+            defer { lock.unlock() }
+            let prior = edits[channelID]
+            edits[channelID] = (name ?? prior?.name, description ?? prior?.description)
+        }
+
+        public func deleteChannel(_ channelID: String) {
+            lock.lock()
+            defer { lock.unlock() }
+            deletedChannels.insert(channelID)
+        }
+
+        public func leaveTeam(_ teamID: String) {
+            lock.lock()
+            defer { lock.unlock() }
+            leftTeams.insert(teamID)
+            added.removeAll { $0.teamId == teamID }
+        }
+
+        /// `base` with this session's channel writes and leaves applied.
+        public func applied(to base: [TeamItem]) -> [TeamItem] {
+            lock.lock()
+            defer { lock.unlock() }
+            return base.filter { !leftTeams.contains($0.teamId) }.map { team in
+                let channels = (team.channels + (newChannels[team.teamId] ?? []))
+                    .filter { !deletedChannels.contains($0.channelId) }
+                    .map { ch -> TeamChannel in
+                        guard let e = edits[ch.channelId] else { return ch }
+                        let desc = e.description.map { $0.isEmpty ? nil : $0 } ?? ch.description
+                        return TeamChannel(channelId: ch.channelId, name: e.name ?? ch.name,
+                                           description: desc, membershipType: ch.membershipType,
+                                           webUrl: ch.webUrl, email: ch.email)
+                    }
+                return TeamItem(teamId: team.teamId, name: team.name, channels: channels)
+            }
+        }
     }
 
     /// The demo teams list: canned teams, extras, then this session's
-    /// joins and creates.
+    /// joins and creates, with menu writes applied.
     public static func response(ledger: Ledger) -> TeamsResponse {
-        TeamsResponse(ok: true, teams: (DemoData.teams + extraTeams).map(describe) + ledger.teams)
+        TeamsResponse(ok: true, teams: ledger.applied(
+            to: (DemoData.teams + extraTeams).map(describe) + ledger.teams))
+    }
+
+    /// Demo channel posting address (Graph `email` shape, fake domain).
+    static func demoEmail(_ channelID: String) -> String {
+        let slug = channelID.replacingOccurrences(of: "demo-chan-", with: "")
+        return "\(slug).demo@example.invalid"
     }
 
     /// Channel descriptions for the canned channels (the header's
@@ -70,9 +128,10 @@ public enum DemoTeams {
 
     static func describe(_ team: TeamItem) -> TeamItem {
         TeamItem(teamId: team.teamId, name: team.name, channels: team.channels.map { ch in
-            guard ch.description?.isEmpty ?? true, let d = descriptions[ch.channelId] else { return ch }
+            let d = (ch.description?.isEmpty ?? true) ? descriptions[ch.channelId] : ch.description
             return TeamChannel(channelId: ch.channelId, name: ch.name, description: d,
-                               membershipType: ch.membershipType, webUrl: ch.webUrl)
+                               membershipType: ch.membershipType, webUrl: ch.webUrl,
+                               email: ch.email ?? demoEmail(ch.channelId))
         })
     }
 

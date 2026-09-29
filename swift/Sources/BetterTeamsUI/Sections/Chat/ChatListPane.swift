@@ -12,6 +12,8 @@ struct ChatListPane: View {
     @ObservedObject var failures: SendFailures
     /// 1:1 rows badge the other person's status (§6.2, §10).
     @ObservedObject var presence: PresenceStore
+    /// Filter look-back (inline indicator + its terminal state).
+    @ObservedObject var pager: ChatFilterPager
     let state: ChatSectionState
     @Environment(\.windowModel) private var model
 
@@ -24,7 +26,7 @@ struct ChatListPane: View {
     @ViewBuilder
     private func content(_ m: WindowModel) -> some View {
         let forced = m.forced(.chat)
-        let rows = forced == .empty ? [] : filtered(chats.displayChats)
+        let rows = forced == .empty ? [] : filterRules.apply(state.filter, to: chats.displayChats)
         if forced == .loading || (chats.state == .loading && chats.chats.isEmpty) {
             LoadingPane("Loading Chats\u{2026}")
         } else if forced == .error {
@@ -33,25 +35,131 @@ struct ChatListPane: View {
             ErrorPane(title: "Couldn't Load Chats", message: errorMessage(nil, m)) {}
         } else if case .error(let msg) = chats.state, chats.chats.isEmpty {
             ErrorPane(title: "Couldn't Load Chats", message: errorMessage(msg, m)) { chats.refresh() }
-        } else if rows.isEmpty {
-            if state.filter == .all || forced == .empty {
-                EmptyPane("No Chats", systemImage: "bubble.left.and.bubble.right",
-                          message: "Chats you start or join appear here.") {
-                    Button("New Chat…") {
-                        m.presentSheet(SheetRequest(ChatCommands.newChatSheet, in: .chat))
-                    }
-                }
-            } else {
-                EmptyPane("No \(state.filter.title) Chats", systemImage: "line.3.horizontal.decrease") {
-                    Button("Show All Chats") { state.filter = .all }
+        } else if rows.isEmpty && (state.filter == .all || forced == .empty) {
+            EmptyPane("No Chats", systemImage: "bubble.left.and.bubble.right",
+                      message: "Chats you start or join appear here.") {
+                Button("New Chat…") {
+                    m.presentSheet(SheetRequest(ChatCommands.newChatSheet, in: .chat))
                 }
             }
         } else {
-            // R12: a refresh runs behind the rows on screen.
+            // R12: a refresh runs behind the rows on screen. One list for
+            // the full and filtered rows (a filter never remounts it), so
+            // clearing the filter returns without a flash.
             list(rows, m)
+                .overlay {
+                    if rows.isEmpty { filterEmpty }
+                }
+                .safeAreaInset(edge: .top, spacing: 0) {
+                    if state.filter != .all { filterBar(count: rows.count) }
+                }
+                .onExitCommand { if state.filter != .all { state.clear() } }
                 .refreshStatus(chats.state == .loading, failure: Self.failure(chats.state),
                                label: "Updating Chats", retry: { chats.refresh() })
         }
+    }
+
+    private var filterRules: ChatFilterRules {
+        ChatFilterRules(unread: unread, mentions: mentions, rules: rules, snooze: snooze,
+                        folders: chats.folders)
+    }
+
+    private var folderName: String? {
+        if case .folder(let id) = state.filter { return chats.folders.name(for: id) }
+        return nil
+    }
+
+    /// Active filter as a pill: clicking it (or its X, or Esc) returns
+    /// to the full list, as clicking an active filter does in Teams.
+    private func filterBar(count: Int) -> some View {
+        HStack(spacing: 8) {
+            Button { state.clear() } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "line.3.horizontal.decrease")
+                    Text(folderName ?? state.filter.title)
+                    Image(systemName: "xmark").imageScale(.small)
+                }
+                .font(.callout.weight(.medium))
+                .foregroundStyle(.tint)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+                .background(Capsule().fill(.tint.opacity(0.14)))
+                .contentShape(Capsule())
+            }
+            .buttonStyle(.plain)
+            .help("Show All Chats (Esc)")
+            .accessibilityLabel("\(folderName ?? state.filter.title) filter")
+            .accessibilityHint("Clears the filter and shows all chats")
+            Spacer(minLength: 4)
+            Text(count == 1 ? "1 chat" : "\(count) chats")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(.bar)
+    }
+
+    /// No row matches the filter: a themed empty state with the way
+    /// back, plus the bounded look-back's indicator (it ends).
+    private var filterEmpty: some View {
+        EmptyPane(state.filter.emptyTitle(folderName: folderName), systemImage: "line.3.horizontal.decrease",
+                  message: state.filter.emptyMessage) {
+            Button("Show All Chats") { state.clear() }
+            filterSearchStatus
+        }
+    }
+
+    /// Inline look-back state: a small spinner while it runs; after it
+    /// ends, a link for another bounded look when older chats remain.
+    @ViewBuilder
+    private var filterSearchStatus: some View {
+        switch pager.phase {
+        case .searching:
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.small)
+                Text("Checking older chats\u{2026}").font(.caption).foregroundStyle(.secondary)
+            }
+            .accessibilityElement(children: .combine)
+        case .finished where chats.hasMore:
+            Button("Check Older Chats") { state.searchOlder(list: chats, rules: filterRules) }
+                .buttonStyle(.link)
+                .font(.caption)
+                .disabled(chats.isLoadingMore)
+        case .idle, .finished:
+            EmptyView()
+        }
+    }
+
+    /// End of the loaded rows while Teams has older chats: a small
+    /// spinner while the next page loads. On screen it keeps paging (the
+    /// task re-runs per new page link) until the rows fill the pane.
+    private var pageFooter: some View {
+        HStack {
+            Spacer()
+            if chats.loadMoreFailed {
+                // FIXPACK F9: a timed-out / failed older-page read says so.
+                HStack(spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle").foregroundStyle(.secondary)
+                    Text("Couldn\u{2019}t load older chats.").font(.caption).foregroundStyle(.secondary)
+                    Button("Try Again") { Task { await chats.retryLoadMore() } }
+                        .buttonStyle(.link)
+                        .font(.caption)
+                }
+                .accessibilityElement(children: .combine)
+            } else {
+                ProgressView()
+                    .controlSize(.small)
+                    .opacity(chats.isLoadingMore ? 1 : 0)
+                    .accessibilityLabel("Loading More Chats")
+                    .accessibilityHidden(!chats.isLoadingMore)
+            }
+            Spacer()
+        }
+        .frame(height: 24)
+        .selectionDisabled()
+        .task(id: chats.nextPageLink) { await chats.loadMore() }
     }
 
     /// A failed refresh behind the rows on screen (quiet notice).
@@ -62,36 +170,102 @@ struct ChatListPane: View {
     private func list(_ rows: [ChatItem], _ m: WindowModel) -> some View {
         let pinnedIDs = Set(chats.pins.orderedIDs)
         let pinned = rows.filter { pinnedIDs.contains($0.id) }
-        let recent = rows.filter { !pinnedIDs.contains($0.id) }
+        // Teams Favorites folder, as in Teams: its own section above
+        // the rest (a chat pinned here stays under Pinned).
+        let favIDs = Set(chats.folders.favoriteIDs).subtracting(pinnedIDs)
+        let favorites = rows.filter { favIDs.contains($0.id) }
+        let recent = rows.filter { !pinnedIDs.contains($0.id) && !favIDs.contains($0.id) }
         let now = RelativeClock.shared.now
+        let shownIDs = Set(rows.map(\.id))
         let selection = Binding<String?>(
             get: { m.nav.selection(in: .chat)?.id },
-            set: { id in m.navigator?.select(id.map { SectionSelection(id: $0) }, in: .chat) })
-        return List(selection: selection) {
+            set: { id in
+                // A filter hiding the open chat is not a deselect: it
+                // stays open and selected when the filter clears.
+                if id == nil, state.filter != .all,
+                   let open = m.nav.selection(in: .chat)?.id, !shownIDs.contains(open) { return }
+                m.navigator?.select(id.map { SectionSelection(id: $0) }, in: .chat)
+            })
+        return ScrollViewReader { proxy in
+        List(selection: selection) {
             if !pinned.isEmpty {
                 Section("Pinned") {
                     ForEach(pinned) { c in row(c, pinned: true, now: now) }
                 }
             }
+            if !favorites.isEmpty {
+                Section("Favorites") {
+                    ForEach(favorites) { c in row(c, pinned: false, now: now) }
+                }
+            }
             if !recent.isEmpty {
                 Section("Recent") {
-                    ForEach(recent) { c in row(c, pinned: false, now: now) }
+                    ForEach(recent) { c in
+                        row(c, pinned: false, now: now)
+                            .onAppear {
+                                // Unfiltered only: a filter's look-back is
+                                // the bounded pager, never scroll paging.
+                                if state.filter == .all { chats.loadMoreIfNeeded(currentID: c.id, in: recent) }
+                            }
+                    }
                 }
+            }
+            if state.filter == .all {
+                if chats.hasMore { pageFooter }
+            } else if !rows.isEmpty, pager.phase == .searching || chats.hasMore {
+                HStack {
+                    Spacer()
+                    filterSearchStatus
+                    Spacer()
+                }
+                .frame(height: 24)
+                .selectionDisabled()
             }
         }
         .listStyle(.inset)
         .contextMenu(forSelectionType: String.self) { ids in
             if let id = ids.first {
-                let isUnread = unread.isUnread(chatID: id)
-                Button(isUnread ? "Mark as Read" : "Mark as Unread") {
-                    if isUnread { unread.markRead(chatID: id) } else { unread.markUnread(chatID: id) }
-                }
-                Button(chats.isPinned(id) ? "Unpin" : "Pin") {
-                    if chats.isPinned(id) { chats.unpin(id) } else { chats.pin(id) }
-                }
+                ChatRowMenu(id: id, chats: chats, unread: unread, rules: rules, snooze: snooze,
+                            folders: chats.folders, model: m)
             }
         } primaryAction: { ids in
             if let id = ids.first { m.navigator?.select(SectionSelection(id: id), in: .chat) }
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) { actionError }
+        .onChange(of: state.filter) { _, now in
+            // Back on the full list: return to the rows on screen when
+            // the filter was entered.
+            if now == .all, let anchor = state.returnAnchor { proxy.scrollTo(anchor, anchor: .top) }
+        }
+        }
+    }
+
+    /// Quiet note when Teams refused a chat action (the change was
+    /// undone); dismissible, no alert.
+    @ViewBuilder
+    private var actionError: some View {
+        if let text = rules.syncError
+            ?? chats.folders.serverSyncError.map({ "Couldn't move the chat: \($0)" })
+            ?? chats.leaveError.map({ "Couldn't leave the chat: \($0)" })
+            ?? chats.deleteError.map({ "Couldn't delete the chat: \($0)" })
+            ?? chats.readStateError
+        {
+            HStack(spacing: 6) {
+                Image(systemName: "exclamationmark.circle").foregroundStyle(.secondary)
+                Text(text).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                Spacer(minLength: 4)
+                Button {
+                    rules.clearSyncError()
+                    chats.folders.clearServerSyncError()
+                    chats.clearLeaveError()
+                } label: { Image(systemName: "xmark") }
+                    .buttonStyle(.borderless)
+                    .help("Dismiss")
+                    .accessibilityLabel("Dismiss")
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(.bar)
         }
     }
 
@@ -109,19 +283,7 @@ struct ChatListPane: View {
                     : presence.availabilityForChat(c.id).flatMap(PresenceStatus.from(availability:)),
                 conv: model?.graph.conv, now: now)
             .tag(c.id)
-    }
-
-    /// Hidden chats leave every view but Hidden (§6.2 Filter menu).
-    private func filtered(_ list: [ChatItem]) -> [ChatItem] {
-        if state.filter == .hidden { return list.filter { rules.isHidden(chatID: $0.id) } }
-        let shown = list.filter { !rules.isHidden(chatID: $0.id) }
-        switch state.filter {
-        case .all, .hidden: return shown
-        case .unread: return shown.filter { unread.isUnread(chatID: $0.id) }
-        case .mentions: return shown.filter { mentions.contains(chatID: $0.id) }
-        case .muted: return shown.filter { rules.level(chatID: $0.id) == .muted }
-        case .snoozed: return shown.filter { snooze.isSnoozed(chatID: $0.id) }
-        case .folder(let id): return shown.filter { chats.folders.folderID(for: $0) == id }
-        }
+            .onAppear { if state.filter == .all { state.visibleIDs.insert(c.id) } }
+            .onDisappear { if state.filter == .all { state.visibleIDs.remove(c.id) } }
     }
 }

@@ -152,6 +152,11 @@ public enum RustCore {
         try CoreReads.chats(limit: limit, profile: profile)
     }
 
+    /// Next page of the chat list (`pageLink` = previous `next_link`).
+    public static func chats(limit: Int32 = 50, profile: String? = nil, pageLink: String) throws -> ChatsResponse {
+        try CoreReads.chats(limit: limit, profile: profile, pageLink: pageLink)
+    }
+
     /// Swift-native (R14 om-later-b4 B4; was `ostmac_teams`).
     public static func teams() throws -> TeamsResponse {
         try CoreReads.teams()
@@ -171,6 +176,65 @@ public enum RustCore {
                 }
             }
         }
+    }
+
+    /// Rename / re-describe one channel (Teams middle tier PATCH). nil fields stay
+    /// unchanged; a blank description clears it. Blocking FFI
+    /// (network): call off the main thread.
+    public static func channelUpdate(
+        teamID: String, channelID: String, name: String?, description: String?
+    ) throws {
+        struct Ack: Decodable { let ok: Bool }
+        try teamID.withCString { teamPtr in
+            try channelID.withCString { chanPtr in
+                try withOptionalCString(name) { namePtr in
+                    try withOptionalCString(description) { descPtr in
+                        _ = try call(
+                            ostmac_channel_update(teamPtr, chanPtr, namePtr, descPtr),
+                            as: Ack.self)
+                    }
+                }
+            }
+        }
+    }
+
+    /// Delete one channel (Teams middle tier DELETE). Blocking FFI (network): call
+    /// off the main thread.
+    public static func channelDelete(teamID: String, channelID: String) throws {
+        struct Ack: Decodable { let ok: Bool }
+        try teamID.withCString { teamPtr in
+            try channelID.withCString { chanPtr in
+                _ = try call(ostmac_channel_delete(teamPtr, chanPtr), as: Ack.self)
+            }
+        }
+    }
+
+    /// Whether the signed-in user owns `teamID` (read-only: whoami +
+    /// member list). Blocking network: call off the main thread.
+    public static func isTeamOwner(teamID: String) throws -> Bool {
+        let me = try whoami()
+        let roster = try teamMembers(teamID: teamID)
+        return roster.members.contains { $0.userId == me.id && $0.isOwner }
+    }
+
+    /// One team's member permissions + General channel id (read-only;
+    /// null fields = unknown). Blocking network: call off the main thread.
+    public static func teamSettings(teamID: String) throws -> TeamMemberSettings {
+        try teamID.withCString { ptr in
+            try call(ostmac_team_settings(ptr), as: TeamMemberSettings.self)
+        }
+    }
+
+    /// Leave one team: remove the signed-in user's own membership
+    /// (whoami + member list, then one member DELETE). Blocking
+    /// network: call off the main thread.
+    public static func teamLeave(teamID: String) throws {
+        let me = try whoami()
+        let roster = try teamMembers(teamID: teamID)
+        guard let mine = roster.members.first(where: { $0.userId == me.id }) else {
+            throw CoreCallError.failed("You are not a member of this team.")
+        }
+        _ = try teamMemberRemove(teamID: teamID, memberID: mine.id)
     }
 
     /// Create (or re-open) a 1:1 chat with one user ref, AAD id or
@@ -211,9 +275,9 @@ public enum RustCore {
         }
     }
 
-    /// Create one standard team (async Graph POST + poll, blocking FFI:
-    /// call off the main thread; waits up to ~120s for the operation).
-    /// Nil/blank description is dropped by core.
+    /// Create one standard (private) team (Teams middle tier POST,
+    /// blocking FFI: call off the main thread). Nil/blank description is
+    /// sent as empty by core.
     public static func teamCreate(
         name: String, description: String? = nil
     ) throws -> TeamCreateResponse {
@@ -269,6 +333,66 @@ public enum RustCore {
         try chatID.withCString { idPtr in
             try text.withCString { textPtr in
                 try call(ostmac_send(idPtr, textPtr), as: SendResponse.self)
+            }
+        }
+    }
+
+    /// §106: post with a caller-owned client message id (retries reuse
+    /// it, so one logical send is one server message). The answer names
+    /// the server id when the chat service returned it.
+    public static func sendIdem(chatID: String, text: String, clientMessageID: String) throws -> SendResponse {
+        try chatID.withCString { idPtr in
+            try text.withCString { textPtr in
+                try clientMessageID.withCString { cPtr in
+                    try call(ostmac_send_idem(idPtr, textPtr, cPtr), as: SendResponse.self)
+                }
+            }
+        }
+    }
+
+    /// §106: quote reply with a caller-owned client message id.
+    public static func replyIdem(
+        chatID: String, parentID: String, parentSender: String, parentText: String,
+        text: String, clientMessageID: String
+    ) throws -> SendResponse {
+        try chatID.withCString { idPtr in
+            try parentID.withCString { parentPtr in
+                try parentSender.withCString { senderPtr in
+                    try parentText.withCString { snippetPtr in
+                        try text.withCString { textPtr in
+                            try clientMessageID.withCString { cPtr in
+                                try call(
+                                    ostmac_reply_idem(idPtr, parentPtr, senderPtr, snippetPtr, textPtr, cPtr),
+                                    as: SendResponse.self)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// §106: channel thread reply with a caller-owned client message id.
+    public static func threadReplyIdem(
+        channelID: String, rootID: String, text: String, clientMessageID: String
+    ) throws -> SendResponse {
+        try channelID.withCString { idPtr in
+            try rootID.withCString { rootPtr in
+                try text.withCString { textPtr in
+                    try clientMessageID.withCString { cPtr in
+                        try call(ostmac_thread_reply_idem(idPtr, rootPtr, textPtr, cPtr), as: SendResponse.self)
+                    }
+                }
+            }
+        }
+    }
+
+    /// §106 verify: the newest page of `chatID` searched for the client
+    /// message id (nil message = not posted, as far as that page shows).
+    public static func findClientMessage(chatID: String, clientMessageID: String) throws -> FindClientMessageResponse {
+        try chatID.withCString { idPtr in
+            try clientMessageID.withCString { cPtr in
+                try call(ostmac_find_client_message(idPtr, cPtr), as: FindClientMessageResponse.self)
             }
         }
     }
@@ -409,6 +533,19 @@ public enum RustCore {
         return (data, resp.content_type)
     }
 
+    /// FIXPACK F7: the first `maxBytes` of an https image URL (HTTP Range,
+    /// core deadline `timeoutMs`): an image-header probe. A prefix, never
+    /// cached as the file. Blocking FFI (network): call off the main thread.
+    public static func mediaHead(url: String, maxBytes: UInt32, timeoutMs: UInt32) throws -> Data {
+        let resp: MediaResponse = try url.withCString { ptr in
+            try call(ostmac_media_head(ptr, maxBytes, timeoutMs), as: MediaResponse.self)
+        }
+        guard let data = Data(base64Encoded: resp.data_base64) else {
+            throw CoreCallError.failed("media: bad base64 from core")
+        }
+        return data
+    }
+
     /// OneDrive file search, one $top window (blocking FFI + network:
     /// call off the main thread). Rows reuse the Shared tab shape.
     public static func fileSearch(query: String, limit: Int32 = 25) throws -> FileSearchResponse {
@@ -422,6 +559,14 @@ public enum RustCore {
     public static func peopleSearch(query: String, limit: Int32 = 25) throws -> PeopleSearchResponse {
         try query.withCString { ptr in
             try call(ostmac_people_search(ptr, limit), as: PeopleSearchResponse.self)
+        }
+    }
+
+    /// One chat's pinned tabs (Graph `/chats/{id}/tabs`, read-only).
+    /// Blocking FFI + network: call off the main thread.
+    public static func chatTabs(chatID: String) throws -> TabsResponse {
+        try chatID.withCString { ptr in
+            try call(ostmac_chat_tabs(ptr), as: TabsResponse.self)
         }
     }
 
@@ -442,6 +587,24 @@ public enum RustCore {
         try chatID.withCString { c in
             try messageID.withCString { m in
                 try call(ostmac_message_files(c, m), as: SharedFilesResponse.self)
+            }
+        }
+    }
+
+    /// A chat's server-side pinned messages (OstMac §84; chat-service
+    /// thread first, Graph fallback). Blocking FFI (network): off main.
+    public static func chatPinnedMessages(chatID: String) throws -> ServerPinsResponse {
+        try chatID.withCString { ptr in
+            try call(ostmac_chat_pinned_messages(ptr), as: ServerPinsResponse.self)
+        }
+    }
+
+    /// Unpin one Graph-sourced pin (Graph DELETE). Blocking FFI
+    /// (network): off main.
+    public static func chatUnpinMessage(chatID: String, pinID: String) throws {
+        try chatID.withCString { c in
+            try pinID.withCString { p in
+                _ = try call(ostmac_chat_unpin_message(c, p), as: ServerUnpinResponse.self)
             }
         }
     }
@@ -467,6 +630,21 @@ public enum RustCore {
         try chatID.withCString { idPtr in
             try path.withCString { pathPtr in
                 try call(ostmac_files_upload(idPtr, pathPtr), as: SharedFileUploadResponse.self)
+            }
+        }
+    }
+
+    /// §106: chat file send carrying `clientMessageID` (a Retry reuses it
+    /// with `verifyFirst`, so a file message that landed is never re-posted).
+    public static func sharedUploadIdem(
+        chatID: String, path: String, clientMessageID: String, verifyFirst: Bool
+    ) throws -> SharedFileUploadResponse {
+        try chatID.withCString { idPtr in
+            try path.withCString { pathPtr in
+                try clientMessageID.withCString { cPtr in
+                    try call(ostmac_files_upload_idem(idPtr, pathPtr, cPtr, verifyFirst ? 1 : 0),
+                             as: SharedFileUploadResponse.self)
+                }
             }
         }
     }
@@ -592,16 +770,18 @@ public enum RustCore {
         try CoreReads.presence()
     }
 
+    /// Swift-native (GRAPHSWEEP; was `ostmac_presence_set` → Graph
+    /// setUserPreferredPresence, 403 without Presence.ReadWrite): the
+    /// Teams presence service `forceavailability`.
     public static func setPresence(status: String) throws -> PresenceResponse {
-        try status.withCString { ptr in
-            try call(ostmac_presence_set(ptr), as: PresenceResponse.self)
-        }
+        try SyncBridge.run { try await UnifiedPresence.setOwn(status: status) }
     }
 
+    /// Swift-native (GRAPHSWEEP; was `ostmac_presence_user` → Graph
+    /// /users/{id}/presence, 403 without Presence.Read.All): the Teams
+    /// presence service `getpresence`.
     public static func userPresence(id: String) throws -> UserPresenceResponse {
-        try id.withCString { ptr in
-            try call(ostmac_presence_user(ptr), as: UserPresenceResponse.self)
-        }
+        try SyncBridge.run { try await UnifiedPresence.one(id: id) }
     }
 
     public static func resolveMri(mri: String) throws -> ResolveMriResponse {

@@ -257,6 +257,12 @@ extension AppStoreModel {
         }
     }
 
+    /// A tab content page the native host can run without a manifest:
+    /// https, and not the Teams web app.
+    static func hostableTabPage(_ content: String) -> Bool {
+        content.lowercased().hasPrefix("https://") && !ChatTabCatalog.isTeamsTemplate(content)
+    }
+
     /// Host of a URL template (placeholders make `URL(string:)` unsafe).
     static func templateHost(_ s: String) -> String? {
         guard let r = s.range(of: "://") else { return nil }
@@ -275,35 +281,41 @@ extension AppStoreModel {
         return host == p
     }
 
-    /// Native launch for a matched channel tab, with channel context.
+    /// Native launch for a channel tab, with channel context: its catalog
+    /// app's manifest when one matches, else the tab's own content page
+    /// in the same host (APPNATIVE4: every tab runs natively; nothing
+    /// falls back to the Teams web app).
     func launch(forTab t: ChannelTab, team: TeamItem, channel: TeamChannel) -> TeamsAppLaunch? {
-        guard let m = app(forTab: t), let content = t.contentURL else { return nil }
-        let original = t.target
-        guard case .web(let url) = original else { return nil }
-        var domains = m.validDomains
+        guard let content = t.contentURL, case .web = t.target else { return nil }
+        let m = app(forTab: t)
+        guard m != nil || Self.hostableTabPage(content) else { return nil }
+        var domains = m?.validDomains ?? []
         if let h = Self.templateHost(content), !domains.contains(where: { Self.domain($0, matches: h) }) {
             domains.append(h)
         }
-        let fallback = FramePolicy.launch(url: url.absoluteString, label: t.name)?.url ?? url
         return TeamsAppLaunch(
-            appID: m.id, entityID: t.entityID ?? t.id, contentTemplate: content, fallback: fallback,
-            resource: m.webApplicationInfo?.resource, webAppID: m.webApplicationInfo?.id, validDomains: domains,
+            appID: m?.id ?? t.appID ?? t.id, entityID: t.entityID ?? t.id, contentTemplate: content,
+            resource: m?.webApplicationInfo?.resource, webAppID: m?.webApplicationInfo?.id, validDomains: domains,
             demoHTML: demo ? DemoTeamsJSApp.html(title: t.name) : nil,
             channel: TeamsAppChannelContext(teamID: team.teamId, channelID: channel.id,
                                             groupID: UUID(uuidString: team.teamId) != nil ? team.teamId : nil,
-                                            teamName: team.name, channelName: channel.name))
+                                            teamName: team.name, channelName: channel.name),
+            website: t.websiteURL)
     }
 }
 
 // MARK: - Host mode (Teams web page vs native), per app
 
-/// How an app is hosted. Automatic keeps every app on its Teams web page
-/// (the Teams-shell app frame) unless it is on the verified native list
-/// (`TeamsJSNativeAllowlist`); a verified app runs natively, starts
-/// frameless, and gets one try in the iframe transport if it never
-/// initializes. A native page that fails (sign-in page, AADSTS error,
-/// app-reported failure, blank page) switches to the Teams web page and
-/// Automatic remembers that. Direct / In a Frame force the native host.
+/// How an app is hosted. Every mode runs the app in the one native host
+/// (APPNATIVE3): its page is the top document of the pane's web view on
+/// the account's store, with the TeamsJS bridge at document start, so
+/// its cookies are first-party and no frame policy applies. The only
+/// per-app input is the manifest. Automatic: a page that never
+/// initializes and stays blank gets one try in the iframe transport; a
+/// blank page with a same-host websiteUrl gets that page once; a page
+/// that still fails shows the reason in its pane with Retry. There is
+/// no Teams web page mode (APPNATIVE4): a saved "teamsWeb" choice reads
+/// as Automatic. Direct / In a Frame force a transport.
 enum TeamsJSHostMode: String, CaseIterable, Identifiable {
     case automatic, frameless, iframe
     var id: String { rawValue }
@@ -313,21 +325,6 @@ enum TeamsJSHostMode: String, CaseIterable, Identifiable {
         case .frameless: "Direct"
         case .iframe: "In a Frame"
         }
-    }
-}
-
-/// Apps proven to work end to end in the native host (APPLIVE live
-/// read-only check, 2026-09-28): getAuthToken + nested-app-auth 1P apps.
-/// Everything else stays on its Teams web page in Automatic mode.
-enum TeamsJSNativeAllowlist {
-    /// Catalog app ids, lowercased.
-    static let verified: Set<String> = [
-        "7c316234-ded0-4f95-8a83-8453d0876592", // Approvals
-    ]
-
-    /// Demo apps are local sample pages (no network): always native.
-    static func contains(_ l: TeamsAppLaunch) -> Bool {
-        l.demoHTML != nil || verified.contains(l.appID.lowercased())
     }
 }
 
@@ -358,6 +355,7 @@ enum TeamsJSTransportChoice {
         guard m != mode(app, demo: demo) else { return }
         set(m == .automatic ? nil : m.rawValue, modeKey(app), demo: demo)
         learn(nil, app: app, demo: demo)
+        setUsesWebsite(false, app: app, demo: demo)
         forgetFailure(app: app, demo: demo)
     }
 
@@ -378,26 +376,31 @@ enum TeamsJSTransportChoice {
         set(v, learnedKey(app), demo: demo)
     }
 
-    /// Why the native host failed this app (Automatic then keeps it on
-    /// its Teams web page). A short reason, never page content.
-    static func failure(_ app: String, demo: Bool) -> String? { get(failedKey(app), demo: demo) }
-
-    static func rememberFailure(_ why: String, app: String, demo: Bool) {
-        set(String(why.prefix(80)), failedKey(app), demo: demo)
+    /// Earlier builds remembered a native failure per app and kept the
+    /// app on its Teams web page; that page is gone (APPNATIVE4), so the
+    /// old record is only cleared (Try Again, host mode change).
+    static func forgetFailure(app: String, demo: Bool) {
+        set(nil, failedKey(app), demo: demo)
+        setUsesWebsite(false, app: app, demo: demo)
     }
 
-    static func forgetFailure(app: String, demo: Bool) { set(nil, failedKey(app), demo: demo) }
-
-    /// The transport to host `l` with, nil = its Teams web page: the
-    /// user's choice, else (Automatic) native only for a verified app
-    /// with no remembered failure, on the remembered or default transport.
-    static func resolve(_ l: TeamsAppLaunch, demo: Bool) -> TeamsJSTransport? {
+    /// The transport to host `l` with: the user's choice, else
+    /// (Automatic) the remembered or default transport. Always native.
+    static func resolve(_ l: TeamsAppLaunch, demo: Bool) -> TeamsJSTransport {
         switch mode(l.appID, demo: demo) {
         case .frameless: .frameless
         case .iframe: .iframe
-        case .automatic:
-            TeamsJSNativeAllowlist.contains(l) && failure(l.appID, demo: demo) == nil
-                ? learned(l.appID, demo: demo) ?? l.transport : nil
+        case .automatic: learned(l.appID, demo: demo) ?? l.transport
         }
+    }
+
+    private static func websiteKey(_ app: String) -> String { "bt.apphost.website.\(app.lowercased())" }
+
+    /// Automatic learned that the app's Teams-embedded page stays blank
+    /// but its own web page (same-host websiteUrl) draws: open that.
+    static func usesWebsite(_ app: String, demo: Bool) -> Bool { get(websiteKey(app), demo: demo) != nil }
+
+    static func setUsesWebsite(_ on: Bool, app: String, demo: Bool) {
+        set(on ? "1" : nil, websiteKey(app), demo: demo)
     }
 }

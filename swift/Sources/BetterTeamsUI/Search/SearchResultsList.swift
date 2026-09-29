@@ -165,7 +165,7 @@ private struct SearchResultsContent: View {
     }
 
     private func placeName(_ h: SearchHit) -> String {
-        model?.app?.chatNameOrNil(for: h.chatID) ?? DemoData.name(for: h.chatID) ?? "Conversation"
+        model?.app?.chatNameOrNil(for: h.chatID) ?? DemoFixture.name(for: h.chatID, demo: model?.options.demo == true) ?? "Conversation"
     }
 }
 
@@ -332,12 +332,13 @@ struct SearchPersonRow: View {
     var body: some View {
         HStack(spacing: 8) {
             // Presence = shape + color on the avatar corner (§6, §10).
-            Avatar(name: person.displayName)
+            Avatar(name: person.displayName, person: ContactRef(person))
                 .overlay(alignment: .bottomTrailing) {
                     // 4 pt out: at 2 pt the ring clipped the monogram's
                     // trailing letter ("AL").
                     if let presence { PresenceBadge(status: presence).offset(x: 4, y: 4) }
                 }
+                .contactHover(ContactRef(person), arrowEdge: .bottom)
             VStack(alignment: .leading, spacing: 2) {
                 Text(person.displayName).font(AppFont.body(scale)).lineLimit(1)
                 if let email = person.email, !email.isEmpty {

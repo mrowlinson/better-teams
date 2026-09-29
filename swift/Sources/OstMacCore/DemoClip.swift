@@ -21,17 +21,32 @@ public enum DemoClip {
             at: dir, withIntermediateDirectories: true)
         let out = dir.appendingPathComponent("demo-meeting.mp4")
         if FileManager.default.fileExists(atPath: out.path) { return out }
-        try render(to: out)
+        try renderHardwareFirst(to: out)
         return out
     }
 
-    static func render(to url: URL) throws {
+    /// HWACCEL: hardware encoder required; a refusal is logged and the
+    /// clip re-renders with software allowed (never a missing demo clip).
+    static func renderHardwareFirst(to url: URL) throws {
+        let dims = "\(width)x\(height)"
+        do {
+            try render(to: url, requireHardware: true)
+            // The writer finished under RequireHardware: hardware by contract.
+            HWVideo.report(kind: "encode", hw: true, codec: "h264", path: "demo-clip",
+                           detail: dims + " assetwriter via=required", fallback: [])
+        } catch {
+            try? FileManager.default.removeItem(at: url)
+            try render(to: url, requireHardware: false)
+            HWVideo.report(kind: "encode", hw: false, codec: "h264", path: "demo-clip",
+                           detail: dims + " assetwriter via=unknown",
+                           fallback: ["require-hw: \(error.localizedDescription)"])
+        }
+    }
+
+    static func render(to url: URL, requireHardware: Bool = true) throws {
         let writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
-        let settings: [String: Any] = [
-            AVVideoCodecKey: AVVideoCodecType.h264,
-            AVVideoWidthKey: width,
-            AVVideoHeightKey: height,
-        ]
+        let settings = HWVideo.writerVideoSettings(
+            codec: .h264, width: width, height: height, requireHardware: requireHardware)
         let input = AVAssetWriterInput(
             mediaType: .video, outputSettings: settings)
         input.expectsMediaDataInRealTime = false

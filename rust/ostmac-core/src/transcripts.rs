@@ -7,7 +7,6 @@
 //! existing files download (`drive_id` + `id`), and cue parsing is
 //! pure Swift (`TranscriptsParser.swift`).
 
-use std::ffi::CStr;
 use std::os::raw::{c_char, c_int};
 
 use serde_json::json;
@@ -113,7 +112,7 @@ pub extern "C" fn ostmac_transcripts_search(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::CString;
+    use std::ffi::CStr;
 
     /// Read an FFI string return back into JSON, then free it.
     unsafe fn read_and_free(p: *mut c_char) -> serde_json::Value {

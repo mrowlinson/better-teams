@@ -6,25 +6,65 @@ import Foundation
 import OstMacCore
 
 /// Calendar selection path: `[view]` or `[view, meetingID]`, view =
-/// `agenda` | `week`. A bare `[meetingID]` (older state) reads as Agenda.
+/// `day` | `workweek` | `week` | `month` | `list` (Teams order). Older
+/// state: `agenda` reads as List, a bare `[meetingID]` as the last view.
 struct CalendarSelection: Equatable {
-    enum View: String { case agenda, week }
+    enum View: String, CaseIterable, Identifiable {
+        case day, workWeek = "workweek", week, month, list
+
+        var id: Self { self }
+
+        /// Teams switcher names.
+        var title: String {
+            switch self {
+            case .day: "Day"
+            case .workWeek: "Work week"
+            case .week: "Week"
+            case .month: "Month"
+            case .list: "List"
+            }
+        }
+
+        init?(route raw: String) {
+            if raw == "agenda" { self = .list } else if let v = View(rawValue: raw) { self = v } else { return nil }
+        }
+
+        /// Navigation step for ‹ › (List pages by week).
+        var span: CalendarWeekStore.Span {
+            switch self {
+            case .day: .day
+            case .month: .month
+            case .workWeek, .week, .list: .week
+            }
+        }
+
+        /// The view last chosen (kept across launches).
+        static let defaultsKey = "calendar.view"
+
+        static var remembered: View {
+            UserDefaults.standard.string(forKey: defaultsKey).flatMap(View.init(route:)) ?? .week
+        }
+
+        static func remember(_ v: View) {
+            UserDefaults.standard.set(v.rawValue, forKey: defaultsKey)
+        }
+    }
 
     var view: View
     var meetingID: String?
 
-    init(view: View = .agenda, meetingID: String? = nil) {
+    init(view: View = .remembered, meetingID: String? = nil) {
         self.view = view
         self.meetingID = meetingID
     }
 
     init(_ sel: SectionSelection?) {
         let p = sel?.path ?? []
-        if let first = p.first, let v = View(rawValue: first) {
+        if let first = p.first, let v = View(route: first) {
             view = v
             meetingID = p.count > 1 ? p[1] : nil
         } else {
-            view = .agenda
+            view = .remembered
             meetingID = p.first
         }
     }
@@ -92,12 +132,18 @@ enum CalendarFormat {
         return f
     }()
 
+    /// Wall-clock string → date in the current zone (re-read per call so
+    /// a system time-zone change never leaves a stale parser zone).
     static func date(_ s: String?) -> Date? {
         guard let s, s.count >= 19 else { return nil }
+        parser.timeZone = .current
         return parser.date(from: String(s.prefix(19)))
     }
 
-    static func day(_ key: String) -> Date? { dayParser.date(from: key) }
+    static func day(_ key: String) -> Date? {
+        dayParser.timeZone = .current
+        return dayParser.date(from: key)
+    }
 
     /// Minutes after midnight (week grid placement).
     static func minutes(_ s: String?) -> Int? {
@@ -108,11 +154,51 @@ enum CalendarFormat {
 
     static func time(_ d: Date) -> String { d.formatted(date: .omitted, time: .shortened) }
 
-    /// "9:00 AM – 9:15 AM" (start only when the end is unknown).
+    /// "9:00 AM – 9:15 AM" (start only when the end is unknown);
+    /// "All day" for all-day events.
     static func range(_ m: MeetingItem) -> String {
+        if m.isAllDay { return allDayRange(m) }
         guard let s = date(m.start) else { return "" }
         guard let e = date(m.end) else { return time(s) }
         return "\(time(s)) \u{2013} \(time(e))"
+    }
+
+    /// "All day", or "All day, Sep 29 – Sep 30" across days.
+    static func allDayRange(_ m: MeetingItem) -> String {
+        guard let s = date(m.start) else { return "All day" }
+        let last = date(m.end).flatMap { Calendar.current.date(byAdding: .day, value: -1, to: $0) } ?? s
+        guard last > s else { return "All day" }
+        let f = Date.FormatStyle.dateTime.month(.abbreviated).day()
+        return "All day, \(s.formatted(f)) \u{2013} \(last.formatted(f))"
+    }
+
+    /// Teams popover time line: "Tue 9/29/2026 9:30 AM – 9:45 AM",
+    /// "Tue 9/29/2026 (All day)"; a range across days names both days.
+    static func when(_ m: MeetingItem) -> String {
+        guard let s = date(m.start) else { return "" }
+        let dayF = Date.FormatStyle.dateTime.weekday(.abbreviated).month(.defaultDigits).day().year()
+        if m.isAllDay {
+            let last = date(m.end).flatMap { Calendar.current.date(byAdding: .day, value: -1, to: $0) } ?? s
+            return last > s ? "\(s.formatted(dayF)) \u{2013} \(last.formatted(dayF)) (All day)"
+                : "\(s.formatted(dayF)) (All day)"
+        }
+        guard let e = date(m.end) else { return "\(s.formatted(dayF)) \(time(s))" }
+        if Calendar.current.isDate(s, inSameDayAs: e) {
+            return "\(s.formatted(dayF)) \(time(s)) \u{2013} \(time(e))"
+        }
+        return "\(s.formatted(dayF)) \(time(s)) \u{2013} \(e.formatted(dayF)) \(time(e))"
+    }
+
+    /// The same meeting in the organizer's zone, when that differs:
+    /// "12:30 AM – 1:30 AM Pacific Daylight Time".
+    static func organizerTime(_ m: MeetingItem) -> String? {
+        guard let tz = CalendarTime.organizerZone(m),
+              let s = CalendarTime.instant(m.utcStart), let e = CalendarTime.instant(m.utcEnd) else { return nil }
+        var f = Date.FormatStyle.dateTime.hour().minute()
+        f.timeZone = tz
+        var d = Date.FormatStyle.dateTime.weekday(.abbreviated).month(.defaultDigits).day()
+        d.timeZone = tz
+        return "\(s.formatted(d)) \(s.formatted(f)) \u{2013} \(e.formatted(f)) \(CalendarTime.zoneLabel(tz, at: s))"
     }
 
     /// "Monday, September 28" (or "Today").
@@ -132,7 +218,7 @@ enum CalendarFormat {
     /// Join shows in a row when joinable now: from 10 minutes before the
     /// start until the end (§6.4 ±10 min).
     static func joinableNow(_ m: MeetingItem, now: Date) -> Bool {
-        guard m.joinURL?.isEmpty == false, let s = date(m.start) else { return false }
+        guard !m.isAllDay, m.joinURL?.isEmpty == false, let s = date(m.start) else { return false }
         let e = date(m.end) ?? s.addingTimeInterval(3600)
         return now >= s.addingTimeInterval(-600) && now <= e.addingTimeInterval(600)
     }

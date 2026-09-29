@@ -443,6 +443,174 @@ pub async fn send_message_with_client(
     Ok(())
 }
 
+// OstMac §106 (SENDFIX): idempotent sends. Every post carries a
+// `clientmessageid`; the server receipt (Location / OriginalArrivalTime)
+// names the posted copy, and `find_message_by_client_id` lets a caller
+// whose POST timed out check whether it landed before re-posting with the
+// SAME id — one logical send is never two server messages.
+
+/// New client message id: a 19-digit decimal string (the shape Teams
+/// clients use). Idempotency key for one logical send.
+pub fn new_client_message_id() -> String {
+    let v = u128::from_be_bytes(*uuid::Uuid::new_v4().as_bytes());
+    let n = 1_000_000_000_000_000_000u128 + v % 9_000_000_000_000_000_000u128;
+    n.to_string()
+}
+
+/// Server receipt for one chat-service POST.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SentMessage {
+    /// Posted message id, when the answer named it.
+    pub id: Option<String>,
+    /// The `clientmessageid` the post carried.
+    pub client_message_id: String,
+}
+
+/// Server message id from a POST answer (pure): the `Location` header's
+/// numeric last path segment wins, else `OriginalArrivalTime` from the
+/// JSON body (chat-service ids are the arrival epoch ms). None when the
+/// answer names neither.
+pub fn sent_id_from_response(location: Option<&str>, body: &str) -> Option<String> {
+    if let Some(loc) = location {
+        let path = loc.split('?').next().unwrap_or(loc);
+        let last = path.rsplit('/').next().unwrap_or("").trim();
+        if !last.is_empty() && last.chars().all(|c| c.is_ascii_digit()) {
+            return Some(last.to_string());
+        }
+    }
+    let v: serde_json::Value = serde_json::from_str(body).ok()?;
+    let obj = v.as_object()?;
+    let t = obj
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("OriginalArrivalTime"))
+        .map(|(_, v)| v)?;
+    match t {
+        serde_json::Value::Number(n) => Some(n.to_string()),
+        serde_json::Value::String(s)
+            if !s.trim().is_empty() && s.chars().all(|c| c.is_ascii_digit()) =>
+        {
+            Some(s.clone())
+        }
+        _ => None,
+    }
+}
+
+/// POST one body carrying `clientmessageid` and read the receipt.
+async fn post_with_receipt(
+    client: &TeamsClient,
+    url: &str,
+    mut body: serde_json::Value,
+    client_message_id: &str,
+) -> Result<SentMessage> {
+    body["clientmessageid"] = serde_json::json!(client_message_id);
+    let resp = client.chat_post(url, &body).await?;
+    let location = resp
+        .headers()
+        .get(reqwest::header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    // A 2xx already means posted; an unreadable body only loses the id.
+    let text = resp.text().await.unwrap_or_default();
+    Ok(SentMessage {
+        id: sent_id_from_response(location.as_deref(), &text),
+        client_message_id: client_message_id.to_string(),
+    })
+}
+
+/// Send with a caller-owned `clientmessageid` (retries reuse it).
+pub async fn send_message_with_client_id(
+    client: &TeamsClient,
+    chat_id: &str,
+    message: &str,
+    client_message_id: &str,
+) -> Result<SentMessage> {
+    let url = format!(
+        "{}/v1/users/ME/conversations/{}/messages",
+        client.chat_service_url(),
+        chat_id
+    );
+    post_with_receipt(client, &url, send_message_body(message), client_message_id).await
+}
+
+/// Quote reply with a caller-owned `clientmessageid`.
+pub async fn reply_message_with_client_id(
+    client: &TeamsClient,
+    chat_id: &str,
+    parent_id: &str,
+    parent_sender: &str,
+    parent_text: &str,
+    text: &str,
+    client_message_id: &str,
+) -> Result<SentMessage> {
+    let url = format!(
+        "{}/v1/users/ME/conversations/{}/messages",
+        client.chat_service_url(),
+        chat_id
+    );
+    let body = serde_json::json!({
+        "content": build_reply_html(parent_id, parent_sender, parent_text, text),
+        "messagetype": "RichText/Html",
+        "contenttype": "text"
+    });
+    post_with_receipt(client, &url, body, client_message_id).await
+}
+
+/// Channel thread reply with a caller-owned `clientmessageid`. Same
+/// argument guards as [`thread_reply_with_client`].
+pub async fn thread_reply_with_client_id(
+    client: &TeamsClient,
+    channel_id: &str,
+    root_id: &str,
+    text: &str,
+    client_message_id: &str,
+) -> Result<SentMessage> {
+    if !is_channel_conversation_id(channel_id) {
+        bail!("not a channel conversation id");
+    }
+    if root_id.trim().is_empty() || root_id.contains(';') || root_id.contains('/') {
+        bail!("bad root message id");
+    }
+    if text.trim().is_empty() {
+        bail!("empty text");
+    }
+    let url = thread_reply_url(&client.chat_service_url(), channel_id, root_id);
+    post_with_receipt(client, &url, send_message_body(text), client_message_id).await
+}
+
+/// The message carrying `client_message_id` in one page, if any (pure).
+pub fn find_by_client_id<'a>(
+    messages: &'a [MessageInfo],
+    client_message_id: &str,
+) -> Option<&'a MessageInfo> {
+    let want = client_message_id.trim();
+    if want.is_empty() {
+        return None;
+    }
+    messages
+        .iter()
+        .find(|m| m.client_message_id.as_deref() == Some(want))
+}
+
+/// Verify one send: read the newest page of `chat_id` and return the
+/// message carrying `client_message_id` (None = not posted, as far as
+/// the newest page shows). Channel ids read the channel conversation,
+/// whose newest page includes thread replies.
+pub async fn find_message_by_client_id(
+    client: &TeamsClient,
+    chat_id: &str,
+    client_message_id: &str,
+) -> Result<Option<MessageInfo>> {
+    let page = read_messages_page(client, chat_id, 50, None).await?;
+    let want = client_message_id.trim();
+    if want.is_empty() {
+        return Ok(None);
+    }
+    Ok(page
+        .messages
+        .into_iter()
+        .find(|m| m.client_message_id.as_deref() == Some(want)))
+}
+
 /// Max quoted chars carried in a reply `<quote>` block.
 pub const REPLY_SNIPPET_MAX: usize = 140;
 
@@ -520,6 +688,21 @@ fn parse_guid(tag: &str) -> Option<String> {
 /// Channel thread parent from wire fields (om-lt2-quotelink).
 /// Top-level wins, then `properties.*`, then content-embedded forms.
 /// Missing/odd shapes → None, never fatal.
+/// OstMac §106: wire `clientmessageid` (case-insensitive, string or
+/// number), trimmed; None when absent/blank.
+fn client_message_id_of(extra: &HashMap<String, serde_json::Value>) -> Option<String> {
+    let v = extra
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("clientmessageid"))
+        .map(|(_, v)| v)?;
+    let s = match v {
+        serde_json::Value::String(s) => s.trim().to_string(),
+        serde_json::Value::Number(n) => n.to_string(),
+        _ => return None,
+    };
+    if s.is_empty() { None } else { Some(s) }
+}
+
 fn message_parent_id(msg: &NativeMessage) -> Option<String> {
     if let Some(s) = wire_parent_from_map(&msg.extra) {
         return Some(s);
@@ -1146,6 +1329,9 @@ pub struct MessageInfo {
     /// Parent message id for quote replies (om-replies: mined from the
     /// `<quote guid>` block; `content` excludes the quoted text).
     pub reply_to: Option<String>,
+    /// OstMac §106: the `clientmessageid` the sender posted with (the
+    /// idempotency key; an own send's pending bubble reconciles by it).
+    pub client_message_id: Option<String>,
 }
 
 /// One grouped reaction count: picker emoji + number of reactors.
@@ -1426,6 +1612,153 @@ async fn resolve_mate_name(
 }
 
 // ---------------------------------------------------------------------------
+// FIXPACK F8: batched, cached 1:1 mate names for chat-list paging
+// ---------------------------------------------------------------------------
+
+/// Concurrent mate lookups per page (each is a roster read + a history read).
+pub(crate) const MATE_CONCURRENCY: usize = 6;
+/// A cached mate name is trusted this long (renames are rare; a stale
+/// name heals on the next lookup after this).
+const MATE_TTL_SECS: u64 = 14 * 24 * 3600;
+
+/// Persisted chat id -> (mate display name, resolved-at epoch secs). One
+/// file per profile beside its config. Best effort: an unreadable or
+/// unwritable file just means the lookups run again.
+#[derive(Debug, Default)]
+pub(crate) struct MateNames {
+    names: HashMap<String, (String, u64)>,
+    path: Option<std::path::PathBuf>,
+}
+
+impl MateNames {
+    pub(crate) fn load(path: Option<std::path::PathBuf>) -> Self {
+        let mut names = HashMap::new();
+        if let Some(text) = path.as_ref().and_then(|p| std::fs::read_to_string(p).ok()) {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+                if let Some(obj) = v.as_object() {
+                    for (k, e) in obj {
+                        if let (Some(n), Some(t)) = (e.get(0).and_then(|x| x.as_str()), e.get(1).and_then(|x| x.as_u64())) {
+                            names.insert(k.clone(), (n.to_string(), t));
+                        }
+                    }
+                }
+            }
+        }
+        Self { names, path }
+    }
+
+    pub(crate) fn get(&self, chat_id: &str, now: u64) -> Option<String> {
+        self.names
+            .get(chat_id)
+            .filter(|(n, t)| !n.trim().is_empty() && now.saturating_sub(*t) < MATE_TTL_SECS)
+            .map(|(n, _)| n.clone())
+    }
+
+    pub(crate) fn put(&mut self, chat_id: &str, name: &str, now: u64) {
+        self.names.insert(chat_id.to_string(), (name.to_string(), now));
+    }
+
+    /// Write the map (temp file + rename). Errors are logged, never raised.
+    pub(crate) fn save(&self) {
+        let Some(path) = self.path.as_ref() else { return };
+        let obj: serde_json::Map<String, serde_json::Value> = self
+            .names
+            .iter()
+            .map(|(k, (n, t))| (k.clone(), serde_json::json!([n, t])))
+            .collect();
+        let tmp = path.with_extension("json.tmp");
+        let write = || -> std::io::Result<()> {
+            if let Some(dir) = path.parent() {
+                std::fs::create_dir_all(dir)?;
+            }
+            std::fs::write(&tmp, serde_json::Value::Object(obj).to_string())?;
+            std::fs::rename(&tmp, path)
+        };
+        if let Err(e) = write() {
+            tracing::debug!("mate name cache not saved: {}", e);
+        }
+    }
+}
+
+/// The process-wide cache for one profile (loaded once from its file).
+fn mate_cache_for(profile: &str) -> std::sync::Arc<std::sync::Mutex<MateNames>> {
+    use std::sync::{Arc, Mutex, OnceLock};
+    static CACHES: OnceLock<Mutex<HashMap<String, Arc<Mutex<MateNames>>>>> = OnceLock::new();
+    let map = CACHES.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut g = map.lock().unwrap_or_else(|e| e.into_inner());
+    g.entry(profile.to_string())
+        .or_insert_with(|| {
+            let path = crate::config::Config::config_path_for(profile).ok().map(|p| {
+                let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("config").to_string();
+                p.with_file_name(format!("mates-{}.json", stem))
+            });
+            Arc::new(Mutex::new(MateNames::load(path)))
+        })
+        .clone()
+}
+
+fn epoch_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Mate names for `ids` (untitled 1:1 threads): cache hits answer with no
+/// network; the misses are looked up together, `concurrency` at a time,
+/// and every name found is cached and saved once. A lookup that fails
+/// leaves that chat out (the caller keeps its fallback name).
+pub(crate) async fn resolve_mates_cached(
+    client: &TeamsClient,
+    ids: &[String],
+    me: &str,
+    cache: &std::sync::Mutex<MateNames>,
+    now: u64,
+    concurrency: usize,
+) -> HashMap<String, String> {
+    use futures::StreamExt;
+    let mut out = HashMap::new();
+    let mut misses: Vec<String> = Vec::new();
+    {
+        let g = cache.lock().unwrap_or_else(|e| e.into_inner());
+        for id in ids {
+            match g.get(id, now) {
+                Some(n) => {
+                    out.insert(id.clone(), n);
+                }
+                None => misses.push(id.clone()),
+            }
+        }
+    }
+    if misses.is_empty() {
+        return out;
+    }
+    let found: Vec<(String, Option<String>)> = futures::stream::iter(misses)
+        .map(|id| async move {
+            let name = resolve_mate_name(client, &id, me).await;
+            (id, name)
+        })
+        .buffer_unordered(concurrency.max(1))
+        .collect()
+        .await;
+    let mut g = cache.lock().unwrap_or_else(|e| e.into_inner());
+    let mut any = false;
+    for (id, name) in found {
+        if let Some(n) = name {
+            g.put(&id, &n, now);
+            out.insert(id, n);
+            any = true;
+        } else {
+            tracing::debug!("mate resolve failed for {}", id);
+        }
+    }
+    if any {
+        g.save();
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
 // 1:1 chat create (om-lt5-person11: person-pick opens 1:1)
 // ---------------------------------------------------------------------------
 
@@ -1475,10 +1808,84 @@ pub fn parse_created_chat(value: &serde_json::Value) -> Result<ChatInfo> {
     })
 }
 
-/// Create (or re-open) a 1:1 chat with `user` (AAD id or UPN) via
-/// Graph `POST /me/chats` and return the thread. Empty refs are
-/// rejected before any network. Note: Graph mints a new thread
-/// per call — no existing-1:1 lookup (minimal path).
+/// OstMac §106: the chat-service 1:1 thread id for two AAD object ids
+/// (pure): `19:<lo>_<hi>@unq.gbl.spaces`, ids lowercased and in ascending
+/// order (every 1:1 id on the owner's account has this shape). The same
+/// pair always names the same thread, so an existing 1:1 re-opens and a
+/// new one is created by the chat service on its first post.
+pub fn one_to_one_thread_id(a: &str, b: &str) -> String {
+    let (a, b) = (a.trim().to_ascii_lowercase(), b.trim().to_ascii_lowercase());
+    let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+    format!("19:{}_{}@unq.gbl.spaces", lo, hi)
+}
+
+fn looks_like_guid(s: &str) -> bool {
+    let parts: Vec<&str> = s.split('-').collect();
+    parts.len() == 5
+        && [8, 4, 4, 4, 12].iter().zip(&parts).all(|(n, p)| p.len() == *n)
+        && s.chars().all(|c| c == '-' || c.is_ascii_hexdigit())
+}
+
+/// AAD object id for `me` or a user ref (AAD id passes through; UPN /
+/// mail resolves via Graph `GET /users/{ref}?$select=id`).
+async fn aad_object_id(client: &TeamsClient, user: &str) -> Result<String> {
+    let u = user.trim();
+    if looks_like_guid(u) {
+        return Ok(u.to_ascii_lowercase());
+    }
+    let path = if u == "me" {
+        "/me?$select=id".to_string()
+    } else {
+        let seg: String = u
+            .bytes()
+            .map(|b| match b {
+                b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'@' | b'.' | b'-' | b'_' => {
+                    (b as char).to_string()
+                }
+                _ => format!("%{:02X}", b),
+            })
+            .collect();
+        format!("/users/{}?$select=id", seg)
+    };
+    let v: serde_json::Value = client
+        .graph_get(&path)
+        .await?
+        .json()
+        .await
+        .context("Failed to parse user id response")?;
+    v["id"]
+        .as_str()
+        .filter(|s| looks_like_guid(s))
+        .map(str::to_ascii_lowercase)
+        .context("user id missing")
+}
+
+/// OstMac §106: chat-service body creating the 1:1 thread for two AAD
+/// ids (pure). `uniquerosterthread` + `fixedRoster` make it the roster's
+/// one 1:1 (`19:<lo>_<hi>@unq.gbl.spaces`), never a group thread.
+pub fn one_to_one_thread_body(me: &str, peer: &str) -> serde_json::Value {
+    serde_json::json!({
+        "members": [
+            {"id": format!("8:orgid:{}", peer.trim().to_ascii_lowercase()), "role": "Admin"},
+            {"id": format!("8:orgid:{}", me.trim().to_ascii_lowercase()), "role": "Admin"},
+        ],
+        "properties": {
+            "threadType": "chat",
+            "chatFilesIndexId": "2",
+            "fixedRoster": "true",
+            "uniquerosterthread": "true",
+        },
+    })
+}
+
+/// Create (or re-open) the 1:1 chat with `user` (AAD id or UPN) and
+/// return the thread. Empty refs are rejected before any network.
+/// OstMac §106: Graph `POST /me/chats` answers 405 (not a create
+/// endpoint) and Graph `POST /chats` needs Chat.Create, which the Teams
+/// web token lacks (403) — every live 1:1 open / quick message failed.
+/// Now: both AAD ids resolve to the derived thread id
+/// ([`one_to_one_thread_id`]); an existing thread re-opens; a first
+/// contact creates the unique-roster 1:1 on the chat service.
 pub async fn create_one_to_one_chat_data(
     client: &TeamsClient,
     user: &str,
@@ -1486,26 +1893,52 @@ pub async fn create_one_to_one_chat_data(
     if user.trim().is_empty() {
         bail!("empty user");
     }
-    let resp = client
-        .graph_post(
-            one_to_one_create_path(),
-            &one_to_one_create_body(user),
-        )
-        .await?;
-    let value: serde_json::Value = resp
-        .json()
-        .await
-        .context("Failed to parse created chat response")?;
-    parse_created_chat(&value)
+    let me = aad_object_id(client, "me").await?;
+    let peer = aad_object_id(client, user).await?;
+    if me == peer {
+        bail!("1:1 with self (use the self-chat)");
+    }
+    let derived = one_to_one_thread_id(&me, &peer);
+    let base = client.chat_service_url();
+    let probe = format!("{}/v1/threads/{}?view=msnp24Equivalent", base, derived);
+    let missing = match client.chat_get(&probe).await {
+        Ok(_) => false,
+        Err(e) => format!("{:#}", e).starts_with("HTTP 404"),
+    };
+    if missing {
+        let resp = client
+            .chat_post(&format!("{}/v1/threads", base), &one_to_one_thread_body(&me, &peer))
+            .await
+            .context("1:1 thread create failed")?;
+        let made = resp
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|l| l.split('?').next())
+            .and_then(|l| l.rsplit('/').next())
+            .map(|id| id.replace("%3A", ":").replace("%3a", ":").replace("%40", "@"))
+            .unwrap_or_default();
+        if !made.is_empty() && made != derived {
+            bail!("1:1 thread create answered an unexpected thread");
+        }
+    }
+    Ok(ChatInfo {
+        id: derived,
+        name: String::new(),
+        is_group: false,
+        last_message_time: None,
+        last_message_sender: None,
+        last_message_preview: None,
+    })
 }
 
 // ---------------------------------------------------------------------------
 // Group chat create (OstMac core-a, G5)
 // ---------------------------------------------------------------------------
 
-/// `POST /chats` path for group creation. Pure so tests pin it.
-pub fn group_chat_create_path() -> &'static str {
-    "/chats"
+/// Chat-service thread create URL (group and 1:1). Pure so tests pin it.
+pub fn thread_create_url(base: &str) -> String {
+    format!("{}/v1/threads", base.trim_end_matches('/'))
 }
 
 /// Trim, drop blanks, and de-duplicate user refs (case-insensitive,
@@ -1527,38 +1960,57 @@ pub fn group_chat_members(self_id: &str, users: &[String]) -> Vec<String> {
     out
 }
 
-/// `POST /chats` body for a group chat: the creator first, then every
-/// peer, all with the `owner` role (Graph's group-chat member role);
-/// blank topics are omitted. `users` must already be normalized
-/// ([`group_chat_members`]). Pure so tests pin it.
+/// OstMac §GRAPHSWEEP: chat-service body creating a group chat thread
+/// for AAD object ids: the creator first, then every peer, all `Admin`
+/// (Teams group chats let every member manage the roster); blank topics
+/// are omitted. `peers` must already be normalized
+/// ([`group_chat_members`]) and resolved to object ids. Pure so tests
+/// pin it.
 pub fn group_chat_create_body(
     self_id: &str,
-    users: &[String],
+    peers: &[String],
     topic: Option<&str>,
 ) -> serde_json::Value {
     let member = |u: &str| {
         serde_json::json!({
-            "@odata.type": "#microsoft.graph.aadUserConversationMember",
-            "roles": ["owner"],
-            "user@odata.bind": format!("https://graph.microsoft.com/v1.0/users('{}')", u.trim()),
+            "id": format!("8:orgid:{}", u.trim().to_ascii_lowercase()),
+            "role": "Admin",
         })
     };
     let mut members = vec![member(self_id)];
-    members.extend(users.iter().map(|u| member(u)));
-    let mut body = serde_json::json!({
-        "chatType": "group",
-        "members": members,
+    members.extend(peers.iter().map(|u| member(u)));
+    let mut properties = serde_json::json!({
+        "threadType": "chat",
+        "chatFilesIndexId": "2",
     });
     if let Some(t) = topic.map(str::trim).filter(|t| !t.is_empty()) {
-        body["topic"] = serde_json::Value::String(t.to_string());
+        properties["topic"] = serde_json::Value::String(t.to_string());
     }
-    body
+    serde_json::json!({ "members": members, "properties": properties })
+}
+
+/// Thread id from a chat-service thread-create `Location` header
+/// (`…/v1/threads/19%3A…%40thread.v2?…`), decoded; None when absent or
+/// not a thread id. Pure so tests pin it.
+pub fn created_thread_id(location: Option<&str>) -> Option<String> {
+    let id = location?
+        .split('?')
+        .next()?
+        .rsplit('/')
+        .next()?
+        .replace("%3A", ":")
+        .replace("%3a", ":")
+        .replace("%40", "@");
+    (id.starts_with("19:") && id.contains('@')).then_some(id)
 }
 
 /// Create a group chat with `users` (AAD ids or UPNs) plus the signed-in
-/// user, with an optional topic, via Graph `POST /chats`. At least one
-/// peer is required (checked before any network); the server enforces
-/// its own minimums. Returns the new thread (`is_group` true).
+/// user, with an optional topic, on the chat service (`POST /v1/threads`,
+/// skypetoken). OstMac §GRAPHSWEEP: Graph `POST /chats` needs Chat.Create,
+/// which the Teams web token lacks (403). UPNs resolve to object ids via
+/// Graph `GET /users/{ref}?$select=id` (User.ReadBasic.All, granted). At
+/// least one peer is required (checked before any network). Returns the
+/// new thread (`is_group` true) named after the topic.
 pub async fn create_group_chat_data(
     client: &TeamsClient,
     users: &[String],
@@ -1567,24 +2019,39 @@ pub async fn create_group_chat_data(
     if group_chat_members("", users).is_empty() {
         bail!("no members");
     }
-    let me = whoami_data(client).await?;
-    let peers = group_chat_members(&me.id, users);
+    let me = aad_object_id(client, "me").await?;
+    let mut peers: Vec<String> = Vec::new();
+    for u in group_chat_members(&me, users) {
+        let oid = aad_object_id(client, &u).await?;
+        if oid != me && !peers.contains(&oid) {
+            peers.push(oid);
+        }
+    }
     if peers.is_empty() {
         bail!("no members besides self");
     }
     let resp = client
-        .graph_post(
-            group_chat_create_path(),
-            &group_chat_create_body(&me.id, &peers, topic),
+        .chat_post(
+            &thread_create_url(&client.chat_service_url()),
+            &group_chat_create_body(&me, &peers, topic),
         )
-        .await?;
-    let value: serde_json::Value = resp
-        .json()
         .await
-        .context("Failed to parse created chat response")?;
-    let mut chat = parse_created_chat(&value)?;
-    chat.is_group = true;
-    Ok(chat)
+        .context("group chat create failed")?;
+    let location = resp
+        .headers()
+        .get(reqwest::header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    let id = created_thread_id(location.as_deref())
+        .context("group chat create answered no thread id")?;
+    Ok(ChatInfo {
+        id,
+        name: topic.map(str::trim).unwrap_or_default().to_string(),
+        is_group: true,
+        last_message_time: None,
+        last_message_sender: None,
+        last_message_preview: None,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1696,10 +2163,12 @@ pub enum RosterSource {
     ChatService,
 }
 
-/// Roster for one chat: Graph `GET /chats/{id}/members` (names, emails,
-/// owner roles) first; on any Graph failure, the chat-service thread
-/// roster (MRIs + Admin/User roles, skypetoken auth). Both failing
-/// returns the chat-service error.
+/// Roster for one chat: the chat-service thread roster (MRIs, friendly
+/// names when the service has them, Admin/User roles; skypetoken auth).
+/// OstMac §GRAPHSWEEP: the Graph `GET /chats/{id}/members` attempt is
+/// gone — it needs ChatMember.Read/Chat.ReadBasic, which the Teams web
+/// token lacks (live 403 on every open). Failure returns the chat-service
+/// error (never an empty roster).
 pub async fn list_chat_members_data(
     client: &TeamsClient,
     chat_id: &str,
@@ -1707,24 +2176,72 @@ pub async fn list_chat_members_data(
     if chat_id.trim().is_empty() {
         bail!("empty chat_id");
     }
-    let graph = async {
-        let resp = client.graph_get(&chat_members_path(chat_id)).await?;
-        let v: serde_json::Value = resp.json().await.context("chat members json")?;
-        parse_graph_chat_members(&v)
-    }
-    .await;
-    match graph {
-        Ok(m) if !m.is_empty() => return Ok((RosterSource::Graph, m)),
-        Ok(_) => tracing::debug!("graph chat roster empty, trying chat service"),
-        Err(e) => tracing::debug!("graph chat roster failed: {:#}", e),
-    }
     let url = format!("{}/v1/threads/{}/members", client.chat_service_url(), chat_id.trim());
     let resp = client.chat_get(&url).await?;
     let v: serde_json::Value = resp
         .json()
         .await
         .context("Failed to parse thread members response")?;
-    Ok((RosterSource::ChatService, parse_thread_members(&v)?))
+    let mut members = parse_thread_members(&v)?;
+    fill_member_names(client, &mut members).await;
+    Ok((RosterSource::ChatService, members))
+}
+
+/// Most chat-service rosters carry no names (live: 2/2 blank). Blank
+/// names with an AAD id are filled from Graph `GET /users/{oid}`
+/// (`$select=displayName,mail,userPrincipalName`; User.ReadBasic.All is
+/// granted and proven live), [`ROSTER_NAME_FILL_MAX`] at most, a few at
+/// a time. A failed lookup leaves that member blank (the row shows its
+/// email or "Unknown"); it never drops the member.
+pub const ROSTER_NAME_FILL_MAX: usize = 60;
+
+/// Graph path for one roster name lookup (pure; `oid` must be a GUID).
+pub fn roster_user_path(oid: &str) -> String {
+    format!("/users/{}?$select=displayName,mail,userPrincipalName", oid.trim())
+}
+
+/// Apply one `/users/{oid}` answer to a blank member (pure).
+pub fn apply_roster_user(member: &mut ChatMemberInfo, user: &serde_json::Value) {
+    let text = |k: &str| user[k].as_str().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
+    if member.display_name.trim().is_empty() {
+        if let Some(n) = text("displayName") {
+            member.display_name = n;
+        }
+    }
+    if member.email.is_none() {
+        member.email = text("mail").or_else(|| text("userPrincipalName"));
+    }
+}
+
+async fn fill_member_names(client: &TeamsClient, members: &mut [ChatMemberInfo]) {
+    let todo: Vec<usize> = members
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| m.display_name.trim().is_empty())
+        .filter(|(_, m)| m.user_id.as_deref().map(looks_like_guid).unwrap_or(false))
+        .map(|(i, _)| i)
+        .take(ROSTER_NAME_FILL_MAX)
+        .collect();
+    for chunk in todo.chunks(8) {
+        let reads = chunk.iter().map(|&i| {
+            let path = roster_user_path(members[i].user_id.as_deref().unwrap_or(""));
+            async move {
+                let v: Option<serde_json::Value> = match client.graph_get(&path).await {
+                    Ok(r) => r.json().await.ok(),
+                    Err(e) => {
+                        tracing::debug!("roster name lookup failed: {:#}", e);
+                        None
+                    }
+                };
+                (i, v)
+            }
+        });
+        for (i, v) in futures::future::join_all(reads).await {
+            if let Some(v) = v {
+                apply_roster_user(&mut members[i], &v);
+            }
+        }
+    }
 }
 
 /// List recent chats and return structured data.
@@ -1837,14 +2354,25 @@ pub async fn list_chats_data(client: &TeamsClient, limit: usize) -> Result<Vec<C
     // owner OID, then per-chat roster + history attribution. Any
     // failure keeps the first-pass name — the list never fails here.
     if !needs_mate.is_empty() {
-        if let Ok(me) = whoami_data(client).await {
+        let cache = mate_cache_for(&crate::config::active_profile());
+        let now = epoch_secs();
+        let ids: Vec<String> = needs_mate.iter().map(|&(ci, _)| chats[ci].id.clone()).collect();
+        // Cache hits need no whoami; only misses pay for it.
+        let cached_only = {
+            let g = cache.lock().unwrap_or_else(|e| e.into_inner());
+            ids.iter().all(|id| g.get(id, now).is_some())
+        };
+        let me_id = if cached_only {
+            Some(String::new())
+        } else {
+            whoami_data(client).await.ok().map(|m| m.id)
+        };
+        if let Some(me_id) = me_id {
+            let names = resolve_mates_cached(client, &ids, &me_id, &cache, now, MATE_CONCURRENCY).await;
             for (chat_idx, conv_idx) in needs_mate {
-                let chat_id = chats[chat_idx].id.clone();
-                if let Some(mate) = resolve_mate_name(client, &chat_id, &me.id).await {
+                if let Some(mate) = names.get(&chats[chat_idx].id) {
                     let conv = &conversations[conv_idx];
-                    chats[chat_idx].name = conversation_name(conv, Some(&mate));
-                } else {
-                    tracing::debug!("mate resolve failed for {}", chat_id);
+                    chats[chat_idx].name = conversation_name(conv, Some(mate));
                 }
             }
         }
@@ -1960,6 +2488,7 @@ pub async fn read_messages_page(
             raw: content.to_string(),
             reactions,
             reply_to,
+            client_message_id: client_message_id_of(&msg.extra),
         });
     }
 
@@ -2013,6 +2542,196 @@ fn has_image(html: &str) -> bool {
 
 /// Rewrite the `pageSize=` query value so a followed `backwardLink` honors
 /// the caller's limit. No-op when the marker is absent.
+// -- Files shared in a chat (chat Shared tab) --
+
+/// One file shared in a chat, from a chat-service message's
+/// `properties.files` (the page the timeline reads). The Graph message
+/// endpoints need `Chat.Read`, which the Teams web token lacks (403),
+/// so this is the chat Shared tab's source. GET only: the consumption
+/// horizon (read state) is a separate PUT and never moves here.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChatFileRef {
+    /// File attachment GUID (the body's `<attachment id>`).
+    pub attachment_id: Option<String>,
+    pub name: String,
+    pub file_type: Option<String>,
+    /// SharePoint/OneDrive URL of the file itself.
+    pub object_url: String,
+    /// Sharing link, when the sender's client made one.
+    pub share_url: Option<String>,
+    pub sender: Option<String>,
+    /// Message arrival time (ISO 8601).
+    pub time: Option<String>,
+}
+
+/// Chat-service page size for the Shared tab walk (server maximum).
+pub const CHAT_FILES_PAGE_SIZE: usize = 200;
+
+/// Files shared on one chat-service messages page, newest first, and
+/// the page's `backwardLink` (older history). Deleted messages and
+/// files marked deleted are skipped; `properties.files` may arrive as a
+/// JSON string or an array. Pure (no network).
+pub fn parse_chat_file_refs(page: &serde_json::Value) -> (Vec<ChatFileRef>, Option<String>) {
+    let str_of = |v: &serde_json::Value| v.as_str().map(str::trim).filter(|s| !s.is_empty()).map(String::from);
+    let mut out = Vec::new();
+    for msg in page["messages"].as_array().map(Vec::as_slice).unwrap_or(&[]) {
+        let props = &msg["properties"];
+        if str_of(&props["deletetime"]).is_some() {
+            continue;
+        }
+        let files: Vec<serde_json::Value> = match &props["files"] {
+            serde_json::Value::String(s) => serde_json::from_str(s).unwrap_or_default(),
+            serde_json::Value::Array(a) => a.clone(),
+            _ => Vec::new(),
+        };
+        for f in &files {
+            if f["state"].as_str() == Some("deleted") {
+                continue;
+            }
+            let Some(object_url) = str_of(&f["objectUrl"]).or_else(|| str_of(&f["fileInfo"]["fileUrl"])) else {
+                continue;
+            };
+            let name = str_of(&f["fileName"])
+                .or_else(|| str_of(&f["title"]))
+                .or_else(|| object_url.rsplit('/').next().map(String::from))
+                .unwrap_or_else(|| "[unnamed]".to_string());
+            out.push(ChatFileRef {
+                attachment_id: str_of(&f["id"]),
+                name,
+                file_type: str_of(&f["fileType"]).or_else(|| str_of(&f["type"])),
+                object_url,
+                share_url: str_of(&f["fileInfo"]["shareUrl"]),
+                sender: str_of(&msg["imdisplayname"]),
+                time: str_of(&msg["originalarrivaltime"]).or_else(|| str_of(&msg["composetime"])),
+            });
+        }
+    }
+    let back = str_of(&page["_metadata"]["backwardLink"]);
+    (out, back)
+}
+
+/// OstMac §83: the files one chat-service message shares, from a single
+/// message object (`GET …/messages/{id}`) or a page holding it. Pure.
+pub fn message_file_refs(value: &serde_json::Value, message_id: &str) -> Option<Vec<ChatFileRef>> {
+    let want = message_id.trim();
+    let one = |m: &serde_json::Value| {
+        let id = m["id"].as_str().or_else(|| m["clientmessageid"].as_str()).unwrap_or("");
+        id == want
+    };
+    let msg = if let Some(list) = value["messages"].as_array() {
+        list.iter().find(|m| one(m))?.clone()
+    } else if one(value) {
+        value.clone()
+    } else {
+        return None;
+    };
+    Some(parse_chat_file_refs(&serde_json::json!({ "messages": [msg] })).0)
+}
+
+/// Chat-service message ids are the arrival time in ms: a history page
+/// whose oldest message is newer than `message_id` must go further
+/// back. Pure.
+pub fn page_reaches(page: &serde_json::Value, message_id: &str) -> bool {
+    let Ok(want) = message_id.trim().parse::<i64>() else { return true };
+    page["messages"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|m| m["id"].as_str()?.parse::<i64>().ok()).any(|id| id <= want))
+        .unwrap_or(true)
+}
+
+/// OstMac §83: the files one chat message shares, read from the chat
+/// service (the Graph message route needs Chat.Read: 403 on the Teams
+/// web token). Single-message GET first, then a history walk of at most
+/// `max_pages` pages until the page reaching the message. GET only.
+pub async fn chat_message_file_refs_data(
+    client: &TeamsClient,
+    chat_id: &str,
+    message_id: &str,
+    max_pages: usize,
+) -> Result<Vec<ChatFileRef>> {
+    let (chat_id, message_id) = (chat_id.trim(), message_id.trim());
+    let bad = |s: &str| s.is_empty() || s.contains(['/', '?', '#', ' ']);
+    if bad(chat_id) || bad(message_id) {
+        bail!("bad chat or message id");
+    }
+    let one = message_url(&client.chat_service_url(), chat_id, message_id);
+    if let Ok(resp) = client.chat_get(&one).await {
+        if let Ok(v) = resp.json::<serde_json::Value>().await {
+            if let Some(refs) = message_file_refs(&v, message_id) {
+                return Ok(refs);
+            }
+        }
+    }
+    let mut url = format!(
+        "{}/v1/users/ME/conversations/{}/messages?pageSize={}",
+        client.chat_service_url(),
+        chat_id,
+        CHAT_FILES_PAGE_SIZE
+    );
+    for _ in 0..max_pages.max(1) {
+        let page: serde_json::Value = client
+            .chat_get(&url)
+            .await?
+            .json()
+            .await
+            .context("Failed to parse messages response")?;
+        if let Some(refs) = message_file_refs(&page, message_id) {
+            return Ok(refs);
+        }
+        let back = page["_metadata"]["backwardLink"].as_str().map(str::to_string);
+        let empty = page["messages"].as_array().map_or(true, |a| a.is_empty());
+        match back {
+            Some(b) if !empty && !page_reaches(&page, message_id) => url = with_page_size(&b, CHAT_FILES_PAGE_SIZE),
+            _ => break,
+        }
+    }
+    bail!("message not found in chat history")
+}
+
+/// Files shared in a chat, newest first, deduplicated by file URL: walks
+/// chat-service history pages (newest first) until `limit` files or
+/// `max_pages` pages. Read-only GETs.
+pub async fn chat_file_refs_data(
+    client: &TeamsClient,
+    chat_id: &str,
+    limit: usize,
+    max_pages: usize,
+) -> Result<Vec<ChatFileRef>> {
+    let chat_id = chat_id.trim();
+    if chat_id.is_empty() || chat_id.contains(['/', '?', '#', ' ']) {
+        bail!("bad chat id");
+    }
+    let mut url = format!(
+        "{}/v1/users/ME/conversations/{}/messages?pageSize={}",
+        client.chat_service_url(),
+        chat_id,
+        CHAT_FILES_PAGE_SIZE
+    );
+    let mut out: Vec<ChatFileRef> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for _ in 0..max_pages.max(1) {
+        let page: serde_json::Value = client
+            .chat_get(&url)
+            .await?
+            .json()
+            .await
+            .context("Failed to parse messages response")?;
+        let (refs, back) = parse_chat_file_refs(&page);
+        let empty_page = page["messages"].as_array().map_or(true, |a| a.is_empty());
+        for r in refs {
+            if seen.insert(r.object_url.to_lowercase()) {
+                out.push(r);
+            }
+        }
+        match back {
+            Some(b) if out.len() < limit && !empty_page => url = with_page_size(&b, CHAT_FILES_PAGE_SIZE),
+            _ => break,
+        }
+    }
+    out.truncate(limit.max(1));
+    Ok(out)
+}
+
 fn with_page_size(url: &str, limit: usize) -> String {
     const MARK: &str = "pageSize=";
     let Some(start) = url.find(MARK) else {
@@ -2024,6 +2743,402 @@ fn with_page_size(url: &str, limit: usize) -> String {
         .map(|i| val_start + i)
         .unwrap_or(url.len());
     format!("{}{}{}", &url[..val_start], limit, &url[val_end..])
+}
+
+// ---------------------------------------------------------------------------
+// Chat list actions: mute, hide, folders (OstMac chatmenu lane, §79)
+// ---------------------------------------------------------------------------
+//
+// Mute: the per-user conversation property `alerts` on the chat service
+// (`"false"` = muted, `"true"` = notify), the same property the chat list
+// returns under `properties.alerts`. Hide: Graph v1.0
+// `POST /chats/{id}/hideForUser` / `unhideForUser`. Folders: the chat
+// service aggregator's `conversationFolders` (read-only here), which needs
+// an AAD token for `https://chatsvcagg.teams.microsoft.com`.
+
+/// PUT target for one conversation's `alerts` property.
+pub fn alerts_url(base: &str, chat_id: &str) -> String {
+    format!(
+        "{}/v1/users/ME/conversations/{}/properties?name=alerts",
+        base, chat_id
+    )
+}
+
+/// PUT body: muted chats carry `"false"` (the server stores strings).
+pub fn alerts_body(muted: bool) -> serde_json::Value {
+    serde_json::json!({ "alerts": if muted { "false" } else { "true" } })
+}
+
+/// Muted state from a conversation's `properties` object: `Some(true)`
+/// for `alerts: "false"`, `Some(false)` for `"true"`, None when absent.
+pub fn alerts_muted(properties: &serde_json::Value) -> Option<bool> {
+    match properties.get("alerts")?.as_str()?.trim().to_ascii_lowercase().as_str() {
+        "false" => Some(true),
+        "true" => Some(false),
+        _ => None,
+    }
+}
+
+/// Mute or unmute one chat for the signed-in user.
+pub async fn set_chat_muted_with_client(client: &TeamsClient, chat_id: &str, muted: bool) -> Result<()> {
+    let id = chat_id.trim();
+    if id.is_empty() {
+        bail!("empty chat_id");
+    }
+    let url = alerts_url(&client.chat_service_url(), id);
+    client.chat_put(&url, &alerts_body(muted)).await?;
+    Ok(())
+}
+
+// OstMac §GRAPHSWEEP3: hide/unhide go to the chat service the way the
+// Teams web client's `setChatVisibility` resolver does (CDL worker):
+// PUT the conversation property `unpinnedTime` (hide = now in ms, unhide
+// = null) and, when hiding, `historyHiddenTime` = the same stamp as a
+// string. Graph `hideForUser`/`unhideForUser` need Chat.ReadWrite, which
+// the Teams token lacks (still refused by `graph_denied`).
+
+/// PUT target for one conversation property of the signed-in user.
+pub fn conversation_property_url(base: &str, chat_id: &str, name: &str) -> String {
+    format!(
+        "{}/v1/users/ME/conversations/{}/properties?name={}",
+        base,
+        chat_id.trim(),
+        name
+    )
+}
+
+/// Property writes, in order: hide (`Some(now_ms)`) or unhide (`None`).
+/// Body is `{<name>: <value>}` like the web client's. Pure.
+pub fn hide_chat_properties(hidden_at_ms: Option<u64>) -> Vec<(&'static str, serde_json::Value)> {
+    match hidden_at_ms {
+        Some(t) => vec![
+            ("unpinnedTime", serde_json::json!({ "unpinnedTime": t })),
+            ("historyHiddenTime", serde_json::json!({ "historyHiddenTime": t.to_string() })),
+        ],
+        None => vec![("unpinnedTime", serde_json::json!({ "unpinnedTime": null }))],
+    }
+}
+
+/// Hide or unhide one chat for the signed-in user (chat service).
+pub async fn set_chat_hidden_with_client(client: &TeamsClient, chat_id: &str, hidden: bool) -> Result<()> {
+    let id = chat_id.trim();
+    if id.is_empty() {
+        bail!("empty chat_id");
+    }
+    let now = if hidden {
+        Some(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0),
+        )
+    } else {
+        None
+    };
+    let base = client.chat_service_url();
+    for (name, body) in hide_chat_properties(now) {
+        client
+            .chat_put(&conversation_property_url(&base, id, name), &body)
+            .await?;
+    }
+    Ok(())
+}
+
+/// Chat service aggregator resource for folder reads.
+pub const CHATSVCAGG_SCOPE: &str = "https://chatsvcagg.teams.microsoft.com/.default";
+
+/// Folder list URL (system folders included so Favorites comes back).
+pub fn conversation_folders_url() -> String {
+    "https://teams.microsoft.com/api/csa/api/v1/teams/users/me/conversationFolders?supportsAdditionalSystemGeneratedFolders=true&supportsSliceItems=true".to_string()
+}
+
+/// Server folder types that are views, not folders a chat is moved into.
+pub const SYSTEM_FOLDER_TYPES: &[&str] = &[
+    "RecentChats",
+    "TeamsAndChannels",
+    "QuickViews",
+    "MutedChats",
+    "MeetingChats",
+    "EngageCommunities",
+];
+
+/// One chat folder from the server: Favorites and user folders.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConversationFolder {
+    pub id: String,
+    pub name: String,
+    pub folder_type: String,
+    /// Conversation ids in folder order (chats and channels alike).
+    pub item_ids: Vec<String>,
+}
+
+/// Parse a `conversationFolders` payload: deleted and system folders
+/// dropped, blank ids dropped, `conversationFolderOrder` order first
+/// (folders it omits keep payload order after it).
+pub fn parse_conversation_folders(v: &serde_json::Value) -> Vec<ConversationFolder> {
+    let mut out: Vec<ConversationFolder> = Vec::new();
+    for f in v.get("conversationFolders").and_then(|x| x.as_array()).into_iter().flatten() {
+        let s = |k: &str| f.get(k).and_then(|x| x.as_str()).unwrap_or("").trim().to_string();
+        let (id, folder_type) = (s("id"), s("folderType"));
+        if id.is_empty() || f.get("isDeleted").and_then(|x| x.as_bool()).unwrap_or(false) {
+            continue;
+        }
+        if SYSTEM_FOLDER_TYPES.iter().any(|t| t.eq_ignore_ascii_case(&folder_type)) {
+            continue;
+        }
+        let mut name = s("name");
+        if name.is_empty() {
+            name = folder_type.clone();
+        }
+        let item_ids = f
+            .get("conversationFolderItems")
+            .and_then(|x| x.as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|i| i.get("conversationId").and_then(|x| x.as_str()))
+            .map(|x| x.trim().to_string())
+            .filter(|x| !x.is_empty())
+            .collect();
+        out.push(ConversationFolder { id, name, folder_type, item_ids });
+    }
+    let order: Vec<&str> = v
+        .get("conversationFolderOrder")
+        .and_then(|x| x.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|x| x.as_str())
+        .collect();
+    out.sort_by_key(|f| order.iter().position(|o| *o == f.id).unwrap_or(usize::MAX));
+    out
+}
+
+/// Read the signed-in user's chat folders with a chatsvcagg bearer token.
+pub async fn conversation_folders_data(bearer: &str) -> Result<Vec<ConversationFolder>> {
+    if bearer.trim().is_empty() {
+        bail!("no chat service aggregator token");
+    }
+    let url = conversation_folders_url();
+    let resp = super::client::shared_http()
+        .get(&url)
+        .bearer_auth(bearer)
+        .header("x-ms-client-version", "1415/24080616421")
+        .timeout(std::time::Duration::from_secs(30))
+        .send()
+        .await
+        .context("conversationFolders GET failed")?;
+    let status = resp.status();
+    if !status.is_success() {
+        bail!("conversationFolders GET: {}", status);
+    }
+    let v: serde_json::Value = resp.json().await.context("Failed to parse conversationFolders")?;
+    Ok(parse_conversation_folders(&v))
+}
+
+/// One folder edit: `("AddItem" | "RemoveItem", folder id, conversation id)`.
+pub type FolderAction = (&'static str, String, String);
+
+/// Pure: the edits that leave `chat_id` in `target` (blank = no folder)
+/// and in no other movable folder, from a raw `conversationFolders`
+/// payload. Returns `(folderHierarchyVersion, actions)`; no actions when
+/// the chat is already where it should be. System folders (views) are
+/// never edited; an unknown target is an error.
+pub fn folder_move_actions(
+    v: &serde_json::Value,
+    chat_id: &str,
+    target: &str,
+) -> Result<(i64, Vec<FolderAction>)> {
+    let version = v.get("folderHierarchyVersion").and_then(|x| x.as_i64()).unwrap_or(0);
+    let folders = parse_conversation_folders(v);
+    let target = target.trim();
+    if !target.is_empty() && !folders.iter().any(|f| f.id == target) {
+        bail!("unknown folder");
+    }
+    let mut actions: Vec<FolderAction> = Vec::new();
+    for f in &folders {
+        let holds = f.item_ids.iter().any(|i| i == chat_id);
+        if holds && f.id != target {
+            actions.push(("RemoveItem", f.id.clone(), chat_id.to_string()));
+        }
+        if !holds && f.id == target {
+            actions.push(("AddItem", f.id.clone(), chat_id.to_string()));
+        }
+    }
+    Ok((version, actions))
+}
+
+/// Folder edit POST body (same URL as the folder GET).
+pub fn folder_move_body(version: i64, actions: &[FolderAction]) -> serde_json::Value {
+    let list: Vec<serde_json::Value> = actions
+        .iter()
+        .map(|(action, folder, item)| {
+            serde_json::json!({"action": action, "folderId": folder, "itemId": item})
+        })
+        .collect();
+    serde_json::json!({"folderHierarchyVersion": version, "actions": list})
+}
+
+async fn conversation_folders_raw(bearer: &str) -> Result<serde_json::Value> {
+    let resp = super::client::shared_http()
+        .get(conversation_folders_url())
+        .bearer_auth(bearer)
+        .header("x-ms-client-version", "1415/24080616421")
+        .timeout(std::time::Duration::from_secs(30))
+        .send()
+        .await
+        .context("conversationFolders GET failed")?;
+    let status = resp.status();
+    if !status.is_success() {
+        bail!("conversationFolders GET: {}", status);
+    }
+    resp.json().await.context("Failed to parse conversationFolders")
+}
+
+/// Move one chat into `target` (blank = out of every folder): fresh GET
+/// for the version and membership, one POST with the edits, then check
+/// the returned folders. Returns the folders after the move; an answer
+/// that does not show the chat where it was asked to go is an error.
+pub async fn conversation_folder_move_with_client(
+    client: &TeamsClient,
+    bearer: &str,
+    chat_id: &str,
+    target: &str,
+) -> Result<Vec<ConversationFolder>> {
+    let chat_id = chat_id.trim();
+    if chat_id.is_empty() || bearer.trim().is_empty() {
+        bail!("missing chat id or token");
+    }
+    let current = conversation_folders_raw(bearer).await?;
+    let (version, actions) = folder_move_actions(&current, chat_id, target)?;
+    if actions.is_empty() {
+        return Ok(parse_conversation_folders(&current));
+    }
+    let skype = client.skype_token()?;
+    let resp = super::client::shared_http()
+        .post(conversation_folders_url())
+        .bearer_auth(bearer)
+        .header("Authentication", format!("skypetoken={}", skype))
+        .header("x-ms-client-version", "1415/24080616421")
+        .json(&folder_move_body(version, &actions))
+        .timeout(std::time::Duration::from_secs(30))
+        .send()
+        .await
+        .context("conversationFolders POST failed")?;
+    let status = resp.status();
+    if !status.is_success() {
+        bail!("conversationFolders POST: {}", status);
+    }
+    // The answer carries the folder state; re-read when it does not.
+    let body: serde_json::Value = resp.json().await.unwrap_or(serde_json::Value::Null);
+    let after = if body.get("conversationFolders").is_some() {
+        body
+    } else {
+        conversation_folders_raw(bearer).await?
+    };
+    let (_, left) = folder_move_actions(&after, chat_id, target)?;
+    if !left.is_empty() {
+        bail!("folder move not applied");
+    }
+    Ok(parse_conversation_folders(&after))
+}
+
+#[cfg(test)]
+mod chatmenu_tests {
+    use super::*;
+
+    fn folders_payload() -> serde_json::Value {
+        serde_json::json!({
+            "folderHierarchyVersion": 7,
+            "conversationFolders": [
+                {"id": "t~u~Favorites", "folderType": "Favorites",
+                 "conversationFolderItems": [{"conversationId": "19:a@thread.v2"}]},
+                {"id": "f1", "name": "Work", "folderType": "UserCreated",
+                 "conversationFolderItems": [{"conversationId": "48:notes"}]},
+                {"id": "q", "folderType": "QuickViews",
+                 "conversationFolderItems": [{"conversationId": "48:notes"}]}
+            ]
+        })
+    }
+
+    #[test]
+    fn folder_move_request_shape() {
+        let v = folders_payload();
+        let (version, actions) = folder_move_actions(&v, "48:notes", "t~u~Favorites").unwrap();
+        assert_eq!(version, 7);
+        // Out of the user folder, into Favorites; the QuickViews view is untouched.
+        assert_eq!(
+            actions,
+            vec![
+                ("AddItem", "t~u~Favorites".to_string(), "48:notes".to_string()),
+                ("RemoveItem", "f1".to_string(), "48:notes".to_string()),
+            ]
+        );
+        assert_eq!(
+            folder_move_body(version, &actions),
+            serde_json::json!({"folderHierarchyVersion": 7, "actions": [
+                {"action": "AddItem", "folderId": "t~u~Favorites", "itemId": "48:notes"},
+                {"action": "RemoveItem", "folderId": "f1", "itemId": "48:notes"}
+            ]})
+        );
+        // Blank target = out of every folder; already-there = no edits.
+        let (_, out) = folder_move_actions(&v, "48:notes", "").unwrap();
+        assert_eq!(out, vec![("RemoveItem", "f1".to_string(), "48:notes".to_string())]);
+        let (_, none) = folder_move_actions(&v, "19:a@thread.v2", "t~u~Favorites").unwrap();
+        assert!(none.is_empty());
+        // System views and unknown ids are not move targets.
+        assert!(folder_move_actions(&v, "48:notes", "q").is_err());
+        assert!(folder_move_actions(&v, "48:notes", "nope").is_err());
+    }
+
+    #[test]
+    fn alerts_request_shape() {
+        assert_eq!(
+            alerts_url("https://h", "19:a@thread.v2"),
+            "https://h/v1/users/ME/conversations/19:a@thread.v2/properties?name=alerts"
+        );
+        assert_eq!(alerts_body(true), serde_json::json!({"alerts": "false"}));
+        assert_eq!(alerts_body(false), serde_json::json!({"alerts": "true"}));
+        assert_eq!(alerts_muted(&serde_json::json!({"alerts": "false"})), Some(true));
+        assert_eq!(alerts_muted(&serde_json::json!({"alerts": "True"})), Some(false));
+        assert_eq!(alerts_muted(&serde_json::json!({"favorite": "true"})), None);
+    }
+
+    #[test]
+    fn hide_request_shape() {
+        // §GRAPHSWEEP3: chat-service conversation properties, not Graph.
+        assert_eq!(
+            conversation_property_url("https://h", " 19:a@thread.v2 ", "unpinnedTime"),
+            "https://h/v1/users/ME/conversations/19:a@thread.v2/properties?name=unpinnedTime"
+        );
+        let hide = hide_chat_properties(Some(1727600000123));
+        assert_eq!(hide.len(), 2);
+        assert_eq!(hide[0], ("unpinnedTime", serde_json::json!({"unpinnedTime": 1727600000123u64})));
+        assert_eq!(hide[1], ("historyHiddenTime", serde_json::json!({"historyHiddenTime": "1727600000123"})));
+        let show = hide_chat_properties(None);
+        assert_eq!(show, vec![("unpinnedTime", serde_json::json!({"unpinnedTime": null}))]);
+        assert!(crate::api::client::graph_denied("POST", "/chats/19:a@thread.v2/hideForUser").is_some());
+    }
+
+    #[test]
+    fn folders_parse_drops_system_and_deleted_and_orders() {
+        let v = serde_json::json!({
+            "conversationFolderOrder": ["f-work", "f-fav", "f-recent"],
+            "conversationFolders": [
+                {"id": "f-fav", "name": "Favorites", "folderType": "Favorites",
+                 "conversationFolderItems": [{"conversationId": "19:a@thread.v2"}, {"conversationId": " "}]},
+                {"id": "f-recent", "name": "Chats", "folderType": "RecentChats", "conversationFolderItems": []},
+                {"id": "f-gone", "name": "Old", "folderType": "UserCreated", "isDeleted": true},
+                {"id": "f-work", "name": "Work", "folderType": "UserCreated",
+                 "conversationFolderItems": [{"conversationId": "19:b@unq.gbl.spaces"}]},
+                {"id": "", "name": "Blank", "folderType": "UserCreated"}
+            ]
+        });
+        let f = parse_conversation_folders(&v);
+        assert_eq!(f.iter().map(|x| x.id.as_str()).collect::<Vec<_>>(), ["f-work", "f-fav"]);
+        assert_eq!(f[0].item_ids, ["19:b@unq.gbl.spaces"]);
+        assert_eq!(f[1].item_ids, ["19:a@thread.v2"]);
+        assert!(parse_conversation_folders(&serde_json::json!({})).is_empty());
+        assert!(conversation_folders_url().contains("/conversationFolders?"));
+    }
 }
 
 #[cfg(test)]
@@ -2329,6 +3444,33 @@ src="x">"#));
     }
 
     #[test]
+    fn bot_one_to_one_chats_list_like_teams() {
+        // OstMac §83: live-shaped bot 1:1 rows (mychats view): the new
+        // shape `19:{userOid}_{botAppId}@unq.gbl.spaces` and the legacy
+        // bare bot MRI `28:{botAppId}`. Both list as 1:1s named after the
+        // bot, never "[Direct message]" / a raw id.
+        let c = conv(
+            r#"{"id":"19:6b1f2c3d-aaaa-4bbb-8ccc-0d1e2f3a4b5c_7c8d9e0f-1111-4222-8333-444455556666@unq.gbl.spaces",
+                "threadProperties":{"uniquerosterthread":"true","productThreadType":"OneToOneChat"},
+                "lastMessage":{"imdisplayname":"Workflows","messagetype":"RichText/Html",
+                    "from":"https://x/v1/users/ME/contacts/28:7c8d9e0f-1111-4222-8333-444455556666",
+                    "content":"<div>Your approval is ready</div>"}}"#,
+        );
+        let id = c.id.as_deref().unwrap();
+        assert!(is_onetoone_id(id));
+        assert!(!(id.contains("thread") || id.contains("meeting")), "bot chat is not a group");
+        assert_eq!(conversation_name(&c, Some("Workflows")), "Workflows");
+        assert_eq!(conversation_name(&c, None), "Workflows");
+        let legacy = conv(
+            r#"{"id":"28:7c8d9e0f-1111-4222-8333-444455556666",
+                "lastMessage":{"imdisplayname":"Polly","messagetype":"Text","content":"Poll closed"}}"#,
+        );
+        let id = legacy.id.as_deref().unwrap();
+        assert!(!(id.contains("thread") || id.contains("meeting")));
+        assert_eq!(conversation_name(&legacy, None), "Polly");
+    }
+
+    #[test]
     fn conversation_name_never_raw_id() {
         // Topic wins over everything.
         let c = conv(
@@ -2620,4 +3762,622 @@ src="x">"#));
         assert_eq!(b["skypeeditedid"], "123");
     }
 
+}
+
+#[cfg(test)]
+mod chat_files_tests {
+    use super::*;
+
+    #[test]
+    fn message_file_refs_single_and_page() {
+        let files = r#"[{"id":"att-1","fileName":"Plan.docx","objectUrl":"https://c.sharepoint.com/Plan.docx","fileInfo":{"shareUrl":"https://c.sharepoint.com/:w:/s/x"}}]"#;
+        let msg = serde_json::json!({"id":"1700000000500","imdisplayname":"Ava Hart",
+            "originalarrivaltime":"2026-09-28T10:00:00Z","properties":{"files":files}});
+        let refs = message_file_refs(&msg, "1700000000500").unwrap();
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].attachment_id.as_deref(), Some("att-1"));
+        assert_eq!(refs[0].share_url.as_deref(), Some("https://c.sharepoint.com/:w:/s/x"));
+        assert!(message_file_refs(&msg, "999").is_none());
+        let page = serde_json::json!({"messages":[
+            {"id":"1700000000900","properties":{}}, msg.clone(), {"id":"1700000000100"}]});
+        assert_eq!(message_file_refs(&page, "1700000000500").unwrap().len(), 1);
+        assert!(message_file_refs(&page, "1700000000400").is_none());
+        // A message without files yields an empty list, not a miss.
+        assert_eq!(message_file_refs(&page, "1700000000900").unwrap().len(), 0);
+        // History walk stops once a page reaches the message's time.
+        assert!(page_reaches(&page, "1700000000400"));
+        let newer = serde_json::json!({"messages":[{"id":"1700000000900"}]});
+        assert!(!page_reaches(&newer, "1700000000400"));
+    }
+
+    #[test]
+    fn file_refs_from_chat_service_page() {
+        let files = serde_json::json!([
+            {"id": "att-1", "fileName": "Plan.docx", "fileType": "docx",
+             "objectUrl": "https://contoso-my.sharepoint.com/personal/a/Documents/Microsoft Teams Chat Files/Plan.docx",
+             "fileInfo": {"shareUrl": "https://contoso-my.sharepoint.com/:w:/g/personal/a/xyz"}},
+            {"id": "att-2", "title": "Old.xlsx", "state": "deleted", "objectUrl": "https://x/Old.xlsx"}
+        ])
+        .to_string();
+        let page = serde_json::json!({
+            "messages": [
+                {"imdisplayname": "Alex Carter", "originalarrivaltime": "2026-09-28T09:00:00Z",
+                 "properties": {"files": files}},
+                {"imdisplayname": "Jamie Brooks", "properties": {"deletetime": "1700000000000",
+                 "files": [{"id": "gone", "objectUrl": "https://x/Gone.pdf"}]}},
+                {"imdisplayname": "Jamie Brooks", "composetime": "2026-09-27T08:00:00Z",
+                 "properties": {"files": [{"id": "att-3", "fileInfo": {"fileUrl": "https://x/Budget.pptx"}}]}},
+                {"content": "no files here"}
+            ],
+            "_metadata": {"backwardLink": "https://svc/v1/users/ME/conversations/c/messages?startTime=1&pageSize=200"}
+        });
+        let (refs, back) = parse_chat_file_refs(&page);
+        assert_eq!(refs.len(), 2);
+        assert_eq!(refs[0].name, "Plan.docx");
+        assert_eq!(refs[0].attachment_id.as_deref(), Some("att-1"));
+        assert_eq!(refs[0].share_url.as_deref(), Some("https://contoso-my.sharepoint.com/:w:/g/personal/a/xyz"));
+        assert_eq!(refs[0].sender.as_deref(), Some("Alex Carter"));
+        assert_eq!(refs[0].time.as_deref(), Some("2026-09-28T09:00:00Z"));
+        assert_eq!(refs[1].name, "Budget.pptx");
+        assert_eq!(refs[1].object_url, "https://x/Budget.pptx");
+        assert_eq!(refs[1].time.as_deref(), Some("2026-09-27T08:00:00Z"));
+        assert!(back.unwrap().contains("startTime=1"));
+        let (none, no_back) = parse_chat_file_refs(&serde_json::json!({}));
+        assert!(none.is_empty() && no_back.is_none());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Pinned messages (OstMac §84)
+// ---------------------------------------------------------------------------
+
+/// One server-side pinned chat message. `graph_pin_id` is set only for
+/// Graph-sourced pins (the `pinnedChatMessageInfo` id Graph DELETE
+/// takes); chat-service pins carry the message id alone.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct PinnedRef {
+    pub message_id: String,
+    pub sender: Option<String>,
+    pub preview: Option<String>,
+    /// Message arrival time (ISO 8601).
+    pub time: Option<String>,
+    pub pinned_by: Option<String>,
+    pub pinned_at: Option<String>,
+    pub graph_pin_id: Option<String>,
+}
+
+/// Where a chat's pins came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PinSource {
+    ChatService,
+    Graph,
+}
+
+/// Chat-service thread GET (properties carry the thread's state).
+pub fn thread_pins_url(base: &str, chat_id: &str) -> String {
+    format!("{}/v1/threads/{}?view=msnp24Equivalent", base, chat_id.trim())
+}
+
+/// Graph `GET /chats/{id}/pinnedMessages?$expand=message` (needs
+/// Chat.Read: expect 403 on the Teams web token).
+pub fn graph_pins_path(chat_id: &str) -> String {
+    format!("/chats/{}/pinnedMessages?$expand=message", chat_id.trim())
+}
+
+/// Graph `DELETE /chats/{id}/pinnedMessages/{pinId}`.
+pub fn graph_unpin_path(chat_id: &str, pin_id: &str) -> String {
+    format!("/chats/{}/pinnedMessages/{}", chat_id.trim(), pin_id.trim())
+}
+
+/// Scalar JSON (string or number) as a trimmed non-empty string.
+fn pin_scalar(v: Option<&serde_json::Value>) -> Option<String> {
+    match v? {
+        serde_json::Value::String(s) => Some(s.trim().to_string()).filter(|s| !s.is_empty()),
+        serde_json::Value::Number(n) => Some(n.to_string()),
+        _ => None,
+    }
+}
+
+/// First present scalar among `keys` (case-insensitive).
+fn pin_field(o: &serde_json::Map<String, serde_json::Value>, keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|k| pin_scalar(obj_get_ci(o, k)))
+}
+
+/// Plain one-line preview from message HTML/text.
+fn pin_preview(content: &str) -> Option<String> {
+    let text = strip_html(content);
+    let one: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    Some(one).filter(|s| !s.is_empty())
+}
+
+/// A bare id from a string list: chat-service message ids are arrival
+/// ms, so only all-digit tokens count (flags like "true" never pin).
+fn bare_pin_id(s: &str) -> Option<String> {
+    let t = s.trim().trim_matches('"').trim();
+    (!t.is_empty() && t.bytes().all(|b| b.is_ascii_digit())).then(|| t.to_string())
+}
+
+fn collect_thread_pins(v: &serde_json::Value, depth: usize, out: &mut Vec<PinnedRef>) {
+    if depth > 4 {
+        return;
+    }
+    match v {
+        serde_json::Value::String(s) => {
+            let t = s.trim();
+            if t.starts_with('[') || t.starts_with('{') {
+                if let Ok(inner) = serde_json::from_str::<serde_json::Value>(t) {
+                    collect_thread_pins(&inner, depth + 1, out);
+                    return;
+                }
+            }
+            out.extend(t.split(',').filter_map(bare_pin_id).map(|message_id| PinnedRef {
+                message_id,
+                ..Default::default()
+            }));
+        }
+        serde_json::Value::Number(n) => out.push(PinnedRef {
+            message_id: n.to_string(),
+            ..Default::default()
+        }),
+        serde_json::Value::Array(a) => {
+            for e in a {
+                collect_thread_pins(e, depth + 1, out);
+            }
+        }
+        serde_json::Value::Object(o) => {
+            let id = pin_field(o, &["messageId", "messageid", "id"])
+                .filter(|s| !s.contains(['/', '?', '#', ' ']));
+            match id {
+                Some(message_id) => out.push(PinnedRef {
+                    message_id,
+                    sender: pin_field(o, &["sender", "imdisplayname", "senderDisplayName"]),
+                    preview: pin_field(o, &["content", "preview", "messagePreview"])
+                        .and_then(|c| pin_preview(&c)),
+                    time: pin_field(o, &["originalarrivaltime", "composetime", "messageTime"]),
+                    pinned_by: pin_field(o, &["pinnedBy", "pinnedby"]),
+                    pinned_at: pin_field(o, &["pinnedTime", "pinnedAt", "pinnedDateTime"]),
+                    graph_pin_id: None,
+                }),
+                None => {
+                    // Id-less wrapper (e.g. `{pins:[…]}`): descend into
+                    // containers only — its scalars (times, flags) are
+                    // never ids.
+                    for inner in o.values().filter(|v| v.is_array() || v.is_object()) {
+                        collect_thread_pins(inner, depth + 1, out);
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Pins from a chat-service thread body (`GET /v1/threads/{id}`). The
+/// shape is undocumented, so this is tolerant: every `properties` key
+/// whose lowercase name contains "pinned" is read, its value a JSON
+/// string, an array, or comma-separated ids; object entries take
+/// `messageId|id` (+ optional pinnedBy/pinnedTime/sender/content).
+/// Deduplicated by message id, first wins. Pure (no network).
+pub fn parse_thread_pins(value: &serde_json::Value) -> Vec<PinnedRef> {
+    let props = value
+        .get("properties")
+        .and_then(|p| p.as_object())
+        .or_else(|| value.as_object());
+    let mut out = Vec::new();
+    if let Some(props) = props {
+        for (k, v) in props {
+            if k.to_lowercase().contains("pinned") {
+                collect_thread_pins(v, 0, &mut out);
+            }
+        }
+    }
+    let mut seen = std::collections::HashSet::new();
+    out.retain(|p| seen.insert(p.message_id.clone()));
+    out
+}
+
+/// Pins from a Graph `pinnedMessages?$expand=message` body. Entries
+/// without a message id are skipped. Pure (no network).
+pub fn parse_graph_pins(value: &serde_json::Value) -> Result<Vec<PinnedRef>> {
+    let list = value
+        .get("value")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| anyhow::anyhow!("pinned messages response has no value[]"))?;
+    let mut out = Vec::new();
+    for e in list {
+        let msg = &e["message"];
+        let Some(message_id) = pin_scalar(msg.get("id")) else { continue };
+        if msg["deletedDateTime"].as_str().is_some_and(|s| !s.is_empty()) {
+            continue;
+        }
+        let sender = pin_scalar(msg["from"]["user"].get("displayName"))
+            .or_else(|| pin_scalar(msg["from"]["application"].get("displayName")));
+        out.push(PinnedRef {
+            message_id,
+            sender,
+            preview: msg["body"]["content"].as_str().and_then(pin_preview),
+            time: pin_scalar(msg.get("createdDateTime")),
+            pinned_by: None,
+            pinned_at: None,
+            graph_pin_id: pin_scalar(e.get("id")),
+        });
+    }
+    Ok(out)
+}
+
+/// Fill a thread pin's missing sender/preview/time from its chat-service
+/// message (`GET …/messages/{id}`). Present fields are kept. Pure.
+pub fn fill_pin_from_message(pin: &mut PinnedRef, msg: &serde_json::Value) {
+    if pin.sender.is_none() {
+        pin.sender = pin_scalar(msg.get("imdisplayname"));
+    }
+    if pin.preview.is_none() {
+        pin.preview = msg["content"].as_str().and_then(pin_preview);
+    }
+    if pin.time.is_none() {
+        pin.time = pin_scalar(msg.get("originalarrivaltime")).or_else(|| pin_scalar(msg.get("composetime")));
+    }
+}
+
+/// Source precedence: non-empty chat-service pins, else Graph pins,
+/// else an empty chat-service read (authoritative "no pins"), else the
+/// chat-service error (Graph's 403 is the expected, uninformative one).
+/// `graph` is `None` when it was never tried. Pure.
+pub fn pick_pins(
+    thread: Result<Vec<PinnedRef>>,
+    graph: Option<Result<Vec<PinnedRef>>>,
+) -> Result<(PinSource, Vec<PinnedRef>)> {
+    match (thread, graph) {
+        (Ok(t), _) if !t.is_empty() => Ok((PinSource::ChatService, t)),
+        (_, Some(Ok(g))) => Ok((PinSource::Graph, g)),
+        (Ok(t), _) => Ok((PinSource::ChatService, t)),
+        (Err(e), Some(Err(g))) => Err(e.context(format!("graph pinnedMessages fallback also failed: {:#}", g))),
+        (Err(e), None) => Err(e),
+    }
+}
+
+/// OstMac §84: a chat's server-side pinned messages from the chat service
+/// thread properties (skypetoken; shape undocumented, parsed tolerantly).
+/// §GRAPHSWEEP: the Graph `pinnedMessages` fallback is gone (needs
+/// Chat.Read — 403 on the Teams web token). Thread pins missing a preview are filled from their
+/// chat-service message (failure leaves them `None`). GETs only; the
+/// consumption horizon never moves.
+pub async fn chat_pinned_messages_data(client: &TeamsClient, chat_id: &str) -> Result<(PinSource, Vec<PinnedRef>)> {
+    let chat_id = chat_id.trim();
+    if chat_id.is_empty() || chat_id.contains(['/', '?', '#', ' ']) {
+        bail!("bad chat id");
+    }
+    let base = client.chat_service_url();
+    let thread = async {
+        let v: serde_json::Value = client
+            .chat_get(&thread_pins_url(&base, chat_id))
+            .await?
+            .json()
+            .await
+            .context("Failed to parse thread response")?;
+        Ok::<_, anyhow::Error>(parse_thread_pins(&v))
+    }
+    .await;
+    // §GRAPHSWEEP: no Graph `pinnedMessages` fallback (Chat.Read is not on
+    // the Teams token: a guaranteed 403 per open).
+    let (source, mut pins) = pick_pins(thread, None)?;
+    if source == PinSource::ChatService {
+        for pin in pins.iter_mut().filter(|p| p.preview.is_none() || p.sender.is_none()) {
+            if pin.message_id.contains(['/', '?', '#', ' ']) {
+                continue;
+            }
+            let url = message_url(&base, chat_id, &pin.message_id);
+            if let Ok(resp) = client.chat_get(&url).await {
+                if let Ok(v) = resp.json::<serde_json::Value>().await {
+                    fill_pin_from_message(pin, &v);
+                }
+            }
+        }
+    }
+    Ok((source, pins))
+}
+
+/// OstMac §84: unpin one Graph-sourced pin. §GRAPHSWEEP: Graph pins can
+/// no longer load (the read needs Chat.Read, 403 on the Teams token) and
+/// Graph `DELETE /chats/{id}/pinnedMessages/{pinId}` needs
+/// ChatMessage.ReadWrite/Chat.ReadWrite (not granted either), so this
+/// fails without any network. Blank/unsafe ids are rejected first.
+pub async fn chat_unpin_message_with_client(_client: &TeamsClient, chat_id: &str, pin_id: &str) -> Result<()> {
+    let bad = |s: &str| s.trim().is_empty() || s.trim().contains(['/', '?', '#', ' ']);
+    if bad(chat_id) || bad(pin_id) {
+        bail!("bad chat or pin id");
+    }
+    bail!("Server unpin is not available with the Teams sign-in (Graph Chat.ReadWrite not granted)")
+}
+
+#[cfg(test)]
+mod roster_name_tests {
+    use super::*;
+
+    fn member(mri: &str, name: &str) -> ChatMemberInfo {
+        ChatMemberInfo {
+            mri: mri.to_string(),
+            user_id: oid_from_orgid_mri(mri),
+            display_name: name.to_string(),
+            email: None,
+            roles: vec![],
+            is_owner: false,
+        }
+    }
+
+    /// §GRAPHSWEEP: blank chat-service names fill from Graph /users/{oid};
+    /// present names win; a missing answer leaves the member as it was.
+    #[test]
+    fn roster_blank_names_fill_from_users() {
+        assert_eq!(
+            roster_user_path(" 11111111-aaaa-4aaa-8aaa-111111111111 "),
+            "/users/11111111-aaaa-4aaa-8aaa-111111111111?$select=displayName,mail,userPrincipalName"
+        );
+        let mut m = member("8:orgid:11111111-aaaa-4aaa-8aaa-111111111111", "");
+        apply_roster_user(&mut m, &serde_json::json!({"displayName": "Ava Stone", "mail": null, "userPrincipalName": "ava@example.com"}));
+        assert_eq!(m.display_name, "Ava Stone");
+        assert_eq!(m.email.as_deref(), Some("ava@example.com"));
+        let mut named = member("8:orgid:11111111-aaaa-4aaa-8aaa-111111111111", "Kept Name");
+        apply_roster_user(&mut named, &serde_json::json!({"displayName": "Other", "mail": "k@example.com"}));
+        assert_eq!(named.display_name, "Kept Name");
+        assert_eq!(named.email.as_deref(), Some("k@example.com"));
+        let mut blank = member("8:orgid:11111111-aaaa-4aaa-8aaa-111111111111", "");
+        apply_roster_user(&mut blank, &serde_json::json!({"displayName": "  "}));
+        assert_eq!(blank.display_name, "");
+        assert_eq!(blank.email, None);
+    }
+}
+
+#[cfg(test)]
+mod pinned_tests {
+    use super::*;
+
+    #[test]
+    fn thread_pins_from_json_string_property() {
+        let pins = serde_json::json!([
+            {"messageId": "1727000000100", "pinnedBy": "8:orgid:aaa", "pinnedTime": "1727000000900"},
+            {"id": 1727000000200u64, "content": "<p>Ship <b>Friday</b></p>", "imdisplayname": "Ava Hart"},
+            {"messageId": "1727000000100"}
+        ])
+        .to_string();
+        let thread = serde_json::json!({
+            "id": "19:a@thread.v2", "type": "Thread",
+            "properties": {"topic": "Launch", "pinnedMessages": pins, "ispinned": "true"}
+        });
+        let got = parse_thread_pins(&thread);
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0].message_id, "1727000000100");
+        assert_eq!(got[0].pinned_by.as_deref(), Some("8:orgid:aaa"));
+        assert_eq!(got[0].pinned_at.as_deref(), Some("1727000000900"));
+        assert!(got[0].preview.is_none() && got[0].graph_pin_id.is_none());
+        assert_eq!(got[1].message_id, "1727000000200");
+        assert_eq!(got[1].preview.as_deref(), Some("Ship Friday"));
+        assert_eq!(got[1].sender.as_deref(), Some("Ava Hart"));
+    }
+
+    #[test]
+    fn thread_pins_from_array_and_csv_and_absent() {
+        let arr = serde_json::json!({"properties": {"PinnedMessages": [
+            {"messageid": "1727000000300", "sender": "Jamie Brooks"}, "1727000000400"]}});
+        let ids: Vec<_> = parse_thread_pins(&arr).into_iter().map(|p| p.message_id).collect();
+        assert_eq!(ids, ["1727000000300", "1727000000400"]);
+        let csv = serde_json::json!({"properties": {"pinnedmessages": "1727000000500, 1727000000600,"}});
+        assert_eq!(parse_thread_pins(&csv).len(), 2);
+        let none = serde_json::json!({"properties": {"topic": "x", "alerts": "true"}});
+        assert!(parse_thread_pins(&none).is_empty());
+        assert!(parse_thread_pins(&serde_json::json!({})).is_empty());
+    }
+
+    #[test]
+    fn graph_pins_parse_and_fill_from_message() {
+        let v = serde_json::json!({"value": [
+            {"id": "pin-1", "message": {"id": "1727000000700", "createdDateTime": "2026-09-28T10:00:00Z",
+             "from": {"user": {"displayName": "Alex Carter"}},
+             "body": {"contentType": "html", "content": "<p>Budget  due</p>"}}},
+            {"id": "pin-2", "message": {"id": "1727000000800", "deletedDateTime": "2026-09-28T11:00:00Z"}},
+            {"id": "pin-3"}
+        ]});
+        let got = parse_graph_pins(&v).unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].graph_pin_id.as_deref(), Some("pin-1"));
+        assert_eq!(got[0].sender.as_deref(), Some("Alex Carter"));
+        assert_eq!(got[0].preview.as_deref(), Some("Budget due"));
+        assert!(parse_graph_pins(&serde_json::json!({"error": {"code": "Forbidden"}})).is_err());
+
+        let mut p = PinnedRef { message_id: "1".into(), sender: Some("Kept".into()), ..Default::default() };
+        fill_pin_from_message(&mut p, &serde_json::json!({"imdisplayname": "Other",
+            "content": "<div>hi there</div>", "originalarrivaltime": "2026-09-28T09:00:00Z"}));
+        assert_eq!(p.sender.as_deref(), Some("Kept"));
+        assert_eq!(p.preview.as_deref(), Some("hi there"));
+        assert_eq!(p.time.as_deref(), Some("2026-09-28T09:00:00Z"));
+    }
+
+    #[test]
+    fn source_precedence_and_graph_403() {
+        let pin = |id: &str| PinnedRef { message_id: id.into(), ..Default::default() };
+        let forbidden = || Err(anyhow::anyhow!("HTTP 403 Forbidden: Missing scope permissions"));
+        // Thread pins win; Graph untried.
+        let (s, p) = pick_pins(Ok(vec![pin("1")]), None).unwrap();
+        assert_eq!((s, p.len()), (PinSource::ChatService, 1));
+        // Empty thread + Graph 403 = no pins, not an error.
+        let (s, p) = pick_pins(Ok(vec![]), Some(forbidden())).unwrap();
+        assert_eq!((s, p.len()), (PinSource::ChatService, 0));
+        // Thread failure falls back to Graph.
+        let (s, p) = pick_pins(Err(anyhow::anyhow!("chatsvc 500")), Some(Ok(vec![pin("2")]))).unwrap();
+        assert_eq!((s, p[0].message_id.as_str()), (PinSource::Graph, "2"));
+        // Both fail: the chat-service error leads.
+        let e = pick_pins(Err(anyhow::anyhow!("chatsvc 500")), Some(forbidden())).unwrap_err();
+        let msg = format!("{:#}", e);
+        assert!(msg.contains("chatsvc 500") && msg.contains("403"), "{}", msg);
+        assert_eq!(e.root_cause().to_string(), "chatsvc 500");
+    }
+
+    #[test]
+    fn pin_paths() {
+        assert_eq!(thread_pins_url("https://h", " 19:a@thread.v2 "), "https://h/v1/threads/19:a@thread.v2?view=msnp24Equivalent");
+        assert_eq!(graph_pins_path("19:a@thread.v2"), "/chats/19:a@thread.v2/pinnedMessages?$expand=message");
+        assert_eq!(graph_unpin_path("19:a@thread.v2", " pin-1 "), "/chats/19:a@thread.v2/pinnedMessages/pin-1");
+    }
+}
+
+#[cfg(test)]
+mod sendfix_tests {
+    use super::*;
+
+    #[test]
+    fn sendfix_one_to_one_thread_id_is_ordered_pair() {
+        let a = "527A0000-0000-0000-0000-000000000001";
+        let b = "01d90000-0000-0000-0000-000000000002";
+        let want = "19:01d90000-0000-0000-0000-000000000002_527a0000-0000-0000-0000-000000000001@unq.gbl.spaces";
+        assert_eq!(one_to_one_thread_id(a, b), want);
+        assert_eq!(one_to_one_thread_id(b, a), want);
+        assert!(looks_like_guid(b));
+        assert!(!looks_like_guid("someone@example.org"));
+    }
+
+    #[test]
+    fn sendfix_client_message_id_is_19_digits_and_fresh() {
+        let a = new_client_message_id();
+        let b = new_client_message_id();
+        assert_eq!(a.len(), 19);
+        assert!(a.chars().all(|c| c.is_ascii_digit()));
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn sendfix_sent_id_prefers_location_then_arrival_time() {
+        let loc = "https://h/v1/users/ME/conversations/19:a@thread.v2/messages/1727540406676";
+        assert_eq!(sent_id_from_response(Some(loc), "").as_deref(), Some("1727540406676"));
+        assert_eq!(
+            sent_id_from_response(None, r#"{"OriginalArrivalTime":1727540406677}"#).as_deref(),
+            Some("1727540406677")
+        );
+        assert_eq!(
+            sent_id_from_response(Some("https://h/x/messages"), r#"{"originalarrivaltime":"42"}"#)
+                .as_deref(),
+            Some("42")
+        );
+        assert_eq!(sent_id_from_response(None, "{}"), None);
+        assert_eq!(sent_id_from_response(None, "not json"), None);
+    }
+
+    #[test]
+    fn sendfix_history_rows_carry_client_message_id() {
+        let with: NativeMessage = serde_json::from_str(
+            r#"{"id":"2","ClientMessageId":"555","content":"<p>b</p>"}"#,
+        )
+        .unwrap();
+        let num: NativeMessage =
+            serde_json::from_str(r#"{"id":"3","clientmessageid":556}"#).unwrap();
+        let without: NativeMessage = serde_json::from_str(r#"{"id":"1"}"#).unwrap();
+        assert_eq!(client_message_id_of(&with.extra).as_deref(), Some("555"));
+        assert_eq!(client_message_id_of(&num.extra).as_deref(), Some("556"));
+        assert_eq!(client_message_id_of(&without.extra), None);
+        let row = |id: &str, c: Option<&str>| MessageInfo {
+            id: id.into(),
+            sender_mri: String::new(),
+            sender: "A".into(),
+            timestamp: String::new(),
+            content: "x".into(),
+            raw: String::new(),
+            reactions: vec![],
+            reply_to: None,
+            client_message_id: c.map(String::from),
+        };
+        let rows = vec![row("1", None), row("2", Some("555"))];
+        assert_eq!(find_by_client_id(&rows, "555").map(|m| m.id.as_str()), Some("2"));
+        assert!(find_by_client_id(&rows, "556").is_none());
+        assert!(find_by_client_id(&rows, " ").is_none());
+    }
+}
+
+/// FIXPACK F8: batched + cached 1:1 mate names (fake transport, no tenant).
+#[cfg(test)]
+mod mate_batch_tests {
+    use super::*;
+    use crate::api::fake_transport::Fake;
+    use serde_json::json;
+    use std::sync::Mutex;
+
+    const ME: &str = "aaaaaaaa-0000-0000-0000-000000000001";
+
+    fn routes(ids: &[(&'static str, &str, &str)]) -> Vec<crate::api::fake_transport::Route> {
+        let mut r = Vec::new();
+        for (id, mate_oid, name) in ids {
+            r.push((
+                "GET",
+                Box::leak(format!("/chat/v1/threads/{id}/members").into_boxed_str()) as &'static str,
+                200,
+                json!({"members": [{"id": format!("8:orgid:{ME}")}, {"id": format!("8:orgid:{mate_oid}")}]}).to_string(),
+            ));
+            r.push((
+                "GET",
+                Box::leak(format!("/chat/v1/users/ME/conversations/{id}/messages").into_boxed_str()) as &'static str,
+                200,
+                json!({"messages": [{
+                    "id": "1", "messagetype": "Text", "content": "hi", "imdisplayname": name,
+                    "from": format!("https://chat.example.com/v1/users/ME/contacts/8:orgid:{mate_oid}"),
+                    "originalarrivaltime": "2026-09-29T10:00:00.000Z",
+                }]})
+                .to_string(),
+            ));
+        }
+        r
+    }
+
+    fn ids() -> Vec<String> {
+        vec!["19:one@unq.gbl.spaces".into(), "19:two@unq.gbl.spaces".into(), "19:three@unq.gbl.spaces".into()]
+    }
+
+    fn fake_routes() -> Vec<crate::api::fake_transport::Route> {
+        routes(&[
+            ("19:one@unq.gbl.spaces", "bbbbbbbb-0000-0000-0000-000000000001", "Riley Stone"),
+            ("19:two@unq.gbl.spaces", "bbbbbbbb-0000-0000-0000-000000000002", "Casey Morgan"),
+            ("19:three@unq.gbl.spaces", "bbbbbbbb-0000-0000-0000-000000000003", "Drew Parker"),
+        ])
+    }
+
+    #[tokio::test]
+    async fn a_page_of_untitled_one_to_ones_resolves_together_then_never_again() {
+        let fake = Fake::start(fake_routes()).await;
+        let cache = Mutex::new(MateNames::default());
+        let got = resolve_mates_cached(&fake.client(), &ids(), ME, &cache, 1_000, MATE_CONCURRENCY).await;
+        assert_eq!(got.len(), 3);
+        assert_eq!(got["19:one@unq.gbl.spaces"], "Riley Stone");
+        assert_eq!(got["19:three@unq.gbl.spaces"], "Drew Parker");
+        assert_eq!(fake.requests().len(), 6, "one roster + one history read per chat");
+        // Second page view / refresh: all from the cache, zero requests.
+        let again = resolve_mates_cached(&fake.client(), &ids(), ME, &cache, 2_000, MATE_CONCURRENCY).await;
+        assert_eq!(again, got);
+        assert_eq!(fake.requests().len(), 6, "cache hits make no request");
+    }
+
+    #[tokio::test]
+    async fn a_failed_lookup_leaves_that_chat_out_and_uncached() {
+        let mut r = fake_routes();
+        r.retain(|(_, p, _, _)| !p.contains("two@"));
+        let fake = Fake::start(r).await;
+        let cache = Mutex::new(MateNames::default());
+        let got = resolve_mates_cached(&fake.client(), &ids(), ME, &cache, 1_000, 2).await;
+        assert_eq!(got.len(), 2);
+        assert!(!got.contains_key("19:two@unq.gbl.spaces"));
+        assert!(cache.lock().unwrap().get("19:two@unq.gbl.spaces", 1_000).is_none(), "failures are retried later");
+    }
+
+    #[test]
+    fn names_persist_across_a_reload_and_expire() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join(format!("mate-tests-{}", std::process::id()));
+        let path = dir.join("mates-config.json");
+        let mut c = MateNames::load(Some(path.clone()));
+        assert!(c.get("19:one@unq.gbl.spaces", 10).is_none());
+        c.put("19:one@unq.gbl.spaces", "Riley Stone", 10);
+        c.save();
+        let back = MateNames::load(Some(path.clone()));
+        assert_eq!(back.get("19:one@unq.gbl.spaces", 20).as_deref(), Some("Riley Stone"));
+        assert!(back.get("19:one@unq.gbl.spaces", 10 + MATE_TTL_SECS + 1).is_none(), "stale names are looked up again");
+        // Corrupt file: empty cache, no panic.
+        std::fs::write(&path, "not json").unwrap();
+        assert!(MateNames::load(Some(path)).get("19:one@unq.gbl.spaces", 20).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

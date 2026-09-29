@@ -116,6 +116,25 @@ pub async fn fetch_media_data(client: &TeamsClient, url: &str) -> Result<MediaBy
     client.media_get(u).await
 }
 
+/// OstMac FIXPACK F7: the first `max_bytes` of a media URL within
+/// `timeout` (an image header probe). Same host rules as
+/// [`fetch_media_data`]; the bytes are a prefix, never the whole file.
+pub async fn fetch_media_head_data(
+    client: &TeamsClient,
+    url: &str,
+    max_bytes: usize,
+    timeout: std::time::Duration,
+) -> Result<MediaBytes> {
+    let u = url.trim();
+    if !u.starts_with("https://") {
+        bail!("media: only https URLs are fetched");
+    }
+    if host_of(u).is_none() {
+        bail!("media: unparseable URL");
+    }
+    client.media_get_head(u, max_bytes.clamp(1, MAX_BYTES), timeout).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -218,5 +237,34 @@ mod tests {
         );
         assert_eq!(host_of("https://H.EXAMPLE.COM/x").as_deref(), Some("h.example.com"));
         assert!(host_of("https://").is_none());
+    }
+}
+
+/// FIXPACK F7: the header probe against the fake transport.
+#[cfg(test)]
+mod head_tests {
+    use crate::api::fake_transport::Fake;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn head_asks_for_a_byte_range_and_never_returns_more_than_asked() {
+        // The fake ignores Range and answers the whole body: only the
+        // first `max_bytes` come back.
+        let fake = Fake::start(vec![("GET", "/img", 200, "0123456789abcdefghij".into())]).await;
+        let url = format!("{}/img", fake.base);
+        let got = fake.client().media_get_head(&url, 10, Duration::from_millis(300)).await.expect("head ok");
+        assert_eq!(got.data, b"0123456789");
+        let reqs = fake.requests();
+        assert_eq!(reqs.len(), 1);
+        assert_eq!(reqs[0].headers.get("range").map(String::as_str), Some("bytes=0-9"));
+    }
+
+    #[tokio::test]
+    async fn head_rejects_non_https_and_surfaces_http_errors() {
+        let fake = Fake::start(vec![("GET", "/img", 404, "{}".into())]).await;
+        assert!(super::fetch_media_head_data(&fake.client(), "http://x/img", 10, Duration::from_millis(300)).await.is_err());
+        let url = format!("{}/img", fake.base);
+        let err = fake.client().media_get_head(&url, 10, Duration::from_millis(300)).await.err().expect("404 is an error");
+        assert!(format!("{err:#}").contains("404"), "{err:#}");
     }
 }

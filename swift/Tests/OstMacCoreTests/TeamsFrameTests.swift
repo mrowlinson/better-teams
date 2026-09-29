@@ -104,7 +104,6 @@ final class TeamsFrameTests: XCTestCase {
         defaults.removeObject(forKey: TeamsFrameConfig.keepAliveMinutesKey)
         defaults.removeObject(forKey: TeamsFrameRegistry.appsKey)
         defaults.removeObject(forKey: TeamsFrameRegistry.selectedAppKey)
-        defaults.removeObject(forKey: TeamsFrameLibrary.cacheKey)
         super.tearDown()
     }
 
@@ -310,8 +309,11 @@ final class TeamsFrameTests: XCTestCase {
 
     func testDownloadsDefaultDirectoryIsDownloads() {
         let dir = TeamsFrameDownloads.defaultDirectory()
-        XCTAssertEqual(dir.lastPathComponent, "Downloads")
-        XCTAssertTrue(dir.path.hasPrefix(FileManager.default.homeDirectoryForCurrentUser.path))
+        XCTAssertEqual(dir, UserFolders.downloads())
+        // Under XCTest it never points at the owner's real ~/Downloads.
+        let real = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Downloads", isDirectory: true)
+        XCTAssertFalse(dir.standardizedFileURL.path.hasPrefix(real.standardizedFileURL.path))
     }
 
     func testSanitizedFilename() {
@@ -599,134 +601,5 @@ final class TeamsFrameTests: XCTestCase {
         store.updateCrop(id: "nope", crop: TeamsFrameCrop(left: 1, top: 1))
         XCTAssertEqual(store.apps.count, 1)
         store.destroy()
-    }
-
-    // MARK: - Library
-
-    private let tabsAllFixture = """
-    === Falcon IT | General | 19:aaa111@thread.tacv2
-      Notes                          19038e38-fake-42c5-a437-fakefake0001
-        https://onenote.example.com/
-      Order Tracker                  6ece32a4-fake-41d8-ba3f-fakefake0002
-        https://teams.microsoft.com/l/entity/1c256a65-fake-4b5c-9ccf-fakefake0003/x?label=Order+Tracker
-    === Falcon IT | Inventory | 19:bbb222@thread.tacv2
-      (no tabs found)
-    === Falcon Ops | General | 19:ccc333@thread.skype
-      Wiki                           6482e894-fake-42ee-b5bd-fakefake0004
-        https://teams.microsoft.com/l/channel/19abc/tab%3a%3a6482e894?label=Wiki
-      Bare Tab With No URL           deadbeef-fake-0000-0000-fakefake0005
-    === Broken | header
-      Orphan                         11111111-fake-0000-0000-fakefake0006
-        https://teams.microsoft.com/l/entity/orphan
-    """
-
-    func testParseTabsAllSectionsAndRows() {
-        let entries = TeamsFrameLibrary.parseTabsAll(tabsAllFixture)
-        // Notes + Order Tracker + Wiki. Bare/orphan/malformed skipped.
-        XCTAssertEqual(entries.count, 3)
-        XCTAssertEqual(entries[0].team, "Falcon IT")
-        XCTAssertEqual(entries[0].channel, "General")
-        XCTAssertEqual(entries[0].label, "Notes")
-        XCTAssertEqual(entries[0].url, "https://onenote.example.com/")
-        XCTAssertEqual(entries[1].label, "Order Tracker")
-        XCTAssertEqual(entries[2].team, "Falcon Ops")
-        XCTAssertEqual(entries[2].label, "Wiki")
-        // Stable composite ids.
-        XCTAssertTrue(entries[0].id.hasPrefix("Falcon IT|General|"))
-        XCTAssertNotEqual(entries[0].id, entries[1].id)
-    }
-
-    func testParseTabsAllEmptyAndGarbage() {
-        XCTAssertEqual(TeamsFrameLibrary.parseTabsAll(""), [])
-        XCTAssertEqual(TeamsFrameLibrary.parseTabsAll("hello\nworld\n"), [])
-        XCTAssertEqual(
-            TeamsFrameLibrary.parseTabsAll("=== Broken | header\n  X y\n"), [])
-    }
-
-    func testEntryFrameLoadable() {
-        XCTAssertTrue(TeamsFrameLibraryEntry(
-            id: "1", team: "T", channel: "C", label: "Files",
-            url: "https://teams.microsoft.com/l/entity/abc").frameLoadable)
-        XCTAssertFalse(TeamsFrameLibraryEntry(
-            id: "2", team: "T", channel: "C", label: "Notes",
-            url: "https://www.onenote.com/").frameLoadable)
-        XCTAssertFalse(TeamsFrameLibraryEntry(
-            id: "3", team: "T", channel: "C", label: "Bad",
-            url: "not a url at all").frameLoadable)
-    }
-
-    func testAppFromEntry() {
-        let app = TeamsFrameLibrary.appFromEntry(TeamsFrameLibraryEntry(
-            id: "Falcon IT|General|tab-1", team: "Falcon IT",
-            channel: "General", label: "Order Tracker",
-            url: "https://teams.microsoft.com/l/entity/x"))
-        XCTAssertEqual(app.label, "Order Tracker (General)")
-        XCTAssertEqual(app.entityURL, "https://teams.microsoft.com/l/entity/x")
-        XCTAssertTrue(app.id.hasPrefix("lib-"))
-        XCTAssertFalse(app.id.contains("|"))
-        XCTAssertFalse(app.id.contains(" "))
-    }
-
-    func testAppFromURLLabelAndFallbacks() {
-        let named = TeamsFrameLibrary.appFromURL(
-            "https://teams.microsoft.com/l/entity/abc?label=My+App")!
-        XCTAssertEqual(named.label, "My App")
-        XCTAssertTrue(named.id.hasPrefix("link-"))
-        let host = TeamsFrameLibrary.appFromURL("https://teams.microsoft.com/")!
-        XCTAssertEqual(host.label, "teams.microsoft.com")
-        XCTAssertNil(TeamsFrameLibrary.appFromURL("   "))
-        XCTAssertNil(TeamsFrameLibrary.appFromURL("not a url"))
-    }
-
-    func testCliCandidatesOrder() {
-        let cands = TeamsFrameLibrary.cliCandidates(
-            bundleResourcePath: "/A/B.app/Contents/Resources",
-            devBuildPath: "/repo/rust/ost/target/release/teams-cli")
-        XCTAssertEqual(cands, [
-            "/A/B.app/Contents/Resources/teams-cli",
-            "/repo/rust/ost/target/release/teams-cli",
-        ])
-        let bare = TeamsFrameLibrary.cliCandidates(
-            bundleResourcePath: nil, devBuildPath: nil)
-        XCTAssertEqual(bare, [])
-        // Relative paths never become candidates (no cwd/PATH resolution).
-        let relative = TeamsFrameLibrary.cliCandidates(
-            bundleResourcePath: "Resources", devBuildPath: "teams-cli")
-        XCTAssertEqual(relative, [])
-        XCTAssertTrue(TeamsFrameLibrary.devBuildCLIPath.hasPrefix("/"))
-        XCTAssertTrue(
-            TeamsFrameLibrary.devBuildCLIPath.hasSuffix(
-                "/rust/ost/target/release/teams-cli"))
-    }
-
-    func testFirstExecutableSkipsMissing() throws {
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let exe = dir.appendingPathComponent("teams-cli")
-        try "#!/bin/sh\necho hi\n".write(to: exe, atomically: true, encoding: .utf8)
-        try FileManager.default.setAttributes(
-            [.posixPermissions: 0o755], ofItemAtPath: exe.path)
-        XCTAssertEqual(
-            TeamsFrameLibrary.firstExecutable(["/nonexistent/x", exe.path]),
-            exe.path)
-        XCTAssertNil(TeamsFrameLibrary.firstExecutable(["/nonexistent/x"]))
-        try? FileManager.default.removeItem(at: dir)
-    }
-
-    /// G1: a bare name is never looked up on PATH, even when PATH holds
-    /// an executable of that name (`sh` is on every PATH).
-    func testFirstExecutableNeverSearchesPath() {
-        XCTAssertNil(TeamsFrameLibrary.firstExecutable(["sh", "teams-cli"]))
-    }
-
-    func testLibraryCacheRoundTrip() {
-        let defaults = freshDefaults()
-        XCTAssertEqual(TeamsFrameLibrary.loadCache(defaults: defaults), [])
-        let entries = TeamsFrameLibrary.parseTabsAll(tabsAllFixture)
-        TeamsFrameLibrary.saveCache(entries, defaults: defaults)
-        XCTAssertEqual(TeamsFrameLibrary.loadCache(defaults: defaults), entries)
-        defaults.set(Data([0x00]), forKey: TeamsFrameLibrary.cacheKey)
-        XCTAssertEqual(TeamsFrameLibrary.loadCache(defaults: defaults), [])
     }
 }

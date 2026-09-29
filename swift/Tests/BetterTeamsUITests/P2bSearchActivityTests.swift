@@ -91,9 +91,8 @@ final class P2bSearchActivityTests: XCTestCase {
     /// P2b fixes (D2): every demo feed row is the message it opens (same
     /// sender, text and time), and the reply really replies to the owner.
     func testDemoFeedRowsMatchTheirMessages() {
-        let store = ActivityStore(defaults: UserDefaults(suiteName: "p2bfix-tests-\(UUID().uuidString)")!)
-        store.seedDemo()
-        XCTAssertEqual(store.items.count, 10)
+        let store = ActivityStore.demo(DemoGate.launch(args: ["--demo"])!)
+        XCTAssertEqual(store.items.count, 12)
         for item in store.items where item.messageID != nil {
             let m = DemoData.messages(for: item.chatID).first { $0.id == item.messageID }
             XCTAssertNotNil(m, item.id)

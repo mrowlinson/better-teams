@@ -342,36 +342,42 @@ public enum TeamsAppStoreCache {
 /// ui-lint R11). Network calls run off the main thread.
 public enum TeamsAppService {
     public static func catalog(profile: String?) async -> Result<TeamsAppCatalogResponse, any Error> {
-        await Task.detached(priority: .utility) { Result { try RustCore.appCatalog(profile: profile) } }.value
+        await Task.blocking(priority: .utility) { Result { try RustCore.appCatalog(profile: profile) } }.value
     }
 
     public static func store(profile: String?) async -> Result<TeamsAppStoreResponse, any Error> {
-        await Task.detached(priority: .utility) { Result { try RustCore.appStore(profile: profile) } }.value
+        await Task.blocking(priority: .utility) { Result { try RustCore.appStore(profile: profile) } }.value
     }
 
     public static func search(profile: String?, query: String) async -> Result<[TeamsAppManifest], any Error> {
-        await Task.detached(priority: .userInitiated) {
+        await Task.blocking(priority: .userInitiated) {
             Result { try RustCore.appSearch(profile: profile, query: query).apps }
         }.value
     }
 
     /// Team-installed + channel-tab app manifests (read-only).
     public static func teamApps(profile: String?, teamID: String?, ids: [String]) async -> Result<[TeamsAppManifest], any Error> {
-        await Task.detached(priority: .utility) {
+        await Task.blocking(priority: .utility) {
             Result { try RustCore.teamAppDefinitions(profile: profile, teamID: teamID, ids: ids).apps }
         }.value
     }
 
     /// SharePoint site URLs for tab placeholders (read-only).
     public static func sites(profile: String?, groupID: String?) async -> Result<TeamsAppSites, any Error> {
-        await Task.detached(priority: .userInitiated) {
+        await Task.blocking(priority: .userInitiated) {
             Result { try RustCore.appSites(profile: profile, groupID: groupID) }
         }.value
     }
 
+    /// The signed-in account's joined teams, for hosted apps asking
+    /// TeamsJS getUserJoinedTeams (read-only; empty on failure).
+    public static func joinedTeams() async -> [TeamItem] {
+        await Task.blocking(priority: .utility) { (try? RustCore.teams().teams) ?? [] }.value
+    }
+
     /// REMOTE WRITE (tenant sees a new personal install). Confirm first.
     public static func install(profile: String?, appID: String) async -> Result<Void, any Error> {
-        await Task.detached(priority: .userInitiated) {
+        await Task.blocking(priority: .userInitiated) {
             Result { try RustCore.appInstall(profile: profile, appID: appID) }
         }.value
     }
@@ -382,14 +388,14 @@ public enum TeamsAppService {
     }
 
     public static func token(profile: String?, scopes: String) async -> Result<TeamsAppToken, any Error> {
-        await Task.detached(priority: .userInitiated) {
+        await Task.blocking(priority: .userInitiated) {
             Result { try RustCore.tokenForScope(profile: profile, scopes: scopes) }
         }.value
     }
 
     public static func naaToken(profile: String?, clientID: String, scopes: String,
                                 origin: String) async -> Result<TeamsAppToken, any Error> {
-        await Task.detached(priority: .userInitiated) {
+        await Task.blocking(priority: .userInitiated) {
             Result { try RustCore.naaToken(profile: profile, clientID: clientID, scopes: scopes, origin: origin) }
         }.value
     }

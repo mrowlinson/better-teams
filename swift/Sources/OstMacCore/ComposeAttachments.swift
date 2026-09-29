@@ -111,12 +111,29 @@ public final class ComposeAttachmentsStore: ObservableObject {
             .uint64Value
     }
 
+    /// §106: idempotent chat file send (chatID, path, client message id,
+    /// verifyFirst). When set it replaces `upload`: every row keeps one
+    /// client message id across Retry, and a retry verifies first, so a
+    /// file message whose answer was lost is never posted twice.
+    public typealias IdemUploadFetcher = @Sendable (String, String, String, Bool) throws -> SharedFileUploadResponse
+    /// Live idempotent uploader (the app's composer passes it).
+    public nonisolated static let liveIdemUpload: IdemUploadFetcher = {
+        try RustCore.sharedUploadIdem(chatID: $0, path: $1, clientMessageID: $2, verifyFirst: $3)
+    }
+    private let idemUploadFetcher: IdemUploadFetcher?
+    /// Per-row client message id (attachment id → cmid) and rows already
+    /// attempted once (their next attempt verifies first).
+    private var clientMessageIDs: [String: String] = [:]
+    private var attempted: Set<String> = []
+
     public nonisolated init(
         upload: @escaping UploadFetcher = { try RustCore.sharedUpload(chatID: $0, path: $1) },
+        uploadIdem: IdemUploadFetcher? = nil,
         sizeProbe: @escaping SizeProbe = ComposeAttachmentsStore.defaultSizeProbe,
         progress: @escaping SharedFilesStore.ProgressFetcher = { try RustCore.sharedUploadProgress() }
     ) {
         self.uploadFetcher = upload
+        self.idemUploadFetcher = uploadIdem
         self.sizeProbe = sizeProbe
         self.progressFetcher = progress
     }
@@ -209,9 +226,19 @@ public final class ComposeAttachmentsStore: ObservableObject {
             let poll = startProgressPoll(id: item.id)
             do {
                 let fetcher = uploadFetcher
+                let idem = idemUploadFetcher
                 let path = item.path
-                let resp = try await Task.detached { try fetcher(chatID, path) }.value
+                let cmid = clientMessageIDs[item.id] ?? SendReconcile.newClientMessageID()
+                clientMessageIDs[item.id] = cmid
+                let verifyFirst = attempted.contains(item.id)
+                attempted.insert(item.id)
+                let resp = try await Task.blocking {
+                    if let idem { return try idem(chatID, path, cmid, verifyFirst) }
+                    return try fetcher(chatID, path)
+                }.value
                 setState(id: item.id, .uploaded)
+                clientMessageIDs.removeValue(forKey: item.id)
+                attempted.remove(item.id)
                 done.append(resp.file)
             } catch {
                 let msg = SharedFilesStore.message(for: error)
@@ -232,7 +259,7 @@ public final class ComposeAttachmentsStore: ObservableObject {
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 200_000_000)
                 if Task.isCancelled { break }
-                if let p = try? await Task.detached(operation: { try fetcher() }).value,
+                if let p = try? await Task.blocking(operation: { try fetcher() }).value,
                    let frac = SharedFilesStore.progressFraction(uploaded: p.uploaded, total: p.total)
                 {
                     self.uploadProgress[id] = frac

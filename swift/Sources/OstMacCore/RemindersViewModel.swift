@@ -114,7 +114,7 @@ public final class RemindersViewModel: ObservableObject {
         tasksError = nil
         let fetcher = listsFetcher
         do {
-            let response = try await Task.detached {
+            let response = try await Task.blocking {
                 try fetcher()
             }.value
             lists = response.lists
@@ -181,7 +181,7 @@ public final class RemindersViewModel: ObservableObject {
         }
         let fetcher = addFetcher
         tasksError = nil
-        Task.detached { [weak self] in
+        Task.blocking { [weak self] in
             do {
                 let created = try fetcher(id, trimmed)
                 await MainActor.run { [weak self] in
@@ -222,7 +222,7 @@ public final class RemindersViewModel: ObservableObject {
         }
         let fetcher = done ? doneFetcher : reopenFetcher
         tasksError = nil
-        Task.detached { [weak self] in
+        Task.blocking { [weak self] in
             do {
                 let updated = try fetcher(id, taskID)
                 await MainActor.run { [weak self] in
@@ -244,7 +244,7 @@ public final class RemindersViewModel: ObservableObject {
         tasksError = nil
         let fetcher = tasksFetcher
         do {
-            let response = try await Task.detached {
+            let response = try await Task.blocking {
                 try fetcher(listID)
             }.value
             // Selection may have moved while fetching; only adopt when fresh.

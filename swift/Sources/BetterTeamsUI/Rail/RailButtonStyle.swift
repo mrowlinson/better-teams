@@ -44,23 +44,20 @@ private struct RailButtonBody: View {
         forced == .hover || forced == .focused || (forced == nil && (hovering || focused))
     }
 
+    /// The label text is `.primary` in every state; the selection is the
+    /// fill and the symbol. A `.tint` label drew mid-gray whenever the app
+    /// was not active, even with `controlActiveState == .key` (evidence
+    /// runs force `.key`; SwiftUI still resolves the tint unemphasized),
+    /// so the selected tab read dimmer than the unselected ones.
     var body: some View {
         configuration.label
-            .foregroundStyle(foreground)
+            .foregroundStyle(.primary)
             .environment(\.railSelected, isSelected)
             .environment(\.railKey, isKey)
             .frame(width: RailModel.itemWidth, height: height)
             .background(background, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
             .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
             .onHover { hovering = $0 }
-    }
-
-    /// Selected in an inactive window keeps the label at `.primary`, as
-    /// every other label: `.secondary` read lighter than the unselected
-    /// tabs, as if disabled (the gray selection fill carries the state).
-    private var foreground: AnyShapeStyle {
-        if isSelected, isKey { return AnyShapeStyle(.tint) }
-        return AnyShapeStyle(.primary)
     }
 
     private var background: AnyShapeStyle {
@@ -89,19 +86,19 @@ extension EnvironmentValues {
 }
 
 /// Symbol over label, badge overlaid top-trailing on the symbol.
+/// A catalog app (`icon`, the manifest's color icon) shows its own icon
+/// once cached, at the symbol's height; the symbol until then.
 struct RailButtonLabel: View {
     let title: String
     let symbol: String
     let badge: Int?
+    var icon: URL?
     @Environment(\.railSelected) private var selected
     @Environment(\.railKey) private var key
 
     var body: some View {
         VStack(spacing: 3) {
-            Image(systemName: symbol)
-                .symbolVariant(selected ? .fill : .none)
-                .font(.title2)
-                .foregroundStyle(symbolStyle)
+            AppIconImage(url: icon, size: 22) { symbolImage }
                 .frame(height: 24)
                 .overlay(alignment: .topTrailing) {
                     if let badge { RailBadge(count: badge).offset(x: 10, y: -5) }
@@ -112,6 +109,13 @@ struct RailButtonLabel: View {
                 .truncationMode(.tail)
                 .padding(.horizontal, 2)
         }
+    }
+
+    private var symbolImage: some View {
+        Image(systemName: symbol)
+            .symbolVariant(selected ? .fill : .none)
+            .font(.title2)
+            .foregroundStyle(symbolStyle)
     }
 
     private var symbolStyle: AnyShapeStyle {

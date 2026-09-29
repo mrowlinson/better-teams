@@ -29,7 +29,9 @@ final class RichConversationTests: XCTestCase {
     }
 
     func testMentionTokenFallback() {
-        XCTAssertEqual(MessageRender.mentionTokens(in: "hi @Doe, Jane ok"), ["Doe, Jane ok"])
+        XCTAssertEqual(MessageRender.mentionTokens(in: "hi @Doe, Jane ok"), ["Doe, Jane"])
+        XCTAssertEqual(MessageRender.mentionTokens(in: "@Jordan Fox can you confirm the change window works?"), ["Jordan Fox"])
+        XCTAssertEqual(MessageRender.mentionTokens(in: "hi @Jordan Fox, ok @Ava Lindqvist."), ["Jordan Fox", "Ava Lindqvist"])
         XCTAssertEqual(MessageRender.mentionTokens(in: "no mention"), [])
     }
 

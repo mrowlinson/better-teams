@@ -125,6 +125,9 @@ public enum Palette {
     /// Edge of in-message panels (code blocks, link cards): their
     /// `.fill.quaternary` alone barely separates from the dark background.
     public static let panelEdge = Color(nsColor: .separatorColor)
+    /// Image viewer window + letterbox: the app's window background, so
+    /// the viewer follows light/dark live like every other window.
+    public static let viewerBackgroundNS = NSColor.windowBackgroundColor
 
     /// A manifest `accentColor` (`#RRGGBB`); nil when absent or malformed.
     public static func manifestAccent(_ hex: String?) -> Color? {

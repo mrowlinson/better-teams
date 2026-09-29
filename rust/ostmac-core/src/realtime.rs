@@ -81,6 +81,10 @@ pub struct RealtimeMessage {
     /// the event carried none — the rules filter treats that as
     /// unclassifiable (type gate passes) for old-core tolerance.
     pub message_type: String,
+    /// §106: the sender's `clientmessageid` (idempotency key): an own
+    /// send's echo reconciles its pending bubble by it. Omitted when absent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_message_id: Option<String>,
 }
 
 /// One grouped reaction count: picker emoji + number of reactors.
@@ -142,6 +146,11 @@ pub struct ParsedBatch {
     pub messages: Vec<RealtimeMessage>,
     pub typing: Vec<TypingEvent>,
     pub roster: Vec<RosterEvent>,
+    /// Thread ids from `ThreadUpdate` resources (team/channel/member
+    /// changes made elsewhere), deduplicated. The host refreshes the
+    /// teams tree on any entry; an id may be empty when the frame
+    /// carried none.
+    pub threads: Vec<String>,
     pub resync: bool,
     pub skipped: usize,
 }
@@ -168,6 +177,25 @@ fn parse_value(v: &Value, batch: &mut ParsedBatch) {
                 batch.resync = true;
                 batch.skipped += 1;
                 return;
+            }
+            // ThreadUpdate (channel added/renamed/deleted, members,
+            // team properties): a tree-refresh signal, never a bubble.
+            if let Some(id) = thread_update_id(map) {
+                if !batch.threads.contains(&id) {
+                    batch.threads.push(id);
+                }
+                return;
+            }
+            // ThreadActivity/* system messages (channel added, renamed,
+            // deleted; members changed) also mean the tree changed: signal
+            // a refresh, then let the normal path handle the frame.
+            if let Some(mt) = first_str(map, &["messagetype", "messageType"]) {
+                if mt.get(..15).is_some_and(|h| h.eq_ignore_ascii_case("ThreadActivity/")) {
+                    let id = chat_id_from(map);
+                    if !batch.threads.contains(&id) {
+                        batch.threads.push(id);
+                    }
+                }
             }
             // socket.io v1 envelope {"name","args"}.
             if let Some(args) = map.get("args").and_then(|a| a.as_array()) {
@@ -303,6 +331,31 @@ fn find_ci(hay: &str, needle: &str) -> Option<usize> {
 }
 
 /// True when the object itself carries a loss marker.
+/// Thread id of a chat-service `ThreadUpdate` event
+/// (`{"resourceType":"ThreadUpdate","resource":{"id":…}}` or a
+/// `resourceLink` ending `/threads/<id>`); None for anything else.
+fn thread_update_id(map: &serde_json::Map<String, Value>) -> Option<String> {
+    let kind = map
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("resourceType"))
+        .and_then(|(_, v)| v.as_str())?;
+    if !kind.eq_ignore_ascii_case("ThreadUpdate") {
+        return None;
+    }
+    let from_resource = map
+        .get("resource")
+        .and_then(|r| r.get("id"))
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let from_link = || {
+        map.get("resourceLink")
+            .and_then(|v| v.as_str())
+            .and_then(|l| l.rsplit("/threads/").next().filter(|t| *t != l))
+            .map(|t| t.split(['?', '/']).next().unwrap_or("").to_string())
+    };
+    Some(from_resource.or_else(from_link).unwrap_or_default())
+}
+
 fn has_loss_marker(map: &serde_json::Map<String, Value>) -> bool {
     // Exact keys first (wire shape is lowercase / camelCase).
     if map.contains_key("message_loss")
@@ -718,6 +771,7 @@ fn message_from_object(
         || contains_ci(&msgtype, "edit")
         || contains_ci(type_field, "edit")
         || edited_id.is_some();
+    let client_message_id = first_str(map, &["clientmessageid"]).filter(|s| !s.trim().is_empty());
     let id = first_str(
         map,
         &[
@@ -742,6 +796,7 @@ fn message_from_object(
         raw: content,
         reactions,
         message_type: msgtype,
+        client_message_id,
     })
 }
 
@@ -925,6 +980,29 @@ fn decode_entities(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn sendfix_pushed_new_message_carries_client_message_id() {
+        // The decoded Trouter `3:::` body (ost §106): chat-service event.
+        let ev: Value = serde_json::from_str(
+            r#"{"time":"t","type":"EventMessage","resourceType":"NewMessage",
+                "resourceLink":"https://h/v1/users/ME/conversations/19:abc@unq.gbl.spaces/messages/1727",
+                "resource":{"id":"1727","clientmessageid":"4242424242424242424",
+                  "content":"<p>test</p>","messagetype":"RichText/Html",
+                  "imdisplayname":"Alice Smith","from":"https://h/v1/users/ME/contacts/8:orgid:a",
+                  "originalarrivaltime":"2026-09-28T18:20:06.676Z",
+                  "conversationLink":"https://h/v1/users/ME/conversations/19:abc@unq.gbl.spaces"}}"#,
+        )
+        .unwrap();
+        let b = parse_batch(&[ev]);
+        assert_eq!(b.messages.len(), 1);
+        let m = &b.messages[0];
+        assert_eq!(m.chat_id, "19:abc@unq.gbl.spaces");
+        assert_eq!(m.id, "1727");
+        assert_eq!(m.client_message_id.as_deref(), Some("4242424242424242424"));
+        let j = serde_json::to_value(m).unwrap();
+        assert_eq!(j["client_message_id"], "4242424242424242424");
+    }
+
     use super::*;
     use serde_json::json;
 
@@ -1368,5 +1446,40 @@ mod tests {
         assert!(b.roster.is_empty());
         assert!(b.messages.is_empty());
         assert_eq!(b.skipped, 1);
+    }
+
+    #[test]
+    fn thread_update_is_a_tree_signal_not_a_message() {
+        let evs = vec![
+            json!({"resourceType": "ThreadUpdate",
+                   "resource": {"id": "19:team@thread.tacv2", "properties": {"topic": "x"}}}),
+            // Same thread again (deduplicated) and one via resourceLink.
+            json!({"eventMessages": [
+                {"resourceType": "ThreadUpdate", "resource": {"id": "19:team@thread.tacv2"}},
+                {"resourceType": "threadupdate",
+                 "resourceLink": "https://amer.ng.msg.teams.microsoft.com/v1/threads/19:chan@thread.tacv2"}
+            ]}),
+        ];
+        let b = parse_batch(&evs);
+        assert_eq!(b.threads, vec!["19:team@thread.tacv2", "19:chan@thread.tacv2"]);
+        assert!(b.messages.is_empty());
+        assert_eq!(b.skipped, 0);
+        // A ConversationUpdate stays out of threads.
+        let b = parse_batch(&[json!({"resourceType": "ConversationUpdate",
+                                     "resource": {"id": "19:c@thread.v2"}})]);
+        assert!(b.threads.is_empty());
+    }
+
+    #[test]
+    fn thread_activity_system_message_is_a_tree_signal() {
+        let b = parse_batch(&[json!({"resourceType": "NewMessage",
+            "resource": {"messagetype": "ThreadActivity/DeleteChannel",
+                        "conversationLink": "https://x/v1/users/ME/conversations/19:team@thread.tacv2"}})]);
+        assert_eq!(b.threads, vec!["19:team@thread.tacv2"]);
+        // An ordinary text message is not.
+        let b = parse_batch(&[json!({"resourceType": "NewMessage",
+            "resource": {"messagetype": "Text", "content": "hi",
+                        "conversationLink": "https://x/v1/users/ME/conversations/19:c@thread.tacv2"}})]);
+        assert!(b.threads.is_empty());
     }
 }

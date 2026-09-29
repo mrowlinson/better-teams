@@ -47,7 +47,7 @@ public enum CallTargetResolver {
             if demo { return CallTarget(threadID: PersonChat.demoChatID(for: person), name: name) }
             let ref = refs[0]
             do {
-                let created = try await Task.detached { try oneToOne(ref) }.value
+                let created = try await Task.blocking { try oneToOne(ref) }.value
                 return CallTarget(threadID: created.chat.chatId, name: name)
             } catch {
                 throw Failure.create(String(describing: error))
@@ -56,7 +56,7 @@ public enum CallTargetResolver {
         let name = GroupChat.defaultName(for: named)
         if demo { return CallTarget(threadID: GroupChat.demoChatID(refs: refs, topic: nil), name: name) }
         do {
-            let created = try await Task.detached { try group(refs) }.value
+            let created = try await Task.blocking { try group(refs) }.value
             let chatName = created.chat.name.isEmpty ? name : created.chat.name
             return CallTarget(threadID: created.chat.chatId, name: chatName)
         } catch {

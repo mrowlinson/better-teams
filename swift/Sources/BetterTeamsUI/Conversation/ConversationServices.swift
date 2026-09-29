@@ -182,7 +182,8 @@ final class ConversationServices {
         translation = TranslationStore(defaults: demo ? MemoryDefaults() : .standard)
         media = MediaLoader(demo: demo)
         // Demo uploads are fabricated by `uploadPending(isDemo:)`.
-        attachments = ComposeAttachmentsStore()
+        // §106: chat file sends keep one client message id across Retry.
+        attachments = ComposeAttachmentsStore(uploadIdem: ComposeAttachmentsStore.liveIdemUpload)
     }
 
     /// GIF search needs a Klipy key (§6.2.2): demo uses canned GIFs and
@@ -217,9 +218,15 @@ final class ConversationServices {
     /// Per-chat notification level, mute and hide (§6.2 Info). Demo keeps
     /// its own rules file in the temporary directory, so a demo session
     /// never writes the real `rules.json`.
-    private lazy var localRules = RulesStore(
-        path: FileManager.default.temporaryDirectory
-            .appendingPathComponent("BetterTeams-demo-rules-\(ProcessInfo.processInfo.processIdentifier).json").path)
+    /// Demo rows state their Teams mute state (DemoData chats), adopted
+    /// like a fetched chat page.
+    private lazy var localRules: RulesStore = {
+        let r = RulesStore(
+            path: FileManager.default.temporaryDirectory
+                .appendingPathComponent("BetterTeams-demo-rules-\(ProcessInfo.processInfo.processIdentifier).json").path)
+        if isDemo { r.adoptServerMutes(DemoData.chats) }
+        return r
+    }()
 
     func rules(_ m: WindowModel?) -> RulesStore {
         if !isDemo, let r = m?.app?.rules { return r }

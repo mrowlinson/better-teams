@@ -84,7 +84,7 @@ public final class FilePeopleSearchStore: ObservableObject {
         let peopleSearcher = peopleSearcher
         // One detached hop for both blocking FFI calls (sequential:
         // two Graph windows, still off-main).
-        let result = await Task.detached { () -> (
+        let result = await Task.blocking { () -> (
             Result<[SharedFile], Error>, Result<[TeamMember], Error>
         ) in
             let f: Result<[SharedFile], Error>

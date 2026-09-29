@@ -82,10 +82,17 @@ public final class TeamsJSHost: NSObject {
     /// A Teams deep link (`/l/...`) the app opened: true when the window
     /// routed it natively (APPHOST-B2). Nil or false → default browser.
     public var onDeepLink: ((URL) -> Bool)?
+    /// The user's joined teams (`teams.fullTrust.joinedTeams`, Shifts
+    /// and Office read them at start). Nil = none known.
+    public var onJoinedTeams: (() async -> [TeamsJSTeamInfo])?
     public private(set) var appSDKVersion: String?
     public private(set) var initialized = false
     /// APIs the app called that the host does not implement yet.
     public private(set) var unhandled: [String: Int] = [:]
+    /// The app asked for meeting context (a `meeting.*` API): a meeting
+    /// app opened outside a meeting. Teams shows an "open me in a
+    /// meeting" state, not an error, when such an app then draws nothing.
+    public private(set) var wantsMeetingContext = false
     private var appearanceObservation: NSKeyValueObservation?
     private var fellBack = false
 
@@ -225,17 +232,43 @@ public final class TeamsJSHost: NSObject {
 
     // MARK: runtime + context
 
+    /// The runtime version the app's own TeamsJS accepts. TeamsJS
+    /// upgrades an older runtime itself but throws on a newer one
+    /// ("Received a runtime that could not be upgraded to the latest
+    /// version": Polly on 2.19 got 4 and never started; APPNATIVE4).
+    /// Runtime 2 came with TeamsJS 2.8, 3 with 2.15, 4 with 2.20.
+    nonisolated static func runtimeAPIVersion(sdk: String) -> Int {
+        let parts = sdk.split(separator: ".").map { Int($0.prefix { $0.isNumber }) }
+        guard let major = parts.first ?? nil else { return 4 }
+        if major >= 3 { return 4 }
+        if major < 2 { return 1 }
+        let minor = (parts.count > 1 ? parts[1] : nil) ?? 0
+        switch minor {
+        case 20...: return 4
+        case 15...: return 3
+        case 8...: return 2
+        default: return 1
+        }
+    }
+
     func runtimeConfigJSON() -> String {
         let empty: [String: Any] = [:]
+        // What Teams desktop advertises that apps call unguarded at start
+        // (APPNATIVE2: Shifts reads joined teams, Office sets its menu);
+        // TeamsJS throws "not supported" for anything missing here.
         var supports: [String: Any] = [
             "authentication": empty,
             "pages": ["appButton": empty, "tabs": empty, "config": empty, "backStack": empty],
             "teamsCore": empty,
             "appInitialization": empty,
+            "menus": empty,
+            "logs": empty,
+            "webStorage": empty,
+            "teams": ["fullTrust": ["joinedTeams": empty]],
         ]
         if advertiseNAA { supports["nestedAppAuth"] = empty }
         let runtime: [String: Any] = [
-            "apiVersion": 4,
+            "apiVersion": Self.runtimeAPIVersion(sdk: appSDKVersion ?? ""),
             "hostVersionsInfo": ["adaptiveCardSchemaVersion": ["majorVersion": 1, "minorVersion": 5]],
             "isLegacyTeams": false,
             "isNAAChannelRecommended": advertiseNAA,
@@ -256,7 +289,7 @@ public final class TeamsJSHost: NSObject {
             "userLicenseType": "Unknown", "tenantSKU": "enterprise", "isFullScreen": false,
             "isMultiWindow": false, "isCallingAllowed": false, "isPSTNCallingAllowed": false,
             "appId": c.appId, "userClickTime": Int(Date().timeIntervalSince1970 * 1000),
-            "osLocaleInfo": ["platform": "macos", "regionalFormat": c.locale],
+            "osLocaleInfo": Self.osLocaleInfo(regionalFormat: c.locale),
         ]
         if let v = c.teamId { d["teamId"] = v }
         if let v = c.channelId { d["channelId"] = v }
@@ -264,6 +297,34 @@ public final class TeamsJSHost: NSObject {
         if let v = c.teamName { d["teamName"] = v }
         if let v = c.channelName { d["channelName"] = v; d["channelType"] = "Regular" }
         return d
+    }
+
+    /// TeamsJS `LocaleInfo` (`app.osLocaleInfo`) as Teams fills it: the
+    /// Mac's date and time patterns, not just the platform. Apps format
+    /// dates from these (Viva Learning reads `shortDate` unguarded and
+    /// shows its error page when it is missing — APPNATIVE5, R5).
+    static func osLocaleInfo(regionalFormat: String, locale: Locale = .current) -> [String: Any] {
+        func pattern(_ d: DateFormatter.Style, _ t: DateFormatter.Style) -> String {
+            let f = DateFormatter()
+            f.locale = locale
+            f.dateStyle = d
+            f.timeStyle = t
+            return f.dateFormat ?? ""
+        }
+        return ["platform": "macos", "regionalFormat": regionalFormat,
+                "shortDate": pattern(.short, .none), "longDate": pattern(.full, .none),
+                "shortTime": pattern(.none, .short), "longTime": pattern(.none, .medium)]
+    }
+
+    /// TeamsJS `UserProfile` for `authentication.getUser`: identity
+    /// claims only (no token).
+    func userProfile() -> [String: Any] {
+        let c = context
+        return ["oid": c.userObjectId, "tid": c.tenantId, "name": c.userDisplayName,
+                "upn": c.userPrincipalName, "unique_name": c.userPrincipalName,
+                "preferred_username": c.userPrincipalName, "email": c.userPrincipalName,
+                "sub": c.userObjectId, "ver": "2.0",
+                "iss": "https://login.microsoftonline.com/\(c.tenantId)/v2.0"]
     }
 
     /// NAA account (MSAL `AccountInfo`).
@@ -310,10 +371,14 @@ public final class TeamsJSHost: NSObject {
             emit(fn, "", true)
         case "authentication.getAuthToken":
             let resources = (args.first as? [Any])?.compactMap { $0 as? String } ?? []
-            emit(fn, "resources=\(resources.count)", true)
+            // Shape only: whether the page asked for its manifest resource.
+            let same = launch.resource.map { r in resources.contains { $0.caseInsensitiveCompare(r) == .orderedSame } }
+            emit(fn, "resources=\(resources.count) manifest=\(launch.resource != nil) same=\(same.map(String.init) ?? "-")", true)
             getAuthToken(req, requested: resources)
         case "authentication.getUser":
-            respond(req, [false, "getUser is not supported"])
+            // The signed-in user's profile (id-token claim names), as
+            // Teams answers it; Office on the web reads it at start.
+            respond(req, [true, userProfile()])
             emit(fn, "", true)
         case "appInitialization.failure", "appInitialization.expectedFailure":
             let reason = (args.first as? String) ?? ""
@@ -342,6 +407,25 @@ public final class TeamsJSHost: NSObject {
             emit(fn, "", false)
         case "nestedAppAuth.execute":
             handleNAA(req["data"] as? String ?? (args.first as? String) ?? "")
+        case "getUserJoinedTeams":
+            emit(fn, "", true)
+            joinedTeams(req)
+        case "teams.fullTrust.getConfigSetting", "getConfigSetting":
+            respond(req, [""])
+            emit(fn, "", true)
+        case "webStorage.isWebStorageClearedOnUserLogOut":
+            // The account's web store persists across sign-outs.
+            respond(req, [false])
+            emit(fn, "", true)
+        case "setNavBarMenu", "setUpViews", "showActionMenu":
+            // Teams draws these menus in its own header; this host has
+            // none (the app keeps its in-page controls). No reply.
+            emit(fn, "", true)
+        case "files.getExternalProviders":
+            // No third-party storage providers (OneDrive's file browser
+            // waits for this answer before it shows files).
+            respond(req, [NSNull(), [Any]()])
+            emit(fn, "", true)
         case "registerHandler":
             emit(fn, (args.first as? String).map { String($0.prefix(40)) } ?? "?", false)
         case "executeDeepLink", "openLink", "pages.navigateToApp", "navigateToApp":
@@ -353,11 +437,35 @@ public final class TeamsJSHost: NSObject {
             if back { web?.goBack() }
             respond(req, [back])
             emit(fn, "", true)
+        case _ where fn.hasPrefix("meeting."):
+            // Not in a meeting (APPNATIVE4): meeting apps opened as a
+            // personal app or tab (Q&A) wait on this answer forever
+            // unless told, as Teams tells them, that it does not apply.
+            wantsMeetingContext = true
+            unhandled[fn, default: 0] += 1
+            respond(req, [["errorCode": 501, "message": "Not in a meeting."] as [String: Any]])
+            emit(fn, "not in a meeting", true)
         default:
             // Unadvertised/private API: count it, do not answer (TeamsJS
             // gates public APIs on runtime.supports before sending).
             unhandled[fn, default: 0] += 1
             emit(fn, Self.shape(args), false)
+        }
+    }
+
+    /// `{userJoinedTeams: [TeamInformation]}` (TeamsJS `sendAndUnwrap`).
+    private func joinedTeams(_ req: [String: Any]) {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let teams = await self.onJoinedTeams?() ?? []
+            let tenant = self.context.tenantId
+            let list: [[String: Any]] = teams.map { t in
+                var d: [String: Any] = ["teamId": t.teamId, "teamName": t.teamName, "isTeamArchived": false]
+                if let g = t.groupId { d["groupId"] = g }
+                if !tenant.isEmpty { d["tenantId"] = tenant }
+                return d
+            }
+            self.respond(req, [["userJoinedTeams": list]])
         }
     }
 
@@ -390,6 +498,9 @@ public final class TeamsJSHost: NSObject {
                         return
                     }
                     self.respond(req, [false, "resourceRequiresConsent"])
+                    // Declined (Cancel) or not finished: the pane says the
+                    // app needs permission, with Retry to ask again (R8).
+                    self.failed("consent declined")
                     return
                 }
                 self.respond(req, [false, why])
@@ -421,17 +532,26 @@ public final class TeamsJSHost: NSObject {
             respond(req, [false, "Invalid link."])
             return
         }
-        if TeamsDeepLink.parse(url) != nil {
-            // Teams deep links route to native sections (APPHOST-B2).
+        if TeamsDeepLink.parse(url) != nil || TeamsWebGuard.isTeamsWeb(url) {
+            // Teams deep links route to native sections (APPHOST-B2). A
+            // Teams address never opens the Teams web app, not even in the
+            // default browser (APPNATIVE6): one with no native view opens
+            // nothing and the app is told so.
             let routed = onDeepLink?(url) ?? false
-            if !routed, !trustsBlankOrigin { NSWorkspace.shared.open(url) }
-            respond(req, [true])
-            emit("deepLink.teams", routed ? "native" : "browser", true)
+            respond(req, routed ? [true] : [false, "This Teams link has no view in this app."])
+            emit("deepLink.teams", routed ? "native" : "refused", true)
             return
         }
-        if !trustsBlankOrigin { NSWorkspace.shared.open(url) }
+        if !trustsBlankOrigin { openExternal(url) }
         respond(req, [true])
         emit("openLink", "external", true)
+    }
+
+    /// Opens a non-Teams link in the default browser. Never in a test
+    /// process (a test once opened a browser and wrote to ~/Downloads).
+    var openExternal: (URL) -> Void = { url in
+        guard !UserFolders.isTestProcess else { return }
+        NSWorkspace.shared.open(url)
     }
 
     /// The link a navigation call carries: a URL string (openLink,
@@ -502,7 +622,14 @@ public final class TeamsJSHost: NSObject {
     private func naaToken(_ requestID: Any, client: String, scope: String) {
         // The page origin is ours to observe, never the app's to claim.
         // Demo (about:blank) and iframe pages stand for the content URL.
-        let pageOrigin: URL? = transport == .frameless && !trustsBlankOrigin ? web?.url : contentURL
+        // A token request can race a same-app redirect (Office hops
+        // cloud.microsoft/d4→d3): the main-frame URL is momentarily nil
+        // or about:blank, which would refuse the token and leave the app
+        // blank. Fall back to the app's own declared content origin —
+        // still validated by isAppOrigin below, so no host is trusted
+        // that navigation would not already keep in the pane (R2).
+        let live = transport == .frameless && !trustsBlankOrigin ? web?.url : contentURL
+        let pageOrigin: URL? = (live?.scheme?.lowercased() == "https") ? live : contentURL
         guard let pageOrigin, let origin = Self.origin(of: pageOrigin),
               TeamsJSPolicy.isAppOrigin(pageOrigin, launch: launch),
               !client.isEmpty, !scope.isEmpty
@@ -624,10 +751,36 @@ public final class TeamsJSHost: NSObject {
 /// Breaks the WKUserContentController → handler retain cycle.
 @MainActor
 /// What the app's frame painted (counts only).
+/// One joined team for `getUserJoinedTeams` (TeamsJS `TeamInformation`).
+public struct TeamsJSTeamInfo: Sendable, Equatable {
+    /// The team's thread id (its General channel).
+    public var teamId: String
+    public var teamName: String
+    /// Microsoft 365 group id, when known.
+    public var groupId: String?
+
+    public nonisolated init(teamId: String, teamName: String, groupId: String?) {
+        self.teamId = teamId
+        self.teamName = teamName
+        self.groupId = groupId
+    }
+
+    /// From the core's team list: the General channel (else the first)
+    /// is the team thread; a UUID team id is the group id.
+    public nonisolated static func from(_ t: TeamItem) -> TeamsJSTeamInfo? {
+        let general = t.channels.first { $0.name.caseInsensitiveCompare("General") == .orderedSame } ?? t.channels.first
+        let thread = t.teamId.hasPrefix("19:") ? t.teamId : general?.channelId
+        guard let thread, !thread.isEmpty else { return nil }
+        return TeamsJSTeamInfo(teamId: thread, teamName: t.name,
+                               groupId: UUID(uuidString: t.teamId) != nil ? t.teamId : nil)
+    }
+}
+
 public struct TeamsJSPaintReport: Sendable, Equatable {
     public let text: Int
     public let items: Int
-    public var isBlank: Bool { text == 0 && items == 0 }
+    /// No text and at most one sized element (a lone spinner or logo).
+    public var isBlank: Bool { text == 0 && items <= 1 }
 }
 
 private final class WeakScriptHandler: NSObject, WKScriptMessageHandler {
