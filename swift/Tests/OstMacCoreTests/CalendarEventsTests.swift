@@ -168,7 +168,10 @@ final class CalendarEventsTests: XCTestCase {
                 update: { _, _ in throw CoreCallError.failed("x") },
                 meetNow: { _ in throw CoreCallError.failed("x") }))
         store.jump(to: now, span: .month)
-        for _ in 0 ..< 500 where !store.monthLoaded { try await Task.sleep(nanoseconds: 2_000_000) }
+        // Wait on the condition (5 s ceiling only bounds a hang): a fixed
+        // 500 x 2 ms poll ran out under machine load, leaving monthLoaded
+        // false and the grid at its pre-load defaults.
+        await Self.waitUntil { store.monthLoaded }
         XCTAssertTrue(store.monthLoaded)
         XCTAssertEqual(store.monthWeeks, 5, "Sep 2026, Monday-first: 5 rows")
         XCTAssertEqual(store.monthDayKeys.first, "2026-08-31")
@@ -180,9 +183,82 @@ final class CalendarEventsTests: XCTestCase {
         fail.on = true
         store.respond(to: row, .decline)
         XCTAssertNil(store.meetings.first { $0.id == "demo-cal-design" }, "decline drops the row at once")
-        for _ in 0 ..< 500 where store.respondingID != nil { try await Task.sleep(nanoseconds: 2_000_000) }
+        await Self.waitUntil { store.respondingID == nil }
         XCTAssertNotNil(store.meetings.first { $0.id == "demo-cal-design" }, "failure restores it")
         XCTAssertNotNil(store.rsvpError)
+    }
+
+    @MainActor
+    static func waitUntil(seconds: Double = 5, _ done: @MainActor @escaping () -> Bool) async {
+        let t0 = DispatchTime.now()
+        while !done(), Double(DispatchTime.now().uptimeNanoseconds &- t0.uptimeNanoseconds) / 1e9 < seconds {
+            try? await Task.sleep(nanoseconds: 2_000_000)
+        }
+    }
+
+    /// Month composition never reads the wall clock: pinned dates at month
+    /// ends, year ends and both DST transitions give a contiguous
+    /// Monday/Sunday-first grid that starts on or before the 1st and whose
+    /// last row holds the month's last day.
+    func testMonthGridAtMonthEndsAndDSTBoundaries() {
+        let cases: [(y: Int, m: Int, d: Int, firstWeekday: Int, weeks: Int, gridStart: String)] = [
+            (2026, 9, 30, 2, 5, "2026-08-31"),  // last day of a 30-day month
+            (2026, 1, 31, 2, 5, "2025-12-29"),  // Jan 31, grid starts in the previous year
+            (2026, 2, 28, 2, 5, "2026-01-26"),  // 28-day month starting on Sunday, Mon-first: 5 rows
+            (2026, 2, 28, 1, 4, "2026-02-01"),  // same month, Sunday-first: exactly 4 rows
+            (2026, 3, 31, 2, 6, "2026-02-23"),  // DST began Mar 8; 6th row holds Mar 30-31
+            (2026, 10, 31, 2, 5, "2026-09-28"), // day before DST ends
+            (2026, 11, 1, 2, 6, "2026-10-26"),  // DST ends Nov 1 (25-hour day); 6th row = Nov 30
+            (2026, 3, 8, 1, 5, "2026-03-01"),   // DST starts (23-hour day)
+            (2026, 12, 31, 2, 5, "2026-11-30"),
+            (2028, 2, 29, 2, 5, "2028-01-31"),  // leap day
+        ]
+        for c in cases {
+            var cal = Calendar(identifier: .gregorian)
+            cal.timeZone = Self.newYork
+            cal.firstWeekday = c.firstWeekday
+            let date = cal.date(from: DateComponents(year: c.y, month: c.m, day: c.d, hour: 23, minute: 30))!
+            let store = CalendarWeekStore(
+                weekStart: CalWeek.startOfWeek(containing: date, calendar: cal), calendar: cal,
+                weekFetcher: { CalWeekResponse(ok: true, weekStart: $0, days: 7, meetings: []) })
+            let g = store.monthGrid(containing: date)
+            let tag = "\(c.y)-\(c.m)-\(c.d) firstWeekday \(c.firstWeekday)"
+            XCTAssertEqual(store.dayKey(g.gridStart), c.gridStart, tag)
+            XCTAssertEqual(g.weeks.count, c.weeks, tag)
+            XCTAssertEqual(cal.component(.day, from: g.first), 1, "\(tag): first is the 1st")
+            for (i, w) in g.weeks.enumerated() {
+                XCTAssertEqual(w, cal.startOfDay(for: w), "\(tag): row \(i) starts at local midnight")
+                XCTAssertEqual(cal.component(.weekday, from: w), c.firstWeekday, "\(tag): row \(i) weekday")
+                if i > 0 {
+                    XCTAssertEqual(cal.dateComponents([.day], from: g.weeks[i - 1], to: w).day, 7, "\(tag): row \(i) is +7 days across DST")
+                }
+            }
+            let lastDay = cal.range(of: .day, in: .month, for: date)!.upperBound - 1
+            let lastOfMonth = cal.date(from: DateComponents(year: c.y, month: c.m, day: lastDay))!
+            let lastRowEnd = cal.date(byAdding: .day, value: 7, to: g.weeks.last!)!
+            XCTAssertTrue(g.weeks.last! <= lastOfMonth && lastOfMonth < lastRowEnd, "\(tag): last row holds the last day")
+        }
+    }
+
+    /// Navigating month by month from a month-end day never skips or repeats
+    /// a month (Jan 31 + 1 month must land on February, not March).
+    func testMonthPagingFromMonthEndDoesNotSkip() async throws {
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = Self.newYork
+        cal.firstWeekday = 2
+        let start = cal.date(from: DateComponents(year: 2026, month: 1, day: 31, hour: 12))!
+        let store = CalendarWeekStore(
+            weekStart: CalWeek.startOfWeek(containing: start, calendar: cal), calendar: cal,
+            weekFetcher: { CalWeekResponse(ok: true, weekStart: $0, days: 7, meetings: []) })
+        store.jump(to: start, span: .month)
+        await Self.waitUntil { store.monthLoaded }
+        var seen: [Int] = []
+        for _ in 0 ..< 3 {
+            seen.append(cal.component(.month, from: store.monthStart))
+            store.step(.month, by: 1)
+            await Self.waitUntil { !store.isLoadingMonth }
+        }
+        XCTAssertEqual(seen, [1, 2, 3])
     }
 
     func testTimeZoneChangeRelocalizesWithoutBlank() async {
