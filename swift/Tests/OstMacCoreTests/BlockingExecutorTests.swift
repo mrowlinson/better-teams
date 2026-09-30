@@ -5,8 +5,8 @@
 //     width, interactive jobs not stuck behind background saturation;
 //   * P2 starvation proof: saturate blocking calls (fake core = sleeps) and
 //     show unrelated async work, a MainActor task awaiting nonisolated async
-//     work, and a real ChatListViewModel load still finish within a bound,
-//     with a main-queue lateness watchdog running. The same harness run with
+//     work, and a real ChatListViewModel load still finish WHILE every
+//     saturating call is still blocked (progress, not a wall-clock bound). The same harness run with
 //     the legacy switch (Task.detached semantics) MUST starve: that is the
 //     negative control / mutation check;
 //   * lint: no Task.detached or DispatchQueue.global in Sources outside the
@@ -36,6 +36,8 @@ private final class BEDone: @unchecked Sendable {
     private var n = 0
     var count: Int { lock.lock(); defer { lock.unlock() }; return n }
     func bump() { lock.lock(); n += 1; lock.unlock() }
+    /// Overwrite the count (used to record a snapshot value).
+    func set(_ v: Int) { lock.lock(); n = v; lock.unlock() }
 }
 
 private final class BEFlag: @unchecked Sendable {
@@ -183,6 +185,31 @@ final class BlockingExecutorTests: XCTestCase {
         var mainHop: Double
         var chatList: Double
         var lateness: Double
+        /// LOAD-INDEPENDENT progress facts: how many saturating calls had
+        /// finished when each probe finished (0 = every one still blocking),
+        /// and whether each probe finished at all within `probeLimit`.
+        var satDoneAtUnrelated: Int
+        var satDoneAtMainHop: Int
+        var satDoneAtChatList: Int
+        var unrelatedFinished: Bool
+        var mainHopFinished: Bool
+        var chatListFinished: Bool
+    }
+
+    /// Gate the saturating calls block on: they stay blocked until the
+    /// test opens it, so "still saturated" is a fact, not a race against a
+    /// sleep that a loaded machine can overrun.
+    private final class SatGate: @unchecked Sendable {
+        private let sem = DispatchSemaphore(value: 0)
+        private let lock = NSLock()
+        private var opened = false
+        func wait() { sem.wait() }
+        func openAll(_ n: Int) {
+            lock.lock(); defer { lock.unlock() }
+            if opened { return }
+            opened = true
+            for _ in 0..<n { sem.signal() }
+        }
     }
 
     /// Poll until `flag` is set (never awaits the task: no escalation).
@@ -196,9 +223,14 @@ final class BlockingExecutorTests: XCTestCase {
         while done.count < n, seconds(t0) < 15 { try? await Task.sleep(nanoseconds: 5_000_000) }
     }
 
-    /// Saturate blocking calls (fake core = 0.6 s sleeps, more than the
-    /// pool is wide), then measure how long unrelated work takes.
-    private func measureUnderSaturation(legacy: Bool) async -> Measured {
+    /// Saturate blocking calls (fake core = calls parked on a gate, more
+    /// than the pool is wide), then measure whether unrelated work finishes
+    /// WHILE they are all still blocked. Progress, not wall clock: a starved
+    /// probe cannot finish until the gate opens, however fast the machine.
+    /// `probeLimit` only bounds how long the harness waits (generous for the
+    /// new pattern; short for the legacy negative control, where more load
+    /// only starves more).
+    private func measureUnderSaturation(legacy: Bool, probeLimit: Double) async -> Measured {
         BlockingExecutor.legacyCooperativePool = legacy
         defer { BlockingExecutor.legacyCooperativePool = false }
         let dog = MainLatenessWatchdog()
@@ -206,20 +238,25 @@ final class BlockingExecutorTests: XCTestCase {
         defer { dog.stop() }
 
         let done = BEDone()
-        let n = ProcessInfo.processInfo.activeProcessorCount + 4
+        let gate = SatGate()
+        // 2n blocked calls must stay under the executor's 32 threads (interactive
+        // probes need a free one) yet exceed the cooperative pool for the legacy control.
+        let n = min(ProcessInfo.processInfo.activeProcessorCount + 4, 12)
+        defer { gate.openAll(2 * n) }
         for _ in 0..<n {
-            Task.blocking(priority: .utility) { Thread.sleep(forTimeInterval: 0.6); done.bump() }
-            Task.blocking(priority: .userInitiated) { Thread.sleep(forTimeInterval: 0.6); done.bump() }
+            Task.blocking(priority: .utility) { gate.wait(); done.bump() }
+            Task.blocking(priority: .userInitiated) { gate.wait(); done.bump() }
         }
         try? await Task.sleep(nanoseconds: 150_000_000)
 
         // All three probes start together, right after saturation begins.
         let t0 = DispatchTime.now()
         let fa = BEFlag(), fb = BEFlag(), fc = BEFlag(), ok = BEFlag()
+        let sa = BEDone(), sb = BEDone(), sc = BEDone()
         // A: unrelated async work (any pool consumer in the app).
-        Task.detached(priority: .utility) { _ = await unrelatedAsyncWork(); fa.set() }
+        Task.detached(priority: .utility) { _ = await unrelatedAsyncWork(); sa.set(done.count); fa.set() }
         // B: MainActor task hopping to nonisolated async work (a UI hop).
-        Task(priority: .utility) { @MainActor in _ = await unrelatedAsyncWork(); fb.set() }
+        Task(priority: .utility) { @MainActor in _ = await unrelatedAsyncWork(); sb.set(done.count); fb.set() }
         // C: real chat-list load through the fake core (350 ms fetch).
         Task(priority: .userInitiated) { @MainActor in
             let model = ChatListViewModel(fetcher: { _ in
@@ -228,34 +265,49 @@ final class BlockingExecutorTests: XCTestCase {
             })
             await model.load()
             if model.state == .loaded { ok.set() }
+            sc.set(done.count)
             fc.set()
         }
-        for f in [fa, fb, fc] { _ = await waitSeconds(f, from: t0) }
-        XCTAssertTrue(ok.value)
+        for f in [fa, fb, fc] { _ = await waitSeconds(f, from: t0, limit: probeLimit) }
         let unrelated = fa.elapsed(since: t0), mainHop = fb.elapsed(since: t0), list = fc.elapsed(since: t0)
+        let m = Measured(
+            unrelated: unrelated, mainHop: mainHop, chatList: list, lateness: dog.worstLateness,
+            satDoneAtUnrelated: sa.count, satDoneAtMainHop: sb.count, satDoneAtChatList: sc.count,
+            unrelatedFinished: fa.value, mainHopFinished: fb.value, chatListFinished: fc.value)
 
+        // Open the gate so the saturating calls (and any starved probe) drain.
+        gate.openAll(2 * n)
+        for f in [fa, fb, fc] { _ = await waitSeconds(f, from: DispatchTime.now(), limit: 15) }
         await drain(done, 2 * n)
-        return Measured(unrelated: unrelated, mainHop: mainHop, chatList: list, lateness: dog.worstLateness)
+        if !legacy { XCTAssertTrue(ok.value) }
+        return m
     }
 
+    /// Load-independent: every probe must finish while ALL saturating calls
+    /// are still blocked (gate closed => satDone == 0). No wall-clock bound
+    /// beyond the harness' generous wait ceiling.
     func testSaturatedBlockingCallsDoNotStarveUnrelatedWork() async {
-        let m = await measureUnderSaturation(legacy: false)
-        print("CHATPERF-STARVE new unrelated=\(m.unrelated) mainHop=\(m.mainHop) list=\(m.chatList) lateness=\(m.lateness)")
-        XCTAssertLessThan(m.unrelated, 0.25, "unrelated async work stalled")
-        XCTAssertLessThan(m.mainHop, 0.25, "MainActor hop to nonisolated work stalled")
-        XCTAssertLessThan(m.chatList, 0.7, "chat list load stalled behind saturation")
-        XCTAssertLessThan(m.lateness, 0.25, "main queue late")
+        let m = await measureUnderSaturation(legacy: false, probeLimit: 20)
+        print("CHATPERF-STARVE new unrelated=\(m.unrelated) mainHop=\(m.mainHop) list=\(m.chatList) lateness=\(m.lateness) satDone=\(m.satDoneAtUnrelated)/\(m.satDoneAtMainHop)/\(m.satDoneAtChatList)")
+        XCTAssertTrue(m.unrelatedFinished, "unrelated async work stalled")
+        XCTAssertTrue(m.mainHopFinished, "MainActor hop to nonisolated work stalled")
+        XCTAssertTrue(m.chatListFinished, "chat list load stalled behind saturation")
+        XCTAssertEqual(m.satDoneAtUnrelated, 0, "unrelated work only ran after saturation drained")
+        XCTAssertEqual(m.satDoneAtMainHop, 0, "MainActor hop only ran after saturation drained")
+        XCTAssertEqual(m.satDoneAtChatList, 0, "chat list only loaded after saturation drained")
     }
 
     /// Negative control / mutation check: the old pattern (Task.detached on
     /// the cooperative pool) MUST starve under the identical load, or the
     /// test above proves nothing.
     func testLegacyDetachedPatternStarvesUnderSameLoad() async {
-        let m = await measureUnderSaturation(legacy: true)
-        print("CHATPERF-STARVE legacy unrelated=\(m.unrelated) mainHop=\(m.mainHop) list=\(m.chatList) lateness=\(m.lateness)")
-        XCTAssertGreaterThan(m.unrelated, 0.4, "old pattern did not starve unrelated work; harness is blind")
-        XCTAssertGreaterThan(m.mainHop, 0.4, "old pattern did not starve the MainActor hop")
-        XCTAssertGreaterThan(m.chatList, 0.7, "old pattern did not delay the chat-list load")
+        let m = await measureUnderSaturation(legacy: true, probeLimit: 1.5)
+        print("CHATPERF-STARVE legacy unrelated=\(m.unrelated) mainHop=\(m.mainHop) list=\(m.chatList) lateness=\(m.lateness) finished=\(m.unrelatedFinished)/\(m.mainHopFinished)/\(m.chatListFinished)")
+        // Saturating calls never finish on their own (gate closed), so a
+        // starved probe simply does not finish inside the wait.
+        XCTAssertFalse(m.unrelatedFinished, "old pattern did not starve unrelated work; harness is blind")
+        XCTAssertFalse(m.mainHopFinished, "old pattern did not starve the MainActor hop")
+        XCTAssertFalse(m.chatListFinished, "old pattern did not delay the chat-list load")
     }
 
     // MARK: lint

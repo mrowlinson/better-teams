@@ -35,32 +35,31 @@
 
 ## Ten reasons to switch
 
+<div align="center">
+  <sub>01</sub>
+  <h3>Catch Up, privately on your Mac</h3>
+  <p>Back from a week off? One click turns a long thread into a summary, key points and action items, right beside the chat.<br>
+  It runs on Apple Intelligence, on this Mac. Your messages are never sent anywhere to be summarized.</p>
+</div>
+
 <table>
   <tr>
-    <td colspan="2" align="center">
-      <br>
-      <sub>01</sub>
-      <h2>Catch Up, privately on your Mac</h2>
-      <p>Back from a week off? One click turns a long thread into a summary, key points and action items, right beside the chat.<br>
-      It runs on Apple Intelligence, on this Mac. Your messages are never sent anywhere to be summarized.</p>
-      <table>
-        <tr>
-          <td align="center" width="33%"><b>Off</b><br><sub>No button, no summaries.</sub></td>
-          <td align="center" width="33%"><b>When you click</b><br><sub>Summarize the chat you're in, on demand.</sub></td>
-          <td align="center" width="33%"><b>Always up to date</b><br><sub>A live Catch Up window that refreshes as messages arrive.</sub></td>
-        </tr>
-      </table>
-      <sub>Pick the last day, three days, five days or two weeks. Background updates pause in Low Power Mode and while your Mac is running hot.</sub>
-      <br><br>
-      <table>
-        <tr>
-          <td width="70%" valign="top"><img src="docs/screenshots/catchup-inspector.png" alt="Catch Up in the inspector beside a group chat, with a summary, key points and action items"></td>
-          <td width="30%" valign="top"><img src="docs/screenshots/catchup-window.png" alt="The Catch Up window, with mentions of you listed first and a summary for each chat"></td>
-        </tr>
-      </table>
-      <br>
-    </td>
+    <td align="center" width="33%"><b>Off</b><br><sub>No button, no summaries.</sub></td>
+    <td align="center" width="33%"><b>When you click</b><br><sub>Summarize the chat you're in, on demand.</sub></td>
+    <td align="center" width="33%"><b>Always up to date</b><br><sub>A live Catch Up window that refreshes as messages arrive.</sub></td>
   </tr>
+</table>
+
+<p align="center"><sub>Pick the last day, three days, five days or two weeks. Background updates pause in Low Power Mode and while your Mac is running hot.</sub></p>
+
+<table>
+  <tr>
+    <td width="70%" valign="top"><img src="docs/screenshots/catchup-inspector.png" alt="Catch Up in the inspector beside a group chat, with a summary, key points and action items"></td>
+    <td width="30%" valign="top"><img src="docs/screenshots/catchup-window.png" alt="The Catch Up window, with mentions of you listed first and a summary for each chat"></td>
+  </tr>
+</table>
+
+<table>
   <tr>
     <td width="58%"><img src="docs/screenshots/apps-home.png" alt="The Apps store: installed apps, apps built by Microsoft and apps popular with your team, each with its own icon"></td>
     <td width="42%">
@@ -70,6 +69,9 @@
       <p>Pin the ones you use and they sit in the sidebar with their real icons. A few apps still ask for a one-time sign-in, and some don't load yet.</p>
     </td>
   </tr>
+</table>
+
+<table>
   <tr>
     <td width="42%">
       <sub>03</sub>
@@ -79,6 +81,9 @@
     </td>
     <td width="58%"><img src="docs/screenshots/activity.png" alt="Activity feed with mentions, replies and missed calls, and the mentioned message highlighted"></td>
   </tr>
+</table>
+
+<table>
   <tr>
     <td width="58%"><img src="docs/screenshots/call-video.png" alt="A meeting in progress with participant tiles along the bottom"></td>
     <td width="42%">
@@ -88,6 +93,9 @@
       <p>Video is decoded and encoded in hardware on the Mac's own media engine, for your camera, screen sharing and everyone else's video.</p>
     </td>
   </tr>
+</table>
+
+<table>
   <tr>
     <td width="42%">
       <sub>05</sub>
@@ -97,6 +105,9 @@
     </td>
     <td width="58%"><img src="docs/screenshots/teams-thread.png" alt="A Teams channel with a reply thread open in the inspector"></td>
   </tr>
+</table>
+
+<table>
   <tr>
     <td width="58%"><img src="docs/screenshots/calendar-week.png" alt="Calendar week view with meetings laid out across the days"></td>
     <td width="42%">
@@ -106,6 +117,9 @@
       <p>Reply to invites, start a Meet now, and the Join button appears as a meeting gets close.</p>
     </td>
   </tr>
+</table>
+
+<table>
   <tr>
     <td width="42%">
       <sub>07</sub>
