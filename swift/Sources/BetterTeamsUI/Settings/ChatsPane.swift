@@ -43,10 +43,10 @@ struct ChatsPane: View {
     var body: some View {
         Form {
             Section("Messages") {
-                Toggle("Return sends the message", isOn: $settings.returnSends)
-                Text(settings.returnSends ? "Shift-Return starts a new line." : "Shift-Return sends; Return starts a new line.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                Toggle(isOn: $settings.returnSends) {
+                    InfoLabel(title: "Return sends the message", subject: "the Return key",
+                              text: settings.returnSends ? "Shift-Return starts a new line." : "Shift-Return sends; Return starts a new line.")
+                }
                 Picker("Density", selection: $density.mode) {
                     ForEach(MessageDensity.allCases, id: \.rawValue) { Text($0.displayName).tag($0) }
                 }
@@ -131,12 +131,15 @@ struct ChatsPane: View {
                     }
                     .disabled(!settings.quickComposer)
                 }
+                Button("Reset to Default (\(QuickComposeCombo.default.displayString))") {
+                    combo = .default
+                    QuickComposerController.resetCombo()
+                    settings.noteQuickComposerChange()
+                }
+                .disabled(!settings.quickComposer || combo == .default)
             } header: {
-                Text("Quick Composer")
-            } footer: {
-                Text("A shortcut that opens a small window to message a recent chat from any app.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                InfoHeader(title: "Quick Composer", subject: "the quick composer",
+                           text: "A shortcut that opens a small window to message a recent chat from any app.")
             }
             Section {
                 if demo {
@@ -151,11 +154,10 @@ struct ChatsPane: View {
                     .disabled(gifKey.isEmpty)
                 }
             } header: {
-                Text("GIFs")
+                InfoHeader(title: "GIFs", subject: "GIF search",
+                           text: "GIF search needs a Klipy key, kept in your Keychain.")
             } footer: {
-                Text(gifSaved ? "Key saved in your Keychain." : "GIF search needs a Klipy key, kept in your Keychain.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                if gifSaved { Text("Key saved.").font(.caption).foregroundStyle(.secondary) }
             }
         }
         .formStyle(.grouped)

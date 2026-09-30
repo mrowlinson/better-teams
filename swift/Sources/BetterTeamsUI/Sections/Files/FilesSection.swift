@@ -266,8 +266,11 @@ final class FilesSection: SectionProvider, InspectorCapable {
             } else {
                 open(it, app, m)
             }
+        case FilesCommands.openWindow:
+            guard let f = it.row?.file, !it.isFolder else { return false }
+            FileWindowController.show(m, chatID: it.locationID ?? "", file: f)
         case FilesCommands.openInBrowser:
-            if !m.options.demo, let url = it.webURL { NSWorkspace.shared.open(url) }
+            if !m.options.demo, let url = it.webURL { TeamsLinkRouter.openInBrowser(url) }
         case FilesCommands.quickLook:
             quickLook(it, app, m)
         case FilesCommands.showInFinder:
@@ -316,6 +319,7 @@ final class FilesSection: SectionProvider, InspectorCapable {
         let file = !it.isFolder
         switch c {
         case FilesCommands.open: return .enabled
+        case FilesCommands.openWindow: return CommandValidation(enabled: file && it.row != nil)
         case FilesCommands.openInBrowser: return CommandValidation(enabled: it.webURL != nil)
         case FilesCommands.quickLook: return CommandValidation(enabled: file)
         case FilesCommands.showInFinder:
@@ -364,9 +368,9 @@ final class FilesSection: SectionProvider, InspectorCapable {
             return
         }
         if let path = localPath(it, app, m) {
-            NSWorkspace.shared.open(URL(fileURLWithPath: path))
+            TeamsLinkRouter.open(URL(fileURLWithPath: path))
         } else if let row = it.row {
-            download(row, it, app, to: nil) { path in NSWorkspace.shared.open(URL(fileURLWithPath: path)) }
+            download(row, it, app, to: nil) { path in TeamsLinkRouter.open(URL(fileURLWithPath: path)) }
         }
     }
 

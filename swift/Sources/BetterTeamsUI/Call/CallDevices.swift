@@ -29,6 +29,14 @@ final class CallDevices: NSObject, NSPopoverDelegate {
     /// Input level 0…1; `levelLive == false` = no input right now.
     private(set) var level = 0.0
     private(set) var levelLive = false
+    /// REGFIX-C R3 device tests: a 1 s tone out of the speaker, a 3 s
+    /// microphone recording played back. Core runs them live; demo shows
+    /// fixed outcomes (no hardware).
+    private(set) var speakerPhase = TestPhase.idle
+    private(set) var speakerResult = "Not tested"
+    private(set) var micPhase = TestPhase.idle
+    private(set) var micResult = "Not tested"
+    private(set) var micDenied = false
 
     @ObservationIgnored private let live: Bool
     @ObservationIgnored private let store: CallStore?
@@ -78,6 +86,11 @@ final class CallDevices: NSObject, NSPopoverDelegate {
         a.$devicesError.sink { [weak self] v in self?.error = v }.store(in: &subs)
         a.$level.sink { [weak self] v in self?.level = v }.store(in: &subs)
         a.$levelLive.sink { [weak self] v in self?.levelLive = v }.store(in: &subs)
+        a.$speakerPhase.sink { [weak self] v in self?.speakerPhase = v }.store(in: &subs)
+        a.$speakerResult.sink { [weak self] v in self?.speakerResult = v }.store(in: &subs)
+        a.$micPhase.sink { [weak self] v in self?.micPhase = v }.store(in: &subs)
+        a.$micResult.sink { [weak self] v in self?.micResult = v }.store(in: &subs)
+        a.$micDenied.sink { [weak self] v in self?.micDenied = v }.store(in: &subs)
         speaker = store?.speaker ?? a.speakerDevice
         cameras = CameraCapture.videoDevices()
         camera = capture?.selectedDeviceID ?? cameras.first?.id
@@ -95,6 +108,26 @@ final class CallDevices: NSObject, NSPopoverDelegate {
         guard live else { return }
         av?.speakerDevice = name
         store?.setSpeaker(name)
+    }
+
+    /// Plays the test tone on the picked speaker.
+    func testSpeaker() {
+        guard live else {
+            speakerPhase = .done
+            speakerResult = "Played a test tone."
+            return
+        }
+        av?.runTonePlay()
+    }
+
+    /// Records 3 s from the picked microphone and plays it back.
+    func testMicrophone() {
+        guard live else {
+            micPhase = .done
+            micResult = "Recorded 3 s and played it back."
+            return
+        }
+        av?.runMicTest()
     }
 
     func selectCamera(_ id: String?) {

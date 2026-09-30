@@ -167,6 +167,8 @@ public enum ShellCommand {
     public static let account: CommandID = "shell.account"
     public static let connection: CommandID = "shell.connection"
     public static let signOut: CommandID = "app.signOut"
+    /// File ▸ New Quick Message… (⌃⌘M, the hotkey's default combo).
+    public static let quickMessage: CommandID = "shell.quickMessage"
     public static let settings: CommandID = "app.settings"
 
     static func go(_ s: SectionID) -> CommandID {
@@ -208,7 +210,7 @@ public enum CommandCatalog {
             C(ShellCommand.account, "Status", symbol: "person.crop.circle", menu: .init(.app, group: 1, order: 1),
               toolbar: .trailing, isSubmenu: true),
             C(ShellCommand.connection, "Sign In Again…", symbol: "exclamationmark.triangle",
-              menu: .init(.app, group: 1, order: 2), toolbar: .trailing),
+              key: "i", modifiers: [.command, .shift], menu: .init(.app, group: 1, order: 2), toolbar: .trailing),
             C(ShellCommand.signOut, "Sign Out…", menu: .init(.app, group: 1, order: 3)),
             C("app.hide", "Hide Better Teams", key: "h", selector: #selector(NSApplication.hide(_:)),
               menu: .init(.app, group: 3, order: 0)),
@@ -219,6 +221,8 @@ public enum CommandCatalog {
             C("app.quit", "Quit Better Teams", key: "q", selector: #selector(NSApplication.terminate(_:)),
               menu: .init(.app, group: 4, order: 0)),
             // File
+            C(ShellCommand.quickMessage, "New Quick Message\u{2026}", symbol: "square.and.pencil", key: "m",
+              modifiers: [.command, .control], menu: .init(.file, group: 0, order: 8)),
             C("file.close", "Close Window", key: "w", selector: #selector(NSWindow.performClose(_:)),
               menu: .init(.file, group: 9, order: 0)),
             // Edit

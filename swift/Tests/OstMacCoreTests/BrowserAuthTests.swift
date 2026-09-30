@@ -162,10 +162,9 @@ final class BrowserAuthTests: XCTestCase {
         }
         vm.cancelBrowser()
         XCTAssertEqual(vm.state, .signedOut)
-        // Detached cancel lands shortly; poll briefly (no sleep loops).
-        for _ in 0..<50 where seen.sessions.isEmpty {
-            await Task.yield()
-        }
+        // The core cancel runs on the blocking executor; await it (a yield
+        // budget ran out first when the full suite kept that executor busy).
+        await vm.browserCancelTask?.value
         XCTAssertEqual(seen.sessions, ["ba-1"])
     }
 

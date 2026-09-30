@@ -79,6 +79,15 @@ private struct FrameContent: View {
                 Button("Try Again") { host.retry(page.key) }
             }
             .background(.background)
+        } else if forced == nil, page.pausedInBackground, let snapshot = page.snapshot {
+            // Better Teams is in the background: the page's last picture
+            // stands in for the paused view (APPEFF2 O5).
+            Image(nsImage: snapshot)
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .clipped()
+                .accessibilityHidden(true)
         } else if forced == nil, page.restoring, let snapshot = page.snapshot {
             // Back to an evicted page: its last picture until the restore
             // finishes (no blank or white pane), the progress line on top.

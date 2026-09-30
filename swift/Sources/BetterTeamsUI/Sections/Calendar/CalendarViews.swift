@@ -99,10 +99,25 @@ struct CalendarHeaderBar: View {
                     Label("Meet now", systemImage: "video")
                 }
                 .help("Start an instant meeting")
-                Button { model.presentSheet(SheetRequest(CalendarCommands.newMeetingSheet, in: .calendar)) } label: {
+                Menu {
+                    Button("New Meeting\u{2026}") {
+                        model.presentSheet(SheetRequest(CalendarCommands.newMeetingSheet, in: .calendar))
+                    }
+                    Button("New Webinar\u{2026}") {
+                        model.presentSheet(SheetRequest(CalendarCommands.webinarSheet, in: .calendar))
+                    }
+                    Divider()
+                    Button("Scheduling Assistant\u{2026}") {
+                        model.presentSheet(SheetRequest(CalendarCommands.schedulerSheet, in: .calendar))
+                    }
+                } label: {
                     Label("New meeting", systemImage: "plus")
+                } primaryAction: {
+                    model.presentSheet(SheetRequest(CalendarCommands.newMeetingSheet, in: .calendar))
                 }
+                .menuStyle(.button)
                 .buttonStyle(.borderedProminent)
+                .fixedSize()
             }
             .controlSize(.regular)
             .padding(.horizontal, 12)
@@ -237,8 +252,12 @@ struct CalendarMeetingMenu: View {
                 Button("Join") { CalendarSection.join(meeting, m) }
                 Button("Copy Join Link") { CalendarSection.copyJoinLink(meeting) }
             }
+            Button("Open in New Window") { MeetingWindowController.show(m, meeting: meeting) }
             if meeting.chatThreadID != nil {
                 Button("Chat with Participants") { CalendarSection.openChat(meeting, m) }
+            }
+            if CalendarSection.hasRecap(meeting) {
+                Button("Recap") { CalendarSection.openRecap(meeting, m) }
             }
             if !meeting.isOrganizer, meeting.info != nil {
                 Divider()
@@ -306,7 +325,7 @@ struct AgendaRow: View {
                     .monospacedDigit()
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
-                let sub = [meeting.organizer, meeting.info?.location].compactMap { $0 }.filter { !$0.isEmpty }
+                let sub = [meeting.organizerDisplay, meeting.info?.location].compactMap { $0 }.filter { !$0.isEmpty }
                 if !sub.isEmpty {
                     Text(sub.joined(separator: " \u{00B7} "))
                         .font(AppFont.subheadline(scale))
@@ -385,12 +404,33 @@ struct MeetingInspector: View {
                             }
                             .help("Chat with participants")
                         }
+                        if CalendarSection.hasRecap(meeting) {
+                            Button { if let model { CalendarSection.openRecap(meeting, model) } } label: {
+                                Label("Recap", systemImage: "play.rectangle.on.rectangle")
+                            }
+                            .help("Recording, transcript and notes")
+                            .accessibilityIdentifier("calendar.recap")
+                        }
                     }
                 }
                 CalendarFactRow(symbol: "clock") {
-                    Text(CalendarFormat.when(meeting)).monospacedDigit()
+                    if let lines = CalendarFormat.whenLines(meeting) {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(lines.day).lineLimit(1)
+                            Text(lines.range).lineLimit(1).minimumScaleFactor(0.8)
+                        }
+                        .monospacedDigit()
+                    } else {
+                        Text(CalendarFormat.whenUnbroken(meeting)).monospacedDigit()
+                    }
                     if meeting.isSeries {
                         SeriesBadge()
+                    }
+                    if let rec = week.details[meeting.id]?.recurrence ?? meeting.info?.recurrence {
+                        Text(rec).foregroundStyle(.secondary).font(AppFont.caption(scale))
+                    }
+                    if meeting.isSeries, let model {
+                        SeriesLinks(meeting: meeting, model: model)
                     }
                     if let other = CalendarFormat.organizerTime(meeting) {
                         Text(other).foregroundStyle(.secondary).font(AppFont.caption(scale))
@@ -403,33 +443,72 @@ struct MeetingInspector: View {
                         Text("No location added").foregroundStyle(.secondary)
                     }
                 }
-                CalendarFactRow(symbol: "person.2") {
-                    if !meeting.isOrganizer, let org = meeting.organizer, !org.isEmpty {
+                if online {
+                    let kind = meeting.eventType(body: week.details[meeting.id]?.bodyHTML ?? week.details[meeting.id]?.bodyText)
+                    CalendarFactRow(symbol: "video") {
+                        Text("Microsoft Teams \(kind.title.lowercased())")
+                    }
+                }
+                if let info = meeting.info, let line = CalendarDetailsText.statusLine(info) {
+                    CalendarFactRow(symbol: "bell") { Text(line).foregroundStyle(.secondary) }
+                }
+                if !meeting.categories.isEmpty {
+                    CalendarFactRow(symbol: "tag") { CategoryChips(names: meeting.categories, list: week.categoryList) }
+                }
+                if !meeting.isOrganizer, let org = meeting.organizerDisplay {
+                    HStack(alignment: .center, spacing: 10) {
+                        Avatar(name: org, diameter: 18, person: ContactRef(name: org, email: meeting.organizerEmail))
+                            .frame(width: 18)
                         HStack(spacing: 4) {
                             Text(org).contactHover(name: org, email: meeting.organizerEmail, arrowEdge: .bottom)
                             Text("invited you.")
                         }
-                    } else {
-                        Text(inviteLine)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    if let counts = CalendarDetailsText.counts(meeting) {
-                        Text(counts).foregroundStyle(.secondary)
+                } else {
+                    CalendarFactRow(symbol: "person.crop.circle") { Text(inviteLine) }
+                }
+                if let names = CalendarDetailsText.attendeeLine(meeting) {
+                    CalendarFactRow(symbol: "person.2") {
+                        Text(CalendarDetailsText.unbrokenNames(names)).lineLimit(2)
+                        if let roles = CalendarDetailsText.roleLine(meeting) {
+                            Text(roles).foregroundStyle(.secondary).font(AppFont.caption(scale))
+                        }
                     }
+                }
+                if let buckets = CalendarDetailsText.bucketLine(meeting) {
+                    CalendarFactRow(symbol: "checklist") {
+                        Text(CalendarDetailsText.unbroken(buckets)).monospacedDigit()
+                    }
+                    .accessibilityLabel("Responses: \(buckets)")
                 }
                 if !meeting.isOrganizer, let info = meeting.info {
                     CalendarFactRow(symbol: CalendarDetailsText.responseSymbol(info.myResponse)) {
                         HStack(spacing: 8) {
-                            Text(info.myResponse.isPending ? "Not responded" : info.myResponse.label)
-                            Menu(info.myResponse.isPending ? "Respond" : "Change") {
+                            if info.myResponse.isPending { Text("Not responded") }
+                            // Pop-up titled with the current response.
+                            Menu(EventRespondControl.title(info.myResponse)) {
                                 RSVPMenuItems(meeting: meeting, week: week)
                             }
-                            .menuStyle(.borderlessButton)
+                            .menuStyle(.button)
                             .fixedSize()
                             .disabled(week.respondingID != nil)
                         }
                         if let error = week.rsvpError {
                             Text(error).foregroundStyle(Palette.failed).font(AppFont.caption(scale))
                         }
+                    }
+                }
+                if meeting.info?.hasAttachments == true {
+                    let count = week.details[meeting.id]?.attachments.count
+                    CalendarFactRow(symbol: "paperclip") {
+                        Text(count.map { "\($0) attachment\($0 == 1 ? "" : "s")" } ?? "Has attachments")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                if let preview = Self.previewText(meeting.info?.bodyPreview) {
+                    CalendarFactRow(symbol: "text.alignleft") {
+                        Text(preview).lineLimit(3).foregroundStyle(.secondary)
                     }
                 }
                 Divider()
@@ -454,9 +533,17 @@ struct MeetingInspector: View {
         }
     }
 
+    /// First lines of the body preview, minus the Teams join boilerplate.
+    static func previewText(_ raw: String?) -> String? {
+        guard var t = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !t.isEmpty else { return nil }
+        t = CalendarEventDraft.stripTeamsBlock(t)
+        t = t.trimmingCharacters(in: .whitespacesAndNewlines)
+        return t.isEmpty ? nil : t
+    }
+
     private var inviteLine: String {
         if meeting.isOrganizer { return "You organized this meeting." }
-        guard let org = meeting.organizer, !org.isEmpty else { return "Invitation" }
+        guard let org = meeting.organizerDisplay else { return "Invitation" }
         return "\(org) invited you."
     }
 }
@@ -482,22 +569,19 @@ struct SeriesBadge: View {
     @Environment(\.contentTextScale) private var scale
 
     var body: some View {
-        Label("Series", systemImage: "arrow.2.squarepath")
+        Label("Series", systemImage: "repeat")
             .font(AppFont.caption(scale))
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background(Capsule().fill(.tint.opacity(0.15)))
-            .foregroundStyle(.tint)
+            .foregroundStyle(.secondary)
     }
 }
 
 /// Shared wording for the inspector and the details popup.
 enum CalendarDetailsText {
     /// "Accepted 3, Tentative 1, Declined 1, Didn't respond 2" (zero
-    /// groups omitted); nil with no attendees.
+    /// groups omitted; organizer never counted); nil with no attendees.
     static func counts(_ m: MeetingItem) -> String? {
-        guard let info = m.info, !info.people.isEmpty else { return nil }
-        let t = info.tally
+        guard !m.invitees.isEmpty else { return nil }
+        let t = m.tally
         let parts = [("Accepted", t.accepted), ("Tentative", t.tentative), ("Declined", t.declined),
                      ("Didn\u{2019}t respond", t.pending)].filter { $0.1 > 0 }.map { "\($0.0) \($0.1)" }
         return parts.isEmpty ? nil : parts.joined(separator: ", ")

@@ -5,6 +5,7 @@
 // (⌘[ / ⌘]), Reload (⌘R; Stop ⌘. in the menu), More ▾. Subtitle = page
 // title. ⌘F turns the toolbar field into Find in Page.
 import AppKit
+import OstMacCore
 import SwiftUI
 import WebKit
 
@@ -70,7 +71,7 @@ final class WebAppSection: SectionProvider {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(url.absoluteString, forType: .string)
         case A.openInBrowser:
-            if !m.options.demo, let url = pageURL(m) { NSWorkspace.shared.open(url) }
+            if !m.options.demo, let url = pageURL(m) { TeamsLinkRouter.openInBrowser(url) }
         case A.unload:
             m.navigator?.returnToPrevious()
             m.frameHost.unload(key)
@@ -171,7 +172,7 @@ private struct WebAppDetail: View {
         } else {
             EmptyPane("Opens in Your Browser", systemImage: "arrow.up.forward.app",
                       message: "\(app.label) can't run inside Better Teams.") {
-                Button("Open in Browser") { NSWorkspace.shared.open(app.launch.url) }
+                Button("Open in Browser") { TeamsLinkRouter.openInBrowser(app.launch.url) }
                     .disabled(m.options.demo)
             }
         }

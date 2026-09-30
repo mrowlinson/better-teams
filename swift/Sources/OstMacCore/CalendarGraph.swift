@@ -4,6 +4,7 @@
 // the calendar needs: RSVP, edit, Meet now create, delete.
 // Blocking: call off the main thread (same contract as `CoreReads`).
 import Foundation
+import os
 
 /// One sync Graph request (tests inject stubs; zero live network).
 protocol CalendarHTTP: Sendable {
@@ -34,6 +35,11 @@ public struct CalendarGraph: Sendable {
     var http: any CalendarHTTP
     var token: @Sendable () throws -> String
     var timeZone: @Sendable () -> TimeZone = { .current }
+    /// Read `/me` so the user's own attendee entry carries their own
+    /// response (production; stub transports leave it off).
+    var lookupSelf = false
+    /// Cache key for the `/me` address (the profile signed in).
+    var profileKey = ""
 
     init(http: any CalendarHTTP, token: @escaping @Sendable () throws -> String,
          timeZone: @escaping @Sendable () -> TimeZone = { .current }) {
@@ -44,10 +50,13 @@ public struct CalendarGraph: Sendable {
 
     /// Signed-in profile, URLSession transport.
     public static func production() -> CalendarGraph {
-        CalendarGraph(http: URLSessionCalendarHTTP()) {
+        var g = CalendarGraph(http: URLSessionCalendarHTTP()) {
             try CoreReads.graphToken(
                 profile: CoreLocal.activeProfileID(), code: "calendar", ctx: CoreReads.production())
         }
+        g.lookupSelf = true
+        g.profileKey = CoreLocal.activeProfileID()
+        return g
     }
 
     // MARK: transport
@@ -119,8 +128,9 @@ public struct CalendarGraph: Sendable {
         var rows: [MeetingItem] = []
         var pages = 0
         let tz = timeZone()
+        let mine = lookupSelf ? (try? selfAddresses()) ?? [] : []
         while let path = next, pages < Self.maxPages {
-            let page = try CalendarEvents.page(try request("GET", path), tz: tz)
+            let page = try CalendarEvents.page(try request("GET", path), tz: tz, me: mine.first, meAliases: mine)
             rows += page.rows
             next = page.next
             pages += 1
@@ -135,11 +145,32 @@ public struct CalendarGraph: Sendable {
         return CalWeekResponse(ok: true, weekStart: weekStart, days: 7, meetings: try range(from: from, to: to))
     }
 
+    /// Occurrences of a series in `[from, to)`
+    /// (`/me/events/{seriesMasterId}/instances`), in start order.
+    public func instances(seriesID: String, from: Date, to: Date) throws -> [MeetingItem] {
+        let query = "startDateTime=\(Self.iso(from))&endDateTime=\(Self.iso(to))"
+            + "&$select=\(CalendarEvents.listSelect)&$orderby=start/dateTime&$top=100"
+        var next: String? = "/me/events/\(Self.encode(seriesID))/instances?" + query
+        var rows: [MeetingItem] = []
+        var pages = 0
+        let tz = timeZone()
+        let mine = lookupSelf ? (try? selfAddresses()) ?? [] : []
+        while let path = next, pages < Self.maxPages {
+            let page = try CalendarEvents.page(try request("GET", path), tz: tz, me: mine.first, meAliases: mine)
+            rows += page.rows
+            next = page.next
+            pages += 1
+        }
+        return rows
+    }
+
     /// Full event (body, fresh responses), attachments and series pattern.
     public func detail(id: String) throws -> CalendarEventDetail {
         let tz = timeZone()
         let one = try CalendarEvents.single(
-            try request("GET", "/me/events/\(Self.encode(id))?$select=\(CalendarEvents.detailSelect)"), tz: tz)
+            try request("GET", "/me/events/\(Self.encode(id))?$select=\(CalendarEvents.detailSelect)"), tz: tz,
+            me: lookupSelf ? try? selfAddress() : nil,
+            meAliases: lookupSelf ? (try? selfAddresses()) ?? [] : [])
         var recurrence = one.row.info?.recurrence
         if recurrence == nil, let master = one.row.info?.seriesMasterID {
             struct R: Decodable { let recurrence: GraphEventWire.Recurrence? }
@@ -155,12 +186,15 @@ public struct CalendarGraph: Sendable {
                     let id: String
                     let name: String?
                     let size: Int?
+                    let contentType: String?
                 }
                 let value: [Item]
             }
-            if let data = try? request("GET", "/me/events/\(Self.encode(id))/attachments?$select=id,name,size"),
+            if let data = try? request("GET", "/me/events/\(Self.encode(id))/attachments?$select=id,name,size,contentType"),
                let list = try? JSONDecoder().decode(A.self, from: data) {
-                attachments = list.value.map { EventAttachment(id: $0.id, name: $0.name ?? "Attachment", size: $0.size ?? 0) }
+                attachments = list.value.map {
+                    EventAttachment(id: $0.id, name: $0.name ?? "Attachment", size: $0.size ?? 0, contentType: $0.contentType)
+                }
             }
         }
         let isHTML = one.body?.contentType?.lowercased() == "html"
@@ -170,7 +204,100 @@ public struct CalendarGraph: Sendable {
             attachments: attachments, recurrence: recurrence)
     }
 
+    /// The signed-in user's SMTP address (`/me`), read once per process.
+    public func selfAddress() throws -> String {
+        guard let first = try selfAddresses().first else {
+            throw CoreCallError.failed("calendar: no address for the signed-in user")
+        }
+        return first
+    }
+
+    /// The signed-in user's mail and UPN (attendees may carry either).
+    public func selfAddresses() throws -> [String] {
+        let key = profileKey
+        if let cached = Self.selfCache.withLock({ $0[key] }) { return cached }
+        struct Me: Decodable {
+            let mail: String?
+            let userPrincipalName: String?
+        }
+        let me = try JSONDecoder().decode(Me.self, from: try request("GET", "/me?$select=mail,userPrincipalName"))
+        var addresses: [String] = []
+        for a in [me.mail, me.userPrincipalName] {
+            if let a = CalendarEvents.nonEmpty(a), !addresses.contains(where: { $0.caseInsensitiveCompare(a) == .orderedSame }) {
+                addresses.append(a)
+            }
+        }
+        guard !addresses.isEmpty else {
+            throw CoreCallError.failed("calendar: no address for the signed-in user")
+        }
+        let found = addresses
+        Self.selfCache.withLock { $0[key] = found }
+        return found
+    }
+
+    static let selfCache = OSAllocatedUnfairLock<[String: [String]]>(initialState: [:])
+
+    /// Outlook color categories (`/me/outlook/masterCategories`).
+    public func masterCategories() throws -> [CalendarCategory] {
+        struct L: Decodable {
+            struct C: Decodable {
+                let displayName: String?
+                let color: String?
+            }
+            let value: [C]
+        }
+        let list = try JSONDecoder().decode(L.self, from: try request("GET", "/me/outlook/masterCategories"))
+        return list.value.compactMap { c in
+            CalendarEvents.nonEmpty(c.displayName).map { CalendarCategory(name: $0, color: c.color ?? "none") }
+        }
+    }
+
+    /// Free/busy for `emails` over `[from, to)` (Graph `getSchedule`, a
+    /// read-only query sent as POST). 30-minute availability view.
+    public func schedule(for emails: [String], from: Date, to: Date) throws -> [CalendarFreeBusy] {
+        let body: [String: Any] = [
+            "schedules": emails,
+            "startTime": ["dateTime": CalendarTime.wallClock(from, in: TimeZone(identifier: "UTC")!), "timeZone": "UTC"],
+            "endTime": ["dateTime": CalendarTime.wallClock(to, in: TimeZone(identifier: "UTC")!), "timeZone": "UTC"],
+            "availabilityViewInterval": 30,
+        ]
+        return try CalendarEvents.schedule(try request("POST", "/me/calendar/getSchedule", json: body))
+    }
+
+    /// Download one event attachment's bytes (file attachments).
+    public func attachment(eventID: String, attachmentID: String) throws -> Data {
+        struct F: Decodable { let contentBytes: String? }
+        let data = try request("GET", "/me/events/\(Self.encode(eventID))/attachments/\(Self.encode(attachmentID))")
+        guard let b64 = try JSONDecoder().decode(F.self, from: data).contentBytes,
+              let bytes = Data(base64Encoded: b64) else {
+            throw CoreCallError.failed("calendar: this attachment can\u{2019}t be downloaded (not a file)")
+        }
+        return bytes
+    }
+
     // MARK: writes
+
+    /// Forward the invitation (Graph `POST /me/events/{id}/forward`).
+    public func forward(id: String, to recipients: [String], comment: String = "") throws {
+        try request("POST", "/me/events/\(Self.encode(id))/forward", json: [
+            "comment": comment,
+            "toRecipients": recipients.map { ["emailAddress": ["address": $0]] },
+        ])
+    }
+
+    /// Create a draft Teams webinar (Graph virtual events) and return
+    /// its id. Publishing stays in Teams.
+    public func createWebinar(title: String, start: Date, end: Date, audience: String = "organization") throws -> String {
+        struct R: Decodable { let id: String }
+        let utc = TimeZone(identifier: "UTC")!
+        let data = try request("POST", "/solutions/virtualEvents/webinars", json: [
+            "displayName": title,
+            "audience": audience,
+            "startDateTime": ["dateTime": CalendarTime.wallClock(start, in: utc), "timeZone": "UTC"],
+            "endDateTime": ["dateTime": CalendarTime.wallClock(end, in: utc), "timeZone": "UTC"],
+        ])
+        return try JSONDecoder().decode(R.self, from: data).id
+    }
 
     /// Graph RSVP (`accept` | `tentativelyAccept` | `decline`) on `id`
     /// (an occurrence, or the series master for the whole series).
@@ -207,6 +334,13 @@ public struct CalendarGraph: Sendable {
             if let again, let reread = try? CalendarEvents.single(again, tz: tz).row { row = reread }
         }
         return row
+    }
+
+    /// Create a full event (Duplicate): attendees, location and body.
+    public func create(_ d: CalendarEventDraft) throws -> MeetingItem {
+        let tz = timeZone()
+        let data = try request("POST", "/me/events", json: d.body(in: tz))
+        return try CalendarEvents.single(data, tz: tz).row
     }
 
     /// Delete an event (organizer: also cancels it for invitees).

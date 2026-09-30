@@ -37,7 +37,9 @@ enum EvidenceHarness {
         var quiet = 0
         func tick() {
             guard let window = wc.window else { return }
+            let signInWeb = (window.contentViewController as? SignInViewController)?.webSignIn
             let ready = storesReady(wc.model) && ImageViewerEvidence.ready(wc, route: options.route)
+                && signInWeb?.chrome.pageChecked != false
             if ready {
                 window.displayIfNeeded()
                 quiet += 1

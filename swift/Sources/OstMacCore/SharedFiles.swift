@@ -159,6 +159,8 @@ public final class SharedFilesStore: ObservableObject {
     /// Drop queue (om-iu-dropquick): multi-file drops upload one at a
     /// time, in drop order; the picker path enqueues a single path.
     private var uploadQueue: [String] = []
+    /// Rows uploaded since the last open(): a slower list refresh must not drop them.
+    private var uploadedSinceOpen: [SharedFile] = []
     public private(set) var chatID: String?
     public private(set) var isDemo = false
 
@@ -194,7 +196,7 @@ public final class SharedFilesStore: ObservableObject {
     /// Public: Swift requires default-argument callees of a public init to be public.
     public nonisolated static let defaultOpenURL: OpenURLFn = { url in
         if NSClassFromString("XCTestCase") != nil { return false }
-        return NSWorkspace.shared.open(url)
+        return TeamsLinkRouter.open(url)
     }
 
     /// Default link copier. No-op under XCTest so tests never touch the
@@ -273,6 +275,7 @@ public final class SharedFilesStore: ObservableObject {
         isDemo = false
         savedPath = nil
         openGeneration += 1
+        uploadedSinceOpen = []
         let gen = openGeneration
         if let hit = chatCache[chatID] {
             cache[Self.rootKey] = hit
@@ -287,10 +290,13 @@ public final class SharedFilesStore: ObservableObject {
             do {
                 let resp = try await Task.blocking { try fetcher(chatID, limit) }.value
                 guard gen == openGeneration else { return }
-                cache[Self.rootKey] = resp.files
-                chatCache[chatID] = resp.files
-                files = resp.files
-                state = resp.files.isEmpty ? .empty : .loaded
+                let merged = uploadedSinceOpen.reversed().reduce(resp.files) { list, f in
+                    list.contains { $0.id == f.id } ? list : Self.upsert(f, into: list)
+                }
+                cache[Self.rootKey] = merged
+                chatCache[chatID] = merged
+                files = merged
+                state = merged.isEmpty ? .empty : .loaded
             } catch {
                 guard gen == openGeneration else { return }
                 // Background-refresh failure keeps cached rows on screen;
@@ -526,6 +532,7 @@ public final class SharedFilesStore: ObservableObject {
             let fetcher = uploadFetcher
             do {
                 let resp = try await Task.blocking { try fetcher(id, path) }.value
+                uploadedSinceOpen.append(resp.file)
                 files = Self.upsert(resp.file, into: files)
                 cache[currentKey] = files
                 state = .loaded

@@ -38,6 +38,20 @@ public final class AppState: ObservableObject {
     public let planner: PlannerViewModel
     public let recordings: RecordingsViewModel
     public let transcripts: TranscriptsViewModel
+    /// RECAP2: one recap per meeting for the unified viewer (chat Recap
+    /// tab, Recaps app, Calendar Recap button). Demo reads the offline
+    /// demo recap; live reads the meeting chat and the organizer's files.
+    public private(set) lazy var meetingRecaps: MeetingRecapStore = isDemo
+        ? MeetingRecapStore(transport: MeetingRecapDemoTransport(), download: { _, _, dest in
+            let tmp = FileManager.default.temporaryDirectory.path
+            let out = dest.hasPrefix(tmp) ? dest
+                : (tmp as NSString).appendingPathComponent((dest as NSString).lastPathComponent)
+            try TranscriptsDemo.sampleVTT.write(toFile: out, atomically: true, encoding: .utf8)
+            return out
+        })
+        : MeetingRecapStore(transport: CoreMeetingRecapTransport(), download: { drive, item, dest in
+            try RustCore.sharedDownload(driveID: drive, itemID: item, dest: dest).path
+        })
     /// Unified Files surface (top10-files): chats + channels + drive
     /// recents in one list. Demo seeds canned rows; live loads from
     /// the chats/teams lists in openContentIfAllowed.
@@ -289,6 +303,9 @@ public final class AppState: ObservableObject {
         density = DensityStore(defaults: store)
         history = CallHistoryStore(defaults: store)
         rules = demo ? RulesStore(path: Self.demoTempPath("rules.json")) : RulesStore()
+        // CHATSYNC3 R1: last-read meeting-chat settings survive a relaunch
+        // (next to rules.json), so launch never flips meeting-chat mutes.
+        if !demo { MeetingChatSettingsCache.shared.persist(to: MeetingChatSettingsCache.defaultPath) }
         meetingChat = demo ? MeetingChatStore.memoryOnly() : MeetingChatStore()
         meetingPopouts = demo
             ? MeetingPopOutStore(makeChat: { MeetingChatStore.memoryOnly() })
@@ -767,6 +784,7 @@ public final class AppState: ObservableObject {
             // Demo rows state their Teams read/mute state (unread, muted,
             // muted + unread): the same adoption a fetched page gets.
             rules.adoptServerMutes(DemoData.chats)
+            chats.deletePolicy = .allowed
             unread.seed(ChatListSeed.unreadSeeds(DemoData.chats, mutedIDs: Set(DemoData.chats.filter { $0.muted == true }.map(\.id))))
         } else {
             rules.remote = .live
@@ -774,6 +792,8 @@ public final class AppState: ObservableObject {
             chats.deleter = { [weak self] id, lastMs in
                 try await self?.readSync.deleteChat(chatID: id, lastMessageMs: lastMs)
             }
+            // CHATSYNC2b R1: Teams' delete-chat policy gates Delete per chat.
+            chats.deletePolicyReader = { MessagingPolicyReader.fetch() }
             chats.mentionReader = { try CoreReads.mentionActivity() }
             // DEMOLEAK: the real Teams activity feed (48:notifications).
             activity.feedReader = { try CoreReads.activityFeed() }
@@ -790,6 +810,13 @@ public final class AppState: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] id in
                 Task { @MainActor [weak self] in self?.openSelected(id) }
+            }
+            .store(in: &chatsCancellables)
+        // CHATSYNC2b R5: leaving a chat marked unread while open lets its
+        // views move the read position again.
+        $openChatID.combineLatest(popouts.$poppedIDs)
+            .sink { [weak self] open, popped in
+                self?.readSync.releaseHolds(keeping: PopOutStore.visibleChatIDs(open: open, popped: popped))
             }
             .store(in: &chatsCancellables)
     }
@@ -814,6 +841,40 @@ public final class AppState: ObservableObject {
         seedMentions()
     }
 
+    /// CHATSYNC2b R3: read / marked-unread changes made elsewhere reach
+    /// the list rows at once (the 20 s re-read stays as the fallback for
+    /// missed frames).
+    func subscribeReadState(_ feed: RealtimeFeed) {
+        feed.onReadState { [weak self] evs in
+            Task { @MainActor [weak self] in self?.adoptPushedReadState(evs) }
+        }
+    }
+
+    /// Pushed read positions (Trouter `ConversationUpdate`, CHATSYNC2b
+    /// R3) for listed chats: same adoption as a fetched page, ordered by
+    /// the server's event time so a local change made after it stays.
+    /// Only changed rows publish (UnreadStore diffs), so nothing flashes.
+    func adoptPushedReadState(_ events: [ReadStateEvent]) {
+        let owner = resolvedOwnerMRI.flatMap(Mri.oid(from:))
+        var any = false
+        for ev in events where chats.chat(id: ev.chatID) != nil {
+            any = true
+            if let h = ev.horizon { chatHorizons[ev.chatID] = h }
+            let marked = ChatListSeed.isMarkedUnread(bookmark: ev.bookmark, lastMessageTime: ev.lastMessageTime)
+            // No bookmark in the frame: its marked state is unknown here,
+            // so a local Mark as Unread stays (the 20 s re-read settles it).
+            let bookmarkKnown = ev.bookmark != nil
+            readSync.adopt(horizons: ev.horizon.map { [ev.chatID: $0] } ?? [:],
+                           markedUnread: marked ? [ev.chatID] : [], listed: bookmarkKnown ? [ev.chatID] : [])
+            if !bookmarkKnown, unread.overrides.contains(ev.chatID) { continue }
+            let muted = rules.level(chatID: ev.chatID) == .muted
+            if let s = ChatListSeed.pushedSeed(ev, ownerOID: owner, muted: muted) {
+                unread.seed([s], asOf: ev.time.flatMap(ChatListFormat.parse) ?? Date())
+            }
+        }
+        if any { seedMentions() }
+    }
+
     // MARK: CHATSYNC read state
 
     /// The on-screen timeline reports its newest message (open chat or a
@@ -822,16 +883,29 @@ public final class AppState: ObservableObject {
     public func noteViewingLatest(chatID: String?, messages: [ChatMessage], windowActive: Bool,
                                   atLatest: Bool, loaded: Bool) {
         guard let id = chatID, !id.isEmpty, !isDemo else { return }
-        let open = id == openChatID || popouts.stores[id] != nil
-        let gate = ReadViewGate(isOpen: open, windowActive: windowActive && NSApp.isActive,
-                                atLatest: atLatest, loaded: loaded)
-        readSync.viewed(chatID: id, messages: messages, gate: gate)
+        readSync.viewed(chatID: id, messages: messages,
+                        gate: readViewGate(chatID: id, windowActive: windowActive && NSApp.isActive,
+                                           atLatest: atLatest, loaded: loaded))
+    }
+
+    /// The read gate for a timeline's report: the main window's open chat
+    /// or a popped-out chat whose window is still open (closing it
+    /// releases the pop-out) counts as open.
+    func readViewGate(chatID id: String, windowActive: Bool, atLatest: Bool, loaded: Bool) -> ReadViewGate {
+        ReadViewGate(isOpen: id == openChatID || popouts.isPopped(chatID: id), windowActive: windowActive,
+                     atLatest: atLatest, loaded: loaded)
     }
 
     /// Row menu Mark as read / Mark as unread, on Teams too. A refused
     /// write undoes the local change and says so under the list.
-    public func setChatUnread(_ id: String, unread wantUnread: Bool) {
-        let lastMs = CoreReads.arrivalMs(id: nil, time: chats.chat(id: id)?.last_message_time)
+    /// `newest`: the newest loaded message (message menu, R5) — its
+    /// arrival and client id, as Teams writes them. A chat marked unread
+    /// while on screen stays unread there until a newer message or the
+    /// owner leaves it (ReadSync holds).
+    public func setChatUnread(_ id: String, unread wantUnread: Bool, newest: ChatMessage? = nil) {
+        let lastMs = newest.flatMap(ReadSync.arrivalMs)
+            ?? CoreReads.arrivalMs(id: nil, time: chats.chat(id: id)?.last_message_time)
+        let onScreen = popouts.visibleChatIDs(open: openChatID).contains(id)
         if wantUnread {
             unread.markUnread(chatID: id, muted: rules.level(chatID: id) == .muted)
         } else {
@@ -842,7 +916,9 @@ public final class AppState: ObservableObject {
             guard let self else { return }
             do {
                 if wantUnread {
-                    try await self.readSync.markUnread(chatID: id, lastMessageMs: lastMs)
+                    try await self.readSync.markUnread(chatID: id, lastMessageMs: lastMs,
+                                                       clientMessageID: newest?.clientMessageID,
+                                                       holdWhileOpen: onScreen)
                 } else {
                     try await self.readSync.markRead(chatID: id, lastMessageMs: lastMs)
                 }
@@ -1418,6 +1494,7 @@ public final class AppState: ObservableObject {
             feed.onThreadUpdate { [weak self] _ in
                 Task { @MainActor [weak self] in self?.teamsSync.kick() }
             }
+            subscribeReadState(feed)
             // Single shared response delegate (routes both banner
             // families; installed after Notifier.setup so it wins).
             notifs.attach()
@@ -1935,7 +2012,7 @@ public final class AppState: ObservableObject {
             let comps = URLComponents(url: url, resolvingAgainstBaseURL: false),
             comps.host != nil
         else { return }
-        NSWorkspace.shared.open(url)
+        TeamsLinkRouter.open(url)
     }
 
     /// Person-hit pick (om-lt5-person11): open the 1:1 chat with the

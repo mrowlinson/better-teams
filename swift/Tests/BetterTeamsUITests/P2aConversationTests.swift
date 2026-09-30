@@ -40,17 +40,20 @@ final class P2aConversationTests: XCTestCase {
         XCTAssertEqual(MentionTrigger.complete("", with: "Tom Becker"), "@Tom Becker ")
     }
 
-    func testComposerHeightClampsToOneThroughEightLines() {
+    func testComposerHeightClampsToTwoThroughEightLines() {
         let font = ComposerTextView.font(1.0)
         let line = NSLayoutManager().defaultLineHeight(for: font)
-        let one = ComposerTextView.height(for: "", width: 300, font: font)
-        XCTAssertEqual(one, line.rounded(.up), accuracy: 1)
-        let two = ComposerTextView.height(for: "a\nb", width: 300, font: font)
-        XCTAssertGreaterThan(two, one)
+        // Owner spec: the input is always at least 2 lines tall.
+        let empty = ComposerTextView.height(for: "", width: 300, font: font)
+        XCTAssertEqual(empty, (line * 2).rounded(.up), accuracy: 1)
+        XCTAssertEqual(ComposerTextView.height(for: "one line", width: 300, font: font), empty)
+        XCTAssertEqual(ComposerTextView.height(for: "a\nb", width: 300, font: font), empty)
+        let three = ComposerTextView.height(for: "a\nb\nc", width: 300, font: font)
+        XCTAssertGreaterThan(three, empty)
         let many = ComposerTextView.height(for: String(repeating: "x\n", count: 30), width: 300, font: font)
         XCTAssertEqual(many, (line * 8).rounded(.up), accuracy: 1)
         // A trailing newline already counts as a line (caret on it).
-        XCTAssertGreaterThan(ComposerTextView.height(for: "a\n", width: 300, font: font), one)
+        XCTAssertGreaterThan(ComposerTextView.height(for: "a\nb\n", width: 300, font: font), empty)
     }
 
     // MARK: row state

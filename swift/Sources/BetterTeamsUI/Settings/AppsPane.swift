@@ -3,7 +3,7 @@
 // non-visible web views), Suspend after (0/5/15/30/60 min: the keep-alive
 // before a warm view is suspended), the apps in memory with Unload, the
 // downloads folder
-// and Refresh Library. Values apply to the window's `FrameHost` at once
+// and Refresh Library. Values apply to every window's `FrameHost` at once
 // (its next attach, detach or memory event evicts or suspends by them)
 // and persist under the keys FrameHost reads at launch; demo keeps them
 // in memory.
@@ -16,6 +16,8 @@ struct AppsPane: View {
     let defaults: UserDefaults
     @State private var keep: Int
     @State private var suspendMinutes: Int
+    @State private var unloadIdle: Bool
+    @State private var pauseInBackground: Bool
     @State private var downloads: URL
     /// Bumped after Unload so the resident list re-reads the host.
     @State private var residentsTick = 0
@@ -37,26 +39,38 @@ struct AppsPane: View {
         self.defaults = defaults
         _keep = State(initialValue: host.keepInMemory)
         _suspendMinutes = State(initialValue: Int(host.keepAlive / 60))
+        _unloadIdle = State(initialValue: host.unloadIdleApps)
+        _pauseInBackground = State(initialValue: host.pauseInBackground)
         _downloads = State(initialValue: host.downloadsFolder)
     }
 
     var body: some View {
         Form {
             Section {
-                Picker("Keep apps in memory", selection: $keep) {
+                Picker(selection: $keep) {
                     ForEach(Self.keepOptions, id: \.n) { o in
                         Text("\(o.title) (\(o.n))").tag(o.n)
                     }
+                } label: {
+                    InfoLabel(title: "Keep apps in memory", subject: "keeping apps in memory",
+                              text: "How many hidden apps stay loaded at once.")
                 }
-                Picker("Suspend background apps after", selection: $suspendMinutes) {
+                Picker(selection: $suspendMinutes) {
                     ForEach(Self.suspendOptions, id: \.description) { v in
                         Text(v == 0 ? "Immediately" : "\(v) minutes").tag(v)
                     }
+                } label: {
+                    InfoLabel(title: "Suspend background apps after", subject: "suspending background apps",
+                              text: "How long a hidden app stays active before it is suspended.")
                 }
-            } footer: {
-                Text("More apps in memory switch faster and use more memory. Suspended apps reload their page when you return.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                Toggle(isOn: $unloadIdle) {
+                    InfoLabel(title: "Unload apps after 30 minutes hidden", subject: "unloading hidden apps",
+                              text: "Apps you have not opened for 30 minutes are unloaded to free memory. Opening one reloads it where you left off. Notifications, calls and unread counts are not affected.")
+                }
+                Toggle(isOn: $pauseInBackground) {
+                    InfoLabel(title: "Pause apps while Better Teams is in the background", subject: "pausing apps in the background",
+                              text: "While another app is in front, the app pages stop updating to save battery and processor time. They resume when you return. Notifications, calls and unread counts keep working.")
+                }
             }
             Section("Apps in Memory") {
                 let _ = residentsTick
@@ -99,11 +113,19 @@ struct AppsPane: View {
         .frame(width: SettingsWindowController.paneWidth)
         .fixedSize(horizontal: false, vertical: true)
         .onChange(of: keep) { _, n in
-            host.keepInMemory = n
+            FrameHost.forEachHost { $0.keepInMemory = n }
             defaults.set(n, forKey: FramePolicy.keepInMemoryKey)
         }
+        .onChange(of: unloadIdle) { _, on in
+            FrameHost.forEachHost { $0.unloadIdleApps = on }
+            defaults.set(on, forKey: FramePolicy.unloadIdleAppsKey)
+        }
+        .onChange(of: pauseInBackground) { _, on in
+            FrameHost.forEachHost { $0.pauseInBackground = on }
+            defaults.set(on, forKey: FramePolicy.pauseInBackgroundKey)
+        }
         .onChange(of: suspendMinutes) { _, v in
-            host.keepAlive = TimeInterval(v * 60)
+            FrameHost.forEachHost { $0.keepAlive = TimeInterval(v * 60) }
             defaults.set(v, forKey: TeamsFrameConfig.keepAliveMinutesKey)
         }
     }
@@ -118,7 +140,7 @@ struct AppsPane: View {
         panel.prompt = "Choose"
         guard panel.runModal() == .OK, let url = panel.url else { return }
         downloads = url
-        host.downloadsFolder = url
+        FrameHost.forEachHost { $0.downloadsFolder = url }
         defaults.set(url.path, forKey: FrameHost.downloadsFolderKey)
     }
 }

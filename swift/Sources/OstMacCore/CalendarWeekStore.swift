@@ -68,6 +68,32 @@ public final class CalendarWeekStore: ObservableObject {
     /// Meet now create in flight / its last failure.
     @Published public internal(set) var meetingNow = false
     @Published public internal(set) var meetNowError: String?
+    /// Forward in flight / its last failure (CALDETAIL).
+    @Published public internal(set) var forwarding = false
+    @Published public internal(set) var forwardError: String?
+    /// Personal-field edit (show as / reminder / categories / private)
+    /// failure; the row rolls back.
+    @Published public internal(set) var personalError: String?
+    /// Outlook categories offered by Categorize (master list, else
+    /// Outlook's defaults + names already in use).
+    @Published public internal(set) var categoryList: [CalendarCategory] = []
+    /// Attachment id → where it was saved; downloads in flight; failures.
+    @Published public internal(set) var savedAttachments: [String: URL] = [:]
+    @Published public internal(set) var downloading: Set<String> = []
+    @Published public internal(set) var attachmentErrors: [String: String] = [:]
+    /// Scheduling assistant: free/busy per address for the window read.
+    @Published public internal(set) var freeBusy: [CalendarFreeBusy] = []
+    @Published public internal(set) var freeBusyLoading = false
+    @Published public internal(set) var freeBusyError: String?
+    /// Last removal ("Delete" on an invitation) failure.
+    @Published public internal(set) var removeError: String?
+    /// Duplicate / webinar create in flight and its last failure.
+    /// Occurrences per series master id (View series / Show all instances).
+    @Published public internal(set) var seriesInstances: [String: [MeetingItem]] = [:]
+    @Published public internal(set) var instancesLoading: Set<String> = []
+    @Published public internal(set) var instancesError: [String: String] = [:]
+    @Published public internal(set) var creating = false
+    @Published public internal(set) var createError: String?
 
     /// Seven `"yyyy-MM-dd"` keys for the grid header row.
     public var dayKeys: [String] {
@@ -113,6 +139,10 @@ public final class CalendarWeekStore: ObservableObject {
     var monthGeneration: UInt64 = 0
     /// Demo Meet now ids.
     var meetNowCount = 0
+    /// Categories read once per session.
+    var categoriesLoaded = false
+    /// Folder attachment downloads land in (tests: a temp dir).
+    public var downloadsFolder: () -> URL = { UserFolders.downloads() }
     /// Weeks fetched this session by week start, with fetch time.
     var weekCache: [Int64: (response: CalWeekResponse, at: Date)] = [:]
     var prefetching: Set<Int64> = []

@@ -29,10 +29,31 @@ final class RichConversationTests: XCTestCase {
     }
 
     func testMentionTokenFallback() {
-        XCTAssertEqual(MessageRender.mentionTokens(in: "hi @Doe, Jane ok"), ["Doe, Jane"])
-        XCTAssertEqual(MessageRender.mentionTokens(in: "@Jordan Fox can you confirm the change window works?"), ["Jordan Fox"])
-        XCTAssertEqual(MessageRender.mentionTokens(in: "hi @Jordan Fox, ok @Ava Lindqvist."), ["Jordan Fox", "Ava Lindqvist"])
-        XCTAssertEqual(MessageRender.mentionTokens(in: "no mention"), [])
+        let known: Set<String> = ["Jordan Fox", "Ava Lindqvist", "Doe, Jane"]
+        // Known member names complete the token; nothing more.
+        XCTAssertEqual(MessageRender.mentionTokens(in: "@Jordan Fox can you confirm the change window works?", knownNames: known), ["Jordan Fox"])
+        XCTAssertEqual(MessageRender.mentionTokens(in: "hi @Jordan Fox, ok @Ava Lindqvist.", knownNames: known), ["Jordan Fox", "Ava Lindqvist"])
+        // Unknown name: first word only, never the sentence.
+        XCTAssertEqual(MessageRender.mentionTokens(in: "@Jordan Please confirm", knownNames: known), ["Jordan"])
+        XCTAssertEqual(MessageRender.mentionTokens(in: "@Jordan Please confirm", knownNames: []), ["Jordan"])
+        XCTAssertEqual(MessageRender.mentionTokens(in: "hi @Sam, thanks", knownNames: []), ["Sam"])
+        // A longer word is not a known-name match.
+        XCTAssertEqual(MessageRender.mentionTokens(in: "@Jordan Foxtrot ok", knownNames: known), ["Jordan"])
+        XCTAssertEqual(MessageRender.mentionTokens(in: "ping @Jordan's team", knownNames: []), ["Jordan"])
+        XCTAssertEqual(MessageRender.mentionTokens(in: "mail a@b.com now", knownNames: []), [])
+        XCTAssertEqual(MessageRender.mentionTokens(in: "no mention", knownNames: known), [])
+        XCTAssertEqual(MessageRender.mentionTokens(in: "mail a@ b", knownNames: known), [])
+    }
+
+    func testEntityMentionHighlightsExactSpanOnly() {
+        let raw = "<p>Jordan is out. <span itemtype=\"http://schema.skype.com/Mention\" itemid=\"0\">Jordan Fox</span> Please confirm</p>"
+        let a = MessageRender.attributedBody(text: "Jordan is out. Jordan Fox Please confirm", raw: raw, highlighting: nil)
+        let marked = a.runs.filter { $0.mention != nil }.map { String(a[$0.range].characters) }
+        XCTAssertEqual(marked, ["Jordan Fox"])
+        // <at> entity, exact name.
+        let raw2 = "<p><at id=\"0\">Jordan</at> Please confirm</p>"
+        let b = MessageRender.attributedBody(text: "@Jordan Please confirm", raw: raw2, highlighting: nil)
+        XCTAssertEqual(b.runs.filter { $0.mention != nil }.map { String(b[$0.range].characters) }, ["Jordan"])
     }
 
     func testEntityDecode() {

@@ -26,6 +26,14 @@ public final class ConversationStore: ObservableObject {
     @Published public private(set) var error: String?
     @Published public private(set) var didLoad = false
     @Published public private(set) var failedIDs: Set<String> = []
+    /// Own messages whose delete the server did not confirm (MSGDELETE):
+    /// the bubble is back with its text (a failure is never read as
+    /// "gone"), the row shows the error and Retry.
+    @Published public private(set) var deleteFailedIDs: Set<String> = []
+    /// Wire for own-message delete (tests inject a fake; default = core).
+    public var deleteTransport: @Sendable (_ chatID: String, _ messageID: String) throws -> Void = { chat, id in
+        _ = try RustCore.deleteMessage(chatID: chat, messageID: id)
+    }
     /// A background `refresh()` is running behind the bubbles on screen.
     @Published public private(set) var refreshing = false
     /// The last background refresh failed (bubbles stay; quiet notice).
@@ -532,7 +540,7 @@ public final class ConversationStore: ObservableObject {
         refreshError = nil
         error = nil
         didLoad = false
-        failedIDs = []
+        failedIDs = []; deleteFailedIDs = []
         outgoing = [:]
         unseenSentIDs = []
         replyTarget = nil
@@ -653,7 +661,7 @@ public final class ConversationStore: ObservableObject {
         refreshError = nil
         error = nil
         didLoad = false
-        failedIDs = []
+        failedIDs = []; deleteFailedIDs = []
         outgoing = [:]
         unseenSentIDs = []
         replyTarget = nil
@@ -1284,6 +1292,12 @@ public final class ConversationStore: ObservableObject {
     /// D12): real Teams shows the deleter-only tombstone for a few
     /// minutes, then drops the row. Group/channel tombstones persist.
     public static let tombstoneFadeSeconds: UInt64 = 5 * 60
+    /// Fade delay in nanoseconds (tests shorten it; production = the above).
+    var tombstoneFadeNanos: UInt64 = ConversationStore.tombstoneFadeSeconds * 1_000_000_000
+    /// Pending fade timers by message id: a rollback or a retry cancels the
+    /// earlier attempt's timer, so a retried delete fades a full interval
+    /// after ITS tombstone, never early off the first attempt's clock.
+    private var fadeTasks: [String: Task<Void, Never>] = [:]
 
     /// Record a peer delete (fid-msgs D12): group/channel chats keep a
     /// tombstone bubble; 1:1 drops the row (real Teams shows the
@@ -1293,6 +1307,7 @@ public final class ConversationStore: ObservableObject {
     /// this when a delete is observed out-of-band.
     public func ingestDeleted(id: String, isOneToOne: Bool = false) {
         guard messages.contains(where: { $0.id == id }) else { return }
+        deleteFailedIDs.remove(id)
         if isOneToOne {
             messages = Self.removing(id: id, from: messages)
         } else {
@@ -1316,33 +1331,61 @@ public final class ConversationStore: ObservableObject {
         else { return }
         messages = Self.applyingDelete(id: id, to: messages)
         failedIDs.remove(id)
+        deleteFailedIDs.remove(id)
         if isOneToOne { scheduleTombstoneFade(id: id) }
         let hop = coreHop
+        let wire = deleteTransport
         Task {
             do {
-                _ = try await Task.blocking {
-                    try hop.run { try RustCore.deleteMessage(chatID: chat, messageID: id) }
+                try await Task.blocking {
+                    try hop.run { try wire(chat, id) }
                 }.value
                 self.onDelete?(chat, id)
             } catch {
-                // Unmark the tombstone (same row, original bubble back).
+                // Not confirmed: the original bubble comes back (same
+                // row, text intact) and the row offers Retry.
+                self.fadeTasks.removeValue(forKey: id)?.cancel()
                 if let j = self.messages.firstIndex(where: { $0.id == id }) {
-                    self.messages[j] = before
+                    self.messages[j] = Self.restoringAfterFailedDelete(before: before, current: self.messages[j])
                 }
+                self.deleteFailedIDs.insert(id)
                 self.error = "delete failed: \(error)"
             }
         }
     }
 
+    /// Retry a delete the server did not confirm (same bubble, no dupe).
+    public func retryDelete(id: String, isOneToOne: Bool = false) {
+        guard deleteFailedIDs.contains(id) else { return }
+        deleteMessage(id: id, isOneToOne: isOneToOne)
+    }
+
     /// Drop a 1:1 tombstone after the fade interval. No-op when the row
     /// is gone or was unmarked (delete failure rolled back).
     private func scheduleTombstoneFade(id: String) {
-        Task { [weak self] in
-            try? await Task.sleep(nanoseconds: Self.tombstoneFadeSeconds * 1_000_000_000)
-            guard let self else { return }
+        fadeTasks.removeValue(forKey: id)?.cancel()
+        let nanos = tombstoneFadeNanos
+        fadeTasks[id] = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: nanos)
+            guard !Task.isCancelled, let self else { return }
+            self.fadeTasks[id] = nil
             guard self.messages.contains(where: { $0.id == id && $0.deleted }) else { return }
             self.messages = Self.removing(id: id, from: self.messages)
         }
+    }
+
+    /// Rollback of an unconfirmed delete: the pre-delete bubble, except that
+    /// anything that landed on the tombstone while the request was in flight
+    /// (an edit, a reaction) is kept rather than overwritten by the snapshot.
+    static func restoringAfterFailedDelete(before: ChatMessage, current: ChatMessage) -> ChatMessage {
+        var out = before
+        if !current.content.isEmpty {
+            out.content = current.content
+            out.edited = current.edited
+            out.raw = current.raw
+        }
+        if !current.reactions.isEmpty { out.reactions = current.reactions }
+        return out
     }
 
     /// Pure edit: rewrite content in place + mark edited; unknown id unchanged.

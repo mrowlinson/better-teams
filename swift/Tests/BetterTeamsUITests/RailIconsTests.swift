@@ -50,6 +50,48 @@ final class RailIconsTests: XCTestCase {
         return ink
     }
 
+    // MARK: Rail symbol contrast (CALDETAIL T3)
+
+    /// Unselected rail symbols were nearly invisible in light mode
+    /// (`.secondary` in the rail's vibrant sidebar pane): the symbol must be
+    /// at least as dark as its own label text, in vibrant and plain light.
+    func testUnselectedSymbolIsAsDarkAsItsLabel() {
+        for name in [NSAppearance.Name.vibrantLight, .aqua] {
+            let (symbol, text) = inks(RailButtonLabel(title: "Files", symbol: "folder", badge: nil), appearance: name)
+            XCTAssertLessThan(text, 0.6, "control: label text measured (\(name.rawValue)): \(text)")
+            XCTAssertLessThanOrEqual(symbol, text + 0.05, "symbol lighter than its label (\(name.rawValue)): \(symbol) vs \(text)")
+        }
+    }
+
+    /// Controls: an invisible symbol measures light; the old `.secondary`
+    /// symbol measures lighter than its label, so the check above flags it.
+    func testSymbolInkControls() {
+        let clear = inks(VStack(spacing: 3) {
+            Image(systemName: "folder").font(.title2).foregroundStyle(.clear).frame(height: 24)
+            Text("Files").font(.subheadline)
+        }, appearance: .aqua)
+        XCTAssertGreaterThan(clear.symbol, 0.95, "invisible symbol: \(clear)")
+        let old = inks(VStack(spacing: 3) {
+            Image(systemName: "folder").font(.title2).foregroundStyle(.secondary).frame(height: 24)
+            Text("Files").font(.subheadline)
+        }, appearance: .aqua)
+        XCTAssertGreaterThan(old.symbol, old.text + 0.05, "old .secondary symbol: \(old)")
+    }
+
+    /// Darkest luminance in the symbol band and the label band of one
+    /// unselected 54 pt rail button.
+    private func inks<L: View>(_ label: L, appearance: NSAppearance.Name) -> (symbol: Double, text: Double) {
+        let button = Button {} label: { label }
+            .buttonStyle(RailButtonStyle(selected: false, height: 54))
+        let rep = render(button, size: NSSize(width: RailModel.itemWidth, height: 54), appearance: appearance)
+        var symbol = 1.0, text = 1.0
+        for x in 6..<Int(RailModel.itemWidth) - 6 {
+            for y in 4..<30 { symbol = min(symbol, lum(rep, x, y)) }
+            for y in 34..<51 { text = min(text, lum(rep, x, y)) }
+        }
+        return (symbol, text)
+    }
+
     // MARK: R11
 
     private func tempDir() -> URL {
@@ -135,12 +177,13 @@ final class RailIconsTests: XCTestCase {
     // MARK: helpers
 
     /// Renders `view` in a borderless window that is never ordered in.
-    private func render<V: View>(_ view: V, size: NSSize, settle: Bool = true) -> NSBitmapImageRep {
+    private func render<V: View>(_ view: V, size: NSSize, settle: Bool = true,
+                                 appearance: NSAppearance.Name = .aqua) -> NSBitmapImageRep {
         let host = NSHostingView(rootView: view.frame(width: size.width, height: size.height))
         let window = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: size.width, height: size.height),
                               styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        window.appearance = NSAppearance(named: .aqua)
+        window.appearance = NSAppearance(named: appearance)
         window.contentView = host
         host.layoutSubtreeIfNeeded()
         if settle { RunLoop.current.run(until: Date().addingTimeInterval(0.2)); host.layoutSubtreeIfNeeded() }

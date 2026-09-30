@@ -76,6 +76,14 @@ public final class FramePage: NSObject {
     /// The view was re-created from saved state and has not finished
     /// loading yet (the snapshot stands in until it does).
     public fileprivate(set) var restoring = false
+    /// The view is out of the window while Better Teams is in the
+    /// background (APPEFF2 O5); the snapshot stands in, the page is
+    /// suspended, and coming back to the app puts the view back.
+    public fileprivate(set) var pausedInBackground = false
+    /// Where the paused view goes back to.
+    @ObservationIgnored fileprivate weak var pausedContainer: NSView?
+    /// The view held keyboard focus when it was paused (given back on resume).
+    @ObservationIgnored fileprivate var pausedHadFocus = false
 
     init(key: FrameKey, url: URL, title: String) {
         self.key = key
@@ -93,7 +101,7 @@ public final class FramePage: NSObject {
     /// A web view exists (Settings ▸ Apps ▸ apps in memory).
     public var isResident: Bool { web != nil }
     /// Shown in a window right now.
-    public var isOnScreen: Bool { web?.window != nil }
+    public var isOnScreen: Bool { web?.window != nil || pausedInBackground }
     public var canGoBack: Bool { web?.canGoBack ?? false }
     public var canGoForward: Bool { web?.canGoForward ?? false }
     public var isLoading: Bool { web?.isLoading ?? false }
@@ -383,6 +391,26 @@ public final class FrameHost {
     /// Settings ▸ Apps ▸ Downloads folder (§7.3 downloads).
     var downloadsFolder: URL
 
+    /// Unload apps hidden for `idleUnloadAfter` (APPEFF2 O2; Settings ▸
+    /// Apps). Turning it off cancels the pending unload.
+    var unloadIdleApps: Bool {
+        didSet { if !unloadIdleApps { idleTimer?.invalidate(); idleTimer = nil } else { scheduleIdleUnload() } }
+    }
+    /// Pause the panes while Better Teams is in the background (APPEFF2
+    /// O5; Settings ▸ Apps). Turning it off puts paused panes back.
+    var pauseInBackground: Bool {
+        didSet { if !pauseInBackground { resumeFromBackground() } }
+    }
+    /// Idle time before a hidden app is unloaded (tests shorten it).
+    var idleUnloadAfter = FramePolicy.idleUnloadAfter
+    /// Background time before the panes pause (tests shorten it).
+    var backgroundPauseDelay = FramePolicy.backgroundPauseDelay
+    /// The panes are paused: Better Teams is in the background.
+    private(set) var backgroundPaused = false
+    private var idleTimer: Timer?
+    private var pauseTimer: Timer?
+    private var activityObservers: [NSObjectProtocol] = []
+
 
     static let downloadsFolderKey = "bt.frame.downloadsFolder"
 
@@ -404,9 +432,24 @@ public final class FrameHost {
         let demo = accountKey == "demo"
         keepInMemory = demo ? 3 : FramePolicy.keepInMemory()
         keepAlive = demo ? 15 * 60 : TimeInterval(TeamsFrameConfig.keepAliveMinutes(defaults: .standard) * 60)
+        // Demo keeps the defaults (both on), never the owner's saved choice.
+        unloadIdleApps = demo ? true : FramePolicy.unloadIdleApps()
+        pauseInBackground = demo ? true : FramePolicy.pauseInBackground()
         let saved = demo ? nil : UserDefaults.standard.string(forKey: Self.downloadsFolderKey)
         downloadsFolder = (Self.isTestProcess ? nil : saved).map { URL(fileURLWithPath: $0, isDirectory: true) }
             ?? Self.defaultDownloads()
+        // Ready before the first pane opens (APPEFF R5).
+        if !demo { PaneContentRules.prepare() }
+        Self.liveHosts.add(self)
+    }
+
+    /// Every window's host, weakly held: a Settings ▸ Apps change applies
+    /// to all of them at once, not just the window that owns the pane.
+    private static let liveHosts = NSHashTable<FrameHost>.weakObjects()
+
+    /// Runs `change` on every live window's host (Settings ▸ Apps).
+    static func forEachHost(_ change: (FrameHost) -> Void) {
+        for host in liveHosts.allObjects { change(host) }
     }
 
     var isDemo: Bool { accountKey == "demo" }
@@ -805,7 +848,7 @@ public final class FrameHost {
         js.onJoinedTeams = { [weak self] in await self?.joinedTeams() ?? [] }
         js.onDeepLink = { [weak self] url in
             guard let m = self?.window else { return false }
-            return DeepLinkRouter.route(url, m)
+            return TeamsLinkRouter.route(url, window: m) == .native
         }
         return js
     }
@@ -1000,7 +1043,8 @@ public final class FrameHost {
     func openTeamsLink(_ url: URL) -> Bool {
         if isDemo { return false }
         guard let m = window else { return false }
-        return DeepLinkRouter.route(url, m)
+        // No native view: `TeamsLinkRouter` shows the error (Copy Link).
+        return TeamsLinkRouter.route(url, window: m) == .native
     }
 
     /// A page, frame or popup went for a Teams web address (the load was
@@ -1019,7 +1063,7 @@ public final class FrameHost {
     /// an empty file to ~/Downloads (APPNATIVE4).
     var openExternal: (URL) -> Void = { url in
         guard !FrameHost.isTestProcess else { return }
-        NSWorkspace.shared.open(url)
+        TeamsLinkRouter.open(url)
     }
 
     /// XCTest is loaded: nothing may open a browser or write to the
@@ -1056,6 +1100,12 @@ public final class FrameHost {
     /// a view shown elsewhere (one parent, ever).
     public func attach(_ key: FrameKey, to container: NSView) {
         guard let p = pages[key.raw] else { return }
+        // Paused in the background: stays out of the window until Better
+        // Teams is frontmost again (a SwiftUI update must not wake it).
+        if p.pausedInBackground, backgroundPaused, p.web != nil {
+            p.pausedContainer = container
+            return
+        }
         let web = p.web ?? makeView(p)
         if web.superview !== container {
             web.removeFromSuperview()
@@ -1073,6 +1123,14 @@ public final class FrameHost {
 
     /// Removes `key`'s view from `container` without destroying it.
     public func detach(_ key: FrameKey, from container: NSView) {
+        // A paused pane's container is going away: it is just hidden now.
+        if let p = pages[key.raw], p.pausedInBackground, p.pausedContainer === container {
+            p.pausedInBackground = false
+            p.pausedContainer = nil
+            p.lastUsed = Date()
+            rebalance()
+            return
+        }
         guard let p = pages[key.raw], let web = p.web, web.superview === container else { return }
         captureSnapshot(key)
         web.removeFromSuperview()
@@ -1096,7 +1154,10 @@ public final class FrameHost {
     func containerMoved(_ key: FrameKey, _ container: NSView) {
         if container.window != nil {
             attach(key, to: container)
-        } else if let p = pages[key.raw], p.web?.superview === container {
+        } else if let p = pages[key.raw], let web = p.web, web.superview === container {
+            // Hidden: out of the view tree too, like a detached pane, so
+            // WebKit suspends it once idle (APPEFF R3).
+            web.removeFromSuperview()
             p.lastUsed = Date()
             rebalance()
         }
@@ -1117,7 +1178,7 @@ public final class FrameHost {
     var residents: [FramePolicy.Resident] {
         pages.values.compactMap { p in
             guard let web = p.web else { return nil }
-            return FramePolicy.Resident(key: p.key.raw, visible: web.window != nil,
+            return FramePolicy.Resident(key: p.key.raw, visible: web.window != nil || p.pausedInBackground,
                                         lastUsed: p.lastUsed, suspended: p.suspended)
         }
     }
@@ -1135,6 +1196,149 @@ public final class FrameHost {
             // Under memory pressure the stand-in picture goes too.
             if pressure != .normal { p.snapshot = nil }
         }
+        scheduleIdleUnload()
+    }
+
+    // MARK: unload after idle (APPEFF2 O2)
+
+    /// An app that is safe to unload: nothing the user would lose beyond
+    /// what an eviction already loses. Never one using the camera or
+    /// microphone (a meeting app in a call) or downloading.
+    private func canUnload(_ p: FramePage) -> Bool {
+        guard let web = p.web else { return false }
+        return web.cameraCaptureState == .none && web.microphoneCaptureState == .none && p.downloads.isEmpty
+    }
+
+    /// Unloads every hidden app unused for `idleUnloadAfter` (interaction
+    /// state and last picture kept: opening it again restores it like any
+    /// evicted app). Returns the keys unloaded.
+    @discardableResult
+    func unloadIdle(now: Date = Date()) -> [String] {
+        guard unloadIdleApps else { return [] }
+        var out: [String] = []
+        for k in FramePolicy.idle(residents, now: now, after: idleUnloadAfter) {
+            guard let p = pages[k], canUnload(p) else { continue }
+            evict(p, keepState: true)
+            out.append(k)
+        }
+        return out
+    }
+
+    /// One timer, aimed at the earliest deadline among the hidden apps:
+    /// nothing wakes while no app is hidden.
+    private func scheduleIdleUnload() {
+        idleTimer?.invalidate()
+        idleTimer = nil
+        guard unloadIdleApps else { return }
+        let now = Date()
+        let due = residents.filter { !$0.visible }.map { r -> TimeInterval in
+            let left = r.lastUsed.addingTimeInterval(idleUnloadAfter).timeIntervalSince(now)
+            // Already due yet not unloadable (in a call): look again later.
+            return left <= 0 ? max(idleUnloadAfter / 30, 1) : left
+        }
+        guard let next = due.min() else { return }
+        let t = Timer(timeInterval: max(next, 0.01), repeats: false) { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                self.unloadIdle()
+                self.scheduleIdleUnload()
+            }
+        }
+        t.tolerance = min(next * 0.1, 30)
+        RunLoop.main.add(t, forMode: .common)
+        idleTimer = t
+    }
+
+    // MARK: pause in the background (APPEFF2 O5)
+
+    /// Better Teams left the foreground: after `backgroundPauseDelay` the
+    /// visible panes are paused. Nothing native depends on a pane
+    /// (notifications, calls and unread badges run in the core), so only
+    /// the pages stop updating.
+    func appDidResignActive() {
+        guard pauseInBackground else { return }
+        pauseTimer?.invalidate()
+        let t = Timer(timeInterval: backgroundPauseDelay, repeats: false) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, !NSApp.isActive else { return }
+                self.pauseForBackground()
+            }
+        }
+        RunLoop.main.add(t, forMode: .common)
+        pauseTimer = t
+    }
+
+    func appDidBecomeActive() {
+        pauseTimer?.invalidate()
+        pauseTimer = nil
+        resumeFromBackground()
+    }
+
+    /// Takes every on-screen pane out of the window, its picture standing
+    /// in. A pane that has not painted or is restoring, or is using the
+    /// camera or microphone, or is downloading, stays live. (Audio
+    /// playback has no public signal: a pane playing audio is paused too.)
+    func pauseForBackground() {
+        guard pauseInBackground else { return }
+        backgroundPaused = true
+        for p in pages.values {
+            guard let web = p.web, let container = web.superview, web.window != nil,
+                  p.committed, !p.restoring, canUnload(p) else { continue }
+            web.takeSnapshot(with: nil) { [weak self, weak p, weak container] image, _ in
+                guard let self, self.backgroundPaused, let p, let image, let container,
+                      let web = p.web, web.superview === container else { return }
+                p.snapshot = image
+                p.pausedContainer = container
+                p.pausedHadFocus = (web.window?.firstResponder as? NSView).map { $0 === web || $0.isDescendant(of: web) } ?? false
+                web.removeFromSuperview()
+                p.pausedInBackground = true
+                self.rebalance()
+            }
+        }
+    }
+
+    /// Puts every paused pane back in its window.
+    func resumeFromBackground() {
+        backgroundPaused = false
+        for p in pages.values where p.pausedInBackground {
+            let container = p.pausedContainer
+            p.pausedContainer = nil
+            if let container, container.window != nil {
+                attach(p.key, to: container)
+                // Leaving the window dropped keyboard focus: give it back.
+                if p.pausedHadFocus, let web = p.web { web.window?.makeFirstResponder(web) }
+            }
+            p.pausedHadFocus = false
+            p.pausedInBackground = false
+        }
+    }
+
+    /// Follows the app in and out of the foreground (never in tests).
+    private func startActivityMonitor() {
+        guard activityObservers.isEmpty, !Self.isTestProcess else { return }
+        let nc = NotificationCenter.default
+        activityObservers = [
+            nc.addObserver(forName: NSApplication.didResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.appDidResignActive() }
+            },
+            nc.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.appDidBecomeActive() }
+            },
+        ]
+    }
+
+    /// The system is short of memory (§7.3, APPEFF R4). Warning: suspended
+    /// panes are evicted (`FramePolicy.evict`) and the web processes'
+    /// in-memory resource cache is dropped (memory only: cookies, storage
+    /// and the disk cache stay, so nothing a pane shows is lost).
+    /// Critical: every pane not on screen is evicted, and so is every
+    /// stand-in picture of a pane not on screen.
+    func handleMemoryPressure(_ level: FramePolicy.Pressure) {
+        guard level != .normal else { return }
+        rebalance(level)
+        dataStore.removeData(ofTypes: [WKWebsiteDataTypeMemoryCache], modifiedSince: .distantPast) {}
+        guard level == .critical else { return }
+        for p in pages.values where !p.isOnScreen { p.snapshot = nil }
     }
 
     /// `evicted`: interaction state + URL saved, view released.
@@ -1152,12 +1356,18 @@ public final class FrameHost {
         web.stopLoading()
         web.navigationDelegate = nil
         web.uiDelegate = nil
+        // Pending checks hold the page's TeamsJS host; the view is gone.
+        blankChecks.removeValue(forKey: p.key.raw)?.cancel()
+        hostChecks.removeValue(forKey: p.key.raw)?.cancel()
         if let js = jsHosts.removeValue(forKey: p.key.raw) {
             js.detach()
             TeamsJSHost.uninstall(from: web.configuration.userContentController)
         }
         web.removeFromSuperview()
+        retire(web)
         p.web = nil
+        p.pausedInBackground = false
+        p.pausedContainer = nil
         p.suspended = false
         p.committed = false
         p.restoring = false
@@ -1166,11 +1376,42 @@ public final class FrameHost {
         if findKey == p.key { endFind() }
     }
 
+    /// Evicted views, held until their page's process has answered once
+    /// (APPEFF R7). A view released while its hidden page was suspended
+    /// (WKPreferences.inactiveSchedulingPolicy) often left its web process
+    /// alive at full size (140-250 MB) for minutes; one round trip in an
+    /// isolated world (never the page's own) wakes it, so the release
+    /// lets it exit (seconds, not minutes). Released after the answer, or
+    /// after 5 s at most.
+    private var retiring: [Int: WKWebView] = [:]
+    private var retireSeq = 0
+
+    private func retire(_ web: WKWebView) {
+        retireSeq += 1
+        let id = retireSeq
+        retiring[id] = web
+        web.evaluateJavaScript("0", in: nil, in: .defaultClient) { [weak self] _ in
+            self?.retiring[id] = nil
+        }
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
+            self?.retiring[id] = nil
+        }
+    }
+
+    /// Evicted views still waiting for their page's answer (tests).
+    var retiringCount: Int { retiring.count }
+
     private func makeView(_ p: FramePage) -> WKWebView {
         let config = WKWebViewConfiguration()
         config.websiteDataStore = dataStore
         config.applicationNameForUserAgent = TeamsFrameConfig.userAgentSuffix
         config.mediaTypesRequiringUserActionForPlayback = .all
+        // A pane out of the window, idle, is suspended by WebKit: no
+        // script, timers or layout until it is shown again (APPEFF R3).
+        config.preferences.inactiveSchedulingPolicy = .suspend
+        // Telemetry / analytics beacons never leave a pane (APPEFF R5).
+        if !isDemo { PaneContentRules.apply(to: config.userContentController) }
         var js: TeamsJSHost?
         if let l = hosted[p.key.raw] {
             let h = makeJSHost(l, key: p.key)
@@ -1191,16 +1432,29 @@ public final class FrameHost {
         p.web = web
         p.observe(web)
         startPressureMonitor()
-        if let saved = p.savedInteraction, !isDemo {
+        startActivityMonitor()
+        if let saved = p.savedInteraction, !isDemo, Self.restoresInteraction(transport: js?.transport) {
             web.interactionState = saved
             p.savedInteraction = nil
             p.state = .loading
+            // A restore that never starts a load fails with Retry, never
+            // an endless loading pane.
+            p.watchLoad()
         } else {
+            p.savedInteraction = nil
             load(p, in: web)
         }
         // Re-created after eviction: its last picture stands in.
         p.restoring = p.snapshot != nil
         return web
+    }
+
+    /// Whether an evicted page comes back from its saved interaction
+    /// state (address, back/forward list, scroll). Not the iframe host:
+    /// its top document is an HTML string, which WebKit does not restore
+    /// (the view stayed blank, no load; APPEFF R2): it loads afresh.
+    static func restoresInteraction(transport: TeamsJSTransport?) -> Bool {
+        transport != .iframe
     }
 
     private func load(_ p: FramePage, in web: WKWebView) {
@@ -1281,7 +1535,7 @@ public final class FrameHost {
         let src = DispatchSource.makeMemoryPressureSource(eventMask: [.warning, .critical], queue: .main)
         src.setEventHandler { [weak self, weak src] in
             let critical = src?.data.contains(.critical) ?? false
-            Task { @MainActor in self?.rebalance(critical ? .critical : .warning) }
+            Task { @MainActor in self?.handleMemoryPressure(critical ? .critical : .warning) }
         }
         src.resume()
         pressureSource = src

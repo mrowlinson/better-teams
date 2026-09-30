@@ -167,17 +167,34 @@ final class CalendarWeekTests: XCTestCase {
     }
 
     func testPrevNextWeekShiftsSevenDays() async throws {
-        final class SeenBox: @unchecked Sendable { var seen: [Int64] = [] }
+        // The fetcher runs on the multi-threaded BlockingExecutor, so two
+        // fetches started back-to-back may call it in either order and from
+        // different threads: the log is lock-guarded and only the first
+        // (awaited alone) fetch has a pinned position.
+        final class SeenBox: @unchecked Sendable {
+            private let lock = NSLock()
+            private var log: [Int64] = []
+            func append(_ v: Int64) { lock.lock(); log.append(v); lock.unlock() }
+            var seen: [Int64] { lock.lock(); defer { lock.unlock() }; return log }
+        }
         let box = SeenBox()
         let store = CalendarWeekStore(
             weekStart: Self.monday(), calendar: Self.utcMonday(),
             weekFetcher: {
-                box.seen.append($0)
+                box.append($0)
                 return CalWeekResponse(
                     ok: true, weekStart: $0, days: 7, meetings: [])
             })
         store.nextWeek()
-        try await waitFor("next fetch") { box.seen.count == 1 }
+        // Wait for the first week to LAND (not just for its fetch to start):
+        // while the store is still on its first `.loading` load, paging just
+        // moves the target and both loads read the latest week, which is a
+        // different (valid) path than the shift-behind-the-shown-week one
+        // this test pins.
+        try await waitFor("next week lands") {
+            box.seen.count == 1 && store.weekStart == Self.monday().addingTimeInterval(7 * 86_400)
+                && store.state != .loading
+        }
         store.prevWeek()
         store.prevWeek()
         try await waitFor("prev fetches") { box.seen.count == 3 }
@@ -187,8 +204,10 @@ final class CalendarWeekTests: XCTestCase {
         }
         XCTAssertEqual(
             store.weekStart, Self.monday().addingTimeInterval(-7 * 86_400))
-        XCTAssertEqual(box.seen[0], 1_790_553_600 + 7 * 86_400)
-        XCTAssertEqual(box.seen[2], 1_790_553_600 - 7 * 86_400)
+        let seen = box.seen
+        XCTAssertEqual(seen[0], 1_790_553_600 + 7 * 86_400)
+        XCTAssertEqual(
+            Set(seen[1...]), [1_790_553_600, 1_790_553_600 - 7 * 86_400])
     }
 
     /// CALWEEK: an uncached week fetches behind the week on screen —

@@ -100,7 +100,7 @@ private struct ObservedDetail: View {
                         Button("Chat") { SearchPersonActions.chat(p, model) }
                     }
                     if let email = p.email, !email.isEmpty, let url = URL(string: "mailto:\(email)") {
-                        Button("Email") { NSWorkspace.shared.open(url) }
+                        Button("Email") { TeamsLinkRouter.open(url) }
                     }
                 }
             } else {
@@ -235,7 +235,7 @@ struct FileCard: View {
                     Button("Show in Chat", action: showInChat)
                         .disabled(file.source_id?.isEmpty ?? true)
                     if let url = file.web_url.flatMap(URL.init(string:)) {
-                        Button("Open in Browser") { NSWorkspace.shared.open(url) }
+                        Button("Open in Browser") { TeamsLinkRouter.openInBrowser(url) }
                     }
                 }
                 .controlSize(.large)
@@ -246,7 +246,7 @@ struct FileCard: View {
             guard let p = pending, path == p.dest else { return }
             pending = nil
             let url = URL(fileURLWithPath: p.dest)
-            if p.quickLook { FileQuickLook.shared.show(url) } else { NSWorkspace.shared.open(url) }
+            if p.quickLook { FileQuickLook.shared.show(url) } else { TeamsLinkRouter.open(url) }
         }
     }
 

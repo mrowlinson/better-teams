@@ -37,7 +37,7 @@ final class AppSignInTests: XCTestCase {
         let chats = ChatListViewModel(fetcher: { _ in ChatsResponse(ok: true, chats: []) })
         let graph = AccountWindowGraph(account: AccountRecord(id: account, displayName: "Test"), chats: chats)
         let model = WindowModel(graph: graph, accountKey: account, options: LaunchOptions(args: ["--evidence"]))
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 700),
+        let window = OffscreenWindow(contentRect: NSRect(x: -30000, y: -30000, width: 900, height: 700),
                               styleMask: [.titled], backing: .buffered, defer: false)
         let root = NSViewController()
         root.view = NSView(frame: NSRect(x: 0, y: 0, width: 900, height: 700))
@@ -55,6 +55,7 @@ final class AppSignInTests: XCTestCase {
             }
             defaults.removeObject(forKey: storeKey)
         }
+        addTeardownBlock { @MainActor in XCTAssertTrue(TestDisplayGuard.windowsOnDisplay().isEmpty, "test window reached a display") }
         host.registerTab(key, url: URL(string: "about:blank")!, title: "Harness")
         host.attach(key, to: root.view)
         let web = try XCTUnwrap(host.webView(key))

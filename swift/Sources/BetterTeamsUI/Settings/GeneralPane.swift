@@ -20,18 +20,16 @@ struct GeneralPane: View {
                     Toggle("Open at login", isOn: $settings.demoLaunchAtLogin)
                 }
                 Toggle("Show in menu bar", isOn: $settings.showInMenuBar)
-                Toggle("Show unread count in the Dock", isOn: $settings.showDockBadge)
-            } footer: {
-                Text("The Dock shows unread chats plus channels that mention you.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                Toggle(isOn: $settings.showDockBadge) {
+                    InfoLabel(title: "Show unread count in the Dock", subject: "the Dock unread count",
+                              text: "The Dock shows unread chats plus channels that mention you.")
+                }
             }
             Section {
-                Toggle("Show banners while Better Teams is active", isOn: $settings.bannersWhileActive)
-            } footer: {
-                Text("Calls always show a banner. The conversation on screen never does.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                Toggle(isOn: $settings.bannersWhileActive) {
+                    InfoLabel(title: "Show banners while Better Teams is active", subject: "banners while active",
+                              text: "Calls always show a banner. The conversation on screen never does.")
+                }
             }
             Section {
                 Picker("Open new windows in:", selection: $settings.defaultSection) {

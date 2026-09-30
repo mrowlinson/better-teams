@@ -29,6 +29,10 @@ import AppKit
 
 extension NSToolbarItem.Identifier {
     static let listDetailSeparator = NSToolbarItem.Identifier("shell.listDetailSeparator")
+    /// Rail | list divider (index 0). The rail is a plain split item that
+    /// starts below the toolbar (TOOLBARLINE), so the system
+    /// `.sidebarTrackingSeparator` (sidebar items only) does not apply.
+    static let railListSeparator = NSToolbarItem.Identifier("shell.railListSeparator")
 }
 
 @MainActor
@@ -90,7 +94,7 @@ final class ShellToolbarController: NSObject, NSToolbarDelegate, NSSearchFieldDe
         let status: [CommandID] = [ShellCommand.connection]
             + commands.filter { $0.toolbar == .trailing && $0.id != ShellCommand.connection
                 && !trailingGroup.contains($0.id) }.map(\.id)
-        let order: [NSToolbarItem.Identifier] = [.sidebarTrackingSeparator]
+        let order: [NSToolbarItem.Identifier] = [.railListSeparator]
             + list.map(ident)
             + [.listDetailSeparator]
             + detail.map(ident)
@@ -156,7 +160,10 @@ final class ShellToolbarController: NSObject, NSToolbarDelegate, NSSearchFieldDe
                  willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
         if let existing = items[ident] { return existing }
         let item: NSToolbarItem?
-        if ident == .listDetailSeparator {
+        if ident == .railListSeparator {
+            guard let splitView else { return nil }
+            item = NSTrackingSeparatorToolbarItem(identifier: ident, splitView: splitView, dividerIndex: 0)
+        } else if ident == .listDetailSeparator {
             guard let splitView else { return nil }
             item = NSTrackingSeparatorToolbarItem(identifier: ident, splitView: splitView, dividerIndex: 1)
             item?.isHidden = listSeparatorHidden

@@ -150,11 +150,16 @@ public struct ChatItem: Codable, Sendable, Identifiable, Equatable {
     /// Raw Teams "Mark as unread" bookmark
     /// (`properties.consumptionHorizonBookmark`), nil when absent.
     public let read_bookmark: String?
+    /// The owner created this chat (for a meeting chat: organized the
+    /// meeting), from `threadProperties.isCreator`; nil when unknown.
+    /// Gates Delete on meeting chats (ChatDeleteRule, CHATSYNC2b).
+    public let is_creator: Bool?
 
     enum CodingKeys: String, CodingKey {
         case chatId = "id"
         case name, is_group, last_message_time
         case last_message_sender, last_message_preview, muted, unread, read_horizon, read_bookmark
+        case is_creator
     }
 
     /// Host-side construction (demo data, previews). Wire decoding is untouched.
@@ -166,7 +171,8 @@ public struct ChatItem: Codable, Sendable, Identifiable, Equatable {
         muted: Bool? = nil,
         unread: Bool? = nil,
         read_horizon: String? = nil,
-        read_bookmark: String? = nil
+        read_bookmark: String? = nil,
+        is_creator: Bool? = nil
     ) {
         self.chatId = chatId
         self.name = name
@@ -178,6 +184,7 @@ public struct ChatItem: Codable, Sendable, Identifiable, Equatable {
         self.unread = unread
         self.read_horizon = read_horizon
         self.read_bookmark = read_bookmark
+        self.is_creator = is_creator
     }
 }
 
@@ -649,7 +656,7 @@ public struct MeetingItem: Codable, Sendable, Identifiable, Equatable {
     public let isOrganizer: Bool
     public let isOnline: Bool
     /// Graph `categories` (Outlook color categories); empty when absent.
-    public let categories: [String]
+    public internal(set) var categories: [String]
     /// Graph `isAllDay`: `start`/`end` are floating dates (never shifted
     /// between time zones; `end` is the exclusive next midnight).
     public let isAllDay: Bool

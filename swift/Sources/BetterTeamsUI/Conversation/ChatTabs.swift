@@ -1,10 +1,12 @@
 // ChatTabs.swift — CHATTABS: the tab row of a chat and its pinned tabs.
 //
 // Built-ins per chat kind (`ChatTabCatalog.builtins`), then the chat's
-// pinned tabs (Graph, read-only), as Teams underline tabs. Tabs that do
-// not fit the pane go into a "+N" menu with their icons, as in Teams; the
-// selected tab is always visible, and one opened from "+N" shows as a
-// temporary tab with a close button (TABS2). A pinned tab opens through the app host's launch
+// pinned tabs (Graph, read-only), as a native segmented control (system
+// accent on the selected segment; pinned segments show their symbol
+// beside the title). Tabs that do not fit the pane go into
+// a "More" pull-down with their icons; the selected tab is always a
+// segment, and one opened from "More" shows as a temporary tab that the
+// menu's "Close" item dismisses (TABS2). A pinned tab opens through the app host's launch
 // entry (`FrameHost.registerHostedTab`, the one pinned apps use), as a
 // web page, or as a native placeholder with "Open in Teams on the web".
 import AppKit
@@ -32,7 +34,7 @@ struct ChatTabEntry: Identifiable, Equatable {
 struct ChatTabLayout: Equatable {
     let builtins: [ChatTabEntry]
     let pinned: [ChatTabEntry]
-    /// Most pinned tabs shown as segments before "+N".
+    /// Most pinned tabs shown as segments before "More".
     static let maxPinnedVisible = 3
 
     init(kind: ChatKind, tabs: [ChannelTab]) {
@@ -61,10 +63,38 @@ struct ChatTabLayout: Equatable {
     /// Every entry in row order: built-ins, then pinned tabs.
     var all: [ChatTabEntry] { builtins + pinned }
 
-    /// Widest a tab's title runs before it truncates in the middle.
-    static let maxTitleWidth: CGFloat = 160
+    /// Longest segment title, in characters, before it truncates in the middle.
+    static let maxSegmentTitle = 24
+    /// The last-resort row's title length: a narrow pane keeps the
+    /// selected tab as one short segment beside "More".
+    static let compactSegmentTitle = 14
 
-    /// One way to split the row: segments in row order, the rest in "+N".
+    /// A tab name as a segment title: names past `maxSegmentTitle`
+    /// characters truncate in the middle with "\u{2026}", keeping a file
+    /// extension (".docx") intact at the end. Pure.
+    static func segmentTitle(_ name: String, limit: Int = maxSegmentTitle) -> String {
+        guard name.count > limit else { return name }
+        var stem = name
+        var ext = ""
+        if let dot = name.lastIndex(of: "."), dot != name.startIndex {
+            let tail = name[dot...]
+            if (2...6).contains(tail.count), tail.dropFirst().allSatisfy({ $0.isLetter || $0.isNumber }) {
+                stem = String(name[..<dot])
+                ext = String(tail)
+            }
+        }
+        let room = max(2, limit - ext.count - 1)
+        let tailCount = room / 3
+        return String(stem.prefix(room - tailCount)) + "\u{2026}" + String(stem.suffix(tailCount)) + ext
+    }
+
+    /// The "More" menu shows when tabs overflow, or when a temporary tab
+    /// is open (its "Close" item lives there: no close button inside a segment).
+    static func showsMore(fold: Fold, temporary: ChatTabKey?) -> Bool {
+        !fold.more.isEmpty || temporary != nil
+    }
+
+    /// One way to split the row: segments in row order, the rest in "More".
     struct Fold: Identifiable, Equatable {
         let segments: [ChatTabEntry]
         let more: [ChatTabEntry]
@@ -72,7 +102,7 @@ struct ChatTabLayout: Equatable {
     }
 
     /// A pinned tab past the widest fold's pinned tabs. Only these open
-    /// as temporary tabs from "+N"; the first `maxPinnedVisible` are
+    /// as temporary tabs from "More"; the first `maxPinnedVisible` are
     /// the chat's standing tabs and are just selected.
     func isOverflowPinned(_ key: ChatTabKey) -> Bool {
         guard case .pinned = key, pinned.contains(where: { $0.key == key }) else { return false }
@@ -81,8 +111,8 @@ struct ChatTabLayout: Equatable {
 
     /// The row's folds, widest first; the bar shows the first that fits
     /// (`ChatTabBar`). Every fold keeps the selected tab, then the tab
-    /// opened from "+N", as segments; the others fill in row order, and
-    /// what does not fit goes into "+N" in row order. The widest fold is
+    /// opened from "More", as segments; the others fill in row order, and
+    /// what does not fit goes into "More" in row order. The widest fold is
     /// the built-ins plus the first `maxPinnedVisible` pinned tabs; the
     /// last is the selected tab alone, which truncates, so one always fits.
     func folds(selected: ChatTabKey, opened: ChatTabKey?) -> [Fold] {
@@ -100,15 +130,15 @@ struct ChatTabLayout: Equatable {
     }
 }
 
-/// The tab row (Teams underline tabs) plus the "+N" overflow menu. The
-/// widest fold that fits wins and the last one always fits, so the row
-/// never pushes past the pane and reflows as the pane resizes. A pinned
-/// tab picked from "+N" opens as a temporary tab with a close button;
-/// closing it puts it back in "+N" (Teams).
+/// The tab row: a native segmented control plus a "More" pull-down for
+/// the overflow. The widest fold that fits wins and the last one always
+/// fits, so the row never pushes past the pane and reflows as the pane
+/// resizes. A pinned tab picked from "More" opens as a temporary tab;
+/// the menu's "Close" item closes it and puts it back in the menu.
 struct ChatTabBar: View {
     let layout: ChatTabLayout
     @Binding var selection: ChatTabKey
-    /// The tab opened from "+N", shown with a close button.
+    /// The tab opened from "More", shown as a temporary tab.
     let opened: ChatTabKey?
     let open: (ChatTabKey) -> Void
     let close: () -> Void
@@ -121,109 +151,115 @@ struct ChatTabBar: View {
     var body: some View {
         ViewThatFits(in: .horizontal) {
             ForEach(layout.folds(selected: selection, opened: temporary)) { fold in
-                row(fold)
+                row(fold, limit: ChatTabLayout.maxSegmentTitle)
+            }
+            // Last resort in a narrow pane: the selected tab alone, shorter.
+            if let narrowest = layout.folds(selected: selection, opened: temporary).last {
+                row(narrowest, limit: ChatTabLayout.compactSegmentTitle)
             }
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Tabs")
     }
 
-    private func row(_ fold: ChatTabLayout.Fold) -> some View {
-        HStack(spacing: 16) {
-            ForEach(fold.segments) { e in
-                ChatTabItem(entry: e, on: e.key == selection, closable: e.key == temporary,
-                            select: { selection = e.key }, close: close)
-            }
-            if !fold.more.isEmpty {
+    private func name(of key: ChatTabKey?) -> String? {
+        key.flatMap { k in layout.all.first { $0.key == k }?.name }
+    }
+
+    private func row(_ fold: ChatTabLayout.Fold, limit: Int) -> some View {
+        HStack(spacing: 8) {
+            ChatTabSegments(
+                segments: fold.segments.map { e in
+                    let pinned: Bool = if case .pinned = e.key { true } else { false }
+                    return .init(title: ChatTabLayout.segmentTitle(e.name, limit: limit),
+                                 symbol: pinned ? e.symbol : nil, help: e.name)
+                },
+                selected: fold.segments.firstIndex { $0.key == selection },
+                pick: { i in if fold.segments.indices.contains(i) { selection = fold.segments[i].key } })
+            .accessibilityLabel("Tabs")
+            if ChatTabLayout.showsMore(fold: fold, temporary: temporary) {
                 Menu {
                     ForEach(fold.more) { e in
                         Button { pick(e.key) } label: { Label(e.name, systemImage: e.symbol) }
                     }
+                    if let temporary, let title = name(of: temporary) {
+                        if !fold.more.isEmpty { Divider() }
+                        Button("Close \(title)", action: close)
+                    }
                 } label: {
-                    Text("+\(fold.more.count)")
+                    Text("More")
                 }
                 .menuStyle(.button)
                 .fixedSize()
                 .help("More Tabs")
-                .accessibilityLabel("\(fold.more.count) More Tabs")
+                .accessibilityLabel(fold.more.isEmpty ? "More Tabs" : "\(fold.more.count) More Tabs")
             }
         }
     }
 
-    /// A pinned tab past the standing ones opens from "+N" as a temporary
+    /// A pinned tab past the standing ones opens from "More" as a temporary
     /// tab; a built-in or standing tab there (narrow panes) is just selected.
     private func pick(_ key: ChatTabKey) {
         if layout.isOverflowPinned(key) { open(key) } else { selection = key }
     }
 }
 
-/// One underline tab: icon for pinned tabs, title truncated in the middle
-/// (file names keep their extension) with the full name as its tooltip,
-/// and a close button on a tab opened from "+N".
-private struct ChatTabItem: View {
-    let entry: ChatTabEntry
-    let on: Bool
-    let closable: Bool
-    let select: () -> Void
-    let close: () -> Void
-    @Environment(\.contentTextScale) private var scale
-
-    var body: some View {
-        HStack(spacing: 4) {
-            Button(action: select) {
-                HStack(spacing: 5) {
-                    if case .pinned = entry.key {
-                        Image(systemName: entry.symbol).imageScale(.small)
-                    }
-                    WidthCap(limit: ChatTabLayout.maxTitleWidth) {
-                        Text(entry.name)
-                            .font(on ? AppFont.bodyEmphasized(scale) : AppFont.body(scale))
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                    }
-                }
-                .foregroundStyle(on ? Palette.mention : Color.secondary)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .help(entry.name)
-            .accessibilityLabel(entry.name)
-            .accessibilityAddTraits(on ? .isSelected : [])
-            if closable {
-                Button(action: close) {
-                    Image(systemName: "xmark")
-                        .imageScale(.small)
-                        .foregroundStyle(.secondary)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .help("Close \(entry.name)")
-                .accessibilityLabel("Close \(entry.name)")
-            }
-        }
-        // The bar under the selected tab takes the label's width and
-        // never sizes the tab itself.
-        .padding(.bottom, 7)
-        .overlay(alignment: .bottom) {
-            Rectangle()
-                .fill(on ? Palette.mention : Color.clear)
-                .frame(height: 2)
-        }
-    }
-}
-
-/// Offers its content at most `limit` wide and takes the content's own
-/// width (a `.frame(maxWidth:)` would grow to the limit).
-private struct WidthCap: Layout {
-    let limit: CGFloat
-
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache _: inout ()) -> CGSize {
-        guard let child = subviews.first else { return .zero }
-        return child.sizeThatFits(ProposedViewSize(width: min(proposal.width ?? limit, limit), height: proposal.height))
+/// The tab row's NSSegmentedControl. AppKit directly because SwiftUI's
+/// segmented Picker drops a Label's image on macOS, and a pinned tab's
+/// segment shows its symbol beside the title (image + label per segment).
+/// Sized to its content, like the fixed-size Picker it replaces, so
+/// ViewThatFits can fold the row.
+struct ChatTabSegments: NSViewRepresentable {
+    struct Segment: Equatable {
+        let title: String
+        let symbol: String?
+        /// Full tab name (titles are truncated): the segment's tooltip.
+        let help: String
     }
 
-    func placeSubviews(in bounds: CGRect, proposal _: ProposedViewSize, subviews: Subviews, cache _: inout ()) {
-        subviews.first?.place(at: bounds.origin, proposal: ProposedViewSize(bounds.size))
+    let segments: [Segment]
+    let selected: Int?
+    let pick: (Int) -> Void
+
+    final class Coordinator: NSObject {
+        var pick: (Int) -> Void = { _ in }
+        var shown: [Segment] = []
+        @objc func changed(_ sender: NSSegmentedControl) { pick(sender.selectedSegment) }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeNSView(context: Context) -> NSSegmentedControl {
+        let control = NSSegmentedControl()
+        control.trackingMode = .selectOne
+        control.segmentDistribution = .fit
+        control.target = context.coordinator
+        control.action = #selector(Coordinator.changed(_:))
+        control.setContentHuggingPriority(.required, for: .horizontal)
+        control.setContentCompressionResistancePriority(.required, for: .horizontal)
+        return control
+    }
+
+    func updateNSView(_ control: NSSegmentedControl, context: Context) {
+        context.coordinator.pick = pick
+        if context.coordinator.shown != segments {
+            control.segmentCount = segments.count
+            for (i, s) in segments.enumerated() {
+                control.setLabel(s.title, forSegment: i)
+                control.setImage(s.symbol.flatMap { NSImage(systemSymbolName: $0, accessibilityDescription: nil) },
+                                 forSegment: i)
+                control.setImageScaling(.scaleProportionallyDown, forSegment: i)
+                control.setToolTip(s.help, forSegment: i)
+                control.setWidth(0, forSegment: i)
+            }
+            context.coordinator.shown = segments
+            control.invalidateIntrinsicContentSize()
+        }
+        control.selectedSegment = selected ?? -1
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSSegmentedControl, context: Context) -> CGSize? {
+        nsView.intrinsicContentSize
     }
 }
 

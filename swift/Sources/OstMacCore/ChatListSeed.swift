@@ -138,6 +138,26 @@ public enum ChatListSeed {
         }
     }
 
+    /// A pushed read-position change (Trouter `ConversationUpdate`,
+    /// CHATSYNC2b R3) as an Unread seed, same verdict as a fetched row.
+    /// Nil when it carries none (no horizon or owner identity, no newest
+    /// message, not marked unread).
+    public static func pushedSeed(_ ev: ReadStateEvent, ownerOID: String?, muted: Bool) -> UnreadSeed? {
+        let marked = isMarkedUnread(bookmark: ev.bookmark, lastMessageTime: ev.lastMessageTime)
+        var unread: Bool?
+        if horizon(ev.horizon) != nil, let oid = ownerOID, !oid.isEmpty,
+           ev.lastMessageID != nil || ev.lastMessageTime != nil {
+            unread = isUnread(
+                horizon: ev.horizon, lastMessageID: ev.lastMessageID,
+                lastMessageTime: ev.lastMessageTime, messageType: ev.lastMessageType,
+                fromOwner: CoreReads.mriIsSelf(CoreReads.mriFromUserLink(ev.lastMessageFrom), selfOID: oid))
+        }
+        guard let u = unread ?? (marked ? true : nil) else { return nil }
+        return UnreadSeed(chatID: ev.chatID, unread: u,
+                          lastMessageAt: ev.lastMessageTime.flatMap(ChatListFormat.parse),
+                          muted: muted, markedUnread: marked)
+    }
+
     /// Chats with an unreviewed mention → newest such mention's send
     /// time. Unknown horizons fall back to the feed's read flag alone.
     public static func mentionedChats(_ activity: [MentionActivity], horizons: [String: String]) -> [String: Date] {

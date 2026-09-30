@@ -102,11 +102,20 @@ rust/ost/src/api/transcripts.rs::channel_drives | GET /teams/{t}/channels/{c}/fi
 rust/ost/src/api/transcripts.rs::list_transcripts_data | GET /me/drive/root:/Recordings (folder, children), /drives/{d}/items/{i}/children | works | live applog drive children 200; scope Files.ReadWrite.All
 rust/ost/src/api/transcripts.rs::search_transcripts_data | GET /me/drive/search(q=), /drives/{d}/root/search(q=) | works | scope Files.ReadWrite.All granted
 rust/ostmac-core/src/lib.rs::resolve_mri_json | GET /users/{oid}?$select=id,mail,displayName | works | live probeA /users 200; applog /users 200
+rust/ostmac-core/src/recap.rs::drive_item | GET /drives/{d}/items/{i} (meeting organizer's recording, RECAP2) | works | scope Files.ReadWrite.All granted (same basis as recordings list/search)
+rust/ostmac-core/src/recap.rs::resolve_share | GET /shares/u!{b64 url}/driveItem (meeting recording/notes by address, RECAP2) | works | scope Files.ReadWrite.All granted
+swift/Sources/OstMacCore/CalendarGraph.swift::attachment | GET /me/events/{id}/attachments/{aid} | works | scope Calendars.ReadWrite granted
 swift/Sources/OstMacCore/CalendarGraph.swift::create | POST /me/events (+ GET re-read) | works | scope Calendars.ReadWrite granted
+swift/Sources/OstMacCore/CalendarGraph.swift::createWebinar | POST /solutions/virtualEvents/webinars | unproven | scope VirtualEvent.ReadWrite not in the granted list and a tenant write is never sent under the live rules — needs owner OK for one live webinar create
 swift/Sources/OstMacCore/CalendarGraph.swift::delete | DELETE /me/events/{id} | works | scope Calendars.ReadWrite granted
 swift/Sources/OstMacCore/CalendarGraph.swift::detail | GET /me/events/{id}, recurrence, attachments | works | scope Calendars.ReadWrite granted; probeA calendarView 200
+swift/Sources/OstMacCore/CalendarGraph.swift::forward | POST /me/events/{id}/forward | works | scope Calendars.ReadWrite granted
+swift/Sources/OstMacCore/CalendarGraph.swift::instances | GET /me/events/{id}/instances | works | scope Calendars.ReadWrite granted
+swift/Sources/OstMacCore/CalendarGraph.swift::masterCategories | GET /me/outlook/masterCategories | unproven | MailboxSettings.Read not in the granted list and never probed — needs owner OK for one live read
 swift/Sources/OstMacCore/CalendarGraph.swift::range | GET /me/calendarView (+ nextLink) | works | live probeA 200
 swift/Sources/OstMacCore/CalendarGraph.swift::respond | POST /me/events/{id}/{accept|tentativelyAccept|decline} | works | scope Calendars.ReadWrite granted
+swift/Sources/OstMacCore/CalendarGraph.swift::schedule | POST /me/calendar/getSchedule | unproven | read-only POST, not probed under the GET-only live rule; Calendars.ReadWrite.Shared granted — needs owner OK for one live call
+swift/Sources/OstMacCore/CalendarGraph.swift::selfAddresses | GET /me?$select=mail,userPrincipalName | unproven | User.Read not in the granted list (User.ReadBasic.All is), not probed — needs owner OK for one live read
 swift/Sources/OstMacCore/CalendarGraph.swift::update | PATCH /me/events/{id} | works | scope Calendars.ReadWrite granted
 swift/Sources/OstMacCore/ContactCard.swift::card | GET /users/{key}?$select=profile, /users/{id}/directReports | works | live probeA /users 200; scope User.ReadBasic.All; /directReports rests on the granted scope only: live proof BLOCKED (needs owner sign-in) and a failed read shows on the card with Retry (§GRAPH2)
 swift/Sources/OstMacCore/ContactCard.swift::managerChain | GET /users/{id}/manager | works | live probeB 404 ResourceNotFound for a user without a manager (authorized, not 403); scope User.ReadBasic.All

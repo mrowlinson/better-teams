@@ -37,22 +37,21 @@ final class MessageSearchOfflineTests: XCTestCase {
         return local
     }
 
-    // MARK: - Online = server results only (UI-SPEC §5.5)
+    // MARK: - Merge order (online above offline)
 
-    /// The offline index merges only when offline: online, the server
-    /// window replaces the interim local hits (no "On This Mac" extras).
-    func testOnlineResultsAreServerOnly() async {
+    func testOnlineMergesAboveOfflineExtras() async {
         let online = Self.onlineHit()
         let store = MessageSearchStore(searcher: { _, _, _ in
             SearchResponse(ok: true, total: 1, more: false, hits: [online])
         })
         store.local = attachedLocal()
         await store.search(query: "ship")
-        XCTAssertEqual(store.hits.map(\.id), [online.id])
-        XCTAssertEqual(store.onlineIDs, [online.id])
-        XCTAssertEqual(store.source, .online)
-        XCTAssertNotNil(store.offlineMs) // the local pass still ran (interim + fallback)
-        XCTAssertEqual(store.total, 1)
+        // Online first, then the 2 offline-only extras.
+        XCTAssertEqual(store.hits.map(\.id).prefix(1), [online.id])
+        XCTAssertEqual(store.hits.count, 3)
+        XCTAssertEqual(store.source, .mixed)
+        XCTAssertNotNil(store.offlineMs)
+        XCTAssertEqual(store.total, 3) // server 1 + 2 extras
     }
 
     func testOverlappingHitDedupesKeepsOnlineRank() async {
@@ -121,20 +120,20 @@ final class MessageSearchOfflineTests: XCTestCase {
         XCTAssertEqual(store.source, .none)
     }
 
-    func testEmptyOnlineDropsLocalHits() async {
+    func testEmptyOnlineWithLocalExtrasIsOffline() async {
         let store = MessageSearchStore(searcher: { _, _, _ in
             SearchResponse(ok: true, total: 0, more: false, hits: [])
         })
         store.local = attachedLocal()
         await store.search(query: "ship")
-        XCTAssertTrue(store.hits.isEmpty)
-        XCTAssertEqual(store.source, .none)
+        XCTAssertEqual(store.hits.count, 2)
+        XCTAssertEqual(store.source, .offline)
         XCTAssertNil(store.error)
     }
 
     // MARK: - Paging + clear with local attached
 
-    func testLoadMoreAppendsServerWindowOnly() async {
+    func testLoadMoreKeepsOfflineExtras() async {
         let first = Self.onlineHit()
         let second = SearchHit(
             messageID: "m10", chatID: "19:online@thread.v2",
@@ -151,11 +150,12 @@ final class MessageSearchOfflineTests: XCTestCase {
         })
         store.local = attachedLocal()
         await store.search(query: "ship")
-        XCTAssertEqual(store.hits.count, 1) // server window only
+        XCTAssertEqual(store.hits.count, 3) // 1 online + 2 extras
         await store.loadMore()
         XCTAssertEqual(calls.value, 2)
-        XCTAssertEqual(store.hits.map(\.id), [first.id, second.id])
-        XCTAssertFalse(store.hits.contains(where: { $0.id == "c1:m1" }))
+        XCTAssertEqual(store.hits.count, 4)
+        XCTAssertTrue(store.hits.contains(where: { $0.id == second.id }))
+        XCTAssertTrue(store.hits.contains(where: { $0.id == "c1:m1" }))
     }
 
     func testClearResetsSourceAndLocal() async {

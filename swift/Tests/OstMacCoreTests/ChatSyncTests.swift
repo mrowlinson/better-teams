@@ -224,9 +224,21 @@ final class ChatSyncTests: XCTestCase {
                 hits.insert(url.lastPathComponent); break
             }
         }
-        let allowed: Set<String> = ["ChatRowMenu.swift", "ActivitySection.swift", "TeamsListPane.swift"]
+        // CHATSYNC2b R5: the message menu carries Teams' message-level
+        // "Mark as Unread" (never "Mark as Read").
+        // REGFIX-B R3: the Conversation menu's "Mark as Unread" (Shift-Cmd-U,
+        // Mail-style, ChatCommands/ChatSection) is back, Mark as Unread ONLY;
+        // the info panel and the chat view still carry none.
+        let allowed: Set<String> = ["ChatRowMenu.swift", "ActivitySection.swift", "TeamsListPane.swift",
+                                    "MessageContextMenu.swift", "ChatCommands.swift", "ChatSection.swift"]
         XCTAssertTrue(hits.isSubset(of: allowed), "read-state action outside the row menu: \(hits.subtracting(allowed))")
         XCTAssertTrue(hits.contains("ChatRowMenu.swift"))
+        let messageMenu = try String(contentsOf: base.appendingPathComponent("Timeline/MessageContextMenu.swift"), encoding: .utf8)
+        XCTAssertFalse(messageMenu.contains("\"Mark as Read\""), "no Mark as Read inside a chat")
+        for f in ["Sections/Chat/ChatCommands.swift", "Sections/Chat/ChatSection.swift"] {
+            let text = try String(contentsOf: base.appendingPathComponent(f), encoding: .utf8)
+            XCTAssertFalse(text.contains("\"Mark as Read\""), "\(f): the Conversation menu has no Mark as Read")
+        }
     }
 
     // R5: read positions only move forward; a newer queued write supersedes

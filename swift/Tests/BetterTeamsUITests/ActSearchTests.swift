@@ -1,8 +1,8 @@
 // ActSearchTests.swift — ACTSEARCH lane pins (UI-SPEC §5.5, §6.1):
 // the ⌘F scope bar fits the list pane, find in a conversation is case-
 // and diacritic-insensitive and scoped to that conversation, Activity's
-// filter and Mark All as Read validate off with no items, and online
-// search lists server results only (MessageSearchOfflineTests).
+// filter and Mark All as Read validate off with no items (online search
+// mixes on-device hits back in: MessageSearchOfflineTests).
 import AppKit
 import SwiftUI
 import XCTest
@@ -36,7 +36,7 @@ final class ActSearchTests: XCTestCase {
         let host = NSHostingView(rootView: SearchScopeBar(search: search).frame(width: width))
         // Platform controls materialize only inside a window (offscreen,
         // never ordered front).
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: width, height: 40),
+        let window = OffscreenWindow(contentRect: NSRect(x: 0, y: 0, width: width, height: 40),
                               styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.contentView = host

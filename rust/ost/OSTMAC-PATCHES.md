@@ -1638,6 +1638,29 @@ Notes:
     Tests: `file_post_idem_tests` (3), `file_post_idem_fake_tests` (6),
     `write_fakes` (+4), `mate_batch_tests` (3), `head_tests` (2).
 
+91. [fix] `src/api/chat.rs`, `src/api/write_fakes.rs` (test-only) --
+    **own-message delete matches the Teams web client** (MSGDELETE lane).
+    `delete_message_with_client` sent a bare
+    `DELETE .../conversations/{conv}/messages/{id}`. The web client
+    (`apiName:"message"` request builder in the Teams web bundle) sends
+    `DELETE .../conversations/{encodeURIComponent(conv)}/messages/{id}?behavior=softDelete`.
+    New pure `message_delete_url` (+ private `encode_uri_component`, JS
+    `encodeURIComponent` semantics); edit/pin/other `message_url` users
+    unchanged. Not exercised live (the only own message available was
+    hidden by clearHistoryTime; run needs owner OK). Tests:
+    `chat::tests::delete_url_is_web_client_soft_delete`,
+    `write_fakes::delete_message_sends_soft_delete_with_encoded_conversation`,
+    `write_fakes::delete_message_failure_is_surfaced`.
+
+92. [fix] `src/api/recordings.rs` -- **recording length read from the
+    right driveItem field** (CALGRID lane). The `video` facet was
+    deserialized as `durationMillis`, a name Graph does not send (the
+    facet's field is `duration`, milliseconds), so every recording's
+    `duration_ms` was `None` (live: 3 of 3 recap recordings). Now
+    `#[serde(rename = "duration", alias = "durationMillis")]`. Test:
+    `recordings::tests::video_facet_duration_reads_graph_field_name`
+    (real-shaped facet with bitrate/frame fields).
+
 ## Upstream PRs, wave 9 (2026-09-25 R10 audit; base 0892144; origin/main still 0892144)
 
 No-file wave. `git diff 307d221..db62ed7 -- rust/ost` is empty (wave-8

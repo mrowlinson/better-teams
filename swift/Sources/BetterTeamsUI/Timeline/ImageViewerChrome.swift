@@ -74,3 +74,22 @@ final class GifFrameTicker {
         }
     }
 }
+
+/// Zoom slider <-> magnification (P16, f4576fc). Logarithmic between the
+/// scroll view's min and max magnification, so each step is the same
+/// zoom factor whatever the image size.
+enum ImageViewerZoomSlider {
+    /// 0...1 position of `magnification`.
+    static func value(magnification: CGFloat, min lo: CGFloat, max hi: CGFloat) -> Double {
+        guard lo > 0, hi > lo else { return 0 }
+        let m = Swift.min(Swift.max(magnification, lo), hi)
+        return Double(log(m / lo) / log(hi / lo))
+    }
+
+    /// Magnification at slider `value` (clamped to 0...1).
+    static func magnification(value: Double, min lo: CGFloat, max hi: CGFloat) -> CGFloat {
+        guard lo > 0, hi > lo else { return lo }
+        let v = Swift.min(Swift.max(value, 0), 1)
+        return lo * CGFloat(exp(v * Double(log(hi / lo))))
+    }
+}

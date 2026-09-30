@@ -160,6 +160,20 @@ public final class AccountStore: ObservableObject {
         persist()
     }
 
+    /// Test/evidence seam: append an account record WITHOUT flipping the core
+    /// profile (`completeAdd` calls the real core). Unknown ids only; the
+    /// active account is unchanged.
+    public func appendRecordWithoutProfileFlip(
+        profile: String, displayName: String, upn: String? = nil, userID: String? = nil
+    ) {
+        guard !accounts.contains(where: { $0.id == profile }) else { return }
+        accounts.append(AccountRecord(
+            id: profile, displayName: displayName, upn: upn,
+            userID: userID, addedAt: Date().timeIntervalSince1970))
+        _ = vm(for: profile)
+        persist()
+    }
+
     /// Fresh profile id for an add-account flow (VM created
     /// immediately so the sign-in UI binds to it).
     @discardableResult

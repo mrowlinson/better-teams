@@ -1,10 +1,11 @@
 // RecapsSection.swift — Recaps native app provider (UI-SPEC §6.7).
 //
-// List: meeting recordings + transcripts merged per meeting, filterable.
-// Detail: the recording's player (AVPlayerView, AppKit island) above the
-// transcript turns; clicking a turn seeks. Inspector: on-device Action
-// Items, Save, Open in Browser. Selection opens the recap (R24); a
-// selection that arrives before the lists load opens once they land.
+// List: meeting recordings + transcripts merged per meeting, plus the
+// meeting chats (RECAP2: a meeting recorded by someone else keeps its
+// files in the organizer's OneDrive, so its chat is how it is found),
+// filterable. Detail: the unified recap viewer (MeetingRecapView, the
+// same one the chat Recap tab and Calendar use). Inspector: details,
+// on-device Action Items, Save, Open in Browser.
 import Combine
 import OstMacCore
 import SwiftUI
@@ -15,13 +16,9 @@ final class RecapsSection: SectionProvider, InspectorCapable {
     let title = NativeAppID.recaps.title
     let hasInspector = true
 
-    /// Selected recap id waiting for the lists (route at launch).
-    private var pendingID: String?
-    private var listsChange: AnyCancellable?
-
     func subtitle(_ m: WindowModel) -> String {
         guard m.forced(section) == nil, let app = m.app, let id = Self.recapID(m) else { return "" }
-        return Self.recaps(app.recordings, app.transcripts).first { $0.id == id }?.title ?? ""
+        return Self.row(id, in: Self.rows(app))?.title ?? ""
     }
 
     func listPane(_ m: WindowModel) -> AnyView {
@@ -29,18 +26,20 @@ final class RecapsSection: SectionProvider, InspectorCapable {
             return AnyView(EmptyPane(RecapsListState.emptyTitle, systemImage: NativeAppID.recaps.symbol,
                                      message: RecapsListState.emptyMessage))
         }
-        return AnyView(RecapsListPane(recordings: app.recordings, transcripts: app.transcripts))
+        return AnyView(RecapsListPane(recordings: app.recordings, transcripts: app.transcripts, chats: app.chats))
     }
 
     func detailPane(_ m: WindowModel) -> AnyView {
         guard let app = m.app else { return AnyView(NoSelectionPane(RecapDetailState.noSelectionTitle)) }
-        return AnyView(RecapDetailPane(recordings: app.recordings, transcripts: app.transcripts))
+        return AnyView(RecapDetailPane(recordings: app.recordings, transcripts: app.transcripts, chats: app.chats,
+                                       store: app.meetingRecaps))
     }
 
     func inspector(_ m: WindowModel) -> AnyView? {
         guard let app = m.app else { return nil }
         return AnyView(RecapInspector(recordings: app.recordings, transcripts: app.transcripts,
-                                      actionItems: app.transcripts.actionItems))
+                                      actionItems: app.transcripts.actionItems, chats: app.chats,
+                                      store: app.meetingRecaps))
     }
 
     /// `app/recaps/<recap>` (the tail's head is the app id).
@@ -51,18 +50,9 @@ final class RecapsSection: SectionProvider, InspectorCapable {
 
     func selectionDidChange(_ sel: SectionSelection?, _ m: WindowModel) {
         guard m.forced(section) == nil, let app = m.app else { return }
-        pendingID = sel?.path.first
-        Self.open(pendingID, app.recordings, app.transcripts)
-        if listsChange == nil {
-            // @Published fires before the value lands: hop once, then read.
-            listsChange = app.recordings.$items.map { _ in () }
-                .merge(with: app.transcripts.$items.map { _ in () })
-                .receive(on: DispatchQueue.main)
-                .sink { [weak self, weak recordings = app.recordings, weak transcripts = app.transcripts] _ in
-                    guard let self, let recordings, let transcripts, self.pendingID != nil else { return }
-                    Self.open(self.pendingID, recordings, transcripts)
-                }
-        }
+        // The viewer loads the selected recap itself (MeetingRecapView);
+        // clearing the selection stops the player.
+        if sel == nil, app.recordings.selectedID != nil { app.recordings.closePlayer() }
     }
 
     // MARK: shared helpers
@@ -80,34 +70,29 @@ final class RecapsSection: SectionProvider, InspectorCapable {
         m.navigator?.select(id.map { SectionSelection(id: $0) }, in: .native(.recaps))
     }
 
-    /// Load the recap's player (paused) and transcript turns. Idempotent:
-    /// what is already open stays (no reload, no restart). Nil or an
-    /// unknown id closes both.
-    static func open(_ id: String?, _ recordings: RecordingsViewModel, _ transcripts: TranscriptsViewModel) {
-        guard let id, let recap = recaps(recordings, transcripts).first(where: { $0.id == id }) else {
-            if id == nil {
-                if recordings.selectedID != nil { recordings.closePlayer() }
-                if transcripts.selectedID != nil { transcripts.closeTranscript() }
-            }
-            return
-        }
-        if let r = recap.recording {
-            if recordings.selectedID != r.id || recordings.playback == .idle {
-                recordings.play(r, autoplay: false)
-            }
-        } else if recordings.selectedID != nil {
-            recordings.closePlayer()
-        }
-        if let t = recap.transcript {
-            if transcripts.selectedID != t.id { transcripts.select(t) }
-        } else if transcripts.selectedID != nil {
-            transcripts.closeTranscript()
-        }
+    /// Every Recaps row: drive recaps plus meeting chats (RECAP2).
+    static func rows(_ app: AppState) -> [Recap] {
+        Recap.withMeetingChats(recaps(app.recordings, app.transcripts), chats: app.chats.chats)
     }
 
-    /// The recap on screen, when both stores show it.
+    /// The viewer model for a row: the meeting chat's recap (drive files
+    /// as its fallback), or the drive files alone.
+    static func model(for recap: Recap, _ store: MeetingRecapStore) -> MeetingRecapViewModel {
+        if let thread = recap.threadID {
+            return store.model(threadID: thread, title: recap.title)
+        }
+        return store.model(fileRecording: recap.recording, fileTranscript: recap.transcript, title: recap.title)
+    }
+
+    /// The row a route id names: a row id, else a meeting chat's thread id
+    /// (`app/recaps/<chat>` opens the recap its chat matched). Pure.
+    static func row(_ id: String, in rows: [Recap]) -> Recap? {
+        rows.first { $0.id == id } ?? rows.first { $0.threadID == id }
+    }
+
+    /// The recap on screen.
     static func current(_ m: WindowModel) -> Recap? {
         guard let app = m.app, let id = recapID(m) else { return nil }
-        return recaps(app.recordings, app.transcripts).first { $0.id == id }
+        return row(id, in: rows(app))
     }
 }

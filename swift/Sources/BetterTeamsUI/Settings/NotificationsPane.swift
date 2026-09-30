@@ -2,9 +2,10 @@
 // enable / preview / sounds (`MessageNotifications`), mention alerts
 // (channel mentions in quiet chats, name matching: `RulesStore` switch
 // rules), keyword alerts (always / never lists, `RulesStore`), per-chat levels (the chats set
-// to Mentions or Muted, `RulesStore`), quiet hours (`QuietHoursStore`,
-// schedule 1), Focus sync (`FocusSyncStore`) and the presence schedule
-// (`PresenceScheduleStore`). All core stores; the rules engine reads
+// to Mentions or Muted, `RulesStore`), quiet-hours windows (`QuietHoursStore`),
+// Do Not Disturb with auto-expire, Focus sync
+// (`FocusSyncStore`), own status + idle Away + lock (`PresenceTruthStore`)
+// and the presence schedule (`PresenceScheduleStore`). All core stores; the rules engine reads
 // them unchanged. Demo binds to the demo stores (in-memory).
 import OstMacCore
 import SwiftUI
@@ -15,6 +16,10 @@ struct NotificationsPane: View {
     @ObservedObject var quiet: QuietHoursStore
     @ObservedObject var focus: FocusSyncStore
     @ObservedObject var schedule: PresenceScheduleStore
+    @ObservedObject var truth: PresenceTruthStore
+    @ObservedObject var presence: PresenceStore
+    /// Presence writes go to the real account only when signed in (not demo).
+    let live: Bool
     let chatName: (String) -> String
     @State private var newAllow = ""
     @State private var newBlock = ""
@@ -26,6 +31,7 @@ struct NotificationsPane: View {
         let chats = m.graph.chats
         return AnyView(NotificationsPane(notifs: app.notifs, rules: app.rules, quiet: app.quietHours,
                                          focus: app.focusSync, schedule: app.presenceSchedule,
+                                         truth: app.presenceTruth, presence: app.presence, live: !m.options.demo,
                                          chatName: { id in chats.chats.first { $0.id == id }?.name ?? "Conversation" }))
     }
 
@@ -46,11 +52,8 @@ struct NotificationsPane: View {
                     get: { rules.config.matchByDisplayName },
                     set: { rules.setSwitch(NotifyRule.nameBackup, on: $0) }))
             } header: {
-                Text("Mention Alerts")
-            } footer: {
-                Text("Mentions of you always alert unless the chat is muted. In chats set to Mentions, channel, team and everyone mentions alert only when that switch is on.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                InfoHeader(title: "Mention Alerts", subject: "mention alerts",
+                           text: "Mentions of you always alert unless the chat is muted. In chats set to Mentions, channel, team and everyone mentions alert only when that switch is on.")
             }
             Section {
                 KeywordList(title: "Always alert for", words: rules.config.allowKeywords, text: $newAllow,
@@ -60,17 +63,15 @@ struct NotificationsPane: View {
                             add: { keywordIssue = rules.addBlockKeyword($0) },
                             remove: { rules.removeBlockKeyword($0) })
             } header: {
-                Text("Keyword Alerts")
+                InfoHeader(title: "Keyword Alerts", subject: "keyword alerts",
+                           text: "Never beats Always.")
             } footer: {
-                Text(keywordIssue ?? "Never beats Always.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                if let keywordIssue { Text(keywordIssue).font(.caption).foregroundStyle(.secondary) }
             }
-            Section("Chats") {
+            Section {
                 let ids = (rules.config.mentionOnlyChatIDs.union(rules.config.mutedChatIDs)).sorted()
                 if ids.isEmpty {
-                    Text("Every chat notifies for all messages. Change a chat from its Notifications menu.")
-                        .foregroundStyle(.secondary)
+                    Text("No chats are muted.").foregroundStyle(.secondary)
                 } else {
                     ForEach(ids, id: \.description) { id in
                         Picker(chatName(id), selection: Binding(get: { rules.level(chatID: id) },
@@ -81,36 +82,17 @@ struct NotificationsPane: View {
                         }
                     }
                 }
+            } header: {
+                InfoHeader(title: "Chats", subject: "chat notifications",
+                           text: "Change a chat\u{2019}s alerts from its Notifications menu.")
             }
-            Section("Quiet Hours") {
-                Toggle("Quiet hours", isOn: $quiet.windowEnabled)
-                if quiet.windowEnabled, !quiet.windows.isEmpty {
-                    DatePicker("From", selection: minutes(\.startMinutes), displayedComponents: .hourAndMinute)
-                    DatePicker("To", selection: minutes(\.endMinutes), displayedComponents: .hourAndMinute)
-                }
-                Toggle("Stay quiet while a Focus is on", isOn: $focus.syncEnabled)
-            }
-            Section("Presence Schedule") {
-                Toggle("Set my status on a schedule", isOn: $schedule.enabled)
-                ForEach(schedule.entries) { e in
-                    Text(e.summary()).foregroundStyle(schedule.enabled ? .primary : .secondary)
-                }
-            }
+            DoNotDisturbSection(quiet: quiet)
+            QuietHoursSection(quiet: quiet, focus: focus)
+            PresenceStatusSection(truth: truth, presence: presence, live: live)
+            PresenceScheduleSection(schedule: schedule)
         }
         .formStyle(.grouped)
         .frame(width: SettingsWindowController.paneWidth, height: 640)
-    }
-
-    /// Schedule 1's start or end as a time of day.
-    private func minutes(_ key: WritableKeyPath<QuietHoursWindow, Int>) -> Binding<Date> {
-        Binding(get: {
-            let m = quiet.windows.first?[keyPath: key] ?? 0
-            return Calendar.current.startOfDay(for: Date()).addingTimeInterval(TimeInterval(m * 60))
-        }, set: { d in
-            let c = Calendar.current.dateComponents([.hour, .minute], from: d)
-            guard !quiet.windows.isEmpty else { return }
-            quiet.windows[0][keyPath: key] = (c.hour ?? 0) * 60 + (c.minute ?? 0)
-        })
     }
 }
 
@@ -138,7 +120,8 @@ private struct KeywordList: View {
                     }
                 }
                 HStack {
-                    TextField("Keyword", text: $text)
+                    TextField("Keyword", text: $text, prompt: Text("Keyword"))
+                        .labelsHidden()
                         .frame(width: 140)
                         .onSubmit(commit)
                     Button("Add", action: commit)

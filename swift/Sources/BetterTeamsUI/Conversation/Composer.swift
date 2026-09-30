@@ -21,8 +21,10 @@ import SwiftUI
 enum ComposerKeyPolicy {
     enum Action: Equatable { case send, newline, passThrough }
 
-    static func action(shift: Bool, markedText: Bool, returnSends: Bool = true) -> Action {
+    static func action(shift: Bool, command: Bool = false, markedText: Bool, returnSends: Bool = true) -> Action {
         if markedText { return .passThrough }
+        // ⌘Return always sends, whichever way Return itself is set.
+        if command { return .send }
         if shift { return returnSends ? .newline : .send }
         return returnSends ? .send : .newline
     }
@@ -63,7 +65,7 @@ struct Composer: View {
     let services: ConversationServices
     @Environment(\.windowModel) private var model
     @Environment(\.contentTextScale) private var scale
-    @State private var fieldHeight: CGFloat = 18
+    @State private var fieldHeight: CGFloat = ComposerTextView.minFieldHeight(1)
     @State private var mentionIndex = 0
 
     private var draft: Binding<String> {
@@ -87,7 +89,8 @@ struct Composer: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 0) {
+          VStack(alignment: .leading, spacing: 6) {
             if let editing = composer.editing {
                 chip(symbol: "pencil", title: "Editing Message", detail: ConversationStore.quotePreview(editing.content),
                      cancel: "Cancel Editing") { composer.endEdit(chatID: chatID) }
@@ -112,6 +115,7 @@ struct Composer: View {
                 sendButton
                     .alignmentGuide(.composerLine) { $0[VerticalAlignment.center] }
             }
+          }
             statusLine
         }
         .padding(.horizontal, 16)
@@ -269,8 +273,10 @@ struct Composer: View {
     /// (glyph leading, menu indicator trailing).
     static let chevronX: CGFloat = 0.8
 
-    /// Reserved status line (R13): typing on the leading side, queue and
-    /// ghost state trailing. Always present, so nothing shifts.
+    /// Status line: typing on the leading side, queue and ghost state
+    /// trailing. Each piece draws nothing when idle, so the line has zero
+    /// height then (no blank band under the field) and grows only while
+    /// something is shown.
     private var statusLine: some View {
         HStack(spacing: 8) {
             if let typing = model?.app?.typing {
@@ -287,7 +293,6 @@ struct Composer: View {
         }
         .font(AppFont.caption(scale))
         .foregroundStyle(.secondary)
-        .frame(height: 22)
     }
 
     // MARK: popovers (one state value, so never two at once — R17)
@@ -413,7 +418,7 @@ private struct TypingLine: View {
 
     var body: some View {
         if let line = store.line(chatID: chatID) {
-            Text(line).lineLimit(1).truncationMode(.tail)
+            Text(line).lineLimit(1).truncationMode(.tail).padding(.top, 4)
         }
     }
 }
@@ -433,6 +438,7 @@ private struct ScheduledButton: View {
             .buttonStyle(.bordered)
             .controlSize(.small)
             .help("Show Scheduled Messages")
+            .padding(.top, 4)
         }
     }
 }
@@ -445,6 +451,7 @@ private struct GhostGlyph: View {
             Image(systemName: "eye.slash")
                 .help("Ghost mode is on: read receipts and presence are hidden")
                 .accessibilityLabel("Ghost mode on")
+                .padding(.top, 4)
         }
     }
 }
@@ -642,6 +649,19 @@ final class ComposerNSTextView: NSTextView {
         super.doCommand(by: selector)
     }
 
+    /// ⌘Return sends (owner spec; the Return setting only swaps plain
+    /// Return and ⇧Return). AppKit has no default binding for it.
+    override func keyDown(with event: NSEvent) {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if flags.contains(.command), event.keyCode == 36 || event.keyCode == 76,
+           ComposerKeyPolicy.action(shift: flags.contains(.shift), command: true, markedText: hasMarkedText()) == .send
+        {
+            onSubmit?()
+            return
+        }
+        super.keyDown(with: event)
+    }
+
     override func insertNewline(_ sender: Any?) {
         let shift = NSApp.currentEvent?.modifierFlags.contains(.shift) ?? false
         switch ComposerKeyPolicy.action(shift: shift, markedText: hasMarkedText(),
@@ -670,6 +690,14 @@ struct ComposerTextView: NSViewRepresentable {
     let onPasteFiles: ([URL]) -> Void
 
     static let maxLines: CGFloat = 8
+    /// The field is always at least this many lines tall (owner: "2 lines
+    /// tall"); ComposerLayoutTests guards it.
+    static let minLines: CGFloat = 2
+
+    /// Shortest field height at `scale`: `minLines` lines.
+    static func minFieldHeight(_ scale: Double) -> CGFloat {
+        lineHeight(scale) * minLines
+    }
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -738,16 +766,16 @@ struct ComposerTextView: NSViewRepresentable {
         NSLayoutManager().defaultLineHeight(for: font(scale)).rounded(.up)
     }
 
-    /// Height for `text` at `width`: 1…8 lines of `font`.
+    /// Height for `text` at `width`: `minLines`…`maxLines` lines of `font`.
     static func height(for text: String, width: CGFloat, font: NSFont) -> CGFloat {
         let line = NSLayoutManager().defaultLineHeight(for: font)
-        guard width > 1 else { return line.rounded(.up) }
+        guard width > 1 else { return (line * minLines).rounded(.up) }
         var measured = text.isEmpty ? " " : text
         if measured.hasSuffix("\n") { measured += " " }
         let h = (measured as NSString).boundingRect(
             with: NSSize(width: width, height: .greatestFiniteMagnitude),
             options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: [.font: font]).height
-        return min(max(h, line), line * maxLines).rounded(.up)
+        return min(max(h, line * minLines), line * maxLines).rounded(.up)
     }
 
     @MainActor

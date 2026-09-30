@@ -35,6 +35,34 @@ public extension Notification.Name {
     /// userInfo: ["meetingID": String, "join": Bool] — MEETING banner:
     /// Join (true) or a click on the banner (false, UI-SPEC §9.3).
     static let omNotifMeeting = Notification.Name("om-notif-meeting")
+    /// No userInfo — Undo on the automatic-presence-change banner.
+    static let omNotifPresenceUndo = Notification.Name("om-notif-presence-undo")
+}
+
+/// PRESENCE category: the quiet banner posted when the app changed the
+/// status on its own (idle Away, schedule, server drift). One action,
+/// Undo; a stable request id so a newer change replaces the older one.
+public enum PresenceUndoInfo {
+    public static let categoryID = "OM_PRESENCE_UNDO"
+    public static let undoActionID = "OM_PRESENCE_UNDO_ACTION"
+    public static let undoTitle = "Undo"
+    public static let requestID = "presence-undo"
+
+    public static var category: UNNotificationCategory {
+        let undo = UNNotificationAction(identifier: undoActionID, title: undoTitle, options: [])
+        return UNNotificationCategory(identifier: categoryID, actions: [undo], intentIdentifiers: [], options: [])
+    }
+
+    /// Passive (no sound, no break-through).
+    public static func makeContent(_ offer: PresenceUndoOffer) -> UNMutableNotificationContent {
+        let content = UNMutableNotificationContent()
+        content.title = "Status changed"
+        content.body = offer.text
+        content.categoryIdentifier = categoryID
+        content.sound = nil
+        content.interruptionLevel = .passive
+        return content
+    }
 }
 
 /// UI-SPEC §9.3 Foreground: while the app is frontmost, no banner for
@@ -65,6 +93,7 @@ public final class ForegroundBannerPolicy: @unchecked Sendable {
         if categoryID == OmCallInfo.categoryID || categoryID == MeetingNotifyInfo.categoryID {
             return [.banner, .sound, .list]
         }
+        if categoryID == PresenceUndoInfo.categoryID { return [.banner, .list] } // passive: silent
         if let chatID, chatID == onScreenChatID { return [] }
         return bannersWhileActive ? [.banner, .sound, .list] : [.list]
     }
@@ -175,22 +204,28 @@ public final class SystemNotificationCenter: NotificationPosting, @unchecked Sen
         try await center.requestAuthorization(options: [.alert, .sound])
     }
 
-    public func post(_ note: PostedNotification) async {
-        let reply = UNTextInputNotificationAction(
-            identifier: Self.replyActionID, title: "Reply", options: [],
-            textInputButtonTitle: "Send", textInputPlaceholder: "Message")
-        center.setNotificationCategories([
+    /// The full category set `post` installs. It REPLACES every category on
+    /// each post, so every category the app posts must ride along: message,
+    /// mention, call (gap-g3), meeting (Join), presence undo.
+    static func categories(reply: UNNotificationAction) -> Set<UNNotificationCategory> {
+        [
             UNNotificationCategory(
-                identifier: Self.categoryID, actions: [reply],
+                identifier: categoryID, actions: [reply],
                 intentIdentifiers: [], options: []),
             UNNotificationCategory(
                 identifier: MentionAlert.categoryID, actions: [reply],
                 intentIdentifiers: [], options: []),
-            // gap-g3: this set REPLACES all categories every message
-            // post — the call category must ride along or call banners
-            // posted after any message lose their Accept/Decline buttons.
             OmCallInfo.category,
-        ])
+            MeetingNotifyInfo.category,
+            PresenceUndoInfo.category,
+        ]
+    }
+
+    public func post(_ note: PostedNotification) async {
+        let reply = UNTextInputNotificationAction(
+            identifier: Self.replyActionID, title: "Reply", options: [],
+            textInputButtonTitle: "Send", textInputPlaceholder: "Message")
+        center.setNotificationCategories(Self.categories(reply: reply))
         let content = UNMutableNotificationContent()
         content.title = note.title
         content.body = note.body
@@ -529,6 +564,13 @@ public final class MessageNotificationDelegate: NSObject, UNUserNotificationCent
             NotificationCenter.default.post(
                 name: .omNotifMeeting, object: nil,
                 userInfo: ["meetingID": id, "join": response.actionIdentifier == MeetingNotifyInfo.joinActionID])
+            completionHandler()
+            return
+        }
+        if content.categoryIdentifier == PresenceUndoInfo.categoryID {
+            if response.actionIdentifier == PresenceUndoInfo.undoActionID {
+                NotificationCenter.default.post(name: .omNotifPresenceUndo, object: nil)
+            }
             completionHandler()
             return
         }

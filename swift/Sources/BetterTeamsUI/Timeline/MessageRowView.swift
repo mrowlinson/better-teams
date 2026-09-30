@@ -54,15 +54,20 @@ struct MessageRowData {
     /// Shared files the message's `<attachment id>` refs resolve to
     /// (file chips); empty until the conversation's files load.
     var docs: [InlineDoc] = []
+    /// The server did not confirm this message's delete (MSGDELETE): the
+    /// bubble keeps its text and the row shows the error with Retry.
+    var deleteFailed = false
 
     /// Revision of the row state not covered by `TimelineItem.revision`
     /// (FNV-1a, stable across launches).
     var extraRevision: Int { MessageRowData.extraRevision(send: send, receipt: receipt,
                                                           translation: translation,
-                                                          pinned: isPinned, saved: isSaved, docs: docs) }
+                                                          pinned: isPinned, saved: isSaved, docs: docs,
+                                                          deleteFailed: deleteFailed) }
 
     static func extraRevision(send: SendState, receipt: ReceiptDisplay, translation: TranslatedEntry?,
-                              pinned: Bool, saved: Bool, docs: [InlineDoc] = []) -> Int {
+                              pinned: Bool, saved: Bool, docs: [InlineDoc] = [],
+                              deleteFailed: Bool = false) -> Int {
         var h: UInt64 = 14_695_981_039_346_656_037
         func mix(_ s: String) {
             for b in s.utf8 { h = (h ^ UInt64(b)) &* 1_099_511_628_211 }
@@ -72,6 +77,7 @@ struct MessageRowData {
         mix(receipt.accessibilityLabel)
         if let t = translation { mix("\(t.state.rawValue)\(t.isVisible)\(t.text)") } else { mix("-") }
         mix("\(pinned)\(saved)")
+        if deleteFailed { mix("deleteFailed") }
         if !docs.isEmpty { mix(docs.map { "\($0.id)|\($0.name)|\($0.file.size)" }.joined(separator: "/")) }
         return Int(truncatingIfNeeded: h & 0x7fff_ffff_ffff_ffff)
     }
@@ -99,6 +105,34 @@ struct BodySegment: Identifiable {
     let isBlock: Bool
 }
 
+/// "Message failed to send." + a Retry button on the bubble (a7d8375).
+struct FailedSendStatus: View {
+    static let text = "Message failed to send."
+    static let retryTitle = "Retry"
+    let retry: (() -> Void)?
+
+    /// The Retry action for a failed bubble: re-sends in place through the
+    /// timeline's actions (nil without them, e.g. a read-only render).
+    static func retryAction(_ actions: TimelineActions?, _ message: ChatMessage) -> (() -> Void)? {
+        actions.map { a in { a.retry(message) } }
+    }
+    @Environment(\.contentTextScale) private var scale
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Label(Self.text, systemImage: "exclamationmark.circle")
+                .font(AppFont.caption(scale))
+                .foregroundStyle(Palette.failed)
+            if let retry {
+                Button(Self.retryTitle, action: retry)
+                    .controlSize(.small)
+                    .help("Send this message again.")
+                    .accessibilityLabel("Retry sending")
+            }
+        }
+    }
+}
+
 struct MessageRowView: View {
     let row: MessageRowData
     let highlighted: Bool
@@ -108,6 +142,7 @@ struct MessageRowView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorSchemeContrast) private var contrast
     @Environment(\.windowModel) private var model
+    @Environment(\.messageDensity) private var density
 
     private var message: ChatMessage { row.message }
 
@@ -140,8 +175,8 @@ struct MessageRowView: View {
             }
         }
         .padding(.horizontal, 16)
-        .padding(.top, row.showsHeader ? 8 : 2)
-        .padding(.bottom, 2)
+        .padding(.top, row.showsHeader ? density.metrics.headerTop : density.metrics.continuationTop)
+        .padding(.bottom, density.metrics.rowBottom)
         .background { highlight }
         .contentShape(Rectangle())
         .onHover { inside in actions?.hover.pointer(inside, id: message.id) }
@@ -201,8 +236,8 @@ struct MessageRowView: View {
             }
             if row.bubble == .none { reactions }
         }
-        .padding(.horizontal, row.bubble == .none ? 0 : 12)
-        .padding(.vertical, row.bubble == .none ? 0 : 8)
+        .padding(.horizontal, row.bubble == .none ? 0 : density.metrics.bubbleHorizontal)
+        .padding(.vertical, row.bubble == .none ? 0 : density.metrics.bubbleVertical)
         .background {
             switch row.bubble {
             case .none: EmptyView()
@@ -371,6 +406,23 @@ struct MessageRowView: View {
     /// message text never moves when the state changes.
     @ViewBuilder
     private var sendStatus: some View {
+        if row.deleteFailed {
+            HStack(spacing: 6) {
+                Label("Couldn't Delete", systemImage: "exclamationmark.circle")
+                    .font(AppFont.caption(scale))
+                    .foregroundStyle(Palette.failed)
+                Button("Retry") { actions?.retryDelete(message) }
+                    .buttonStyle(.link)
+                    .font(AppFont.caption(scale))
+            }
+            .help("The message was not deleted. Retry, or choose Retry Delete from its context menu.")
+        } else {
+            sendStatusBySend
+        }
+    }
+
+    @ViewBuilder
+    private var sendStatusBySend: some View {
         switch row.send {
         case .none: EmptyView()
         case .sending:
@@ -379,10 +431,7 @@ struct MessageRowView: View {
                 .foregroundStyle(.secondary)
                 .help("Sending")
         case .failed:
-            Label("Not Sent", systemImage: "exclamationmark.circle")
-                .font(AppFont.caption(scale))
-                .foregroundStyle(Palette.failed)
-                .help("Not sent. Retry or delete it from the message's context menu.")
+            FailedSendStatus(retry: FailedSendStatus.retryAction(actions, message))
         }
     }
 
@@ -410,6 +459,7 @@ struct MessageRowView: View {
         let n = message.reactions.reduce(0) { $0 + $1.count }
         if n > 0 { parts.append(n == 1 ? "1 reaction" : "\(n) reactions") }
         if row.send == .failed { parts.append("Not Sent") }
+        if row.deleteFailed { parts.append("Couldn't delete, retry available") }
         if row.send == .sending { parts.append("Sending") }
         return parts.joined(separator: ", ")
     }
@@ -472,6 +522,13 @@ struct MessageRowView: View {
             } else if isBlock {
                 piece.swiftUI.font = AppFont.code(scale)
                 setAppKitFont(AppFont.nsCode(scale), on: &piece)
+            }
+            // Syntax color (research #8): the bucket highlight.js found.
+            if role != nil, let token = run[MessageTextAttributes.CodeTokenAttribute.self],
+               let color = Palette.codeTokenNS(token)
+            {
+                piece.appKit.foregroundColor = color
+                piece.swiftUI.foregroundColor = Color(nsColor: color)
             }
             current.append(piece)
         }

@@ -236,7 +236,7 @@ final class ChatSection: SectionProvider, InspectorCapable {
         case ChatCommands.newChatSheet: AnyView(NewChatSheet(chats: m.graph.chats,
                                                                  contacts: NewChatSheet.directory(m.app, demo: m.options.demo),
                                                                  presence: m.app?.presence ?? noPresence))
-        case ChatCommands.manageFoldersSheet: AnyView(ManageFoldersSheet(folders: m.graph.chats.folders))
+        case ChatCommands.manageFoldersSheet: AnyView(ManageFoldersSheet(folders: m.graph.chats.folders, startOnRules: m.options.demo && r.arg == "rules"))
         case ChatRowActions.newFolderSheet:
             AnyView(NewFolderSheet(chatID: r.arg ?? "", folders: m.graph.chats.folders))
         case ContactActions.sheetName:
@@ -266,7 +266,7 @@ final class ChatSection: SectionProvider, InspectorCapable {
         case ChatCommands.videoCall:
             return ConversationToolbar.startVideoCall(m) != nil
         case ChatCommands.meetNow:
-            return ConversationToolbar.meetNow(m) != nil
+            return ConversationToolbar.meetNow(m)
         case ChatCommands.catchUp:
             guard let id = ConversationToolbar.chatID(m) else { return false }
             // The Catch Up inspector lives in Chat: other hosts (Activity,
@@ -282,6 +282,17 @@ final class ChatSection: SectionProvider, InspectorCapable {
         case ChatCommands.catchUpWindow:
             guard m.app?.catchUp.mode ?? .off != .off else { return false }
             CatchUpWindowController.show(m)
+        case ChatCommands.markUnread:
+            // Same semantics as the message menu's Mark as Unread: Teams
+            // bookmarks just behind the NEWEST loaded message.
+            guard let id = selected(m) else { return false }
+            let conv = m.graph.conv
+            let newest = conv.chatID == id ? ReadSync.latest(conv.messages) : nil
+            if let app = m.app, app.chats.chat(id: id) != nil {
+                app.setChatUnread(id, unread: true, newest: newest)
+            } else {
+                m.graph.unread.markUnread(chatID: id)
+            }
         case ChatCommands.pin:
             guard let id = selected(m) else { return false }
             if m.graph.chats.isPinned(id) { m.graph.chats.unpin(id) } else { m.graph.chats.pin(id) }
@@ -353,6 +364,8 @@ final class ChatSection: SectionProvider, InspectorCapable {
             return CommandValidation(enabled: m.graph.conv.chatID == id && !m.graph.conv.messages.isEmpty)
         case ChatCommands.catchUpWindow:
             return CommandValidation(enabled: m.app?.catchUp.mode ?? .off != .off)
+        case ChatCommands.markUnread:
+            return CommandValidation(enabled: inChat && selected(m) != nil)
         case ChatCommands.pin:
             guard inChat, let id = selected(m) else { return .disabled }
             return CommandValidation(enabled: true, title: m.graph.chats.isPinned(id) ? "Unpin Chat" : "Pin Chat")

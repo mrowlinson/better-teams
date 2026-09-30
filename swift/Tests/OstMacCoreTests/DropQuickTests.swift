@@ -54,12 +54,19 @@ final class DropQuickTests: XCTestCase {
                     """.data(using: .utf8)!)
             })
         store.open(chatID: "c")
+        // The initial (empty) list fetch must land first, or it can overwrite
+        // an uploaded row that arrived before it.
+        await settle { store.state == .empty }
         store.upload(paths: ["/tmp/a.pdf", "/tmp/b.pdf"])
-        for _ in 0 ..< 100 {
-            if seen.value.count == 2 { break }
-            try? await Task.sleep(nanoseconds: 20_000_000)
-        }
+        // Done = queue drained AND both rows upserted, not merely both
+        // fetcher calls seen (the second upsert lands after its call).
+        await settle { seen.value.count == 2 && !store.uploading && store.files.count == 2 }
         XCTAssertEqual(seen.value, ["/tmp/a.pdf", "/tmp/b.pdf"])
         XCTAssertEqual(store.files.count, 2)
+    }
+
+    private func settle(_ cond: @MainActor () -> Bool) async {
+        let deadline = Date().addingTimeInterval(10)
+        while !cond(), Date() < deadline { try? await Task.sleep(nanoseconds: 10_000_000) }
     }
 }

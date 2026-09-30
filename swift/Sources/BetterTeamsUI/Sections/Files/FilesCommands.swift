@@ -20,6 +20,8 @@ public enum FilesCommands {
     public static let moveTo: CommandID = "files.moveTo"
     public static let copyTo: CommandID = "files.copyTo"
     public static let delete: CommandID = "files.delete"
+    /// The file in its own window (R1).
+    public static let openWindow: CommandID = "files.openWindow"
 
     /// Sheet and popover names (evidence routes, §12).
     public static let transfersPopover = "transfers"
@@ -31,7 +33,7 @@ public enum FilesCommands {
 
     /// Context menu (§6.6), in separator groups; unavailable items hide.
     static let contextGroups: [[CommandID]] = [
-        [open, openInBrowser, quickLook, showInFinder],
+        [open, openInBrowser, quickLook, showInFinder, openWindow],
         [download, saveAs, copyLink, share],
         [openConversation],
         [rename, moveTo, copyTo, delete],
@@ -49,9 +51,12 @@ public enum FilesCommands {
                 menu: .init(.view, group: 7, order: 0), toolbar: .trailing, owner: .files),
         Command(open, "Open", key: "o", menu: .init(.file, group: 3, order: 0), owner: .files),
         Command(openInBrowser, "Open in Browser", menu: .init(.file, group: 3, order: 1), owner: .files),
+        Command(openWindow, "Open in New Window", symbol: "macwindow.badge.plus",
+                menu: .init(.file, group: 3, order: 5), owner: .files),
         Command(showInFinder, "Show in Finder", menu: .init(.file, group: 3, order: 3), owner: .files),
         Command(download, "Download", menu: .init(.file, group: 4, order: 0), owner: .files),
-        Command(saveAs, "Save As\u{2026}", key: "s", modifiers: [.command, .shift],
+        // No shortcut: ⇧⌘S is Saved Messages (owner spec).
+        Command(saveAs, "Save As\u{2026}",
                 menu: .init(.file, group: 4, order: 1), owner: .files),
         Command(copyLink, "Copy Link", menu: .init(.file, group: 4, order: 2), owner: .files),
         Command(openConversation, "Open Conversation", menu: .init(.file, group: 3, order: 4), owner: .files),

@@ -41,6 +41,7 @@ public final class ShellWindowController: NSWindowController, NSWindowDelegate, 
     }
 
     public init(graph: any AccountGraph, options: LaunchOptions) {
+        TeamsLinkUI.install()
         let key = options.demo ? "demo" : graph.graphAccountID
         let m = WindowModel(graph: graph, accountKey: key, options: options)
         let nav = Navigator(model: m)
@@ -417,6 +418,7 @@ public final class ShellWindowController: NSWindowController, NSWindowDelegate, 
         case ShellCommand.account: accountAction(arg)
         case ShellCommand.connection: if model.connection == .expired { presentSignInSheet() }
         case ShellCommand.signOut: confirmSignOut()
+        case ShellCommand.quickMessage: NotificationCenter.default.post(name: .showQuickComposer, object: nil)
         case ShellCommand.settings: SettingsWindowController.shared.show()
         default: break
         }
@@ -488,6 +490,7 @@ public final class ShellWindowController: NSWindowController, NSWindowDelegate, 
         case ShellCommand.nextUnread, ShellCommand.previousUnread: return .enabled
         case ShellCommand.connection: return CommandValidation(enabled: model.connection == .expired)
         case ShellCommand.signOut: return CommandValidation(enabled: !model.options.demo && model.app != nil)
+        case ShellCommand.quickMessage: return CommandValidation(enabled: model.app != nil)
         case ShellCommand.settings: return .enabled // Calls pane (P3b); P4c adds the rest
         default: return .disabled // Help: not built yet
         }
@@ -502,10 +505,31 @@ public final class ShellWindowController: NSWindowController, NSWindowDelegate, 
         let own = model.app?.presence.own.flatMap { PresenceStatus(graphAvailability: $0.availability) }
         var out: [SubmenuItem] = [
             (PresenceStatus.available, "Available"), (.busy, "Busy"), (.dnd, "Do Not Disturb"),
-            (.away, "Away"), (.offline, "Appear Offline"),
+            (.brb, "Be Right Back"), (.away, "Appear Away"), (.offline, "Appear Offline"),
         ].map { status, title in
             SubmenuItem(title, arg: "presence:\(status.rawValue)", symbol: PresenceGlyph.symbol(status),
                         checked: own == status, enabled: live)
+        }
+        // An automatic change still inside its undo window (idle Away,
+        // schedule, server drift): note + Undo, above the choices.
+        if let offer = model.app?.presenceTruth.undoOffer, !offer.isExpired() {
+            out.insert(SubmenuItem(offer.text, arg: "note", enabled: false), at: 0)
+            out.insert(SubmenuItem(offer.undoMenuTitle, arg: "presenceUndo", symbol: "arrow.uturn.backward",
+                                   enabled: live), at: 1)
+            out[2].separatorBefore = true
+        }
+        // Status duration ("reset after") and the lock it creates.
+        if let truth = model.app?.presenceTruth {
+            var first = true
+            for d in PresenceLockDuration.allCases {
+                out.append(SubmenuItem(d.resetMenuTitle, arg: "presenceReset:\(d.rawValue)",
+                                       checked: truth.resetAfter == d, enabled: live, separatorBefore: first))
+                first = false
+            }
+            if truth.isLocked(), let lock = truth.lock {
+                out.append(SubmenuItem(lock.summary(), arg: "note", enabled: false, separatorBefore: true))
+                out.append(SubmenuItem("Unlock Status", arg: "presenceUnlock", enabled: live))
+            }
         }
         // Own status note and automatic reply (unified presence), read-only.
         if let mine = model.app?.presence.own {
@@ -525,6 +549,15 @@ public final class ShellWindowController: NSWindowController, NSWindowDelegate, 
                                        enabled: live, separatorBefore: first))
                 first = false
             }
+            // REGFIX-C R1: one window per signed-in account beside this one.
+            if app.accounts.accounts.count > 1 {
+                var firstWindow = true
+                for acct in app.accounts.accounts {
+                    out.append(SubmenuItem("Open \u{201C}\(acct.displayName)\u{201D} in New Window",
+                                           arg: "window:\(acct.id)", enabled: live, separatorBefore: firstWindow))
+                    firstWindow = false
+                }
+            }
         }
         out.append(SubmenuItem("Add Account…", arg: "add", enabled: live, separatorBefore: true))
         out.append(SubmenuItem("Sign Out…", arg: "signOut", enabled: live))
@@ -534,9 +567,18 @@ public final class ShellWindowController: NSWindowController, NSWindowDelegate, 
     private func accountAction(_ arg: String?) {
         guard let arg, let app = model.app, !model.options.demo else { return }
         if arg.hasPrefix("presence:"), let s = PresenceStatus(rawValue: String(arg.dropFirst(9))) {
-            app.presence.set(status: s)
+            app.presenceTruth.choose(status: s)
+        } else if arg.hasPrefix("presenceReset:"),
+                  let d = PresenceLockDuration(rawValue: String(arg.dropFirst(14))) {
+            app.presenceTruth.resetAfter = d
+        } else if arg == "presenceUndo" {
+            app.presenceTruth.undoLastAutoChange()
+        } else if arg == "presenceUnlock" {
+            app.presenceTruth.unlock()
         } else if arg.hasPrefix("account:") {
             app.switchAccount(to: String(arg.dropFirst(8)))
+        } else if arg.hasPrefix("window:") {
+            AccountWindowController.show(model, accountID: String(arg.dropFirst(7)))
         } else if arg == "signOut" {
             confirmSignOut()
         } else if arg == "add" {
@@ -634,9 +676,17 @@ extension PresenceStatus {
         case "Available", "AvailableIdle": self = .available
         case "Busy", "BusyIdle", "InACall", "InAMeeting": self = .busy
         case "DoNotDisturb", "Presenting", "Focusing": self = .dnd
-        case "Away", "BeRightBack": self = .away
+        case "BeRightBack": self = .brb
+        case "Away": self = .away
         case "Offline", "PresenceUnknown": self = .offline
         default: return nil
         }
+    }
+}
+
+extension PresenceLockDuration {
+    /// Status menu radio title for the "reset after" choice.
+    var resetMenuTitle: String {
+        self == .untilOff ? "Don't Reset Status" : "Reset Status After \(label.capitalized)"
     }
 }

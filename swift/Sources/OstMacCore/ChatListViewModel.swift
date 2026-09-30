@@ -214,6 +214,34 @@ public final class ChatListViewModel: ObservableObject, ChatSelection {
         }
         snapshots?.save(visible, key: Self.snapshotKey)
         onFetched?(response.chats)
+        loadDeletePolicyIfNeeded()
+    }
+
+    // MARK: CHATSYNC2b R1 delete gating
+
+    /// The owner's Teams delete-chat policy (ChatDeleteRule): read once
+    /// per list, retried on later fetches while unknown.
+    @Published public var deletePolicy: ChatDeleteRule.Policy = .unknown
+    /// Blocking policy read; nil = none (demo sets `deletePolicy`).
+    public var deletePolicyReader: (@Sendable () -> ChatDeleteRule.Policy)?
+    private var deletePolicyLoading = false
+
+    /// Whether the row menu offers Delete for this chat, as Teams does.
+    public func canDelete(_ id: String) -> Bool {
+        guard let row = chatByID[id] else { return false }
+        return ChatDeleteRule.canDelete(chatID: id, isGroup: row.is_group,
+                                        isMeetingOrganizer: row.is_creator ?? false, policy: deletePolicy)
+    }
+
+    func loadDeletePolicyIfNeeded() {
+        guard deletePolicy == .unknown, !deletePolicyLoading, let read = deletePolicyReader else { return }
+        deletePolicyLoading = true
+        Task { [weak self] in
+            let p = await Task.blocking { read() }.value
+            guard let self else { return }
+            self.deletePolicyLoading = false
+            if p != .unknown { self.deletePolicy = p }
+        }
     }
 
     /// Every fetched list (the app adopts the Teams mute state).

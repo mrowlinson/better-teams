@@ -17,17 +17,13 @@ struct DeviceCodeView: View {
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
             // Exactly as Microsoft issued it; Copy Code copies the same string.
-            Text(code.userCode)
-                .font(AppFont.deviceCode)
-                .textSelection(.enabled)
-                .padding(.horizontal, 20)
-                .padding(.vertical, 10)
-                // Tertiary fill + hairline: quaternary alone vanished on
-                // the light window background.
-                .background(.fill.tertiary, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(.separator, lineWidth: 1)
-                }
+            GroupBox {
+                Text(code.userCode)
+                    .font(AppFont.deviceCode)
+                    .textSelection(.enabled)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 4)
+            }
                 .accessibilityLabel("Code \(code.userCode.map(String.init).joined(separator: " "))")
             HStack(spacing: 8) {
                 ProgressView().controlSize(.small)

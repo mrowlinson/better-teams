@@ -85,6 +85,14 @@ final class CalendarSection: SectionProvider, InspectorCapable {
         return m.app?.calWeek.row(id: id)
     }
 
+    /// The meeting a command acts on: the row named by `arg` (context
+    /// menu), else the selection when the Calendar is showing.
+    static func target(_ arg: String?, _ m: WindowModel) -> MeetingItem? {
+        if let arg, !arg.isEmpty { return m.app?.calWeek.row(id: arg) }
+        guard m.nav.section == .calendar else { return nil }
+        return selectedMeeting(m)
+    }
+
     static func select(_ id: String?, _ m: WindowModel) {
         var s = current(m)
         guard s.meetingID != id else { return }
@@ -177,6 +185,20 @@ final class CalendarSection: SectionProvider, InspectorCapable {
         nav.select(section: .chat)
     }
 
+    /// RECAP2: a meeting that has ended and has a chat shows Recap.
+    static func hasRecap(_ meeting: MeetingItem, now: Date = DemoClock.now) -> Bool {
+        guard meeting.chatThreadID != nil, let end = CalendarFormat.date(meeting.end) else { return false }
+        return end <= now
+    }
+
+    /// RECAP2: the meeting's Recap (the chat's Recap tab: the unified
+    /// recap viewer).
+    static func openRecap(_ meeting: MeetingItem, _ m: WindowModel) {
+        guard let thread = meeting.chatThreadID, let nav = m.navigator else { return }
+        nav.setDetailTab(.recap, for: thread)
+        openChat(meeting, m)
+    }
+
     static func copyJoinLink(_ meeting: MeetingItem) {
         guard let url = meeting.joinURL, !url.isEmpty else { return }
         NSPasteboard.general.clearContents()
@@ -199,6 +221,33 @@ final class CalendarSection: SectionProvider, InspectorCapable {
     static func edit(_ meeting: MeetingItem, _ m: WindowModel) {
         m.dismissSheet()
         m.presentSheet(SheetRequest(CalendarCommands.editSheet, in: .calendar, arg: meeting.id))
+    }
+
+    /// Duplicate: the new-event sheet prefilled with this event (time,
+    /// people, rooms, location, body, personal fields).
+    static func duplicate(_ meeting: MeetingItem, _ m: WindowModel) {
+        m.dismissSheet()
+        m.presentSheet(SheetRequest(CalendarCommands.duplicateSheet, in: .calendar, arg: meeting.id))
+    }
+
+    /// View series: the series master's details.
+    static func viewSeries(_ meeting: MeetingItem, _ m: WindowModel) {
+        guard let id = CalendarWeekStore.seriesID(of: meeting) else { return }
+        m.dismissSheet()
+        showDetails(MeetingItem(meetingId: id, subject: meeting.subject), m)
+    }
+
+    /// Show all instances of the recurring event.
+    static func showInstances(_ meeting: MeetingItem, _ m: WindowModel) {
+        guard let id = CalendarWeekStore.seriesID(of: meeting) else { return }
+        m.dismissSheet()
+        m.presentSheet(SheetRequest(CalendarCommands.instancesSheet, in: .calendar, arg: id))
+    }
+
+    /// Scheduling assistant for this event's people.
+    static func openScheduler(_ meeting: MeetingItem, _ m: WindowModel) {
+        m.dismissSheet()
+        m.presentSheet(SheetRequest(CalendarCommands.schedulerSheet, in: .calendar, arg: meeting.id))
     }
 
     // MARK: commands
@@ -224,8 +273,17 @@ final class CalendarSection: SectionProvider, InspectorCapable {
         case CalendarCommands.viewMode:
             Self.setView(CalendarSelection.View(route: arg ?? "") ?? .week, m)
         case CalendarCommands.join:
-            guard let meeting = Self.selectedMeeting(m) else { return false }
-            Self.join(meeting, m)
+            // ⌘J: the selected meeting when it has a link, else the
+            // Join with ID or Link sheet (old app: Join Meeting…).
+            if here(m), let meeting = Self.selectedMeeting(m), meeting.joinURL?.isEmpty == false {
+                Self.join(meeting, m)
+            } else {
+                if m.nav.section != .calendar { m.navigator?.select(section: .calendar) }
+                m.presentSheet(SheetRequest(CalendarCommands.joinSheet, in: .calendar))
+            }
+        case CalendarCommands.openWindow:
+            guard let meeting = Self.target(arg, m) else { return false }
+            MeetingWindowController.show(m, meeting: meeting)
         case CalendarCommands.copyJoinLink:
             guard let meeting = Self.selectedMeeting(m) else { return false }
             Self.copyJoinLink(meeting)
@@ -256,11 +314,15 @@ final class CalendarSection: SectionProvider, InspectorCapable {
             case .month: return CommandValidation(enabled: !week.calendar.isDate(week.monthStart, equalTo: now, toGranularity: .month))
             default: return CommandValidation(enabled: !week.dayKeys.contains(week.dayKey(now)))
             }
-        case CalendarCommands.join, CalendarCommands.copyJoinLink:
+        case CalendarCommands.join:
+            return .enabled
+        case CalendarCommands.copyJoinLink:
             guard here(m), let meeting = Self.selectedMeeting(m) else { return .disabled }
             return CommandValidation(enabled: meeting.joinURL?.isEmpty == false)
         case CalendarCommands.showDetails:
             return CommandValidation(enabled: here(m) && Self.selectedMeeting(m) != nil)
+        case CalendarCommands.openWindow:
+            return CommandValidation(enabled: Self.target(arg, m) != nil)
         case CalendarCommands.cancelMeeting:
             guard here(m), let meeting = Self.selectedMeeting(m) else { return .disabled }
             return CommandValidation(enabled: Self.isOrganizer(meeting, m))
@@ -292,6 +354,26 @@ final class CalendarSection: SectionProvider, InspectorCapable {
         case CalendarCommands.editSheet:
             guard let id = r.arg ?? Self.current(m).meetingID, let row = app.calWeek.row(id: id) else { return nil }
             return AnyView(EditEventSheet(week: app.calWeek, meeting: row))
+        case CalendarCommands.duplicateSheet:
+            guard let id = r.arg ?? Self.current(m).meetingID else { return nil }
+            let week = app.calWeek
+            return AnyView(CalendarRowSheet(week: week, eventID: id, content: { row in
+                DuplicateEventSheet(week: week, draft: CalendarEventDraft.duplicate(
+                    of: row!, detail: week.details[id], calendar: week.calendar, now: RelativeClock.shared.now))
+            }, needsRow: true))
+        case CalendarCommands.schedulerSheet:
+            let week = app.calWeek
+            return AnyView(CalendarRowSheet(week: week, eventID: r.arg ?? Self.current(m).meetingID) { row in
+                SchedulingAssistantSheet(week: week, meeting: row)
+            })
+        case CalendarCommands.instancesSheet:
+            guard let id = r.arg else { return nil }
+            let title = app.calWeek.seriesInstances[id]?.first?.subject
+                ?? app.calWeek.meetings.first { $0.info?.seriesMasterID == id }?.subject ?? "Recurring event"
+            return AnyView(EventInstancesSheet(week: app.calWeek, seriesID: id, title: title,
+                                               openedFrom: Self.current(m).meetingID))
+        case CalendarCommands.webinarSheet:
+            return AnyView(NewWebinarSheet(week: app.calWeek))
         default: return nil
         }
     }

@@ -146,6 +146,10 @@ final class ActivitySection: SectionProvider, InspectorCapable {
         switch c {
         case ActivityCommands.filter:
             state.filter = ActivityFilter(rawValue: arg ?? "") ?? .all
+        case ActivityCommands.showSaved:
+            m.navigator?.endSearch()
+            m.navigator?.select(section: .activity)
+            state.filter = .saved
         case ActivityCommands.markAllRead:
             activity.markAllReviewed()
         case ActivityCommands.markRead:
@@ -164,6 +168,7 @@ final class ActivitySection: SectionProvider, InspectorCapable {
     func validate(_ c: CommandID, arg: String?, _ m: WindowModel) -> CommandValidation {
         let here = m.nav.section == .activity && m.nav.search == nil && m.app != nil
         switch c {
+        case ActivityCommands.showSaved: return CommandValidation(enabled: m.app != nil)
         case ActivityCommands.filter: return CommandValidation(enabled: here && hasItems(m))
         case ActivityCommands.markAllRead:
             return CommandValidation(enabled: here && unread(m) > 0)

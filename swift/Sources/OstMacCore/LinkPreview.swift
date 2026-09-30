@@ -369,7 +369,7 @@ public enum LinkPreviewOpen {
     /// and never call this (no browser under test).
     public static func `default`(_ url: URL) {
         guard url.scheme?.lowercased() == "https" else { return }
-        NSWorkspace.shared.open(url)
+        TeamsLinkRouter.open(url)
     }
 }
 

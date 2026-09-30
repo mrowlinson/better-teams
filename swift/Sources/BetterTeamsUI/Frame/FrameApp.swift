@@ -169,8 +169,10 @@ public enum TeamsWebGuard {
 
 public enum FramePolicy {
     /// Allow-listed standalone hosts: load directly, no Teams chrome (§7.1 rule 2).
+    /// RECAP2: Loop (meeting notes pages) stays in the window too.
     public static let standaloneHosts = [
         "sharepoint.com", "onedrive.com", "office.com", "office.net", "powerbi.com", "onenote.com",
+        "loop.cloud.microsoft", "loop.microsoft.com",
     ]
 
     /// Channel tabs that are native views, never frames (§7.1 rule 1).
@@ -201,6 +203,26 @@ public enum FramePolicy {
     public static func keepInMemory(_ defaults: UserDefaults = .standard) -> Int {
         let v = defaults.integer(forKey: keepInMemoryKey)
         return [1, 3, 6].contains(v) ? v : 3
+    }
+
+    /// Settings ▸ Apps ▸ Unload apps hidden for a while (APPEFF2 O2). On
+    /// unless switched off.
+    public static let unloadIdleAppsKey = "bt.frame.unloadIdleApps"
+    /// Settings ▸ Apps ▸ Pause apps in the background (APPEFF2 O5). On
+    /// unless switched off.
+    public static let pauseInBackgroundKey = "bt.frame.pauseInBackground"
+    /// A hidden app is unloaded after this long unused (30 min).
+    public static let idleUnloadAfter: TimeInterval = 30 * 60
+    /// Better Teams must stay in the background this long before its
+    /// panes are paused (a quick Cmd-Tab there and back changes nothing).
+    public static let backgroundPauseDelay: TimeInterval = 10
+
+    public static func unloadIdleApps(_ defaults: UserDefaults = .standard) -> Bool {
+        defaults.object(forKey: unloadIdleAppsKey) as? Bool ?? true
+    }
+
+    public static func pauseInBackground(_ defaults: UserDefaults = .standard) -> Bool {
+        defaults.object(forKey: pauseInBackgroundKey) as? Bool ?? true
     }
 
     public enum Pressure: Sendable { case normal, warning, critical }
@@ -234,6 +256,12 @@ public enum FramePolicy {
             }
             return out
         }
+    }
+
+    /// Keys to unload for idleness (APPEFF2 O2): every non-visible view
+    /// unused for `after` or more.
+    public static func idle(_ residents: [Resident], now: Date, after: TimeInterval) -> [String] {
+        residents.filter { !$0.visible && now.timeIntervalSince($0.lastUsed) >= after }.map(\.key)
     }
 
     /// Warm views past the keep-alive (§7.3 `suspended`).

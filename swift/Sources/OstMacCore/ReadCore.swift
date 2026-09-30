@@ -84,6 +84,9 @@ struct ReadContext {
     var http: any ReadFetcher
     var refresher: any TokenRefreshFetcher
     var now: @Sendable () -> UInt64
+    /// The owner's meeting-chat notification settings (CHATSYNC3 R1);
+    /// production shares one, a test context gets its own.
+    var meetingChatSettings = MeetingChatSettingsCache()
 }
 
 // MARK: - CoreReads (moved B4 symbols)
@@ -124,7 +127,8 @@ public enum CoreReads {
         )
         return ReadContext(
             store: store, http: URLSessionReadFetcher(),
-            refresher: URLSessionTokenFetcher(), now: { TokenStatus.nowSecs() }
+            refresher: URLSessionTokenFetcher(), now: { TokenStatus.nowSecs() },
+            meetingChatSettings: .shared
         )
     }
 
@@ -612,6 +616,11 @@ public enum CoreReads {
             let threadType: String?
             let productThreadType: String?
             let hidden: LooseString?
+            /// The owner created the thread (meeting organizer for
+            /// meeting chats); the chat service's list form (CHATSYNC2b).
+            let isCreator: LooseString?
+            /// Creator MRI (the Teams worker's form of the same fact).
+            let creator: String?
         }
         struct NativeMsg: Decodable {
             let id: String?
@@ -637,13 +646,8 @@ public enum CoreReads {
             let consumptionHorizonBookmark: String?
             /// Teams "Delete chat" stamp (epoch ms, string or number).
             let clearHistoryTime: LooseString?
-            var muted: Bool? {
-                switch alerts?.lowercased() {
-                case "false": true
-                case "true": false
-                default: nil
-                }
-            }
+            /// Meeting chats: JSON with the owner's `rsvpStatus`.
+            let meetingInfo: String?
         }
         struct Metadata: Decodable {
             let backwardLink: String?
@@ -746,6 +750,18 @@ public enum CoreReads {
             }
             return meValue
         }
+        // The owner's meeting-chat notification settings (CHATSYNC3 R1):
+        // read on first need, so a page without an alerts-less meeting
+        // chat costs nothing.
+        var meetingSettings: ChatMuteRule.Settings?
+        func meetingChatSettings() -> ChatMuteRule.Settings {
+            if let meetingSettings { return meetingSettings }
+            let s = ctx.meetingChatSettings.settings(profile: profile) {
+                MeetingChatSettingsReader.read(chatService: svc, skype: skype, http: ctx.http)
+            }
+            meetingSettings = s
+            return s
+        }
         for (ci, conv) in conversations.enumerated() {
             let id = conv.id ?? ""
             if id.isEmpty { continue }
@@ -787,6 +803,22 @@ public enum CoreReads {
                     messageType: msg?.messagetype,
                     fromOwner: mriIsSelf(mriFromUserLink(msg?.from), selfOID: oid))
             }
+            // Teams mute (CHATSYNC2b, ChatMuteRule): `alerts` decides; a
+            // meeting chat without it follows the owner's meeting-chat
+            // notification settings (CHATSYNC3; Teams' defaults until read).
+            let creatorSelf: Bool? = {
+                if let v = tp?.isCreator?.value?.lowercased() { return v == "true" }
+                guard let mri = tp?.creator, !mri.isEmpty, let oid = resolveMe()?.id, !oid.isEmpty else { return nil }
+                return mriIsSelf(mri, selfOID: oid)
+            }()
+            let alerts = conv.properties?.alerts
+            var muted = ChatMuteRule.explicitMute(alerts)
+            if muted == nil, conv.properties != nil, ChatMuteRule.isMeetingChat(id) {
+                muted = ChatMuteRule.isMuted(chatID: id, alerts: nil,
+                                             meetingInfo: conv.properties?.meetingInfo,
+                                             creatorIsSelf: creatorSelf ?? false,
+                                             settings: creatorSelf == true ? .teamsDefault : meetingChatSettings())
+            }
             items.append(ChatItem(
                 chatId: id,
                 name: conversationName(topic: conv.threadProperties?.topic, mate: nil, sender: senderName, chatID: id),
@@ -794,10 +826,11 @@ public enum CoreReads {
                 last_message_time: msg?.originalarrivaltime ?? msg?.composetime,
                 last_message_sender: msg?.imdisplayname,
                 last_message_preview: preview,
-                muted: conv.properties?.muted,
+                muted: muted,
                 unread: unread,
                 read_horizon: horizon,
-                read_bookmark: conv.properties?.consumptionHorizonBookmark
+                read_bookmark: conv.properties?.consumptionHorizonBookmark,
+                is_creator: creatorSelf
             ))
         }
         // Second pass: 1:1 mate names. Any failure keeps the first-pass
@@ -817,7 +850,7 @@ public enum CoreReads {
                 last_message_preview: old.last_message_preview,
                 muted: old.muted,
                 unread: old.unread, read_horizon: old.read_horizon,
-                read_bookmark: old.read_bookmark
+                read_bookmark: old.read_bookmark, is_creator: old.is_creator
             )
         }
         if !needsMate.isEmpty, let me {
@@ -841,7 +874,7 @@ public enum CoreReads {
                         last_message_preview: old.last_message_preview,
                         muted: old.muted,
                 unread: old.unread, read_horizon: old.read_horizon,
-                read_bookmark: old.read_bookmark
+                read_bookmark: old.read_bookmark, is_creator: old.is_creator
                     )
                 }
             }

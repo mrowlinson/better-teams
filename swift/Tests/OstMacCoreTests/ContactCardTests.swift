@@ -259,7 +259,13 @@ final class ContactCardTests: XCTestCase {
     @MainActor
     private func waitUntil(_ condition: @MainActor () -> Bool, file: StaticString = #filePath,
                            line: UInt = #line) async throws {
-        for _ in 0..<400 {
+        // A wall-clock bound, not an iteration count: under a saturated full
+        // suite each 5 ms sleep stretches (400 of them was ~4 s), and the
+        // photo/card work runs on the shared blocking executor behind other
+        // suites' parked jobs. The wait ends the instant the condition holds;
+        // the bound only decides how long a genuine failure takes to report.
+        let deadline = Date().addingTimeInterval(60)
+        while Date() < deadline {
             if condition() { return }
             try await Task.sleep(nanoseconds: 5_000_000)
         }

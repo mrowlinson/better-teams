@@ -104,7 +104,10 @@ struct ImageSlot: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             case .loaded:
-                if let img = model.image {
+                if let clip = model.gif, clip.frames.count > 1 {
+                    GifBubblePlayer(clip: clip)
+                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                } else if let img = model.image {
                     Image(nsImage: img)
                         .resizable()
                         .aspectRatio(contentMode: .fit)
@@ -126,6 +129,74 @@ struct ImageSlot: View {
         .accessibilityLabel(alt.isEmpty ? "Image" : alt)
         .accessibilityAddTraits(.isImage)
         .accessibilityAction { if model.image != nil { open(model) } }
+    }
+}
+
+/// Play/pause clock of one bubble GIF: seconds banked when last paused
+/// and when it last resumed (nil = paused). The frame is a pure function
+/// of the clock and the tick date, so drawing never mutates state.
+struct GifPlaybackClock: Equatable {
+    var banked = 0.0
+    var resumedAt: Date?
+
+    var playing: Bool { resumedAt != nil }
+
+    /// Loop time at `now`.
+    func playhead(now: Date, total: Double) -> Double {
+        guard total > 0 else { return 0 }
+        let t = banked + (resumedAt.map { max(0, now.timeIntervalSince($0)) } ?? 0)
+        return t.truncatingRemainder(dividingBy: total)
+    }
+
+    mutating func play(now: Date) { if resumedAt == nil { resumedAt = now } }
+
+    mutating func pause(now: Date, total: Double) {
+        guard playing else { return }
+        banked = playhead(now: now, total: total)
+        resumedAt = nil
+    }
+
+    mutating func toggle(now: Date, total: Double) {
+        if playing { pause(now: now, total: total) } else { play(now: now) }
+    }
+}
+
+/// An animated GIF in a bubble (om-gif-playback, e4fe679): loops the
+/// decoded clip on display ticks with a native Play/Pause button over it.
+/// Reduce Motion opens paused on the first frame; pressing Play always
+/// animates. Clicks elsewhere still open the viewer.
+struct GifBubblePlayer: View {
+    let clip: GifClip
+    @State private var clock = GifPlaybackClock()
+    @State private var started = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 15.0, paused: !clock.playing)) { ctx in
+            let t = clock.playhead(now: ctx.date, total: clip.totalDuration)
+            Image(nsImage: clip.frames[GifClip.frameIndex(at: t, durations: clip.durations)])
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+        }
+        .overlay(alignment: .bottomLeading) {
+            Button { clock.toggle(now: Date(), total: clip.totalDuration) } label: {
+                Image(systemName: clock.playing ? "pause.fill" : "play.fill").frame(width: 22, height: 22)
+            }
+            .buttonStyle(.borderless)
+            .background(.regularMaterial, in: Circle())
+            .padding(6)
+            .help(clock.playing ? "Pause GIF" : "Play GIF")
+            .accessibilityLabel(clock.playing ? "Pause GIF" : "Play GIF")
+        }
+        .onAppear {
+            guard !started else { return }
+            started = true
+            if GifPlayback.initiallyPlaying(animated: true, reduceMotion: reduceMotion) { clock.play(now: Date()) }
+        }
+        // Reduce Motion turning on pauses; turning off resumes autoplay.
+        .onChange(of: reduceMotion) { _, now in
+            if now { clock.pause(now: Date(), total: clip.totalDuration) } else { clock.play(now: Date()) }
+        }
     }
 }
 
@@ -396,7 +467,7 @@ struct ReactionChips: View {
 enum CardLinks {
     static func open(_ raw: String) {
         guard let url = URL(string: raw), url.scheme?.lowercased() == "https" else { return }
-        NSWorkspace.shared.open(url)
+        TeamsLinkRouter.open(url)
     }
 }
 

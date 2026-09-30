@@ -12,20 +12,28 @@ struct Recap: Identifiable, Equatable {
     let recording: RecordingItem?
     let transcript: TranscriptItem?
     let date: Date?
+    /// RECAP2: the meeting chat this recap belongs to (read the way Teams
+    /// reads it); nil for drive files with no matched meeting chat.
+    var threadID: String? = nil
 
     var source: String? { recording?.source ?? transcript?.source }
     var webURL: String? { recording?.web_url ?? transcript?.web_url }
 
-    /// "Recording and Transcript", "Recording", "Transcript".
+    /// "Recording and Transcript", "Recording", "Transcript", or
+    /// "Meeting" (a meeting chat, parts read when opened).
     var kind: String {
         switch (recording != nil, transcript != nil) {
         case (true, true): "Recording and Transcript"
         case (true, false): "Recording"
-        default: "Transcript"
+        case (false, true): "Transcript"
+        default: "Meeting"
         }
     }
 
-    var symbol: String { recording != nil ? "film" : "doc.text" }
+    var symbol: String {
+        if recording != nil { return "film" }
+        return transcript != nil ? "doc.text" : "person.2.wave.2"
+    }
 
     func matches(_ filter: String) -> Bool {
         filter.isEmpty || title.localizedCaseInsensitiveContains(filter)
@@ -51,6 +59,48 @@ struct Recap: Identifiable, Equatable {
                              date: PlannerFormat.dueDate(t.created ?? t.modified)))
         }
         return out.enumerated().sorted { a, b in
+            switch (a.element.date, b.element.date) {
+            case let (x?, y?) where x != y: return x > y
+            case (.some, nil): return true
+            case (nil, .some): return false
+            default: return a.offset < b.offset
+            }
+        }.map(\.element)
+    }
+}
+
+extension Recap {
+    /// RECAP2: meeting chats join the drive recaps (Recaps app), so a
+    /// meeting whose recording and transcript live in the ORGANIZER's
+    /// OneDrive (never in the signed-in user's drive lists) is listed
+    /// too. A drive recap whose name matches a meeting chat takes the
+    /// chat's thread (one row per meeting); other meeting chats active in
+    /// the last `days` days add a row each (newest `limit`).
+    static func withMeetingChats(_ recaps: [Recap], chats: [ChatItem], now: Date = Date(),
+                                 days: Int = 90, limit: Int = 60) -> [Recap] {
+        let meetings = chats.filter { ChatKind.of(chatID: $0.chatId, isGroup: $0.is_group) == .meeting }
+        guard !meetings.isEmpty else { return recaps }
+        var out = recaps
+        var claimed = Set<Int>()
+        let cutoff = now.addingTimeInterval(-Double(days) * 86_400)
+        var extra: [Recap] = []
+        for chat in meetings {
+            let key = ChatRecapMatch.meetingKey(chat.name)
+            if !key.isEmpty, let i = out.indices.first(where: { !claimed.contains($0) && out[$0].threadID == nil
+                && [out[$0].recording?.name, out[$0].transcript?.name, out[$0].title].compactMap { $0 }
+                    .contains { ChatRecapMatch.meetingKey($0) == key } }) {
+                out[i].threadID = chat.chatId
+                claimed.insert(i)
+                continue
+            }
+            let date = PlannerFormat.dueDate(chat.last_message_time)
+            guard let date, date >= cutoff else { continue }
+            extra.append(Recap(id: chat.chatId, title: chat.name, recording: nil, transcript: nil,
+                               date: date, threadID: chat.chatId))
+        }
+        extra.sort { ($0.date ?? .distantPast) > ($1.date ?? .distantPast) }
+        let all = out + extra.prefix(limit)
+        return all.enumerated().sorted { a, b in
             switch (a.element.date, b.element.date) {
             case let (x?, y?) where x != y: return x > y
             case (.some, nil): return true
@@ -106,7 +156,8 @@ enum RecapsListState: Equatable {
     /// Either source loading or failing counts only while nothing is
     /// listed (R12: rows on screen stay).
     static func resolve(recordings: RecordingsState, transcripts: TranscriptsState, count: Int,
-                        forced: ForcedPaneState?, offline: Bool) -> RecapsListState {
+                        forced: ForcedPaneState?, offline: Bool, chatsLoading: Bool = false,
+                        chatsError: String? = nil) -> RecapsListState {
         func failed(_ m: String) -> RecapsListState {
             offline ? .error(title: offlineTitle, message: offlineMessage) : .error(title: errorTitle, message: m)
         }
@@ -117,9 +168,11 @@ enum RecapsListState: Equatable {
         case nil: break
         }
         if count > 0 { return .recaps }
-        if recordings == .loading || transcripts == .loading { return .loading }
+        // RECAP2: meeting chats are rows too; "No Recaps" waits for them.
+        if recordings == .loading || transcripts == .loading || chatsLoading { return .loading }
         if case .error(let m) = recordings { return failed(m) }
         if case .error(let m) = transcripts { return failed(m) }
+        if let m = chatsError { return failed(m) }
         return .empty
     }
 

@@ -27,6 +27,10 @@ final class AppSettings {
         installed = AppSettings(defaults: MemoryDefaults())
     }
 
+    /// The quick-composer hotkey ships ON (owner spec; the rebuild had
+    /// flipped it off).
+    static let quickComposerDefault = true
+
     enum Key {
         static let menuBar = "bt.settings.showInMenuBar"
         static let dockBadge = "bt.settings.showDockBadge"
@@ -53,7 +57,7 @@ final class AppSettings {
     var defaultSection: String { didSet { save(defaultSection, Key.defaultSection, oldValue) } }
     /// Chats ▸ Return sends (⇧Return inserts a newline); off swaps them.
     var returnSends: Bool { didSet { save(returnSends, Key.returnSends, oldValue) } }
-    /// Chats ▸ Quick composer (opt-in, §5.7): the global hotkey panel.
+    /// Chats ▸ Quick composer (on by default): the global hotkey panel.
     var quickComposer: Bool { didSet { save(quickComposer, Key.quickComposer, oldValue) } }
     /// Demo only: General ▸ Open at login, never the real login item.
     var demoLaunchAtLogin = false
@@ -62,12 +66,12 @@ final class AppSettings {
         self.defaults = defaults
         isMemory = defaults is MemoryDefaults
         func bool(_ k: String, _ d: Bool) -> Bool { defaults.object(forKey: k) == nil ? d : defaults.bool(forKey: k) }
-        showInMenuBar = bool(Key.menuBar, false)
+        showInMenuBar = bool(Key.menuBar, true)
         showDockBadge = bool(Key.dockBadge, true)
         bannersWhileActive = bool(Key.bannersActive, false)
         defaultSection = defaults.string(forKey: Key.defaultSection) ?? SectionID.chat.key
         returnSends = bool(Key.returnSends, true)
-        quickComposer = bool(Key.quickComposer, false)
+        quickComposer = bool(Key.quickComposer, Self.quickComposerDefault)
     }
 
     /// The quick-composer shortcut changed (stored with the core prefs).

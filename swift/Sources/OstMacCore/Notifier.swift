@@ -118,7 +118,7 @@ public final class Notifier: NSObject, @unchecked Sendable {
             identifier: MentionAlert.categoryNoReplyID, actions: [markRead, open],
             intentIdentifiers: [], options: [])
         center.setNotificationCategories([message, messageNoReply, mention, mentionNoReply, OmCallInfo.category,
-                                          MeetingNotifyInfo.category])
+                                          MeetingNotifyInfo.category, PresenceUndoInfo.category])
     }
 
     public func requestAuthorization() async -> Bool {

@@ -21,12 +21,11 @@ public enum SearchSource: String, Sendable, Equatable {
 /// detached task. Tests inject a mock searcher.
 ///
 /// Offline-first (gap-g6g7): when `local` is attached, every search runs
-/// the on-device index synchronously first (instant local hits while the
-/// server window is on its way, timed in `offlineMs`). Online, the server
-/// window then REPLACES them: the offline index merges only when offline
-/// (UI-SPEC §5.5). A network failure with local hits keeps the local hits
-/// (`source == .offline`, no error); without local hits the error
-/// surfaces as before. No `local` attached = legacy online-only behavior.
+/// the on-device index synchronously first (instant local hits, timed in
+/// `offlineMs`), then merges online results ABOVE the offline-only extras.
+/// A network failure with local hits keeps the local hits (`source ==
+/// .offline`, no error); without local hits the error surfaces as before.
+/// No `local` attached = legacy online-only behavior exactly.
 @MainActor
 public final class MessageSearchStore: ObservableObject {
     /// Sync search (runs off-main). Throws `CoreCallError` on core failure.
@@ -51,8 +50,7 @@ public final class MessageSearchStore: ObservableObject {
     /// Hit provenance for the palette source badge.
     @Published public private(set) var source: SearchSource = .none
     /// Ids of hits the server returned (additive, P2b fixes): the rest
-    /// came from the on-device index only ("On This Mac" row badge; only
-    /// the interim local pass and the network-failure fallback have any).
+    /// came from the on-device index only ("On This Mac" row badge).
     @Published public private(set) var onlineIDs: Set<String> = []
     /// Wall ms of the synchronous local-index pass (nil = no local
     /// attached, or blank query). Mirrors `LocalSearchStore.lastQueryMs`.
@@ -133,12 +131,21 @@ public final class MessageSearchStore: ObservableObject {
                 try searcher(q, 0, Self.pageSize)
             }.value
             guard gen == generation else { return } // superseded
-            // Online: server results only; the local pass was the
-            // interim list (§5.5 merges the offline index only offline).
             onlineIDs = Set(response.hits.map(\.id))
-            hits = response.hits
-            total = response.total
-            source = local != nil && response.hits.isEmpty ? .none : .online
+            if local == nil {
+                hits = response.hits
+                total = response.total
+                source = .online
+            } else {
+                let extras = localHits.filter { l in
+                    !response.hits.contains(where: { $0.id == l.id })
+                }
+                hits = response.hits + extras
+                total = (response.total ?? response.hits.count) + extras.count
+                source = response.hits.isEmpty
+                    ? (extras.isEmpty ? .none : .offline)
+                    : (extras.isEmpty ? .online : .mixed)
+            }
             more = response.more
             nextFrom = response.next_from
             isSearching = false

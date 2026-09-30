@@ -79,8 +79,10 @@ struct ChatRowMenu: View {
             rules.setHidden(chatID: id, hidden: !rules.isHidden(chatID: id))
         }
         Button("Copy Link") { ChatRowActions.copyLink(id) }
+        // CHATSYNC2b R4: the chat in its own window (Teams "Pop out chat").
+        Button("Pop Out Chat") { if let model { ChatWindowController.show(model, chatID: id) } }
+            .disabled(model?.app == nil)
         // Teams items this app does not offer yet: shown, disabled, why.
-        Button("Pop Out Chat (not available yet)") {}.disabled(true)
         if let row = chats.chat(id: id) {
             if row.is_group {
                 Button("Invite via Link (not available yet)") {}.disabled(true)
@@ -102,7 +104,9 @@ struct ChatRowMenu: View {
             } else if !ChatListFilter.isSelfChat(id) {
                 Button("Block…") { ChatRowActions.block(id, chats, model) }
             }
-            if !ChatListFilter.isSelfChat(id) {
+            // CHATSYNC2b R1: offered where Teams offers it (policy +
+            // meeting organizer rule, ChatDeleteRule).
+            if chats.canDelete(id) {
                 Button("Delete…", role: .destructive) { ChatRowActions.delete(id, chats, model) }
                     .disabled(chats.deletingIDs.contains(id))
             }

@@ -158,7 +158,7 @@ struct TeamsListPane: View {
                 }
             }
         } primaryAction: { tags in
-            if let tag = tags.first { select(tag, m) }
+            Self.primaryAction(tags, m) { select($0, m) }
         }
     }
 
@@ -205,7 +205,6 @@ struct TeamsListPane: View {
         Menu("Move to Section") {
             if folders.folders.isEmpty {
                 Button("No Sections Yet") {}.disabled(true)
-                Text("Make a folder from a chat's Move to Folder menu.")
             }
             ForEach(folders.folders) { f in
                 Toggle(f.name, isOn: Binding(
@@ -249,6 +248,21 @@ struct TeamsListPane: View {
     }
 
     // MARK: selection
+
+    /// Double-click / Return on a row: select it; a channel also pops out
+    /// (a team just selects). The list's `primaryAction` calls exactly this.
+    static func primaryAction(_ tags: Set<String>, _ m: WindowModel, select: (String) -> Void) {
+        guard let tag = tags.first else { return }
+        select(tag)
+        if let channel = doubleClickChannelID(tag) {
+            _ = m.provider(.teams).perform(TeamsCommands.openChannelWindow, arg: channel, m)
+        }
+    }
+
+    /// The channel a double-clicked row pops out (a team row does not).
+    static func doubleClickChannelID(_ tag: String) -> String? {
+        tag.hasPrefix("chan:") ? String(tag.dropFirst(5)) : nil
+    }
 
     private func select(_ tag: String?, _ m: WindowModel) {
         guard let tag else {

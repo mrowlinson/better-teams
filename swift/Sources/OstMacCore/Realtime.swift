@@ -172,6 +172,40 @@ public struct TypingEvent: Decodable, Sendable, Equatable {
     }
 }
 
+/// The owner's read position for one chat, pushed by Teams (chat-service
+/// `ConversationUpdate`; CHATSYNC2b R3). Keys are the core's JSON keys;
+/// fields the frame lacked are nil.
+public struct ReadStateEvent: Decodable, Sendable, Equatable {
+    public let chatID: String
+    public let horizon: String?
+    public let bookmark: String?
+    public let lastMessageID: String?
+    public let lastMessageTime: String?
+    public let lastMessageType: String?
+    public let lastMessageFrom: String?
+    /// Server event time (ISO 8601): orders the push against local changes.
+    public let time: String?
+
+    enum CodingKeys: String, CodingKey {
+        case chatID = "chat_id", horizon, bookmark, time
+        case lastMessageID = "last_message_id", lastMessageTime = "last_message_time"
+        case lastMessageType = "last_message_type", lastMessageFrom = "last_message_from"
+    }
+
+    public init(chatID: String, horizon: String?, bookmark: String?, lastMessageID: String? = nil,
+                lastMessageTime: String? = nil, lastMessageType: String? = nil, lastMessageFrom: String? = nil,
+                time: String? = nil) {
+        self.chatID = chatID
+        self.horizon = horizon
+        self.bookmark = bookmark
+        self.lastMessageID = lastMessageID
+        self.lastMessageTime = lastMessageTime
+        self.lastMessageType = lastMessageType
+        self.lastMessageFrom = lastMessageFrom
+        self.time = time
+    }
+}
+
 /// Typed poll envelope from ostmac_trouter_poll_typed.
 /// `calls` is nil on old core builds (pre om-signal) — treat as no events.
 /// `typing` is nil on old core builds (pre om-typing) — same rule.
@@ -187,6 +221,13 @@ public struct RealtimePoll: Decodable, Sendable {
     /// Thread ids with a membership/property update (team, channel,
     /// thread tree changes). nil on old core builds — no events.
     public let threads: [String]?
+    /// Read-state pushes (CHATSYNC2b R3). nil on old core builds.
+    public var readStates: [ReadStateEvent]?
+
+    enum CodingKeys: String, CodingKey {
+        case ok, messages, resync, skipped, calls, typing, roster, threads
+        case readStates = "read_states"
+    }
 
     public init(ok: Bool, messages: [RealtimeMessage], resync: Bool, skipped: Int, calls: [CallEvent]? = nil, typing: [TypingEvent]? = nil, roster: [MeetingRosterEvent]? = nil, threads: [String]? = nil) {
         self.ok = ok
@@ -235,6 +276,7 @@ public final class RealtimeFeed: @unchecked Sendable {
     private var typingSubs: [UUID: @Sendable (TypingEvent) -> Void] = [:]
     private var rosterSubs: [UUID: @Sendable (MeetingRosterEvent) -> Void] = [:]
     private var threadSubs: [UUID: @Sendable ([String]) -> Void] = [:]
+    private var readStateSubs: [UUID: @Sendable ([ReadStateEvent]) -> Void] = [:]
     private var attempt = 0
     private var pollCountValue = 0
     private var lastErrorValue: String?
@@ -328,6 +370,14 @@ public final class RealtimeFeed: @unchecked Sendable {
     public func onRoster(_ h: @escaping @Sendable (MeetingRosterEvent) -> Void) -> UUID {
         let t = UUID()
         lock.lock(); rosterSubs[t] = h; lock.unlock()
+        return t
+    }
+
+    /// Subscribe to read-state pushes (CHATSYNC2b R3): one batch per poll.
+    @discardableResult
+    public func onReadState(_ h: @escaping @Sendable ([ReadStateEvent]) -> Void) -> UUID {
+        let t = UUID()
+        lock.lock(); readStateSubs[t] = h; lock.unlock()
         return t
     }
 
@@ -488,6 +538,8 @@ public final class RealtimeFeed: @unchecked Sendable {
         let rosterEvents = p.roster ?? []
         let threadHandlers = Array(threadSubs.values)
         let threadIDs = p.threads ?? []
+        let readHandlers = Array(readStateSubs.values)
+        let readEvents = p.readStates ?? []
         lock.unlock()
         if notify {
             for m in fresh { for h in msgHandlers { h(m) } }
@@ -496,6 +548,7 @@ public final class RealtimeFeed: @unchecked Sendable {
             for e in typingEvents { for h in typingHandlers { h(e) } }
             for e in rosterEvents { for h in rosterHandlers { h(e) } }
             if !threadIDs.isEmpty { for h in threadHandlers { h(threadIDs) } }
+            if !readEvents.isEmpty { for h in readHandlers { h(readEvents) } }
         }
         return (fresh.count, p.resync)
     }

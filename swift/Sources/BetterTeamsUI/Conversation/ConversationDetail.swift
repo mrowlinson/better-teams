@@ -47,24 +47,8 @@ struct ConversationDetail: View {
                 Divider()
                 // The tab body fills the pane, so the header stays pinned
                 // to the top whatever the tab shows.
-                Group {
-                    switch selected {
-                    case .builtin(.chat): chatTab(name: name, services: ConversationServices.of(model))
-                    case .builtin(.files): FileTable(scope: .conversation(ref))
-                    case .builtin(.notes): NotesTab(scope: .conversation(ref))
-                    case .builtin(.recap):
-                        if let app = model.app {
-                            ChatRecapTab(chatID: ref, chatName: name, recordings: app.recordings,
-                                         transcripts: app.transcripts)
-                        } else {
-                            ChatTabPlaceholder(title: "Recap", symbol: ChatTabLayout.symbol(.recap),
-                                               message: "Meeting recordings, transcripts and notes show here once the meeting has them.")
-                        }
-                    case .pinned(let id):
-                        if let t = pinned.first(where: { $0.id == id }) {
-                            ChatPinnedTabPane(tab: t, chatID: ref)
-                        }
-                    }
+                ChatTabBody(selected: selected, chatID: ref, name: name, pinned: pinned, app: model.app) {
+                    chatTab(name: name, services: ConversationServices.of(model))
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .task(id: ref) { await chatTabs.load(chatID: ref, demo: model.app?.isDemo ?? false) }
@@ -107,6 +91,10 @@ struct ConversationDetail: View {
                     .padding(.horizontal, 12)
                     .padding(.vertical, 6)
                     Divider()
+                }
+                // FIXPACK3 R3: the newest pinned message above the timeline.
+                if let pins = model?.graph.pinnedMessages {
+                    PinnedMessageBar(store: pins, conv: conv, chatID: ref)
                 }
                 if conv.messages.isEmpty {
                     EmptyPane("No Messages Yet", systemImage: "bubble.left",
@@ -180,6 +168,39 @@ struct RosterBound<Content: View>: View {
                 .task(id: chatID) {
                     if loads { await roster.load(chatID: chatID) }
                 }
+        }
+    }
+}
+
+/// One chat tab's body (Chat, Shared, Notes, Recap, a pinned tab): the
+/// main window's conversation and a popped-out chat show the same tabs
+/// (CHATSYNC3 R2). `chat` is the host's Chat tab (timeline + composer).
+struct ChatTabBody<Chat: View>: View {
+    let selected: ChatTabKey
+    let chatID: String
+    let name: String
+    let pinned: [ChannelTab]
+    let app: AppState?
+    @ViewBuilder let chat: () -> Chat
+
+    var body: some View {
+        switch selected {
+        case .builtin(.chat): chat()
+        case .builtin(.files): FileTable(scope: .conversation(chatID))
+        case .builtin(.notes): NotesTab(scope: .conversation(chatID))
+        case .builtin(.recap):
+            if let app {
+                ChatRecapTab(chatID: chatID, chatName: name, store: app.meetingRecaps,
+                             recordings: app.recordings,
+                             transcripts: app.transcripts)
+            } else {
+                ChatTabPlaceholder(title: "Recap", symbol: ChatTabLayout.symbol(.recap),
+                                   message: "Meeting recordings, transcripts and notes show here once the meeting has them.")
+            }
+        case .pinned(let id):
+            if let t = pinned.first(where: { $0.id == id }) {
+                ChatPinnedTabPane(tab: t, chatID: chatID)
+            }
         }
     }
 }

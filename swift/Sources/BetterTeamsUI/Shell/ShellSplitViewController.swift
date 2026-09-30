@@ -1,7 +1,7 @@
 // ShellSplitViewController.swift — four split items, created once and
 // never replaced (UI-SPEC §5.1, R2, R25).
 //
-//   rail (sidebar slot, fixed 80) | list (260–420) | detail (≥440) | inspector (260–360)
+//   rail (plain item below the toolbar on sidebar material, fixed 80) | list (260–420) | detail (≥440) | inspector (260–360)
 //
 // Rail and list never collapse from a window resize; the list collapses
 // only through Navigator for `.full`. The inspector collapses first when
@@ -37,7 +37,7 @@ final class ShellSplitViewController: NSSplitViewController {
     private var appearanceObservation: NSKeyValueObservation?
 
     init(rail: NSViewController) {
-        railItem = NSSplitViewItem(sidebarWithViewController: rail)
+        railItem = NSSplitViewItem(viewController: RailContainerViewController(rail: rail))
         listItem = NSSplitViewItem(contentListWithViewController: listPane)
         detailItem = NSSplitViewItem(viewController: detailPane)
         inspectorItem = NSSplitViewItem(inspectorWithViewController: inspectorPane)
@@ -45,6 +45,17 @@ final class ShellSplitViewController: NSSplitViewController {
 
         railItem.minimumThickness = Self.railWidth
         railItem.maximumThickness = Self.railWidth
+        // TOOLBARLINE (owner: "the grey line extending up ... looks off to
+        // me"): the toolbar is one unified band across the whole window.
+        // Neither the rail nor the info panel tints up through it. The
+        // toolbar's tracking separators keep working because the window
+        // keeps full-size content. A sidebar-behavior item ignores
+        // `allowsFullHeightLayout` (its frame and material always start at
+        // the window top), so the rail is a plain item that draws the
+        // sidebar material itself (RailContainerViewController), below
+        // the toolbar; the traffic lights sit on the toolbar band above it.
+        inspectorItem.allowsFullHeightLayout = false
+        railItem.allowsFullHeightLayout = false
         railItem.canCollapse = false
         railItem.canCollapseFromWindowResize = false
         railItem.holdingPriority = .init(260)
@@ -195,5 +206,42 @@ final class ShellSplitViewController: NSSplitViewController {
         if dividerIndex == 0 { return .zero }
         return super.splitView(splitView, effectiveRect: proposedEffectiveRect,
                                forDrawnRect: drawnRect, ofDividerAt: dividerIndex)
+    }
+}
+
+/// Hosts the rail below the toolbar on the system sidebar material, so the
+/// rail keeps its sidebar look without a sidebar-behavior item (which would
+/// run its tint up through the toolbar and under the traffic lights).
+@MainActor
+final class RailContainerViewController: NSViewController {
+    let rail: NSViewController
+
+    init(rail: NSViewController) {
+        self.rail = rail
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) unavailable") }
+
+    override func loadView() {
+        let material = NSVisualEffectView()
+        material.material = .sidebar
+        material.blendingMode = .behindWindow
+        material.state = .followsWindowActiveState
+        view = material
+    }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        addChild(rail)
+        rail.view.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(rail.view)
+        NSLayoutConstraint.activate([
+            rail.view.topAnchor.constraint(equalTo: view.topAnchor),
+            rail.view.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            rail.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            rail.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+        ])
     }
 }

@@ -194,7 +194,19 @@ struct NotesPageTextView: NSViewRepresentable {
     let html: String
     let scale: Double
 
-    final class Coordinator { var key: String? }
+    /// Link clicks go through the one router (LINKGUARD): Teams / Microsoft
+    /// 365 links open natively (or are refused), never AppKit's default
+    /// browser open.
+    @MainActor
+    final class Coordinator: NSObject, NSTextViewDelegate {
+        var key: String?
+        func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
+            let url = (link as? URL) ?? (link as? String).flatMap { URL(string: $0) }
+            guard let url else { return false }
+            TeamsLinkRouter.open(url)
+            return true
+        }
+    }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -203,6 +215,7 @@ struct NotesPageTextView: NSViewRepresentable {
         scroll.drawsBackground = false
         scroll.autohidesScrollers = true
         if let tv = scroll.documentView as? NSTextView {
+            tv.delegate = context.coordinator
             tv.isEditable = false
             tv.isSelectable = true
             tv.drawsBackground = false

@@ -1,6 +1,6 @@
 // ConversationHeader.swift — content-layer header (UI-SPEC §6.2):
 // avatar, name, subtitle, trailing tab row (CHATTABS: built-ins per
-// chat kind + pinned tabs with a "+N" overflow, `ChatTabBar`).
+// chat kind + pinned tabs with a "More" menu overflow, `ChatTabBar`).
 import SwiftUI
 
 struct ConversationHeader: View {
@@ -9,7 +9,7 @@ struct ConversationHeader: View {
     let subtitle: String
     let layout: ChatTabLayout
     @Binding var tab: ChatTabKey
-    /// The pinned tab opened from "+N" (temporary, closable).
+    /// The pinned tab opened from "More" (temporary, closable).
     var opened: ChatTabKey? = nil
     var open: (ChatTabKey) -> Void = { _ in }
     var close: () -> Void = {}
@@ -19,7 +19,7 @@ struct ConversationHeader: View {
     /// on one line at the default text size.
     static let minHeight: CGFloat = 56
     /// The name keeps at least this much room; the tab row folds into
-    /// "+N" rather than squeeze it out (TABS2).
+    /// the "More" menu rather than squeeze it out (TABS2).
     static let nameMinWidth: CGFloat = 96
 
     var body: some View {
@@ -39,7 +39,7 @@ struct ConversationHeader: View {
             .frame(minWidth: Self.nameMinWidth, alignment: .leading)
             Spacer(minLength: 12)
             // The row claims width before the name, which truncates down
-            // to `nameMinWidth`; past that the row folds tabs into "+N".
+            // to `nameMinWidth`; past that the row folds tabs into the "More" menu.
             ChatTabBar(layout: layout, selection: $tab, opened: opened, open: open, close: close)
                 .layoutPriority(1)
         }

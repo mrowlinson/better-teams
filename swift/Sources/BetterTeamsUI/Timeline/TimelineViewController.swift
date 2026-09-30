@@ -25,6 +25,7 @@ struct TimelineRowContent: View {
     /// at the top; the off-screen sizer measures the bare content.
     var fills = false
     @Environment(\.contentTextScale) private var scale
+    @Environment(\.messageDensity) private var density
 
     var body: some View {
         if fills {
@@ -44,7 +45,7 @@ struct TimelineRowContent: View {
                 Palette.dayRule.frame(height: 1)
             }
             .padding(.horizontal, 16)
-            .padding(.vertical, 8)
+            .padding(.vertical, density.metrics.separatorVertical)
             .accessibilityElement(children: .combine)
         case .newMessagesDivider:
             HStack(spacing: 8) {
@@ -138,6 +139,7 @@ final class TimelineViewController: NSViewController, NSTableViewDataSource, NST
     private var docIndex: [String: SharedFile] = [:]
     private var docChatID: String?
     private var failed: Set<String> = []
+    private var deleteFailed: Set<String> = []
     private var chatID: String?
     private let heights = RowHeightCache()
     private var measureWidth: CGFloat = 0
@@ -245,6 +247,13 @@ final class TimelineViewController: NSViewController, NSTableViewDataSource, NST
             .sink { [weak self] ids in
                 guard let self, ids != self.failed else { return }
                 self.failed = ids
+                self.apply(messages: self.conv.messages)
+            }
+            .store(in: &cancellables)
+        conv.$deleteFailedIDs
+            .sink { [weak self] ids in
+                guard let self, ids != self.deleteFailed else { return }
+                self.deleteFailed = ids
                 self.apply(messages: self.conv.messages)
             }
             .store(in: &cancellables)
@@ -586,7 +595,7 @@ final class TimelineViewController: NSViewController, NSTableViewDataSource, NST
                 isSaved: saves?.isSaved(chatID: chat, messageID: id) ?? false,
                 ownName: ownName, chatID: chat,
                 bubble: RowBubble.of(m, scope: scope),
-                docs: chips)
+                docs: chips, deleteFailed: deleteFailed.contains(id))
             data[id] = row
             return .message(id: id, revision: TimelineRowState.combine(rev, row.extraRevision), showsHeader: header)
         }
@@ -614,6 +623,8 @@ final class TimelineViewController: NSViewController, NSTableViewDataSource, NST
     // MARK: heights
 
     private var scale: Double { model?.textScale ?? 1.0 }
+    /// Density ordinal in the height key: Compact rows measure shorter.
+    private var densityKey: Int { model?.messageDensity == .compact ? 1 : 0 }
 
     private func ensureWidth() {
         let w = table.bounds.width > 0 ? table.bounds.width : scroll.contentSize.width
@@ -621,7 +632,7 @@ final class TimelineViewController: NSViewController, NSTableViewDataSource, NST
     }
 
     private func height(of item: TimelineItem) -> CGFloat {
-        let key = RowHeightKey(id: item.id, revision: item.revision, width: measureWidth, scale: scale)
+        let key = RowHeightKey(id: item.id, revision: item.revision, width: measureWidth, scale: scale, density: densityKey)
         return heights.height(for: key) {
             sizer.rootView = Hosting.root(content(for: item, highlighted: false), model: model)
             return sizer.sizeThatFits(in: NSSize(width: measureWidth, height: .greatestFiniteMagnitude)).height
@@ -650,8 +661,20 @@ final class TimelineViewController: NSViewController, NSTableViewDataSource, NST
             guard w > 0, abs(w - measureWidth) >= 1 else { return }
             let anchor = updateAnchor()
             measureWidth = w
-            heights.retain(width: w, scale: scale)
+            heights.retain(width: w, scale: scale, density: densityKey)
             table.noteHeightOfRows(withIndexesChanged: IndexSet(integersIn: 0..<items.count))
+            // Rows already on screen lay out again at the settled width
+            // (same content, so nothing flashes).
+            let visible = table.rows(in: table.visibleRect)
+            // Only rows whose cell is not already at the width (a steady
+            // split-divider drag reloads nothing).
+            let off = (visible.location ..< visible.location + visible.length).filter { row in
+                guard let cell = table.view(atColumn: 0, row: row, makeIfNecessary: false) else { return false }
+                return abs(cell.frame.width - w) >= 1
+            }
+            if !off.isEmpty {
+                table.reloadData(forRowIndexes: IndexSet(off), columnIndexes: IndexSet(integer: 0))
+            }
             restore(anchor)
         }
     }
@@ -660,11 +683,24 @@ final class TimelineViewController: NSViewController, NSTableViewDataSource, NST
 
     override func viewDidLayout() {
         super.viewDidLayout()
+        fitColumn()
         if !view.inLiveResize { widthSettled() }
         retryPendingJump()
     }
 
+    /// The one column spans the table. Uniform autoresizing only adds the
+    /// table's size change to the column, so a column created before the
+    /// table had its width (a window built around its content, CHATSYNC3)
+    /// stayed narrower than the rows were measured at: cells laid the
+    /// bubbles out narrow, wrapped, over their neighbors.
+    private func fitColumn() {
+        guard let column = table.tableColumns.first else { return }
+        let w = table.bounds.width
+        if w > 0, abs(column.width - w) >= 1 { column.width = w }
+    }
+
     private var lastScale: Double = 1.0
+    private var lastDensity: MessageDensity = .comfortable
 
     /// A new scope (another thread) rebuilds like a new chat (P2c).
     func setScope(_ s: TimelineScope) {
@@ -680,7 +716,18 @@ final class TimelineViewController: NSViewController, NSTableViewDataSource, NST
         lastScale = s
         guard isViewLoaded, !items.isEmpty else { return }
         let anchor = updateAnchor()
-        heights.retain(width: measureWidth, scale: s)
+        heights.retain(width: measureWidth, scale: s, density: densityKey)
+        table.noteHeightOfRows(withIndexesChanged: IndexSet(integersIn: 0..<items.count))
+        restore(anchor)
+    }
+
+    /// Message density changed (Settings ▸ Chats): re-measure every row once.
+    func densityChanged(_ d: MessageDensity) {
+        guard d != lastDensity else { return }
+        lastDensity = d
+        guard isViewLoaded, !items.isEmpty else { return }
+        let anchor = updateAnchor()
+        heights.retain(width: measureWidth, scale: scale, density: d == .compact ? 1 : 0)
         table.noteHeightOfRows(withIndexesChanged: IndexSet(integersIn: 0..<items.count))
         restore(anchor)
     }
@@ -911,10 +958,26 @@ final class TimelineViewController: NSViewController, NSTableViewDataSource, NST
         guard case .conversation = scope, isViewLoaded, let window = view.window,
               window.isVisible, !window.isMiniaturized else { return }
         let rows = shown ?? conv.messages
-        model?.app?.noteViewingLatest(
-            chatID: conv.chatID, messages: rows, windowActive: window.isKeyWindow,
-            atLatest: pinnedToBottom, loaded: !rows.isEmpty)
+        let report = ViewingLatest(chatID: conv.chatID, messages: rows, windowActive: window.isKeyWindow,
+                                   atLatest: pinnedToBottom, loaded: !rows.isEmpty)
+        if let viewingLatestSink { return viewingLatestSink(report) }
+        model?.app?.noteViewingLatest(chatID: report.chatID, messages: report.messages,
+                                      windowActive: report.windowActive, atLatest: report.atLatest,
+                                      loaded: report.loaded)
     }
+
+    /// One "newest message on screen" report (`reportViewingLatest`).
+    struct ViewingLatest {
+        let chatID: String?
+        let messages: [ChatMessage]
+        /// The timeline's window is key (a background pop-out is not).
+        let windowActive: Bool
+        let atLatest: Bool
+        let loaded: Bool
+    }
+
+    /// Where reports go instead of the app's read gate (tests record them).
+    var viewingLatestSink: ((ViewingLatest) -> Void)?
 
     // MARK: NSTableViewDataSource / Delegate
 
@@ -984,11 +1047,22 @@ final class TimelineViewController: NSViewController, NSTableViewDataSource, NST
         var head0 = false
         if case .message(_, _, let h)? = items.first(where: { $0.messageID != nil }) { head0 = h }
         let y0 = items.isEmpty ? 0 : Int(table.rect(ofRow: 0).minY)
+        // Materialized cells narrower or wider than the rows were measured
+        // at (the heights above cannot see this).
+        let colW = table.tableColumns.first?.width ?? 0
+        var cellsOff = 0
+        let visible = table.rows(in: table.visibleRect)
+        for r in visible.location ..< visible.location + visible.length {
+            if let cell = table.view(atColumn: 0, row: r, makeIfNecessary: false), abs(cell.frame.width - w) >= 1 {
+                cellsOff += 1
+            }
+        }
         return "scope=\(scope) rows=\(items.count) w=\(Int(w)) stale=\(stale) maxDelta=\(Int(worst)) "
             + "head0=\(head0) slack=\(Int(topSlack)) row0y=\(y0) clipY=\(Int(scroll.contentView.bounds.minY)) "
             + "clipH=\(Int(scroll.contentView.bounds.height)) contentH=\(Int(table.frame.height)) "
             + "hiddenBelow=\(Int(table.frame.height - scroll.contentView.bounds.maxY)) "
-            + "insetB=\(Int(scroll.contentInsets.bottom)) pinned=\(pinnedToBottom) measureW=\(Int(measureWidth))"
+            + "insetB=\(Int(scroll.contentInsets.bottom)) pinned=\(pinnedToBottom) measureW=\(Int(measureWidth)) "
+            + "colW=\(Int(colW)) cellsOff=\(cellsOff)"
     }
 }
 
@@ -1000,6 +1074,7 @@ struct TimelineRepresentable: NSViewControllerRepresentable {
     var selectedID: String?
     @Environment(\.windowModel) private var model
     @Environment(\.contentTextScale) private var scale
+    @Environment(\.messageDensity) private var density
 
     func makeNSViewController(context: Context) -> TimelineViewController {
         TimelineViewController(conv: conv, model: model, scope: scope)
@@ -1009,5 +1084,6 @@ struct TimelineRepresentable: NSViewControllerRepresentable {
         vc.setScope(scope)
         vc.setSelected(selectedID)
         vc.scaleChanged(scale)
+        vc.densityChanged(density)
     }
 }

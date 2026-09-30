@@ -27,6 +27,9 @@ final class ContactHover {
     @ObservationIgnored private(set) var inCard = false
     @ObservationIgnored private let scheduler: HoverScheduler
     @ObservationIgnored private var observers: [NSObjectProtocol] = []
+    /// The cards' own popover windows: their scroll view is not a scroll
+    /// under the anchor.
+    @ObservationIgnored private let cardWindows = NSHashTable<NSWindow>.weakObjects()
 
     init(scheduler: HoverScheduler? = nil, observeScrolling: Bool = false) {
         self.scheduler = scheduler ?? DebounceHoverScheduler()
@@ -99,21 +102,39 @@ final class ContactHover {
         if shownAnchor != pointerAnchor { shownAnchor = pointerAnchor }
     }
 
+    /// The card's popover window (its content reports it on arrival).
+    func noteCardWindow(_ window: NSWindow) { cardWindows.add(window) }
+
+    /// A clip-view bounds change that counts as a scroll under the anchor:
+    /// not one in a card's own window (the card scrolls past its height
+    /// cap, so its clip view resizes as the popover lays out and its
+    /// sections load; taking that for a scroll hid every card the moment
+    /// it appeared), and not one outside any window.
+    func isAnchorScroll(_ clip: NSClipView) -> Bool {
+        guard let window = clip.window else { return false }
+        return !cardWindows.contains(window)
+    }
+
     /// Live scrolls (trackpad) and clip-view moves (wheel, programmatic)
     /// cancel the card. Notification observers, not event monitors (R10).
     private func observeScrolls() {
         let center = NotificationCenter.default
         observers.append(center.addObserver(
             forName: NSScrollView.willStartLiveScrollNotification, object: nil, queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.scrolled() }
+        ) { [weak self] note in
+            MainActor.assumeIsolated {
+                guard let self, let clip = (note.object as? NSScrollView)?.contentView,
+                      self.isAnchorScroll(clip) else { return }
+                self.scrolled()
+            }
         })
         observers.append(center.addObserver(
             forName: NSView.boundsDidChangeNotification, object: nil, queue: .main
         ) { [weak self] note in
-            guard note.object is NSClipView else { return }
+            guard let clip = note.object as? NSClipView else { return }
             MainActor.assumeIsolated {
-                guard let self, self.shownAnchor != nil || self.pointerAnchor != nil, !self.inCard else { return }
+                guard let self, self.shownAnchor != nil || self.pointerAnchor != nil, !self.inCard,
+                      self.isAnchorScroll(clip) else { return }
                 self.scrolled()
             }
         })
@@ -143,6 +164,7 @@ struct ContactHoverModifier: ViewModifier {
 
     @Environment(\.windowModel) private var model
     @State private var anchor = UUID().uuidString
+    @State private var anchorBox = PopoverAnchorBox()
 
     private var enabled: Bool {
         !ref.name.isEmpty && model?.app != nil && ContactHoverRules.isPerson(ref.name)
@@ -151,6 +173,7 @@ struct ContactHoverModifier: ViewModifier {
     func body(content: Content) -> some View {
         if enabled {
             content
+                .background { PopoverAnchorReader(box: anchorBox) }
                 .onHover { inside in hover.pointer(inside, anchor: anchor) }
                 .onAppear { hover.claimPin(anchor: anchor, name: ref.name) }
                 .popover(isPresented: Binding(
@@ -158,7 +181,7 @@ struct ContactHoverModifier: ViewModifier {
                     set: { if !$0, hover.isShown(anchor) { hover.dismiss() } }
                 ), arrowEdge: arrowEdge) {
                     ContactHoverCard(ref: ref, hover: hover)
-                        .background { PopoverWindowClamp() }
+                        .background { PopoverWindowClamp(anchor: anchorBox) }
                         .environment(\.windowModel, model)
                         .onHover { hover.card($0) }
                 }
@@ -202,7 +225,12 @@ enum ContactLinks {
     }
 
     static func open(_ url: URL, _ m: WindowModel?) -> OpenURLAction.Result {
-        guard url.scheme == scheme else { return .systemAction }
+        guard url.scheme == scheme else {
+            // Every other link: Microsoft links on their native screen
+            // (or refused), the rest to the system (TeamsLinkRouter).
+            TeamsLinkRouter.open(url, window: m)
+            return .handled
+        }
         if let name = name(from: url), let m { ContactActions.openCard(ContactRef(name: name), m) }
         return .handled
     }
@@ -210,6 +238,32 @@ enum ContactLinks {
 
 extension ContactRef {
     init(_ m: TeamMember) { self.init(name: m.displayName, userID: m.userId, email: m.email) }
+}
+
+/// Reports the card's popover window to the coordinator as the card
+/// arrives in it, before its scroll view's first layout is delivered.
+struct CardWindowReporter: NSViewRepresentable {
+    let hover: ContactHover
+
+    func makeNSView(context: Context) -> ReporterView { ReporterView(hover: hover) }
+    func updateNSView(_ view: ReporterView, context: Context) {}
+
+    final class ReporterView: NSView {
+        let hover: ContactHover
+
+        init(hover: ContactHover) {
+            self.hover = hover
+            super.init(frame: .zero)
+        }
+
+        @available(*, unavailable)
+        required init?(coder: NSCoder) { fatalError("init(coder:) unavailable") }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if let window { hover.noteCardWindow(window) }
+        }
+    }
 }
 
 // MARK: - Keep the card inside its window
@@ -229,15 +283,64 @@ enum PopoverClamp {
     }
 }
 
+/// Placement (unit-tested): keep the card where AppKit put it when it is
+/// inside `bounds` and clear of `anchor`; otherwise flip it to the other
+/// side of the anchor (above, below, right, left; nearest first) and only
+/// as a last resort clamp it (which may then overlap the anchor).
+enum PopoverPlacement {
+    static func place(_ frame: CGRect, anchor: CGRect?, in bounds: CGRect,
+                      margin: CGFloat = 6, gap: CGFloat = 4) -> CGRect {
+        let box = bounds.insetBy(dx: margin, dy: margin)
+        let clamped = PopoverClamp.clamped(frame, in: bounds, margin: margin)
+        guard let anchor, !anchor.isEmpty else { return clamped }
+        func fits(_ r: CGRect) -> Bool { box.contains(r) && !r.intersects(anchor) }
+        if fits(frame) { return frame }
+        if fits(clamped) { return clamped }
+        let w = frame.width, h = frame.height
+        let x = min(max(frame.minX, box.minX), max(box.minX, box.maxX - w))
+        let y = min(max(frame.minY, box.minY), max(box.minY, box.maxY - h))
+        let above = CGRect(x: x, y: anchor.maxY + gap, width: w, height: h)
+        let below = CGRect(x: x, y: anchor.minY - gap - h, width: w, height: h)
+        let right = CGRect(x: anchor.maxX + gap, y: y, width: w, height: h)
+        let left = CGRect(x: anchor.minX - gap - w, y: y, width: w, height: h)
+        // Nearest side first: prefer the side the card already leans to.
+        let vertFirst = abs(frame.midY - anchor.midY) >= abs(frame.midX - anchor.midX)
+        let aboveFirst = frame.midY >= anchor.midY, rightFirst = frame.midX >= anchor.midX
+        let vert = aboveFirst ? [above, below] : [below, above]
+        let horiz = rightFirst ? [right, left] : [left, right]
+        for c in (vertFirst ? vert + horiz : horiz + vert) where fits(c) { return c }
+        return clamped
+    }
+}
+
+/// Live screen frame of the popover's anchor view (read at clamp time so
+/// it tracks scrolling).
+@MainActor
+final class PopoverAnchorBox {
+    weak var view: NSView?
+    var screenFrame: CGRect? {
+        guard let v = view, let w = v.window else { return nil }
+        return w.convertToScreen(v.convert(v.bounds, to: nil))
+    }
+}
+
+struct PopoverAnchorReader: NSViewRepresentable {
+    let box: PopoverAnchorBox
+    func makeNSView(context: Context) -> NSView { let v = NSView(); box.view = v; return v }
+    func updateNSView(_ view: NSView, context: Context) { box.view = view }
+}
+
 /// A hover card is a popover window; AppKit only keeps it on screen, so
 /// near a window edge it hangs off the app. This pins the popover's
 /// window inside the window that hosts its anchor, re-checking whenever
 /// the card resizes (its sections load in after the first frame).
 struct PopoverWindowClamp: NSViewRepresentable {
-    func makeNSView(context: Context) -> ClampView { ClampView() }
-    func updateNSView(_ view: ClampView, context: Context) { view.clampSoon() }
+    var anchor: PopoverAnchorBox?
+    func makeNSView(context: Context) -> ClampView { let v = ClampView(); v.anchor = anchor; return v }
+    func updateNSView(_ view: ClampView, context: Context) { view.anchor = anchor; view.clampSoon() }
 
     final class ClampView: NSView {
+        var anchor: PopoverAnchorBox?
         private var observers: [NSObjectProtocol] = []
 
         override func viewDidMoveToWindow() {
@@ -264,7 +367,7 @@ struct PopoverWindowClamp: NSViewRepresentable {
 
         private func clamp() {
             guard let pop = window, let host = hostWindow(of: pop) else { return }
-            let target = PopoverClamp.clamped(pop.frame, in: host.frame)
+            let target = PopoverPlacement.place(pop.frame, anchor: anchor?.screenFrame, in: host.frame)
             guard abs(target.origin.x - pop.frame.origin.x) > 0.5
                 || abs(target.origin.y - pop.frame.origin.y) > 0.5 else { return }
             pop.setFrameOrigin(target.origin)

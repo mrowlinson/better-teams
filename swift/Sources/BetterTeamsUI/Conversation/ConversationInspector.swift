@@ -579,10 +579,8 @@ struct CatchUpMentionsSection: View {
                     if collapsed, !mentions.isEmpty {
                         Text("\(mentions.count)")
                             .monospacedDigit()
-                            .font(.caption.weight(.semibold))
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 1)
-                            .background(Capsule().fill(.quaternary))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
                     Spacer()
                 }

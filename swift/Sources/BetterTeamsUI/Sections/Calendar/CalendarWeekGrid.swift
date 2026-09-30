@@ -206,21 +206,26 @@ private struct WeekDayColumn: View {
     /// Minutes after midnight on today's column (the now line), else nil.
     let nowMinute: Int?
     let select: (String?) -> Void
+    @Environment(\.contentTextScale) private var scale
 
     var body: some View {
         let spans = meetings.map { m -> (Int, Int) in
             let s = CalendarFormat.minutes(m.start) ?? 0
             let e = CalendarFormat.minutes(m.end).map { $0 > s ? $0 : 24 * 60 } ?? s + 30
-            return (s, e)
+            // Lanes follow what is drawn (a 5-minute meeting fills a 15-minute slot).
+            let v = WeekGridMath.visualSpan(start: s, end: e)
+            return (v.start, v.end)
         }
         let slots = WeekGridLanes.assign(spans)
-        WeekGridLayout(minuteHeight: WeekGrid.hourHeight / 60) {
+        WeekGridLayout(minuteHeight: WeekGrid.hourHeight / 60,
+                       minimumHeight: WeekGridMath.minimumHeight(scale: scale)) {
             ForEach(meetings) { m in
                 let i = meetings.firstIndex(of: m) ?? 0
                 WeekEventBlock(meeting: m, selected: m.id == selectedID) { select(m.id) }
                     .layoutValue(key: WeekGridSpan.self,
                                  value: WeekGridSpan.Value(start: spans[i].0, end: spans[i].1,
-                                                           lane: slots[i].lane, lanes: slots[i].lanes))
+                                                           lane: slots[i].lane, lanes: slots[i].lanes,
+                                                           span: slots[i].span))
             }
         }
         .overlay(alignment: .topLeading) {
@@ -244,6 +249,7 @@ struct WeekGridSpan: LayoutValueKey {
         var end: Int
         var lane: Int
         var lanes: Int
+        var span: Int = 1
     }
 
     static let defaultValue = Value(start: 0, end: 30, lane: 0, lanes: 1)
@@ -252,7 +258,8 @@ struct WeekGridSpan: LayoutValueKey {
 /// Places each meeting at its minutes (y) and lane (x) inside the day.
 struct WeekGridLayout: Layout {
     var minuteHeight: CGFloat
-    var inset: CGFloat = 2
+    var minimumHeight: CGFloat = 13
+    var inset: CGFloat = WeekGridMath.laneGap
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         CGSize(width: proposal.width ?? 120, height: 24 * 60 * minuteHeight)
@@ -261,13 +268,12 @@ struct WeekGridLayout: Layout {
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
         for v in subviews {
             let s = v[WeekGridSpan.self]
-            let lanes = CGFloat(max(1, s.lanes))
-            let laneWidth = max(0, (bounds.width - 2 * inset) / lanes)
-            let x = bounds.minX + inset + laneWidth * CGFloat(s.lane)
-            let y = bounds.minY + CGFloat(s.start) * minuteHeight + 1
-            let h = max(18, CGFloat(s.end - s.start) * minuteHeight - 2)
-            v.place(at: CGPoint(x: x, y: y), anchor: .topLeading,
-                    proposal: ProposedViewSize(width: max(0, laneWidth - inset), height: h))
+            let h = WeekGridMath.horizontal(lane: s.lane, lanes: s.lanes, span: s.span,
+                                            width: bounds.width, inset: inset)
+            let y = WeekGridMath.vertical(start: s.start, end: s.end, minuteHeight: minuteHeight,
+                                          minimumHeight: minimumHeight)
+            v.place(at: CGPoint(x: bounds.minX + h.x, y: bounds.minY + y.y), anchor: .topLeading,
+                    proposal: ProposedViewSize(width: h.width, height: y.height))
         }
     }
 }
@@ -282,6 +288,12 @@ private struct WeekEventBlock: View {
     private var isShort: Bool {
         guard let a = CalendarFormat.minutes(meeting.start), let b = CalendarFormat.minutes(meeting.end) else { return false }
         return b - a <= 30
+    }
+
+    /// 15 minutes or less: the chip is one text line tall, so no vertical padding.
+    private var isTiny: Bool {
+        guard let a = CalendarFormat.minutes(meeting.start), let b = CalendarFormat.minutes(meeting.end) else { return false }
+        return b - a <= WeekGridMath.minimumMinutes
     }
 
     /// The first Outlook category's color, else the accent tint.
@@ -310,9 +322,14 @@ private struct WeekEventBlock: View {
                                     .foregroundStyle(.secondary)
                                     .lineLimit(1)
                             }
+                            // Narrow lane: a 30-minute block has room for two lines
+                            // of title; a 15-minute one keeps one and truncates.
                             Text(meeting.subject)
                                 .font(AppFont.caption(scale).weight(.semibold))
-                                .lineLimit(1)
+                                .lineLimit(isTiny ? 1 : 2)
+                                // Wrap onto the second line rather than cutting the first
+                                // with an ellipsis; the block's edge trims any overflow.
+                                .fixedSize(horizontal: false, vertical: true)
                         }
                     } else {
                         VStack(alignment: .leading, spacing: 1) {
@@ -332,16 +349,19 @@ private struct WeekEventBlock: View {
                     }
                 }
                 .padding(.horizontal, 3)
-                .padding(.vertical, 2)
+                .padding(.top, isTiny ? 0 : (isShort ? 1 : 2))
+                .padding(.bottom, isTiny || isShort ? 0 : 2)
                 Spacer(minLength: 0)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: isTiny ? .leading : .topLeading)
             .background(RoundedRectangle(cornerRadius: 4).fill(color.opacity(selected ? 0.32 : 0.14)))
             .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(color, lineWidth: selected ? 1.5 : 0))
             .clipShape(RoundedRectangle(cornerRadius: 4))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        // Hover shows the whole title and time when the block truncates it.
+        .help("\(meeting.subject)\n\(CalendarFormat.range(meeting))")
         .accessibilityLabel("\(meeting.subject), \(CalendarFormat.range(meeting))")
         .accessibilityAddTraits(selected ? .isSelected : [])
     }

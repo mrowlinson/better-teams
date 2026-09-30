@@ -56,4 +56,18 @@ public enum OfficeDocumentView {
         c.queryItems = items
         return c.url
     }
+
+    /// RECAP2: a Loop file stored in SharePoint or OneDrive (`.loop`,
+    /// `.fluid`) opens on its web page (`web=1`). Nil: not one.
+    public static func loopViewURL(_ url: URL) -> URL? {
+        guard url.scheme?.lowercased() == "https", let host = url.host,
+              SharePointSession.isSharePointHost(host),
+              ["loop", "fluid"].contains(url.pathExtension.lowercased()),
+              var c = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return nil }
+        var items = c.queryItems ?? []
+        guard !items.contains(where: { $0.name.caseInsensitiveCompare("web") == .orderedSame }) else { return url }
+        items.append(URLQueryItem(name: "web", value: "1"))
+        c.queryItems = items
+        return c.url
+    }
 }
