@@ -58,10 +58,7 @@ final class NotesTests: XCTestCase {
 
     /// Spin until `cond` holds (mock fetchers resolve in ms).
     func waitFor(_ what: String, _ cond: @autoclosure @escaping () -> Bool) async throws {
-        for _ in 0 ..< 200 {
-            if cond() { return }
-            try await Task.sleep(nanoseconds: 10_000_000)
-        }
+        if await TestWait.until(interval: 0.01, cond) { return }
         XCTFail("timed out waiting for \(what)")
     }
 

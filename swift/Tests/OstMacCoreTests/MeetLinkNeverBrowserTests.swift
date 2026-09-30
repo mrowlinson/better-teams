@@ -17,10 +17,16 @@ final class MeetLinkNeverBrowserTests: XCTestCase {
     private let thread = "https://teams.microsoft.com/l/meetup-join/19%3ameeting_ABC%40thread.v2/0?context=%7b%7d"
 
     private func settle(_ vm: MeetingsViewModel) async {
-        let end = Date().addingTimeInterval(5)
-        while vm.parsing, Date() < end { try? await Task.sleep(nanoseconds: 2_000_000) }
-        try? await Task.sleep(nanoseconds: 30_000_000)
-        while vm.parsing, Date() < end { try? await Task.sleep(nanoseconds: 2_000_000) }
+        // parsing is set synchronously by submitJoin and a chained stage
+        // (short-link resolve) flips false -> true in one main-actor step, so
+        // a condition wait sees the end. Yield count (not wall time) drains
+        // any trailing main-actor hop, then wait again.
+        let first = await TestWait.until(interval: 0.002) { !vm.parsing }
+        XCTAssertTrue(first, "join never finished parsing")
+        for _ in 0 ..< 100 { await Task.yield() }
+        try? await Task.sleep(nanoseconds: 100_000_000) // negative window: a trailing hop must not reopen parsing
+        let second = await TestWait.until(interval: 0.002) { !vm.parsing }
+        XCTAssertTrue(second, "join never finished parsing (chained stage)")
     }
 
     private func join(_ raw: String, resolver: @escaping MeetingsViewModel.LinkResolver = { _ in nil }) async -> (MeetingsViewModel, [URL]) {

@@ -60,8 +60,11 @@ final class ImagePreloadTests: XCTestCase {
 
     /// Poll until the preloader drains (bounded; returns last snapshot).
     func waitIdle(_ p: ImagePreloader, timeout: TimeInterval = 10) async -> ImagePreloader.Stats {
-        let start = Date()
-        while Date().timeIntervalSince(start) < timeout {
+        // `timeout` is a hang ceiling only (raised to TestWait.hangCeiling):
+        // a short wall deadline would measure scheduler load, not the preloader.
+        let ceiling = max(timeout, TestWait.hangCeiling)
+        let start = DispatchTime.now().uptimeNanoseconds
+        while Double(DispatchTime.now().uptimeNanoseconds &- start) / 1e9 < ceiling {
             let s = await p.snapshot()
             if s.isIdle { return s }
             try? await Task.sleep(nanoseconds: 5_000_000)
@@ -165,7 +168,8 @@ final class ImagePreloadTests: XCTestCase {
         // Window A: visible m0 → 0..<9. One fill runs, the rest queue.
         await preloader.update(messages: msgs, visibleIDs: ["m0"], fetcher: fetcher)
         var running = false
-        for _ in 0 ..< 200 {
+        let runStart = DispatchTime.now().uptimeNanoseconds
+        while Double(DispatchTime.now().uptimeNanoseconds &- runStart) / 1e9 < TestWait.hangCeiling {
             if await preloader.snapshot().inFlight == 1, !gate.started.isEmpty {
                 running = true
                 break

@@ -190,10 +190,7 @@ final class CalendarEventsTests: XCTestCase {
 
     @MainActor
     static func waitUntil(seconds: Double = 5, _ done: @MainActor @escaping () -> Bool) async {
-        let t0 = DispatchTime.now()
-        while !done(), Double(DispatchTime.now().uptimeNanoseconds &- t0.uptimeNanoseconds) / 1e9 < seconds {
-            try? await Task.sleep(nanoseconds: 2_000_000)
-        }
+        await TestWait.until(ceiling: max(seconds, TestWait.hangCeiling), interval: 0.002) { done() }
     }
 
     /// Month composition never reads the wall clock: pinned dates at month

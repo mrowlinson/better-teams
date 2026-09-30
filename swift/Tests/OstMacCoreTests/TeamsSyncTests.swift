@@ -184,13 +184,13 @@ final class TeamsSyncTests: XCTestCase {
         await vm.load()
         let sync = TeamsSync(model: vm, isActive: { true })
         server.value = Self.tree([Self.ch("19:a@thread.tacv2", "General")])
-        let start = Date()
         sync.kick(after: 0.05)
-        while vm.syncChanges == 0, Date().timeIntervalSince(start) < 5 {
-            try await Task.sleep(nanoseconds: 20_000_000)
-        }
+        // Only the kick can drive a sync here (start() is never called, so no
+        // periodic loop exists): the change landing at all proves the kick
+        // path; no wall-clock bound needed.
+        await TestWait.until { vm.syncChanges > 0 }
+        XCTAssertGreaterThan(vm.syncChanges, 0)
         XCTAssertEqual(vm.teams[0].channels.count, 1)
-        XCTAssertLessThan(Date().timeIntervalSince(start), 2)
         XCTAssertEqual(sync.failures, 0)
     }
 

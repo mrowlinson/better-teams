@@ -39,7 +39,7 @@ final class ReceiptsTests: XCTestCase {
         XCTAssertEqual(box.calls.count, 1)
         // Repeat tail is a no-op (no second call).
         store.sendReadPosition(chatID: "c1", latestID: "m1")
-        try? await Task.sleep(nanoseconds: 50_000_000)
+        try? await Task.sleep(nanoseconds: 50_000_000) // negative window: proves no second call
         XCTAssertEqual(box.calls.count, 1)
     }
 
@@ -50,7 +50,7 @@ final class ReceiptsTests: XCTestCase {
         }, fetcher: { _ in [] })
         store.sendReadPosition(chatID: "  ", latestID: "m1")
         store.sendReadPosition(chatID: "c1", latestID: nil)
-        try? await Task.sleep(nanoseconds: 50_000_000)
+        try? await Task.sleep(nanoseconds: 50_000_000) // negative window: proves no second call
         XCTAssertTrue(box.calls.isEmpty)
         XCTAssertTrue(store.sent.isEmpty)
     }
@@ -153,7 +153,7 @@ final class ReceiptsTests: XCTestCase {
             "0 sent · 1 threads · 1 peers")
         // Blank thread is a no-op (no fetch).
         store.refresh(threadID: "  ")
-        try? await Task.sleep(nanoseconds: 50_000_000)
+        try? await Task.sleep(nanoseconds: 50_000_000) // negative window: proves no second call
         XCTAssertEqual(box.calls.count, 1)
     }
 
@@ -179,15 +179,12 @@ final class ReceiptsTests: XCTestCase {
 
     // MARK: - Helpers
 
-    /// Spin until `cond` holds (mock transports resolve in ms; 2s cap).
+    /// Spin until `cond` holds (mock transports resolve in ms; hang-only ceiling).
     private func waitFor(
         _ cond: () -> Bool,
         file: StaticString = #filePath, line: UInt = #line
     ) async {
-        for _ in 0 ..< 100 {
-            if cond() { return }
-            try? await Task.sleep(nanoseconds: 20_000_000)
-        }
-        XCTFail("condition not met in 2s", file: file, line: line)
+        if await TestWait.until(cond) { return }
+        XCTFail("timed out waiting for condition", file: file, line: line)
     }
 }

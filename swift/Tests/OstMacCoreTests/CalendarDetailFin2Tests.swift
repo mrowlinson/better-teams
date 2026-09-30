@@ -78,7 +78,7 @@ final class CalendarDetailFin2Tests: XCTestCase {
                     return rows
                 }))
         store.loadInstances(series: "M1")
-        for _ in 0 ..< 100 where store.seriesInstances["M1"] == nil { try await Task.sleep(nanoseconds: 20_000_000) }
+        await TestWait.until { store.seriesInstances["M1"] != nil }
         asked = box.values
         XCTAssertEqual(asked, ["M1"])
         XCTAssertEqual(store.seriesInstances["M1"]?.map(\.id), ["I1", "I2"], "start order")

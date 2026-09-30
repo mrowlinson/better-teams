@@ -122,12 +122,7 @@ final class TickStormPerfTests: XCTestCase {
     private func spinUntil(
         _ done: @escaping () -> Bool, timeout: TimeInterval = 10
     ) async {
-        let end = Date().addingTimeInterval(timeout)
-        while !done() {
-            if Date() > end { return }
-            await Task.yield()
-            try? await Task.sleep(nanoseconds: 1_000_000)
-        }
+        await TestWait.until(ceiling: max(timeout, TestWait.hangCeiling), interval: 0.001) { done() }
     }
 
     /// Fixed settle budget (lets cross-thread publishes land; no clock).

@@ -45,10 +45,7 @@ final class PollWaitTests: XCTestCase {
         feed.pollInterval = 60 // timer armed but never fires during test
         feed.start()
         XCTAssertEqual(feed.currentState, .live)
-        let end = Date().addingTimeInterval(2)
-        while feed.lastError == nil, Date() < end {
-            Thread.sleep(forTimeInterval: 0.02)
-        }
+        TestWait.untilBlocking(interval: 0.02) { feed.lastError != nil }
         XCTAssertNotNil(feed.lastError)
         XCTAssertEqual(feed.currentState, .live)
         feed.stop()

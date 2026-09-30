@@ -244,13 +244,9 @@ final class LeaveBlockTests: XCTestCase {
                 return LeaveResponse(ok: true)
             })
         async let first: Void = model.leave(chatID: "g1")
-        // Wait for the first call to go in flight (bounded, no timing).
-        var spins = 0
-        while !box.entered, spins < 100_000 {
-            await Task.yield()
-            spins += 1
-        }
-        XCTAssertTrue(box.entered, "first leave never went in flight")
+        // Wait for the first call to go in flight (condition wait, hang ceiling only).
+        let entered = await TestWait.until(interval: 0.001) { box.entered }
+        XCTAssertTrue(entered, "first leave never went in flight")
         await model.leave(chatID: "g1") // second: no-op while pending
         box.released = true
         await first

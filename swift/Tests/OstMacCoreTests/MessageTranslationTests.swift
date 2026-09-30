@@ -168,10 +168,11 @@ final class MessageTranslationTests: XCTestCase {
         let store = TranslationStore(defaults: .emptyTranslationDefaults())
         store.targetLanguageCode = "en"
         XCTAssertFalse(store.isSessionAttached)
-        let start = Date()
         await store.translate(
             msg(content: "Hola equipo, nos vemos mañana en la reunión"))
-        XCTAssertLessThan(Date().timeIntervalSince(start), 5)
+        // No stopwatch: the 30 s session wait would end as
+        // `.provider("...timed out")`, so `.sessionNotAttached` below proves
+        // the fast path.
         XCTAssertEqual(store.entry(for: "m1")?.state, .failed)
         XCTAssertEqual(store.lastFailure, .sessionNotAttached)
     }

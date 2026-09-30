@@ -16,6 +16,11 @@ final class ChatListLoadMoreTimeoutTests: XCTestCase {
         private let lock = NSLock()
         private var hang = true
         private var calls = 0
+        private var returned = false
+        /// The hung read parks here until the test releases it (a gate, not a
+        /// stopwatch: the deadline must win while the read is still parked).
+        let parked = DispatchSemaphore(value: 0)
+        var readReturned: Bool { get { lock.withLock { returned } } set { lock.withLock { returned = newValue } } }
         var hanging: Bool { get { lock.withLock { hang } } set { lock.withLock { hang = newValue } } }
         func call() -> Int { lock.withLock { calls += 1; return calls } }
         var count: Int { lock.withLock { calls } }
@@ -23,18 +28,18 @@ final class ChatListLoadMoreTimeoutTests: XCTestCase {
 
     func testHungPageFailsAtTheDeadlineThenRetrySucceeds() async {
         let gate = Gate()
+        defer { gate.parked.signal() }   // never leave the parked read stuck
         let vm = ChatListViewModel(
             fetcher: { _ in ChatsResponse(ok: true, chats: [self.item("a", 50)], next_link: "p1") },
             pageFetcher: { _ in
                 _ = gate.call()
-                if gate.hanging { Thread.sleep(forTimeInterval: 2) }
+                if gate.hanging { gate.parked.wait(); gate.readReturned = true }
                 return ChatsResponse(ok: true, chats: [self.item("old", 10)], next_link: nil)
             })
         vm.pageTimeout = 0.2
         await vm.load()
-        let t0 = Date()
         await vm.loadMore()
-        XCTAssertLessThan(Date().timeIntervalSince(t0), 1.5, "returns at the deadline, not when the read ends")
+        XCTAssertFalse(gate.readReturned, "returns at the deadline, not when the read ends")
         XCTAssertTrue(vm.loadMoreFailed)
         XCTAssertFalse(vm.isLoadingMore, "no endless spinner")
         XCTAssertEqual(vm.chats.map(\.id), ["a"])

@@ -78,12 +78,7 @@ final class TranscriptsTests: XCTestCase {
         _ cond: @escaping @MainActor () -> Bool,
         timeout: TimeInterval = 5
     ) async -> Bool {
-        let end = Date().addingTimeInterval(timeout)
-        while !cond() {
-            if Date() > end { return false }
-            try? await Task.sleep(nanoseconds: 20_000_000)
-        }
-        return true
+        await TestWait.until(ceiling: max(timeout, TestWait.hangCeiling), interval: 0.02) { cond() }
     }
 
     // MARK: - Decode
@@ -363,6 +358,7 @@ final class TranscriptsTests: XCTestCase {
 
     func testSupersededSelectDropsFirst() async throws {
         let gate = DispatchSemaphore(value: 0)
+        let aStalled = Box(false)
         let m = Self.model(
             list: {
                 TranscriptsResponse(ok: true, transcripts: [
@@ -371,14 +367,15 @@ final class TranscriptsTests: XCTestCase {
                 ])
             },
             download: { _, item, dest in
-                if item == "a" { gate.wait() } // first stalls…
+                if item == "a" { aStalled.value = true; gate.wait() } // first stalls…
                 try TranscriptsDemo.sampleVTT.write(
                     toFile: dest, atomically: true, encoding: .utf8)
                 return dest
             })
         await m.load()
         m.select(m.items[0])
-        try? await Task.sleep(nanoseconds: 100_000_000)
+        let stalled = await waitFor { aStalled.value }
+        XCTAssertTrue(stalled) // first download is in flight before the second select
         m.select(m.items[1]) // …second wins before it lands
         gate.signal()
         let ok = await waitFor { m.content == .loaded }

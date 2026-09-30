@@ -176,14 +176,14 @@ final class GraphTwoTests: XCTestCase {
         })
         let ref = ContactRef(name: "Tom Becker", userID: "u1", email: nil)
         store.load(ref, org: true)
-        for _ in 0 ..< 200 where store.card(for: ref) == nil { try? await Task.sleep(nanoseconds: 10_000_000) }
+        await TestWait.until { store.card(for: ref) != nil }
         XCTAssertNotNil(store.card(for: ref)?.failures[.organization])
         store.load(ref, org: true)
         XCTAssertEqual(loads.v, 1, "unforced load is served from the cache")
         state.v = 1
         store.load(ref, org: true, force: true)
         XCTAssertTrue(store.isRetrying(ref))
-        for _ in 0 ..< 200 where store.isRetrying(ref) { try? await Task.sleep(nanoseconds: 10_000_000) }
+        await TestWait.until { !store.isRetrying(ref) }
         XCTAssertEqual(loads.v, 2)
         XCTAssertTrue(store.card(for: ref)?.failures.isEmpty == true)
     }

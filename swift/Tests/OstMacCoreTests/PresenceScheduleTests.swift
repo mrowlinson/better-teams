@@ -62,10 +62,7 @@ final class PresenceScheduleTests: XCTestCase {
 
     /// Poll until the schedule's lastSetAt lands (fire-and-forget set).
     func awaitSettled(_ store: PresenceScheduleStore, timeout: TimeInterval = 5) async {
-        let deadline = Date().addingTimeInterval(timeout)
-        while store.lastSetAt == nil, Date() < deadline {
-            try? await Task.sleep(nanoseconds: 20_000_000)
-        }
+        await TestWait.until(ceiling: max(timeout, TestWait.hangCeiling)) { store.lastSetAt != nil }
     }
 
     /// Poll until the applier's fire has fully completed (result bookkeeping
@@ -73,27 +70,18 @@ final class PresenceScheduleTests: XCTestCase {
     /// returns to the main actor, so a log count alone can be observed while
     /// the fire is still in flight - and a tick then is (correctly) ignored.
     func awaitIdle(_ store: PresenceScheduleStore, timeout: TimeInterval = 5) async {
-        let deadline = Date().addingTimeInterval(timeout)
-        while store.inflight, Date() < deadline {
-            try? await Task.sleep(nanoseconds: 5_000_000)
-        }
+        await TestWait.until(ceiling: max(timeout, TestWait.hangCeiling), interval: 0.005) { !store.inflight }
         XCTAssertFalse(store.inflight, "applier fire never completed")
     }
 
     /// Poll until the log holds `count` calls.
     fileprivate func awaitCalls(_ log: SetCallLog, _ count: Int, timeout: TimeInterval = 5) async {
-        let deadline = Date().addingTimeInterval(timeout)
-        while log.count < count, Date() < deadline {
-            try? await Task.sleep(nanoseconds: 20_000_000)
-        }
+        await TestWait.until(ceiling: max(timeout, TestWait.hangCeiling)) { log.count >= count }
     }
 
     /// Poll until the store records an error.
     func awaitError(_ store: PresenceScheduleStore, timeout: TimeInterval = 5) async {
-        let deadline = Date().addingTimeInterval(timeout)
-        while store.error == nil, Date() < deadline {
-            try? await Task.sleep(nanoseconds: 20_000_000)
-        }
+        await TestWait.until(ceiling: max(timeout, TestWait.hangCeiling)) { store.error != nil }
     }
 
     // MARK: model
@@ -166,7 +154,7 @@ final class PresenceScheduleTests: XCTestCase {
             store.tick(now: t0.addingTimeInterval(TimeInterval(minute * 60)), calendar: cal)
         }
         // Drain any stray in-flight work, then assert the count held.
-        try? await Task.sleep(nanoseconds: 200_000_000)
+        try? await Task.sleep(nanoseconds: 200_000_000) // negative window: proves nothing more fires
         XCTAssertEqual(log.count, 1)
         XCTAssertEqual(store.appliedEntryID, store.entries[0].id)
     }
@@ -180,7 +168,7 @@ final class PresenceScheduleTests: XCTestCase {
         store.entries = [workEntry()]
         let cal = fixedCalendar()
         store.tick(now: dt(25, 20, 0, cal), calendar: cal) // outside window
-        try? await Task.sleep(nanoseconds: 200_000_000)
+        try? await Task.sleep(nanoseconds: 200_000_000) // negative window: proves nothing more fires
         XCTAssertEqual(log.count, 0)
         XCTAssertNil(store.appliedEntryID)
     }
@@ -194,7 +182,7 @@ final class PresenceScheduleTests: XCTestCase {
         store.entries = [workEntry()]
         let cal = fixedCalendar()
         store.tick(now: dt(25, 10, 0, cal), calendar: cal)
-        try? await Task.sleep(nanoseconds: 200_000_000)
+        try? await Task.sleep(nanoseconds: 200_000_000) // negative window: proves nothing more fires
         XCTAssertEqual(log.count, 0)
     }
 
@@ -237,7 +225,7 @@ final class PresenceScheduleTests: XCTestCase {
         XCTAssertEqual(log.count, 1)
         // 49 min later: still fresh, no re-set.
         store.tick(now: t0.addingTimeInterval(49 * 60), calendar: cal)
-        try? await Task.sleep(nanoseconds: 200_000_000)
+        try? await Task.sleep(nanoseconds: 200_000_000) // negative window: proves nothing more fires
         XCTAssertEqual(log.count, 1)
         // Past the 50-min refresh line: re-set before PT1H lapses.
         store.tick(now: t0.addingTimeInterval(51 * 60), calendar: cal)
@@ -273,7 +261,7 @@ final class PresenceScheduleTests: XCTestCase {
         // Rest of the window: no flap-back (also past refresh line).
         store.tick(now: dt(25, 10, 0, cal), calendar: cal)
         store.tick(now: dt(25, 12, 0, cal), calendar: cal)
-        try? await Task.sleep(nanoseconds: 200_000_000)
+        try? await Task.sleep(nanoseconds: 200_000_000) // negative window: proves nothing more fires
         XCTAssertEqual(log.count, 1)
         // Next boundary resumes the schedule.
         store.tick(now: dt(25, 17, 5, cal), calendar: cal)
@@ -290,10 +278,7 @@ final class PresenceScheduleTests: XCTestCase {
             setFetcher: { _ in schedEcho(.available) })
         presence.manualSetHook = { hooked = true }
         presence.set(status: .available)
-        let deadline = Date().addingTimeInterval(5)
-        while !hooked, Date() < deadline {
-            try? await Task.sleep(nanoseconds: 20_000_000)
-        }
+        await TestWait.until { hooked }
         XCTAssertTrue(hooked)
     }
 
@@ -322,7 +307,7 @@ final class PresenceScheduleTests: XCTestCase {
         // …then the window holds (no retry storm).
         store.tick(now: dt(25, 9, 10, cal), calendar: cal)
         store.tick(now: dt(25, 10, 0, cal), calendar: cal)
-        try? await Task.sleep(nanoseconds: 300_000_000)
+        try? await Task.sleep(nanoseconds: 300_000_000) // negative window: proves no retry storm
         XCTAssertEqual(log.count, 2)
         XCTAssertNotNil(store.error)
         // Last good own kept, peers untouched.

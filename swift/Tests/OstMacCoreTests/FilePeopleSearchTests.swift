@@ -123,11 +123,8 @@ final class FilePeopleSearchTests: XCTestCase {
             peopleSearcher: { q, _ in PeopleSearchResponse(ok: true, query: q, people: []) })
         await store.search(query: "plan")
         store.retry()
-        // Retry hops through a Task; poll briefly for the second call.
-        for _ in 0 ..< 50 {
-            if calls.values.count >= 2 { break }
-            try? await Task.sleep(nanoseconds: 20_000_000)
-        }
+        // Retry hops through a Task; wait for the second call.
+        await TestWait.until(interval: 0.02) { calls.values.count >= 2 }
         XCTAssertEqual(calls.values, ["plan", "plan"])
     }
 

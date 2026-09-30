@@ -482,7 +482,6 @@ public final class CatchUpDemoTransport: CatchUpStreamingTransport, @unchecked S
             if let holdPartial { onPartial(holdPartial) }
             try await Task.sleep(for: .seconds(3600))
         }
-        if prompt.hasPrefix(CatchUpRating.promptLead) { return Self.demoRatings(prompt) }
         if let canned = DemoData.catchUpSummaries.first(where: { prompt.contains($0.marker) })?.text { return canned }
         return Self.extractive(prompt) ?? DemoData.catchUpSummary
     }
@@ -512,19 +511,6 @@ public final class CatchUpDemoTransport: CatchUpStreamingTransport, @unchecked S
         let who = senders.prefix(3).joined(separator: ", ")
         return "SUMMARY: \(lines.count) message\(lines.count == 1 ? "" : "s") from \(who).\nPOINTS:\n"
             + ranked.map { "- \($0)" }.joined(separator: "\n") + "\nACTIONS:\n- None"
-    }
-
-    /// Demo rating pass: social points 0, strong cues 3, the rest 2.
-    static func demoRatings(_ prompt: String) -> String {
-        guard let r = prompt.range(of: "Points:\n") else { return "" }
-        let ctx = CatchUpFilterContext(now: DemoData.catchUpNow)
-        return prompt[r.upperBound...].components(separatedBy: "\n").compactMap { line -> String? in
-            guard let dot = line.range(of: ". "), let n = Int(line[..<dot.lowerBound]) else { return nil }
-            let text = String(line[dot.upperBound...])
-            if CatchUpNoise.reason(text: text) != nil { return "\(n): 0" }
-            let s = CatchUpNoise.salience(ChatMessage(id: "", sender: "", timestamp: "", content: text), ctx)
-            return "\(n): \(s >= 3 ? 3 : 2)"
-        }.joined(separator: "\n")
     }
 }
 
@@ -983,7 +969,7 @@ public final class CatchUpStore: ObservableObject {
     /// a Retry path — never stuck in `.loading`.
     /// `period` + `filter` (CATCHTABS, the inspector): input is bounded
     /// to the period, noise-filtered and salience-ranked, and the result
-    /// gets the bullet rating pass; each (conversation, period) keeps its
+    /// gets the deterministic bullet pass; each (conversation, period) keeps its
     /// last text, which stays on screen while that period refreshes.
     public func summarize(messages rawMessages: [ChatMessage], chatID: String? = nil,
                           period: CatchUpPeriod? = nil, filter: CatchUpFilterContext? = nil) async {
@@ -1064,7 +1050,7 @@ public final class CatchUpStore: ObservableObject {
                     Task { @MainActor [weak self] in self?.applyPartial(snapshot, gen: gen) }
                 }
                 if let filter {
-                    text = await CatchUpPipeline.refine(raw, filter, rater: onDeviceTransport)
+                    text = CatchUpPipeline.refine(raw, filter)
                 } else {
                     text = raw
                 }

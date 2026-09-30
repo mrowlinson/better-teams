@@ -97,10 +97,7 @@ final class ContactsTests: XCTestCase {
         XCTAssertEqual(store.error, "directory down")
         XCTAssertTrue(store.results.isEmpty)
         store.retry()
-        for _ in 0 ..< 50 {
-            if calls.value >= 2 { break }
-            try? await Task.sleep(nanoseconds: 20_000_000)
-        }
+        await TestWait.until(interval: 0.02) { calls.value >= 2 }
         XCTAssertEqual(calls.value, 2)
         XCTAssertEqual(store.results.map(\.id), ["u1"])
         XCTAssertNil(store.error)

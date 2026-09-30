@@ -58,14 +58,13 @@ final class ContactHoverEventTests: XCTestCase {
         window.setContentSize(NSSize(width: 900, height: 700))
         window.orderFront(nil) // recorded only
         let table = views(of: NSTableView.self, in: window.contentView!).first!
-        let deadline = Date().addingTimeInterval(8)
-        repeat {
+        TestWait.spinUntil(slice: 0.05) {
             table.tile()
             table.scrollRowToVisible(table.numberOfRows - 1)
             window.layoutIfNeeded()
             window.displayIfNeeded()
-            spin(0.1)
-        } while vc.visibleMessageIDs.isEmpty && Date() < deadline
+            return !vc.visibleMessageIDs.isEmpty
+        }
         XCTAssertFalse(vc.visibleMessageIDs.isEmpty, "control: timeline rows laid out")
         return (vc, window, table)
     }
@@ -157,8 +156,7 @@ final class ContactHoverEventTests: XCTestCase {
         target.enter()
         XCTAssertEqual(hover.pointerAnchor, target.anchor, "\(what): pointer registered", file: file, line: line)
         XCTAssertNil(hover.shownAnchor, "\(what): no card before the dwell", file: file, line: line)
-        let deadline = Date().addingTimeInterval(3)
-        while hover.shownAnchor == nil, Date() < deadline { spin(0.01) }
+        TestWait.spinUntil { hover.shownAnchor != nil }
         XCTAssertEqual(hover.shownAnchor, target.anchor, "\(what): card never came up", file: file, line: line)
         spin(0.8) // the card lays out, loads its sections and resizes meanwhile
         XCTAssertEqual(hover.shownAnchor, target.anchor, "\(what): card hid itself after appearing",
@@ -219,7 +217,7 @@ final class ContactHoverEventTests: XCTestCase {
         let app = AppState(args: ["--demo"])
         let loaded = expectation(description: "chats")
         Task { await app.chats.load(); loaded.fulfill() }
-        wait(for: [loaded], timeout: 10)
+        wait(for: [loaded], timeout: TestWait.hangCeiling)
         let wc = ShellWindowController(graph: app, options: LaunchOptions(args: ["--demo"]))
         let offDisplay = NSRect(x: -30000, y: -30000, width: 1440, height: 900)
         wc.window!.setFrame(offDisplay, display: false)
@@ -237,15 +235,24 @@ final class ContactHoverEventTests: XCTestCase {
         window.setFrame(offDisplay, display: false)
         window.orderFront(nil) // recorded only
         addTeardownBlock { window.close(); wc.close() }
-        for _ in 0 ..< 20 { window.layoutIfNeeded(); window.displayIfNeeded(); spin(0.05) }
         // List cells host SwiftUI in their own hosting views; 1:1 rows
         // track the pointer (their avatar has a contact card).
-        let cells = views(of: NSView.self, in: window.contentView!).filter { cell in
-            String(describing: type(of: cell)).hasPrefix("CellHostingView")
-                && cell.trackingAreas.contains { $0.owner === cell }
+        func cells() -> [NSView] {
+            views(of: NSView.self, in: window.contentView!).filter { cell in
+                String(describing: type(of: cell)).hasPrefix("CellHostingView")
+                    && cell.trackingAreas.contains { $0.owner === cell }
+            }
         }
-        XCTAssertFalse(cells.isEmpty, "control: chat list rows laid out")
-        guard let target = cells.lazy.map(headerTargets).first(where: { !$0.isEmpty })?.first else {
+        // Wait for the rows to exist, then keep the fixed layout passes:
+        // headerTargets drives hover state, so it must run once, after layout.
+        TestWait.spinUntil(slice: 0.05) {
+            window.layoutIfNeeded(); window.displayIfNeeded()
+            return !cells().isEmpty
+        }
+        for _ in 0 ..< 20 { window.layoutIfNeeded(); window.displayIfNeeded(); spin(0.05) }
+        let found = cells().lazy.map(headerTargets).first(where: { !$0.isEmpty })?.first
+        XCTAssertFalse(cells().isEmpty, "control: chat list rows laid out")
+        guard let target = found else {
             return XCTFail("no chat list row with a contact anchor")
         }
         assertCardShowsAndStays(target, in: window, "chat list avatar")
@@ -258,8 +265,7 @@ final class ContactHoverEventTests: XCTestCase {
         let targets = rowHosts(window).lazy.map(headerTargets).first { !$0.isEmpty }
         guard let target = targets?.last else { return XCTFail("no header row with a contact anchor") }
         target.enter()
-        let deadline = Date().addingTimeInterval(3)
-        while hover.shownAnchor == nil, Date() < deadline { spin(0.01) }
+        TestWait.spinUntil { hover.shownAnchor != nil }
         spin(0.5)
         XCTAssertEqual(hover.shownAnchor, target.anchor, "control: card up before the scroll")
         let clip = table.enclosingScrollView!.contentView

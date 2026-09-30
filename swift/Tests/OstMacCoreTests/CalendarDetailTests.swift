@@ -239,7 +239,7 @@ final class CalendarDetailTests: XCTestCase {
         // Delete without responding: gone at once, back on failure.
         store.removeFromCalendar(row, decline: false)
         XCTAssertNil(store.meetings.first { $0.id == "E9" })
-        for _ in 0 ..< 500 where store.removeError == nil { try await Task.sleep(nanoseconds: 2_000_000) }
+        await TestWait.until(interval: 0.002) { store.removeError != nil }
         XCTAssertNotNil(store.meetings.first { $0.id == "E9" })
     }
 

@@ -224,15 +224,17 @@ final class NoLoadTests: XCTestCase {
         for _ in 0 ..< 3 {
             let teams = TeamsViewModel(fetcher: { throw CoreCallError.failed("unused") })
             teams.snapshots = SectionCache(directory: dir)
-            t0 = DispatchTime.now().uptimeNanoseconds
+            // CPU time of the (synchronous) restore, not wall: wall counts
+            // the scheduler's queueing under load.
+            let c0 = TestWait.cpuSeconds()
             XCTAssertTrue(teams.restoreSnapshot())
-            let tMs = Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e6
+            let tMs = (TestWait.cpuSeconds() - c0) * 1e3
             warm["teams"] = min(warm["teams"] ?? tMs, tMs)
             let rec = RecordingsViewModel(listFetcher: { throw CoreCallError.failed("unused") })
             rec.snapshots = SectionCache(directory: dir)
-            t0 = DispatchTime.now().uptimeNanoseconds
+            let c1 = TestWait.cpuSeconds()
             XCTAssertTrue(rec.restoreSnapshot())
-            let rMs = Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e6
+            let rMs = (TestWait.cpuSeconds() - c1) * 1e3
             warm["recordings"] = min(warm["recordings"] ?? rMs, rMs)
             if (warm["recordings"] ?? .infinity) < 50 { break }
         }

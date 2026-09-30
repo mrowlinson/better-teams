@@ -19,10 +19,7 @@ final class SharedFolderNavTests: XCTestCase {
         file: StaticString = #filePath, line: UInt = #line,
         cond: @escaping () -> Bool
     ) async {
-        let deadline = Date().addingTimeInterval(timeout)
-        while !cond(), Date() < deadline {
-            try? await Task.sleep(nanoseconds: 20_000_000)
-        }
+        await TestWait.until(ceiling: max(timeout, TestWait.hangCeiling), interval: 0.02) { cond() }
         XCTAssertTrue(cond(), "settle timeout: \(what)", file: file, line: line)
     }
 

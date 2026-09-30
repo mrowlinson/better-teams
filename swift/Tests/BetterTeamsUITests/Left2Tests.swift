@@ -11,9 +11,8 @@ import OstMacCore
 @MainActor
 final class Left2Tests: XCTestCase {
     private func waitUntil(_ cond: () -> Bool) async {
-        for _ in 0 ..< 300 where !cond() {
-            try? await Task.sleep(nanoseconds: 10_000_000)
-        }
+        // Waits on the condition; ceiling only bounds a hang. Callers assert the outcome.
+        await TestWait.until { cond() }
     }
 
     /// Remove from Recents drops the record (and hides a feed row) for

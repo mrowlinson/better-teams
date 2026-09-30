@@ -198,12 +198,9 @@ final class CatchUpTabsTests: XCTestCase {
         XCTAssertLessThan(kept.count, 31)
     }
 
-    // MARK: - Rating pass
+    // MARK: - Bullet pass
 
-    func testRatingParseVariantsAndRefine() async {
-        let r = CatchUpRating.parse("1: 3\n2 - 0\nPoint 3: 2 (useful)\n**4**: 1\n5) 7\n9: 2", count: 5)
-        XCTAssertEqual(r, [1: 3, 2: 0, 3: 2])
-        let t = CatchUpCannedTransport(stub: "1: 0\n2: 3")
+    func testBulletPassDropsSocialBulletsOnly() {
         let text = """
             SUMMARY: The launch is on track.
             POINTS:
@@ -214,19 +211,11 @@ final class CatchUpTabsTests: XCTestCase {
             ACTIONS:
             - You: sign off on the release notes.
             """
-        let out = await CatchUpPipeline.refine(text, CatchUpFilterContext(now: now), rater: t)
-        let parsed = CatchUpSummaryParser.parse(out)
-        XCTAssertEqual(parsed.points, ["Megan needs your sign-off on the release notes.", "Tom moved the review to Wednesday."])
+        let parsed = CatchUpSummaryParser.parse(CatchUpPipeline.refine(text, CatchUpFilterContext(now: now)))
+        XCTAssertEqual(parsed.points, ["Megan needs your sign-off on the release notes.",
+                                       "Tom moved the review to Wednesday.", "Liam shared a minor typo fix."])
         XCTAssertEqual(parsed.actions, ["You: sign off on the release notes."])
-        XCTAssertFalse(t.prompts[0].contains("lunch"), "social bullets drop before the model is asked")
-        XCTAssertFalse(t.prompts[0].contains("Wednesday"), "strong bullets (floor 2) are not asked about")
-        XCTAssertTrue(t.prompts[0].contains("1. Liam shared a minor typo fix."))
-        // A reply that can't be parsed keeps every bullet (fail-open).
-        let garbled = await CatchUpPipeline.refine(text, CatchUpFilterContext(now: now),
-                                                   rater: CatchUpCannedTransport(stub: "I can't rate these."))
-        XCTAssertEqual(CatchUpSummaryParser.parse(garbled).points.count, 3)
         XCTAssertEqual(CatchUpSummaryParser.parse("POINTS:\n- - Doubled glyph").points, ["Doubled glyph"])
-        XCTAssertTrue(t.prompts[0].hasPrefix(CatchUpRating.promptLead))
     }
 
     // MARK: - Not important

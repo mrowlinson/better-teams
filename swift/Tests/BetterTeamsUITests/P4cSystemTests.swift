@@ -82,7 +82,7 @@ final class P4cSystemTests: XCTestCase {
         func settle() {
             let hop = expectation(description: "main hop")
             DispatchQueue.main.async { hop.fulfill() }
-            wait(for: [hop], timeout: 2)
+            wait(for: [hop], timeout: TestWait.hangCeiling)
         }
 
         CallSettings.shared.presentation = .separateWindow

@@ -150,7 +150,7 @@ final class RenderParsePerfTests: XCTestCase {
         })
         let exp = expectation(description: "load")
         Task { await model.load(); exp.fulfill() }
-        wait(for: [exp], timeout: 5)
+        wait(for: [exp], timeout: TestWait.hangCeiling)
         for c in chats {
             XCTAssertEqual(model.chat(id: c.id)?.name, c.name)
         }

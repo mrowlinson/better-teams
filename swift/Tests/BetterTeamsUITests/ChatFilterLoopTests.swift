@@ -174,9 +174,7 @@ final class ChatFilterLoopTests: XCTestCase {
     }
 
     private func waitUntil(_ what: String, _ cond: () -> Bool) async {
-        for _ in 0..<400 where !cond() {
-            try? await Task.sleep(nanoseconds: 5_000_000)
-        }
+        await TestWait.until(interval: 0.005) { cond() }
         XCTAssertTrue(cond(), what)
     }
 }

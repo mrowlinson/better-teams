@@ -49,9 +49,9 @@ final class ChatSync2bTests: XCTestCase {
         return s
     }
 
-    /// Waits (bounded) until `done` holds; the retry runs on its own task.
+    /// Waits (hang ceiling only) until `done` holds; the retry runs on its own task.
     func settle(_ done: @escaping () -> Bool) async {
-        for _ in 0 ..< 300 where !done() { try? await Task.sleep(nanoseconds: 10_000_000) }
+        await TestWait.until { done() }
     }
 
     // MARK: R2 mute

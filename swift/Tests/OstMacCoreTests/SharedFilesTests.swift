@@ -101,9 +101,9 @@ final class SharedFilesTests: XCTestCase {
         let store = SharedFilesStore(list: { _, _ in throw CoreCallError.failed("files: boom") })
         store.open(chatID: "19:x")
         // Poll until the detached fetch lands (fast, no network).
-        for _ in 0 ..< 50 {
-            if case .error = store.state { break }
-            try? await Task.sleep(nanoseconds: 20_000_000)
+        await TestWait.until {
+            if case .error = store.state { return true }
+            return false
         }
         if case let .error(m) = store.state {
             XCTAssertEqual(m, "files: boom")
@@ -173,15 +173,9 @@ final class SharedFilesTests: XCTestCase {
             }
         )
         store.open(chatID: "19:x")
-        for _ in 0 ..< 50 {
-            if store.state == .loaded { break }
-            try? await Task.sleep(nanoseconds: 20_000_000)
-        }
+        await TestWait.until { store.state == .loaded }
         store.rename(file, to: "b")
-        for _ in 0 ..< 50 {
-            if store.files.first?.name == "b" { break }
-            try? await Task.sleep(nanoseconds: 20_000_000)
-        }
+        await TestWait.until { store.files.first?.name == "b" }
         XCTAssertEqual(store.files.first?.name, "b")
         XCTAssertEqual(store.files.count, 1)
     }
@@ -194,15 +188,9 @@ final class SharedFilesTests: XCTestCase {
             delete: { _, _ in SharedFileDeleteResponse(ok: true, id: "f1") }
         )
         store.open(chatID: "19:x")
-        for _ in 0 ..< 50 {
-            if store.files.count == 2 { break }
-            try? await Task.sleep(nanoseconds: 20_000_000)
-        }
+        await TestWait.until { store.files.count == 2 }
         store.delete(f1)
-        for _ in 0 ..< 50 {
-            if store.files.count == 1 { break }
-            try? await Task.sleep(nanoseconds: 20_000_000)
-        }
+        await TestWait.until { store.files.count == 1 }
         XCTAssertEqual(store.files.map(\.id), ["f2"])
     }
 

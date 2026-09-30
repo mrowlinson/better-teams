@@ -483,14 +483,8 @@ final class TeamsFrameTests: XCTestCase {
         let store = TeamsFrameStore(defaults: freshDefaults())
         XCTAssertFalse(store.ssoReady)
         store.activate()
-        let exp = expectation(description: "ssoReady")
-        Task { @MainActor in
-            for _ in 0..<200 where !store.ssoReady {
-                try? await Task.sleep(nanoseconds: 10_000_000)
-            }
-            exp.fulfill()
-        }
-        wait(for: [exp], timeout: 10)
+        // Sync test on the main thread: pump the run loop until ssoReady flips.
+        TestWait.spinUntil { store.ssoReady }
         XCTAssertTrue(store.ssoReady)
         store.destroy()
         XCTAssertFalse(store.ssoReady)

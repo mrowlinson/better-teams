@@ -87,12 +87,8 @@ final class MeetingRecapTests: XCTestCase {
     """
 
     func waitFor(_ cond: @escaping @MainActor () -> Bool, timeout: TimeInterval = 5) async -> Bool {
-        let end = Date().addingTimeInterval(timeout)
-        while !cond() {
-            if Date() > end { return false }
-            try? await Task.sleep(nanoseconds: 20_000_000)
-        }
-        return true
+        // `timeout` is a hang ceiling only, raised to TestWait.hangCeiling.
+        await TestWait.until(ceiling: max(timeout, TestWait.hangCeiling), interval: 0.02) { cond() }
     }
 
     func model(_ t: FakeRecapTransport, thread: String? = "19:meeting_abc@thread.v2",

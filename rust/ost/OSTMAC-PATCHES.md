@@ -1349,6 +1349,7 @@ Notes:
     mute PUT and hide POST are not exercised live (no live writes).
     Tests: `chatmenu_tests` (request shapes, alerts parse, folder
     parse).
+    UPSTREAM: PR https://github.com/eisbaw/ost/pull/81 (fix/chat-mute-hide-folders, stacks on #19)
 
 80. [feature] `src/api/chat.rs`, `src/api/mod.rs`, `src/api/client.rs`
     — **chat folder move** (chatlist2 lane). New pure
@@ -1366,6 +1367,7 @@ Notes:
     one round trip on the self chat only (into Favorites, verified,
     back out, verified; folder counts restored). Test:
     `chatmenu_tests::folder_move_request_shape`.
+    UPSTREAM: PR https://github.com/eisbaw/ost/pull/82 (fix/chat-folder-move, stacks on #81)
 
 81. [fix] `src/api/files.rs`, `src/api/chat.rs`, `src/api/tabs.rs`,
     `src/api/mod.rs` — **chat Files tab + chat tabs** (chattabs lane).
@@ -1389,6 +1391,7 @@ Notes:
     `files::…::chat_scope_never_takes_the_channel_scan`,
     `chat_files_tests::file_refs_from_chat_service_page`,
     `tabs::…::chat_tabs_parse_name_and_teams_link`.
+    UPSTREAM: PR https://github.com/eisbaw/ost/pull/93 (fix/chat-files-tab, stacks on #71) + PR https://github.com/eisbaw/ost/pull/90 (fix/chat-tabs, stacks on #80)
 
 82. [feature] `src/api/teams.rs`, `src/api/mod.rs` — **channel edit and
     delete** (teamsync lane). Pure `channel_path` and
@@ -1404,6 +1407,7 @@ Notes:
     `tests/e2e_echo123.sh` (the only scripts that write: self-chat
     sends and a self-call) now exit 0 with a SKIP unless
     `OST_E2E_LIVE_WRITES=1` is set.
+    UPSTREAM: PR https://github.com/eisbaw/ost/pull/83 (fix/channel-edit-delete, stacks on #43)
 
 83. [fix] `src/api/files.rs`, `src/api/chat.rs` — **message file chips
     via the chat service + bot 1:1 fixtures** (chatrows lane).
@@ -1421,6 +1425,7 @@ Notes:
     `tests::bot_one_to_one_chats_list_like_teams` (live-shaped
     `19:{oid}_{botApp}@unq.gbl.spaces` and legacy `28:` rows list as
     1:1s named after the bot), `chat_scope_never_takes_the_channel_scan`.
+    UPSTREAM: PR https://github.com/eisbaw/ost/pull/94 (fix/chat-message-file-chips, stacks on #93) + PR https://github.com/eisbaw/ost/pull/92 (fix/bot-one-to-one-chats, test-only, stacks on #15)
 
 84. [feature] `src/api/chat.rs`, `src/api/files.rs`, `src/api/mod.rs` —
     **server-side pinned chat messages + chat-service file send**
@@ -1445,6 +1450,7 @@ Notes:
     to the Graph reference post. Tests: `pinned_tests::*` (thread
     properties as JSON string and array, CSV, Graph payload, Graph 403
     precedence), `chat_file_send_tests::chat_service_file_body_round_trips_through_the_reader`.
+    UPSTREAM: PR https://github.com/eisbaw/ost/pull/91 (fix/chat-pinned-messages) + PR https://github.com/eisbaw/ost/pull/95 (fix/chat-service-file-send, stacks on #93); pin removal (chat_unpin_message_with_client) deferred until an open PR adding graph_delete merges
 
 85. [fix] `src/api/chat.rs`, `src/api/files.rs`, `src/api/mod.rs`,
     `src/trouter/mod.rs`, `src/trouter/registrar.rs` — **reliable sends
@@ -1486,6 +1492,7 @@ Notes:
     `sendfix_tests::*` (chat.rs: client id shape, receipt id parse,
     page lookup, 1:1 id ordering; trouter: plain/gzip/`data`/object/
     `cp`/`gp` bodies, non-chat frames skipped).
+    UPSTREAM: PARTIAL: (a) idempotent sends https://github.com/eisbaw/ost/pull/96 (stacks on #6; reply/thread-reply variants and the files.rs upload_file_data_idem part pending: need #14/#55/#71-stack), (b) trouter registration https://github.com/eisbaw/ost/pull/88 and data frames https://github.com/eisbaw/ost/pull/89 (stacks on #10), (c) 1:1 open https://github.com/eisbaw/ost/pull/97 (stacks on #37)
 
 86. [fix] `src/api/client.rs`, `src/api/chat.rs`, `src/api/files.rs`,
     `src/api/mod.rs` — **Graph calls the Teams web token cannot use**
@@ -1522,6 +1529,7 @@ Notes:
     `files::tests::message_files_route_off_graph_chats`,
     `roster_name_tests::roster_blank_names_fill_from_users`, ostmac-core
     `core_a_group_chat_body_and_member_normalization`.
+    UPSTREAM: PARTIAL: (a) group chat create via chat service https://github.com/eisbaw/ost/pull/100 (stacks on #62, carries the #97 commit); (b) roster name fill https://github.com/eisbaw/ost/pull/101 (stacks on #61; the chat-service roster is kept as fallback, Graph-first order untouched upstream); (c)-(f) Graph-fallback removals and graph_denied table n/a: policy specific to the host app's Teams-web token
 87. [fix] `src/api/client.rs`, `src/api/teams.rs`, `src/api/apps.rs`,
     `src/api/chat.rs`, `src/api/mod.rs` — **Teams-service routes for the
     writes §86 refused** (graphsweep lane; comments tag §GRAPHSWEEP3).
@@ -1560,6 +1568,7 @@ Notes:
     link" fallback: the app now shows an error and never opens it). Tests: `teams::tests::team_create_goes_to_middle_tier_with_web_client_body`,
     `channel_edit_delete_middle_tier_shapes`, `apps::tests::store_parse_sections_detail_fields_and_install_body`,
     `chat::chatmenu_tests::hide_request_shape`.
+    UPSTREAM: PARTIAL: (a) mt_send_json + create team https://github.com/eisbaw/ost/pull/103 (stacks on #74 and #42), (b) channel edit/delete https://github.com/eisbaw/ost/pull/104 (stacks on #103 and #83), (e) hide chat via chat service https://github.com/eisbaw/ost/pull/102 (stacks on #81); all three are additive (the Graph variants stay); (d) install_app_for_user via app entitlements pending
 89. [feat] `src/api/tags.rs` (new), `src/api/client.rs`, `src/api/mod.rs`,
     `src/api/fake_transport.rs` + `src/api/write_fakes.rs` (test-only) —
     **Teams tags read from the CSA service; fake-transport tests for the
@@ -1587,6 +1596,7 @@ Notes:
     Also: §87's old "keep opening the `/meet/{id}?p=` link" fallback is
     superseded — the app no longer opens it (see Swift
     `MeetingsViewModel.joinByMeetingID`).
+    UPSTREAM: PR https://github.com/eisbaw/ost/pull/99 (fix/teams-tag-cards, tags.rs only, upstream/main); (b)(c) csa_base/graph_base hooks + fake-transport tests n/a: test-harness only, not ported; ostmac-core catchup_tags n/a: host-app glue
 
 
 88. [feature] `src/api/team_settings.rs` (new), `src/api/mod.rs` —
@@ -1604,6 +1614,7 @@ Notes:
     `ostmac_team_settings`, and realtime now treats a
     `ThreadActivity/*` system message as a tree-refresh signal
     (`realtime::tests::thread_activity_system_message_is_a_tree_signal`).
+    UPSTREAM: PR https://github.com/eisbaw/ost/pull/84 (fix/team-member-settings)
 
 90. [fix/feature] `src/api/files.rs`, `src/api/chat.rs`,
     `src/api/client.rs`, `src/api/media.rs`, `src/api/fake_transport.rs`
@@ -1637,6 +1648,7 @@ Notes:
     `ostmac_media_head` (never cached), five rustc warnings removed.
     Tests: `file_post_idem_tests` (3), `file_post_idem_fake_tests` (6),
     `write_fakes` (+4), `mate_batch_tests` (3), `head_tests` (2).
+    UPSTREAM: PARTIAL: (b) mate-name batching + cache https://github.com/eisbaw/ost/pull/98 (stacks on #15), (c) media_get_head https://github.com/eisbaw/ost/pull/87 (stacks on #16); (e) tui.txt n/a: upstream copy already uses Western demo names, vendored swap is cosmetic; (a) idempotent file posts pending (needs #96 + #93/#95 stacks merged), (d) fake-transport tests n/a
 
 91. [fix] `src/api/chat.rs`, `src/api/write_fakes.rs` (test-only) --
     **own-message delete matches the Teams web client** (MSGDELETE lane).
@@ -1651,6 +1663,7 @@ Notes:
     `chat::tests::delete_url_is_web_client_soft_delete`,
     `write_fakes::delete_message_sends_soft_delete_with_encoded_conversation`,
     `write_fakes::delete_message_failure_is_surfaced`.
+    UPSTREAM: PR https://github.com/eisbaw/ost/pull/85 (fix/message-delete-soft, stacks on #19)
 
 92. [fix] `src/api/recordings.rs` -- **recording length read from the
     right driveItem field** (CALGRID lane). The `video` facet was
@@ -1660,6 +1673,7 @@ Notes:
     `#[serde(rename = "duration", alias = "durationMillis")]`. Test:
     `recordings::tests::video_facet_duration_reads_graph_field_name`
     (real-shaped facet with bitrate/frame fields).
+    UPSTREAM: PR https://github.com/eisbaw/ost/pull/86 (fix/recording-duration-field, stacks on #48)
 
 ## Upstream PRs, wave 9 (2026-09-25 R10 audit; base 0892144; origin/main still 0892144)
 

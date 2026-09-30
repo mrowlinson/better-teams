@@ -26,13 +26,13 @@ final class ActSearchTests: XCTestCase {
         XCTAssertGreaterThan(wide.first ?? 0, 276, "small segments overflow the default pane")
         XCTAssertEqual(Self.segmentWidths(four, width: 276).count, 1, "four scopes: mini segments fit")
         XCTAssertEqual(Self.segmentWidths(five, width: 800).count, 1, "control: five segments when wide")
-        XCTAssertEqual(Self.segmentWidths(five, width: 276), [], "five scopes: menu, nothing clipped")
-        XCTAssertEqual(Self.segmentWidths(five, width: 236), [])
+        XCTAssertEqual(Self.segmentWidths(five, width: 276, expectSegments: false), [], "five scopes: menu, nothing clipped")
+        XCTAssertEqual(Self.segmentWidths(five, width: 236, expectSegments: false), [])
     }
 
     /// Widths of the segmented controls the bar draws at `width`, each
     /// checked to lie inside it.
-    private static func segmentWidths(_ search: SearchModel, width: CGFloat) -> [Int] {
+    private static func segmentWidths(_ search: SearchModel, width: CGFloat, expectSegments: Bool = true) -> [Int] {
         let host = NSHostingView(rootView: SearchScopeBar(search: search).frame(width: width))
         // Platform controls materialize only inside a window (offscreen,
         // never ordered front).
@@ -41,7 +41,14 @@ final class ActSearchTests: XCTestCase {
         window.isReleasedWhenClosed = false
         window.contentView = host
         host.layoutSubtreeIfNeeded()
-        RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        if expectSegments {
+            XCTAssertTrue(TestWait.spinUntil { host.layoutSubtreeIfNeeded(); return !segments(in: host).isEmpty },
+                          "segmented control never materialized at \(width)")
+        } else {
+            // Negative window: the bar collapses to a menu, so there is no
+            // positive signal to wait on (cannot be made load-proof).
+            RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        }
         host.layoutSubtreeIfNeeded()
         return segments(in: host).map { v in
             let r = v.convert(v.bounds, to: host)

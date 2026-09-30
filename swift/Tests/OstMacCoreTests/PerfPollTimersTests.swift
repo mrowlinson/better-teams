@@ -7,15 +7,17 @@ import XCTest
 @testable import OstMacCore
 
 final class PerfPollTimersTests: XCTestCase {
-    /// Median wall ns of `body` over `n` iters (first iter = warmup, discarded).
+    /// Median PROCESS CPU ns of `body` over `n` iters (first iter = warmup,
+    /// discarded). CPU time, not wall: wall counts the scheduler's queueing
+    /// under machine load and flakes these bounds.
     static func medianNs(_ n: Int = 200, _ body: () throws -> Void) rethrows -> Double {
         try body()
         var samples: [Double] = []
         samples.reserveCapacity(n)
         for _ in 0 ..< n {
-            let t0 = DispatchTime.now().uptimeNanoseconds
+            let t0 = clock_gettime_nsec_np(CLOCK_PROCESS_CPUTIME_ID)
             try body()
-            let t1 = DispatchTime.now().uptimeNanoseconds
+            let t1 = clock_gettime_nsec_np(CLOCK_PROCESS_CPUTIME_ID)
             samples.append(Double(t1) - Double(t0))
         }
         samples.sort()

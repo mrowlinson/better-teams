@@ -37,10 +37,12 @@ final class BigUploadTests: XCTestCase {
 
     /// Spinner stays up while % streams in from the progress poll.
     func testSharedUploadStreamsPercentWhileSpinning() async {
+        // Upload is held on a gate (released once % was seen), not a 0.6 s sleep.
+        let hold = DispatchSemaphore(value: 0)
         let store = SharedFilesStore(
             list: { _, _ in SharedFilesResponse(ok: true, files: []) },
             upload: { _, _ in
-                Thread.sleep(forTimeInterval: 0.6) // hold the spinner open
+                _ = hold.wait(timeout: .now() + TestWait.hangCeiling) // hold the spinner open
                 return SharedFileUploadResponse(
                     ok: true, file: SharedFile(id: "f-big", name: "b.mov", size: 9))
             },
@@ -48,26 +50,19 @@ final class BigUploadTests: XCTestCase {
                 UploadProgressResponse(ok: true, uploaded: 50, total: 100, percent: 50, active: true)
             })
         store.open(chatID: "19:x")
-        for _ in 0 ..< 50 {
-            if case .empty = store.state { break }
-            try? await Task.sleep(nanoseconds: 20_000_000)
+        await TestWait.until {
+            if case .empty = store.state { return true }
+            return false
         }
         store.upload(path: "/tmp/b.mov")
-        var sawProgress = false
-        for _ in 0 ..< 100 {
-            if store.uploadProgress != nil {
-                sawProgress = true
-                XCTAssertTrue(store.uploading) // spinner stays while % streams
-                break
-            }
-            try? await Task.sleep(nanoseconds: 50_000_000)
+        let sawProgress = await TestWait.until { store.uploadProgress != nil }
+        if sawProgress {
+            XCTAssertTrue(store.uploading) // spinner stays while % streams
         }
         XCTAssertTrue(sawProgress)
         XCTAssertEqual(store.uploadProgress, 0.5)
-        for _ in 0 ..< 100 {
-            if !store.uploading { break }
-            try? await Task.sleep(nanoseconds: 50_000_000)
-        }
+        hold.signal()
+        await TestWait.until { !store.uploading }
         XCTAssertFalse(store.uploading)
         XCTAssertNil(store.uploadProgress)
         XCTAssertEqual(store.files.first?.id, "f-big")

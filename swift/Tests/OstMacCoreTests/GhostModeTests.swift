@@ -348,15 +348,12 @@ final class GhostModeTests: XCTestCase {
 
     // MARK: - helpers
 
-    /// Spin until `cond` holds (mock transports resolve in ms; 2s cap).
+    /// Wait until `cond` holds (TestWait; the ceiling only bounds a hang).
     private func waitFor(
         _ cond: () -> Bool,
         file: StaticString = #filePath, line: UInt = #line
     ) async {
-        for _ in 0 ..< 100 {
-            if cond() { return }
-            try? await Task.sleep(nanoseconds: 20_000_000)
-        }
-        XCTFail("condition not met in 2s", file: file, line: line)
+        let met = await TestWait.until(interval: 0.02) { cond() }
+        if !met { XCTFail("condition not met", file: file, line: line) }
     }
 }

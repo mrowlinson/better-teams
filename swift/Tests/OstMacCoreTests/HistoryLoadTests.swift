@@ -13,6 +13,7 @@ private final class ScriptedRunner: AccountCoreRunner, @unchecked Sendable {
     private let lock = NSLock()
     private var script: [Result<MessagesResponse, Error>]
     private var calls = 0
+    private var done = 0
     let delay: TimeInterval
     /// Unscripted calls: a fresh 2-message page per call (`cN-a/b`).
     let generate: Bool
@@ -24,6 +25,8 @@ private final class ScriptedRunner: AccountCoreRunner, @unchecked Sendable {
     }
 
     var pageCalls: Int { lock.withLock { calls } }
+    /// Page calls whose (delayed) result has been handed back to the store.
+    var finishedCalls: Int { lock.withLock { done } }
 
     func run<T>(_ op: () throws -> T, accountID: String?) throws -> T {
         if T.self == String.self { return "Me" as! T }
@@ -38,6 +41,7 @@ private final class ScriptedRunner: AccountCoreRunner, @unchecked Sendable {
             return .success(page([], token: nil))
         }
         if delay > 0 { Thread.sleep(forTimeInterval: delay) }
+        lock.withLock { done += 1 }
         return try next.get() as! T
     }
 }
@@ -60,12 +64,10 @@ final class HistoryLoadTests: XCTestCase {
     }
 
     private func settle(_ s: ConversationStore, _ extra: (() -> Bool)? = nil) async {
-        let deadline = Date().addingTimeInterval(5)
-        while Date() < deadline {
-            if !s.loading, !s.refreshing, !s.loadingMore, extra?() ?? true { return }
-            try? await Task.sleep(nanoseconds: 5_000_000)
+        let settled = await TestWait.until(interval: 0.005) {
+            !s.loading && !s.refreshing && !s.loadingMore && (extra?() ?? true)
         }
-        XCTFail("store never settled")
+        if !settled { XCTFail("store never settled") }
     }
 
     // MARK: open
@@ -191,7 +193,12 @@ final class HistoryLoadTests: XCTestCase {
         s.open(chatID: "b") // leave mid-fetch
         XCTAssertFalse(s.loadingMore)
         await settle(s)
-        try? await Task.sleep(nanoseconds: 150_000_000) // let a's page land (dropped)
+        // Let a's page land (dropped): wait until every page call has handed
+        // its result back, then drain the main-actor hops that apply it.
+        let landed = await TestWait.until { runner.finishedCalls == runner.pageCalls }
+        XCTAssertTrue(landed, "a's page never returned")
+        for _ in 0 ..< 200 { await Task.yield() }
+        try? await Task.sleep(nanoseconds: 200_000_000) // negative window: a stale page must NOT land; yields alone are microseconds
         let prefixes = Set(s.messages.map { $0.id.split(separator: "-")[0] })
         XCTAssertEqual(prefixes.count, 1, "only b's page, never a's older page: \(s.messages.map(\.id))")
         XCTAssertEqual(s.chatID, "b")
@@ -251,13 +258,17 @@ final class HistoryLoadTests: XCTestCase {
             delay: 0.3)
         let s = store(runner, cache: MessageHistoryCache(directory: dir))
         let t0 = Date()
+        let cpu0 = TestWait.cpuSeconds()
         s.open(chatID: "c")
         let first = Date().timeIntervalSince(t0) * 1000
+        let cpuFirst = TestWait.cpuSeconds() - cpu0
         XCTAssertEqual(s.messages.count, 500)
         await settle(s)
         let fresh = Date().timeIntervalSince(t0) * 1000
         XCTAssertEqual(s.messages.last?.id, "new")
         print(String(format: "HISTLOAD timing: first-content(cached,500 msgs cold disk)=%.1fms fresh(300ms net)=%.1fms", first, fresh))
-        XCTAssertLessThan(first, 250)
+        // CPU time, not wall: the cached first paint must not be CPU-heavy;
+        // wall counts scheduler queueing under load.
+        XCTAssertLessThan(cpuFirst * 1000, 250)
     }
 }

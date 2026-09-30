@@ -169,17 +169,35 @@ final class LinkPreviewTests: XCTestCase {
         XCTAssertEqual(seen.all, ["https://example.com/p"])
     }
 
+    private final class OpenGate: @unchecked Sendable {
+        private let lock = NSLock()
+        private var _open = false
+        var isOpen: Bool { lock.withLock { _open } }
+        func open() { lock.withLock { _open = true } }
+    }
+
     func testCacheDedupesConcurrentFetch() async throws {
         let cache = LinkPreviewCache()
         let calls = Counter()
+        let gate = OpenGate()
         let fetcher: LinkPreviewCache.Fetcher = { _ in
             calls.inc()
-            try await Task.sleep(nanoseconds: 50_000_000)
+            // Hold the fetch open until all three callers have been issued
+            // (gate, not a wall-clock window): the later two must join the
+            // in-flight task instead of starting their own.
+            let t0 = DispatchTime.now().uptimeNanoseconds
+            while !gate.isOpen, DispatchTime.now().uptimeNanoseconds &- t0 < 60_000_000_000 {
+                try await Task.sleep(nanoseconds: 2_000_000)
+            }
             return Data("<title>D</title>".utf8)
         }
         async let a = cache.preview(for: "https://example.com/c", fetcher: fetcher)
         async let b = cache.preview(for: "https://example.com/c", fetcher: fetcher)
         async let c = cache.preview(for: "https://example.com/c", fetcher: fetcher)
+        // Let the three child tasks reach the cache (yield count, not time).
+        for _ in 0 ..< 500 { await Task.yield() }
+        try? await Task.sleep(nanoseconds: 200_000_000) // let b and c reach the cache and join the in-flight fetch
+        gate.open()
         let got = try await [a, b, c]
         XCTAssertEqual(got.map(\.title), ["D", "D", "D"])
         XCTAssertEqual(calls.count, 1)
@@ -206,7 +224,7 @@ final class LinkPreviewTests: XCTestCase {
     func testTimeoutThrows() async {
         let cache = LinkPreviewCache()
         let fetcher: LinkPreviewCache.Fetcher = { _ in
-            try await Task.sleep(nanoseconds: 5_000_000_000)
+            try await Task.sleep(nanoseconds: 60_000_000_000) // wedge: outlives the 50 ms deadline under any load
             return Data("<title>slow</title>".utf8)
         }
         do {
@@ -258,7 +276,7 @@ final class LinkPreviewTests: XCTestCase {
             urlString: "https://example.com/slow",
             cache: LinkPreviewCache(),
             fetcher: { _ in
-                try await Task.sleep(nanoseconds: 5_000_000_000)
+                try await Task.sleep(nanoseconds: 60_000_000_000) // wedge: outlives the 50 ms deadline under any load
                 return Data("<title>x</title>".utf8)
             },
             timeoutSeconds: 0.05)

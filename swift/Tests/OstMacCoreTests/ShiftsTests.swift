@@ -36,10 +36,7 @@ final class ShiftsTests: XCTestCase {
     }
 
     func waitFor(_ what: String, _ cond: @escaping () -> Bool) async throws {
-        for _ in 0 ..< 200 {
-            if cond() { return }
-            try await Task.sleep(nanoseconds: 10_000_000)
-        }
+        if try await TestWait.untilThrowing({ cond() }) { return }
         XCTFail("timed out waiting for \(what)")
     }
 

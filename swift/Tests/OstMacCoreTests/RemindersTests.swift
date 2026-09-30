@@ -263,15 +263,12 @@ final class RemindersTests: XCTestCase {
 
     // MARK: - Helpers
 
-    /// Spin until `cond` holds (mock fetchers resolve in ms; 2s cap).
+    /// Spin until `cond` holds (mock fetchers resolve in ms; hang-only ceiling).
     private func waitFor(
         _ cond: () -> Bool,
         file: StaticString = #filePath, line: UInt = #line
     ) async {
-        for _ in 0 ..< 100 {
-            if cond() { return }
-            try? await Task.sleep(nanoseconds: 20_000_000)
-        }
-        XCTFail("condition not met in 2s", file: file, line: line)
+        if await TestWait.until(cond) { return }
+        XCTFail("timed out waiting for condition", file: file, line: line)
     }
 }

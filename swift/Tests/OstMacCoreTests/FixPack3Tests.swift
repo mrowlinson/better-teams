@@ -65,7 +65,7 @@ final class FixPack3Tests: XCTestCase {
     }
 
     private func settled(_ s: PresenceScheduleStore) async {
-        for _ in 0 ..< 400 where s.inflight { try? await Task.sleep(nanoseconds: 5_000_000) }
+        await TestWait.until(interval: 0.005) { !s.inflight }
     }
 
     func testEditingTheActiveEntryReappliesOnTheNextTickNotTheNextTransition() async {
@@ -114,7 +114,7 @@ final class FixPack3Tests: XCTestCase {
     }
 
     private func wait(_ done: () -> Bool) async {
-        for _ in 0 ..< 400 where !done() { try? await Task.sleep(nanoseconds: 10_000_000) }
+        await TestWait.until { done() }
     }
 
     /// (a) attempt 1 fails, retry succeeds: attempt 1's fade timer must not

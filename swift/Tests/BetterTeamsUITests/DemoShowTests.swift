@@ -27,7 +27,8 @@ final class DemoShowTests: XCTestCase {
         window.contentViewController = vc // adopts the view's (zero) size
         window.setContentSize(NSSize(width: 640, height: 300)) // then the pane gets its size
         window.layoutIfNeeded()
-        RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+        // Wait for the jump to land (condition, not a fixed settle).
+        TestWait.spinUntil { vc.visibleMessageIDs.contains("sc-1") }
 
         let visible = vc.visibleMessageIDs
         XCTAssertFalse(visible.isEmpty, "control: timeline laid out")
