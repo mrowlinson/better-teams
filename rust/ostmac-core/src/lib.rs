@@ -41,6 +41,7 @@ pub mod planner;
 pub mod realtime;
 pub mod recordings;
 pub mod schedule;
+pub mod recap;
 pub mod transcripts;
 
 // ---------------------------------------------------------------------------
@@ -2965,6 +2966,7 @@ fn typed_envelope(events: Vec<String>) -> String {
         "typing": batch.typing,
         "roster": batch.roster,
         "threads": batch.threads,
+        "read_states": batch.read_states,
         "backlog": backlog,
     })
     .to_string()

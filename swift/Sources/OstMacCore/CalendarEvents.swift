@@ -70,16 +70,61 @@ public struct EventAttendee: Codable, Sendable, Equatable, Identifiable {
     /// `required` | `optional` | `resource` (a room).
     public let type: String
     public let response: RSVPResponse
+    /// This entry is the signed-in user (matched by mail or UPN).
+    public let isMe: Bool
 
-    public init(name: String, email: String, type: String = "required", response: RSVPResponse = .none) {
+    public init(name: String, email: String, type: String = "required", response: RSVPResponse = .none,
+                isMe: Bool = false) {
         self.name = name
         self.email = email
         self.type = type
         self.response = response
+        self.isMe = isMe
+    }
+
+    private enum CodingKeys: String, CodingKey { case name, email, type, response, isMe }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        name = try c.decode(String.self, forKey: .name)
+        email = try c.decode(String.self, forKey: .email)
+        type = try c.decode(String.self, forKey: .type)
+        response = try c.decode(RSVPResponse.self, forKey: .response)
+        isMe = try c.decodeIfPresent(Bool.self, forKey: .isMe) ?? false
     }
 
     public var isRoom: Bool { type == "resource" }
     public var typeLabel: String { type == "optional" ? "Optional" : "Required" }
+
+    /// The one display format: "First Last" (never "Last, First", never
+    /// a bare address when a name can be read from it).
+    public var displayName: String { CalendarNames.display(name, email: email) }
+
+    /// `displayName`, plus " (You)" on the signed-in user's own entry.
+    public var label: String { isMe ? displayName + " (You)" : displayName }
+}
+
+/// One display-name format for every calendar surface.
+public enum CalendarNames {
+    /// "Last, First" → "First Last"; an address used as the name →
+    /// the name read from its local part ("ann.lee@x" → "Ann Lee").
+    public static func display(_ name: String?, email: String? = nil) -> String {
+        let raw = (name ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let address = raw.contains("@") ? raw : (email ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if raw.isEmpty || raw.contains("@") {
+            guard let local = address.split(separator: "@").first.map(String.init), !address.isEmpty else { return raw }
+            let words = local.split(whereSeparator: { $0 == "." || $0 == "_" || $0 == "-" }).map(String.init)
+            guard words.count >= 2, words.allSatisfy({ $0.allSatisfy(\.isLetter) }) else { return address }
+            return words.map { $0.prefix(1).uppercased() + $0.dropFirst().lowercased() }.joined(separator: " ")
+        }
+        let parts = raw.split(separator: ",", omittingEmptySubsequences: false).map {
+            $0.trimmingCharacters(in: .whitespaces)
+        }
+        if parts.count == 2, !parts[0].isEmpty, !parts[1].isEmpty, !parts[1].contains("(") {
+            return parts[1] + " " + parts[0]
+        }
+        return raw
+    }
 }
 
 /// Dial-in details of an online meeting (Graph `onlineMeeting`).
@@ -119,6 +164,9 @@ public struct CalendarEventInfo: Codable, Sendable, Equatable {
     /// Human summary of the series pattern, when the row carries it
     /// (series masters; occurrences get it with the details read).
     public var recurrence: String?
+    /// Graph `createdDateTime` as UTC wall clock (`yyyy-MM-dd'T'HH:mm:ss`):
+    /// when the invitation landed in this calendar (Tracking "Sent on").
+    public var sentAt: String?
 
     public init(
         location: String? = nil, myResponse: RSVPResponse = .none, showAs: String? = nil,
@@ -126,7 +174,8 @@ public struct CalendarEventInfo: Codable, Sendable, Equatable {
         attendees: [EventAttendee] = [], originalStartTimeZone: String? = nil,
         isCancelled: Bool = false, hasAttachments: Bool = false, responseRequested: Bool = true,
         bodyPreview: String? = nil, webLink: String? = nil, sensitivity: String? = nil,
-        reminderMinutes: Int? = nil, dialIn: EventDialIn? = nil, recurrence: String? = nil
+        reminderMinutes: Int? = nil, dialIn: EventDialIn? = nil, recurrence: String? = nil,
+        sentAt: String? = nil
     ) {
         self.location = location
         self.myResponse = myResponse
@@ -144,29 +193,76 @@ public struct CalendarEventInfo: Codable, Sendable, Equatable {
         self.reminderMinutes = reminderMinutes
         self.dialIn = dialIn
         self.recurrence = recurrence
+        self.sentAt = sentAt
     }
 
     /// People (rooms excluded).
     public var people: [EventAttendee] { attendees.filter { !$0.isRoom } }
     public var rooms: [EventAttendee] { attendees.filter(\.isRoom) }
 
-    /// Response tally over people, Teams order.
+    /// Response tally, Teams order.
     public struct Tally: Equatable, Sendable {
         public var accepted = 0, tentative = 0, declined = 0, pending = 0
+        public var total: Int { accepted + tentative + declined + pending }
     }
 
-    public var tally: Tally {
+    /// Tracking bucket (Teams order).
+    public enum Bucket: String, CaseIterable, Sendable {
+        case accepted, tentative, declined, pending
+
+        public init(_ r: RSVPResponse) {
+            switch r {
+            case .accepted, .organizer: self = .accepted
+            case .tentativelyAccepted: self = .tentative
+            case .declined: self = .declined
+            case .none, .notResponded: self = .pending
+            }
+        }
+
+        public var title: String {
+            switch self {
+            case .accepted: "Accepted"
+            case .tentative: "Tentative"
+            case .declined: "Declined"
+            case .pending: "Didn\u{2019}t respond"
+            }
+        }
+    }
+
+    public struct AttendeeGroup: Identifiable, Equatable, Sendable {
+        public var id: String { bucket.rawValue }
+        public let bucket: Bucket
+        public let people: [EventAttendee]
+        /// "Didn't respond: 3".
+        public var header: String { "\(bucket.title): \(people.count)" }
+    }
+
+    /// Non-empty buckets of `people`, Teams order.
+    public static func groups(_ people: [EventAttendee]) -> [AttendeeGroup] {
+        Bucket.allCases.compactMap { b in
+            let list = people.filter { Bucket($0.response) == b }
+            return list.isEmpty ? nil : AttendeeGroup(bucket: b, people: list)
+        }
+    }
+
+    /// Tally of `people` (callers pass `MeetingItem.invitees`: the
+    /// organizer is never an attendee).
+    public static func tally(_ people: [EventAttendee]) -> Tally {
         var t = Tally()
         for a in people {
-            switch a.response {
-            case .accepted, .organizer: t.accepted += 1
-            case .tentativelyAccepted: t.tentative += 1
+            switch Bucket(a.response) {
+            case .accepted: t.accepted += 1
+            case .tentative: t.tentative += 1
             case .declined: t.declined += 1
-            case .none, .notResponded: t.pending += 1
+            case .pending: t.pending += 1
             }
         }
         return t
     }
+
+    /// Tally over people minus Graph's `organizer` entries (use
+    /// `MeetingItem.tally`, which also drops the organizer by address).
+    public var tally: Tally { Self.tally(people.filter { $0.response != .organizer }) }
 }
 
 /// Details read on demand (inspector expand / details popup).
@@ -195,34 +291,69 @@ public struct EventAttachment: Codable, Sendable, Equatable, Identifiable {
     public let id: String
     public let name: String
     public let size: Int
+    public var contentType: String?
 
-    public init(id: String, name: String, size: Int) {
+    public init(id: String, name: String, size: Int, contentType: String? = nil) {
         self.id = id
         self.name = name
         self.size = size
+        self.contentType = contentType
+    }
+
+    /// A safe file name for saving (no path separators, never empty).
+    public var fileName: String {
+        let cleaned = name.replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ":", with: "-")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let noDot = cleaned.drop { $0 == "." }
+        return noDot.isEmpty ? "Attachment" : String(noDot)
     }
 }
 
 /// An edit to an existing event (Graph `PATCH /me/events/{id}`); nil
 /// fields are left alone. `start`/`end` are local Graph datetimes in
-/// `timeZone`.
+/// `timeZone`. Subject/time/location/attendees are organizer edits;
+/// show-as, reminder, categories and sensitivity are personal (any
+/// copy of the event, organizer or attendee).
 public struct CalendarEventPatch: Sendable, Equatable {
     public var subject: String?
     public var start: String?
     public var end: String?
     public var timeZone: String
     public var location: String?
+    /// `free` | `tentative` | `busy` | `oof` | `workingElsewhere`.
+    public var showAs: String?
+    /// Minutes before start; a negative value turns the reminder off.
+    public var reminderMinutes: Int?
+    /// Outlook category names (replaces the event's list).
+    public var categories: [String]?
+    /// `normal` | `personal` | `private` | `confidential`.
+    public var sensitivity: String?
+    /// Full attendee list (Graph replaces it): room add / attendee
+    /// removal by the organizer.
+    public var attendees: [EventAttendee]?
 
     public init(subject: String? = nil, start: String? = nil, end: String? = nil,
-                timeZone: String = TimeZone.current.identifier, location: String? = nil) {
+                timeZone: String = TimeZone.current.identifier, location: String? = nil,
+                showAs: String? = nil, reminderMinutes: Int? = nil, categories: [String]? = nil,
+                sensitivity: String? = nil, attendees: [EventAttendee]? = nil) {
         self.subject = subject
         self.start = start
         self.end = end
         self.timeZone = timeZone
         self.location = location
+        self.showAs = showAs
+        self.reminderMinutes = reminderMinutes
+        self.categories = categories
+        self.sensitivity = sensitivity
+        self.attendees = attendees
     }
 
-    public var isEmpty: Bool { subject == nil && start == nil && end == nil && location == nil }
+    public var isEmpty: Bool { body.isEmpty }
+
+    /// Only fields any attendee may change on their own copy.
+    public var isPersonal: Bool {
+        subject == nil && start == nil && end == nil && location == nil && attendees == nil
+    }
 
     /// The PATCH body.
     public var body: [String: Any] {
@@ -231,7 +362,327 @@ public struct CalendarEventPatch: Sendable, Equatable {
         if let start { b["start"] = ["dateTime": start, "timeZone": timeZone] }
         if let end { b["end"] = ["dateTime": end, "timeZone": timeZone] }
         if let location { b["location"] = ["displayName": location] }
+        if let showAs { b["showAs"] = showAs }
+        if let reminderMinutes {
+            b["isReminderOn"] = reminderMinutes >= 0
+            if reminderMinutes >= 0 { b["reminderMinutesBeforeStart"] = reminderMinutes }
+        }
+        if let categories { b["categories"] = categories }
+        if let sensitivity { b["sensitivity"] = sensitivity }
+        if let attendees {
+            b["attendees"] = attendees.map { a -> [String: Any] in
+                ["type": a.type, "emailAddress": ["address": a.email, "name": a.name]]
+            }
+        }
         return b
+    }
+
+    /// `row` with this patch applied in memory (demo / optimistic).
+    public func applied(to row: MeetingItem) -> MeetingItem {
+        var m = row
+        if let s = subject { m.subject = s }
+        if let s = start { m.start = s }
+        if let e = end { m.end = e }
+        if let l = location { m.info?.location = l.isEmpty ? nil : l }
+        if let s = showAs { m.info?.showAs = s }
+        if let r = reminderMinutes { m.info?.reminderMinutes = r >= 0 ? r : nil }
+        if let c = categories { m.categories = c }
+        if let s = sensitivity { m.info?.sensitivity = s }
+        if let a = attendees { m.info?.attendees = a }
+        return m
+    }
+}
+
+/// A new event with everything Duplicate carries over.
+public struct CalendarEventDraft: Sendable, Equatable {
+    public var subject: String
+    public var start: Date
+    public var end: Date
+    public var isAllDay: Bool
+    public var online: Bool
+    public var location: String?
+    /// People and rooms (organizer excluded).
+    public var attendees: [EventAttendee]
+    /// HTML body (Teams join block stripped: a new meeting gets its own).
+    public var bodyHTML: String?
+    public var categories: [String]
+    public var showAs: String?
+    public var reminderMinutes: Int?
+    public var sensitivity: String?
+
+    public init(subject: String, start: Date, end: Date, isAllDay: Bool = false, online: Bool = true,
+                location: String? = nil, attendees: [EventAttendee] = [], bodyHTML: String? = nil,
+                categories: [String] = [], showAs: String? = nil, reminderMinutes: Int? = nil,
+                sensitivity: String? = nil) {
+        self.subject = subject
+        self.start = start
+        self.end = end
+        self.isAllDay = isAllDay
+        self.online = online
+        self.location = location
+        self.attendees = attendees
+        self.bodyHTML = bodyHTML
+        self.categories = categories
+        self.showAs = showAs
+        self.reminderMinutes = reminderMinutes
+        self.sensitivity = sensitivity
+    }
+
+    /// Duplicate of `m` (details `d` when read): same time, people,
+    /// rooms, location, body and personal fields.
+    /// `now` (when given) moves a past occurrence to the next day at the
+    /// same time of day, so the copy is never born in the past.
+    /// `myAddresses`: the signed-in user's mail/UPN, so the user's own
+    /// entry never lands in the copy's attendees (entries also carry
+    /// `isMe`).
+    public static func duplicate(of m: MeetingItem, detail d: CalendarEventDetail?, calendar cal: Calendar = .current,
+                                 now: Date? = nil, myAddresses: [String] = []) -> Self {
+        let zone = cal.timeZone.identifier
+        var start = CalendarTime.instant(m.start, zone: m.isAllDay ? "UTC" : zone) ?? Date()
+        var end = CalendarTime.instant(m.end, zone: m.isAllDay ? "UTC" : zone) ?? start.addingTimeInterval(1800)
+        if let now, !m.isAllDay, start < now {
+            let parts = cal.dateComponents([.hour, .minute], from: start)
+            if let next = cal.nextDate(after: now, matching: parts, matchingPolicy: .nextTime) {
+                end = next.addingTimeInterval(end.timeIntervalSince(start))
+                start = next
+            }
+        }
+        let mine = Set(myAddresses.map { $0.lowercased() })
+        var people = m.invitees.filter { !$0.isMe && !mine.contains($0.email.lowercased()) } + (m.info?.rooms ?? [])
+        // Copying someone else's invitation: the copy is yours, so the
+        // original organizer becomes an attendee.
+        if !m.isOrganizer, let org = m.organizerEmail, !org.isEmpty, !mine.contains(org.lowercased()),
+           !people.contains(where: { $0.email.lowercased() == org.lowercased() }) {
+            people.insert(EventAttendee(name: m.organizer ?? org, email: org), at: 0)
+        }
+        return CalendarEventDraft(
+            subject: m.subject, start: start, end: end, isAllDay: m.isAllDay,
+            online: m.joinURL?.isEmpty == false || m.isOnline,
+            location: m.info?.location, attendees: people.map {
+                EventAttendee(name: $0.name, email: $0.email, type: $0.type)
+            },
+            bodyHTML: d?.bodyHTML.map(stripTeamsBlock) ?? d?.bodyText, categories: m.categories,
+            showAs: m.info?.showAs, reminderMinutes: m.info?.reminderMinutes, sensitivity: m.info?.sensitivity)
+    }
+
+    /// Body HTML up to the Teams join block (Outlook inserts it after a
+    /// long underscore rule / "Microsoft Teams meeting" heading).
+    public static func stripTeamsBlock(_ html: String) -> String {
+        let lower = html.lowercased()
+        var cuts = ["microsoft teams meeting", "microsoft teams need help", "________________"]
+            .compactMap { lower.range(of: $0)?.lowerBound }
+        // Webinar / town hall heading: only as a block (after a rule, or
+        // followed by "Join"), so a body that opens with the words survives.
+        for kind in ["webinar", "town hall"] {
+            let head = "microsoft teams \(kind)"
+            var from = lower.startIndex
+            while let r = lower.range(of: head, range: from ..< lower.endIndex) {
+                let before = lower[..<r.lowerBound]
+                let after = lower[r.upperBound...].replacingOccurrences(of: "<[^>]*>", with: " ", options: .regularExpression)
+                let afterText = after.trimmingCharacters(in: .whitespacesAndNewlines)
+                let rule = String(before).range(of: "<hr[^>]*>\\s*(<(h\\d|p|b|strong|div|span)[^>]*>\\s*)*$",
+                                                options: [.regularExpression])
+                let afterRule = before.trimmingCharacters(in: .whitespacesAndNewlines).hasSuffix("_")
+                if rule != nil || afterRule || afterText.hasPrefix("join") {
+                    var c = r.lowerBound
+                    if let rule { c = rule.lowerBound }
+                    cuts.append(c)
+                    break
+                }
+                from = r.upperBound
+            }
+        }
+        guard let cut = cuts.min() else { return html }
+        let offset = lower.distance(from: lower.startIndex, to: cut)
+        return String(html.prefix(offset))
+    }
+
+    /// The Graph create body; timed events in `tz`, all-day floating.
+    public func body(in tz: TimeZone) -> [String: Any] {
+        let zone = isAllDay ? TimeZone(identifier: "UTC")! : tz
+        var b: [String: Any] = [
+            "subject": subject,
+            "start": ["dateTime": CalendarTime.wallClock(start, in: zone), "timeZone": zone.identifier],
+            "end": ["dateTime": CalendarTime.wallClock(end, in: zone), "timeZone": zone.identifier],
+            "isAllDay": isAllDay,
+            "attendees": attendees.map { ["type": $0.type, "emailAddress": ["address": $0.email, "name": $0.name]] },
+            "categories": categories,
+        ]
+        if online {
+            b["isOnlineMeeting"] = true
+            b["onlineMeetingProvider"] = "teamsForBusiness"
+        }
+        if let location, !location.isEmpty { b["location"] = ["displayName": location] }
+        if let bodyHTML, !bodyHTML.isEmpty { b["body"] = ["contentType": "html", "content": bodyHTML] }
+        if let showAs { b["showAs"] = showAs }
+        if let reminderMinutes {
+            b["isReminderOn"] = true
+            b["reminderMinutesBeforeStart"] = reminderMinutes
+        }
+        if let sensitivity { b["sensitivity"] = sensitivity }
+        return b
+    }
+}
+
+/// An Outlook color category (`/me/outlook/masterCategories`).
+public struct CalendarCategory: Codable, Sendable, Equatable, Identifiable, Hashable {
+    public var id: String { name }
+    public let name: String
+    /// `preset0`…`preset24` or `none`.
+    public let color: String
+
+    public init(name: String, color: String = "none") {
+        self.name = name
+        self.color = color
+    }
+
+    /// Outlook's default list (used when the master list can't be read).
+    public static let defaults: [CalendarCategory] = [
+        .init(name: "Blue category", color: "preset7"), .init(name: "Green category", color: "preset4"),
+        .init(name: "Orange category", color: "preset1"), .init(name: "Purple category", color: "preset8"),
+        .init(name: "Red category", color: "preset0"), .init(name: "Yellow category", color: "preset3"),
+    ]
+
+    /// `defaults` plus any name already used on `rows`, deduplicated.
+    public static func merged(_ master: [CalendarCategory]?, seen rows: [MeetingItem]) -> [CalendarCategory] {
+        var out = master?.isEmpty == false ? master! : defaults
+        var names = Set(out.map { $0.name.lowercased() })
+        for name in rows.flatMap(\.categories) where names.insert(name.lowercased()).inserted {
+            out.append(CalendarCategory(name: name))
+        }
+        return out
+    }
+}
+
+/// One person's free/busy over a window (Graph `getSchedule`).
+public struct CalendarFreeBusy: Sendable, Equatable {
+    public struct Block: Sendable, Equatable {
+        /// `free` | `tentative` | `busy` | `oof` | `workingElsewhere`.
+        public let status: String
+        public let start: Date
+        public let end: Date
+
+        public init(status: String, start: Date, end: Date) {
+            self.status = status
+            self.start = start
+            self.end = end
+        }
+
+        /// Counts against a suggested time.
+        public var blocks: Bool { status == "busy" || status == "oof" || status == "tentative" }
+    }
+
+    public let email: String
+    public let blocks: [Block]
+    /// The calendar could not be read (Graph `error` on the schedule).
+    public let unavailable: Bool
+
+    public init(email: String, blocks: [Block], unavailable: Bool = false) {
+        self.email = email
+        self.blocks = blocks
+        self.unavailable = unavailable
+    }
+
+    /// One candidate slot with the people blocked during it.
+    public struct Suggestion: Equatable, Sendable {
+        public let slot: DateInterval
+        public let conflicts: [String]  // emails
+    }
+
+    /// Slots inside working hours (weekdays, ends by `hours.upperBound`),
+    /// ranked by fewest conflicts then earliest; at most `limit`.
+    public static func rankedSuggestions(_ people: [CalendarFreeBusy], from: Date, to: Date, length: TimeInterval,
+                                         step: Int = 30, hours: Range<Int> = 8 ..< 17, limit: Int = 4,
+                                         calendar cal: Calendar = .current) -> [Suggestion] {
+        var all: [Suggestion] = []
+        var t = cal.dateInterval(of: .hour, for: from)?.start ?? from
+        while t < from { t = t.addingTimeInterval(TimeInterval(step * 60)) }
+        while t.addingTimeInterval(length) <= to {
+            let slot = DateInterval(start: t, duration: length)
+            let comps = cal.dateComponents([.hour, .weekday], from: t)
+            let endComps = cal.dateComponents([.hour, .minute], from: slot.end)
+            let weekday = comps.weekday.map { $0 != 1 && $0 != 7 } ?? true
+            let endMinutes = (endComps.hour ?? 0) * 60 + (endComps.minute ?? 0)
+            let inHours = (comps.hour ?? 0) >= hours.lowerBound && endMinutes <= hours.upperBound * 60
+                && cal.isDate(t, inSameDayAs: slot.end.addingTimeInterval(-1))
+            if weekday, inHours {
+                let busy = people.filter { p in
+                    p.blocks.contains { $0.blocks && $0.start < slot.end && $0.end > slot.start }
+                }.map(\.email)
+                all.append(Suggestion(slot: slot, conflicts: busy))
+            }
+            t = t.addingTimeInterval(TimeInterval(step * 60))
+        }
+        let ranked = all.enumerated().sorted {
+            ($0.element.conflicts.count, $0.offset) < ($1.element.conflicts.count, $1.offset)
+        }.prefix(limit).map(\.element)
+        return ranked
+    }
+
+    /// Free `[start, start+length)` slots inside working hours where
+    /// nobody readable is blocked, stepping `step` minutes; at most
+    /// `limit`. Working hours are `hours` in `calendar`'s zone, weekdays only.
+    public static func suggestions(_ people: [CalendarFreeBusy], from: Date, to: Date, length: TimeInterval,
+                                   step: Int = 30, hours: Range<Int> = 8 ..< 17, limit: Int = 5,
+                                   calendar cal: Calendar = .current) -> [DateInterval] {
+        var out: [DateInterval] = []
+        var t = cal.dateInterval(of: .hour, for: from)?.start ?? from
+        while t < from { t = t.addingTimeInterval(TimeInterval(step * 60)) }
+        while t.addingTimeInterval(length) <= to, out.count < limit {
+            let slot = DateInterval(start: t, duration: length)
+            let comps = cal.dateComponents([.hour, .minute, .weekday], from: t)
+            let endComps = cal.dateComponents([.hour, .minute], from: slot.end)
+            let weekday = comps.weekday.map { $0 != 1 && $0 != 7 } ?? true
+            let endMinutes = (endComps.hour ?? 0) * 60 + (endComps.minute ?? 0)
+            let inHours = (comps.hour ?? 0) >= hours.lowerBound && endMinutes <= hours.upperBound * 60
+                && cal.isDate(t, inSameDayAs: slot.end.addingTimeInterval(-1))
+            if weekday, inHours {
+                let clash = people.contains { p in
+                    p.blocks.contains { b in b.blocks && b.start < slot.end && b.end > slot.start }
+                }
+                if !clash { out.append(slot) }
+            }
+            t = t.addingTimeInterval(TimeInterval(step * 60))
+        }
+        return out
+    }
+}
+
+/// Event type as Teams shows it (read from the invitation's own words:
+/// Graph has no type field for webinars / town halls).
+public enum CalendarEventType: String, Sendable, Equatable {
+    case meeting, webinar, townHall, appointment
+
+    public var title: String {
+        switch self {
+        case .meeting: "Meeting"
+        case .webinar: "Webinar"
+        case .townHall: "Town hall"
+        case .appointment: "Appointment"
+        }
+    }
+
+    public var symbol: String {
+        switch self {
+        case .meeting: "person.2"
+        case .webinar: "person.wave.2"
+        case .townHall: "megaphone"
+        case .appointment: "calendar"
+        }
+    }
+
+    /// From subject/body text (preview or full body) and the attendees.
+    public static func detect(isOnline: Bool, joinURL: String?, text: String?, hasAttendees: Bool) -> Self {
+        let t = ((text ?? "") + "\n" + (joinURL ?? "")).lowercased()
+        if t.contains("microsoft teams webinar") || t.contains("teams webinar") || t.contains("register for this webinar")
+            || t.contains("events.teams.microsoft.com/event/") {
+            return .webinar
+        }
+        if t.contains("microsoft teams town hall") || t.contains("teams town hall") || t.contains("microsoft teams live event") {
+            return .townHall
+        }
+        if isOnline || joinURL?.isEmpty == false || hasAttendees { return .meeting }
+        return .appointment
     }
 }
 
@@ -396,6 +847,7 @@ struct GraphEventWire: Decodable {
     let sensitivity: String?
     let bodyPreview: String?
     let body: Body?
+    let createdDateTime: String?
 }
 
 public enum CalendarEvents {
@@ -405,7 +857,7 @@ public enum CalendarEvents {
         "organizer", "isOrganizer", "webLink", "categories", "location", "locations",
         "attendees", "responseStatus", "showAs", "type", "seriesMasterId", "recurrence",
         "originalStartTimeZone", "isCancelled", "hasAttachments", "responseRequested",
-        "isReminderOn", "reminderMinutesBeforeStart", "sensitivity", "bodyPreview",
+        "isReminderOn", "reminderMinutesBeforeStart", "sensitivity", "bodyPreview", "createdDateTime",
     ].joined(separator: ",")
 
     /// `$select` for the details read (adds the body).
@@ -416,8 +868,11 @@ public enum CalendarEvents {
         return t
     }
 
-    /// One wire event → a local row (`tz` = the display zone).
-    static func item(_ e: GraphEventWire, tz: TimeZone = .current) -> MeetingItem {
+    /// One wire event → a local row (`tz` = the display zone; `me` =
+    /// the signed-in address: that attendee's entry shows the user's own
+    /// response, which Graph keeps on `responseStatus`, not the list).
+    static func item(_ e: GraphEventWire, tz: TimeZone = .current, me: String? = nil,
+                     meAliases: [String] = []) -> MeetingItem {
         let allDay = e.isAllDay ?? false
         let startZone = e.start?.timeZone ?? "UTC"
         let endZone = e.end?.timeZone ?? "UTC"
@@ -428,11 +883,16 @@ public enum CalendarEvents {
             .map { CalendarTime.wallClock($0, in: TimeZone(identifier: "UTC")!) }
         let names = (e.locations ?? []).compactMap { nonEmpty($0.displayName) }
         let location = names.isEmpty ? nonEmpty(e.location?.displayName) : names.joined(separator: "; ")
+        let mine = RSVPResponse(graph: e.responseStatus?.response)
+        let self_ = me.flatMap(nonEmpty)?.lowercased()
+        let mine_ = Set(([me] + meAliases).compactMap { $0.flatMap(nonEmpty)?.lowercased() })
         let attendees = (e.attendees ?? []).map { a in
-            EventAttendee(name: nonEmpty(a.emailAddress?.name) ?? a.emailAddress?.address ?? "",
-                          email: a.emailAddress?.address ?? "",
-                          type: a.type ?? "required",
-                          response: RSVPResponse(graph: a.status?.response))
+            let address = a.emailAddress?.address ?? ""
+            var response = RSVPResponse(graph: a.status?.response)
+            if let self_, address.lowercased() == self_, !mine.isPending, mine != .organizer { response = mine }
+            return EventAttendee(name: nonEmpty(a.emailAddress?.name) ?? a.emailAddress?.address ?? "",
+                                 email: address, type: a.type ?? "required", response: response,
+                                 isMe: mine_.contains(address.lowercased()))
         }
         let online = e.onlineMeeting
         let dialIn: EventDialIn? = online.flatMap {
@@ -442,7 +902,7 @@ public enum CalendarEvents {
         }
         let info = CalendarEventInfo(
             location: location,
-            myResponse: RSVPResponse(graph: e.responseStatus?.response),
+            myResponse: mine,
             showAs: e.showAs,
             kind: e.type.flatMap(CalendarEventKind.init(rawValue:)) ?? .singleInstance,
             seriesMasterID: nonEmpty(e.seriesMasterId),
@@ -456,7 +916,9 @@ public enum CalendarEvents {
             sensitivity: e.sensitivity,
             reminderMinutes: (e.isReminderOn ?? false) ? e.reminderMinutesBeforeStart : nil,
             dialIn: dialIn,
-            recurrence: e.recurrence.map(recurrenceSummary))
+            recurrence: e.recurrence.map(recurrenceSummary),
+            sentAt: CalendarTime.instant(e.createdDateTime, zone: "UTC")
+                .map { CalendarTime.wallClock($0, in: TimeZone(identifier: "UTC")!) })
         let row = MeetingItem(
             meetingId: e.id,
             subject: nonEmpty(e.subject) ?? "(no subject)",
@@ -473,7 +935,8 @@ public enum CalendarEvents {
     }
 
     /// A `calendarView` page → rows (cancelled occurrences dropped).
-    static func page(_ data: Data, tz: TimeZone = .current) throws -> (rows: [MeetingItem], next: String?) {
+    static func page(_ data: Data, tz: TimeZone = .current, me: String? = nil,
+                     meAliases: [String] = []) throws -> (rows: [MeetingItem], next: String?) {
         struct Page: Decodable {
             let value: [GraphEventWire]
             let next: String?
@@ -483,13 +946,43 @@ public enum CalendarEvents {
             }
         }
         let p = try JSONDecoder().decode(Page.self, from: data)
-        return (p.value.map { item($0, tz: tz) }.filter { $0.info?.isCancelled != true }, p.next)
+        return (p.value.map { item($0, tz: tz, me: me, meAliases: meAliases) }.filter { $0.info?.isCancelled != true }, p.next)
     }
 
     /// One event → row.
-    static func single(_ data: Data, tz: TimeZone = .current) throws -> (row: MeetingItem, body: GraphEventWire.Body?) {
+    static func single(_ data: Data, tz: TimeZone = .current, me: String? = nil,
+                       meAliases: [String] = []) throws
+        -> (row: MeetingItem, body: GraphEventWire.Body?) {
         let w = try JSONDecoder().decode(GraphEventWire.self, from: data)
-        return (item(w, tz: tz), w.body)
+        return (item(w, tz: tz, me: me, meAliases: meAliases), w.body)
+    }
+
+    /// `getSchedule` reply → per-person blocks (UTC wall clock in).
+    static func schedule(_ data: Data) throws -> [CalendarFreeBusy] {
+        struct R: Decodable {
+            struct Item: Decodable {
+                let status: String?
+                let start: GraphEventWire.DTZ?
+                let end: GraphEventWire.DTZ?
+            }
+            struct Err: Decodable { let message: String? }
+            struct S: Decodable {
+                let scheduleId: String?
+                let scheduleItems: [Item]?
+                let error: Err?
+            }
+            let value: [S]
+        }
+        return try JSONDecoder().decode(R.self, from: data).value.map { s in
+            CalendarFreeBusy(
+                email: s.scheduleId ?? "",
+                blocks: (s.scheduleItems ?? []).compactMap { i in
+                    guard let a = CalendarTime.instant(i.start?.dateTime, zone: i.start?.timeZone ?? "UTC"),
+                          let b = CalendarTime.instant(i.end?.dateTime, zone: i.end?.timeZone ?? "UTC") else { return nil }
+                    return .init(status: i.status ?? "busy", start: a, end: b)
+                },
+                unavailable: s.error != nil)
+        }
     }
 
     // MARK: recurrence wording
@@ -575,6 +1068,36 @@ extension MeetingItem {
 
     /// Part of a recurring series.
     public var isSeries: Bool { info?.kind.isSeries ?? false }
+
+    /// Invited people: rooms and the organizer excluded (Graph lists the
+    /// organizer with response `organizer`, or by address). The header
+    /// counts, the attendee row and the Tracking groups all read this.
+    public var invitees: [EventAttendee] {
+        let org = organizerEmail?.lowercased()
+        return (info?.people ?? []).filter { a in
+            a.response != .organizer && !(org != nil && !a.email.isEmpty && a.email.lowercased() == org)
+        }
+    }
+
+    public var tally: CalendarEventInfo.Tally { CalendarEventInfo.tally(invitees) }
+
+    /// The organizer in the one display format.
+    public var organizerDisplay: String? {
+        guard let o = organizer, !o.isEmpty else { return nil }
+        return CalendarNames.display(o, email: organizerEmail)
+    }
+
+    /// Meeting / webinar / town hall / appointment.
+    public func eventType(body: String? = nil) -> CalendarEventType {
+        CalendarEventType.detect(isOnline: isOnline, joinURL: joinURL,
+                                 text: [subject, info?.bodyPreview, body].compactMap { $0 }.joined(separator: "\n"),
+                                 hasAttendees: !invitees.isEmpty)
+    }
+
+    public var eventType: CalendarEventType { eventType() }
+
+    /// "Sent on" instant (Graph `createdDateTime`).
+    public var sentDate: Date? { CalendarTime.instant(info?.sentAt, zone: "UTC") }
 }
 
 // MARK: - Safe body rendering

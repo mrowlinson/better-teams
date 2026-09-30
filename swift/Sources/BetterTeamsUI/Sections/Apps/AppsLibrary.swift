@@ -77,6 +77,23 @@ final class AppsLibrary {
         FrameAppDirectory.register([app])
         return app
     }
+
+    /// RECAP2: a page opened from a native pane (meeting notes: a Loop
+    /// page) in this window, like an Office document: an Office file
+    /// opens read-only, a stored Loop file on its web page (`web=1`),
+    /// a Loop address as is. Nil: not an https address.
+    func page(name: String, webURL: URL) -> FrameApp? {
+        guard webURL.scheme?.lowercased() == "https" else { return nil }
+        if let doc = document(name: name, webURL: webURL) { return doc }
+        let url = OfficeDocumentView.loopViewURL(webURL) ?? webURL
+        let digest = SHA256.hash(data: Data(webURL.absoluteString.utf8)).prefix(8)
+        let id = Self.documentPrefix + digest.map { String(format: "%02x", $0) }.joined()
+        if let open = documents.first(where: { $0.id == id }) { return open }
+        let app = FrameApp(id: id, label: name, symbol: "note.text", source: .webLink, launch: .direct(url))
+        documents.append(app)
+        FrameAppDirectory.register([app])
+        return app
+    }
     /// Personal apps from the Teams app catalog (APPHOST): hosted
     /// natively over TeamsJS. App bar (userpinned) order first.
     private(set) var personalApps: [FrameApp] = []

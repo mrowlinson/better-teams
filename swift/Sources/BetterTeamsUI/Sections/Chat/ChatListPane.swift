@@ -69,27 +69,21 @@ struct ChatListPane: View {
         return nil
     }
 
-    /// Active filter as a pill: clicking it (or its X, or Esc) returns
-    /// to the full list, as clicking an active filter does in Teams.
+    /// Active filter: a secondary "Filtered by" label with a small native
+    /// Clear button (also Esc) that returns to the full list.
     private func filterBar(count: Int) -> some View {
         HStack(spacing: 8) {
-            Button { state.clear() } label: {
-                HStack(spacing: 4) {
-                    Image(systemName: "line.3.horizontal.decrease")
-                    Text(folderName ?? state.filter.title)
-                    Image(systemName: "xmark").imageScale(.small)
-                }
-                .font(.callout.weight(.medium))
-                .foregroundStyle(.tint)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 4)
-                .background(Capsule().fill(.tint.opacity(0.14)))
-                .contentShape(Capsule())
-            }
-            .buttonStyle(.plain)
-            .help("Show All Chats (Esc)")
-            .accessibilityLabel("\(folderName ?? state.filter.title) filter")
-            .accessibilityHint("Clears the filter and shows all chats")
+            Label("Filtered by \(folderName ?? state.filter.title)", systemImage: "line.3.horizontal.decrease")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Button("Clear") { state.clear() }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .help("Show All Chats (Esc)")
+                .accessibilityLabel("Clear \(folderName ?? state.filter.title) filter")
+                .accessibilityHint("Clears the filter and shows all chats")
             Spacer(minLength: 4)
             Text(count == 1 ? "1 chat" : "\(count) chats")
                 .font(.caption)
@@ -163,6 +157,12 @@ struct ChatListPane: View {
     }
 
     /// A failed refresh behind the rows on screen (quiet notice).
+    /// Double-click (or Return) on a row pops the chat out into its own
+    /// window (81b718a); a single click only selects.
+    static func doubleClick(_ ids: Set<String>, _ m: WindowModel) {
+        if let id = ids.first { ChatWindowController.show(m, chatID: id) }
+    }
+
     static func failure(_ state: ChatListState) -> String? {
         if case .error(let message) = state { message } else { nil }
     }
@@ -229,7 +229,7 @@ struct ChatListPane: View {
                             folders: chats.folders, model: m)
             }
         } primaryAction: { ids in
-            if let id = ids.first { m.navigator?.select(SectionSelection(id: id), in: .chat) }
+            Self.doubleClick(ids, m)
         }
         .safeAreaInset(edge: .bottom, spacing: 0) { actionError }
         .onChange(of: state.filter) { _, now in

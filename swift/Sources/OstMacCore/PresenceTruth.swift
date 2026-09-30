@@ -250,6 +250,9 @@ public struct PresenceUndoOffer: Equatable, Sendable {
     }
 
     public func isExpired(now: Date = Date()) -> Bool { now >= expiresAt }
+
+    /// Menu item title for the Undo entry (account/Dock/status-bar menus).
+    public var undoMenuTitle: String { "Undo — Back to \(status.title)" }
 }
 
 // MARK: - Devices + precedence
@@ -367,6 +370,7 @@ public final class PresenceTruthStore: ObservableObject {
     public nonisolated static let lockSetAtKey = "presenceTruth.lockSetAt"
     public nonisolated static let autoAwayKey = "presenceTruth.autoAway"
     public nonisolated static let restoreKey = "presenceTruth.restoreOnActivity"
+    public nonisolated static let resetAfterKey = "presenceTruth.resetAfter"
     /// Cap (CallHistoryStore precedent: bounded session lists).
     public nonisolated static let maxEntries = 30
     /// Undo-toast lifetime.
@@ -426,6 +430,11 @@ public final class PresenceTruthStore: ObservableObject {
     @Published public var restoreOnActivity = true {
         didSet { defaults.set(restoreOnActivity, forKey: Self.restoreKey) }
     }
+    /// Status duration for picker choices ("reset after"): untilOff sets
+    /// the status plainly; anything else pins it as a timed lock.
+    @Published public var resetAfter: PresenceLockDuration = .untilOff {
+        didSet { defaults.set(resetAfter.rawValue, forKey: Self.resetAfterKey) }
+    }
     @Published public private(set) var lock: PresenceLock?
     /// Newest-first (capped).
     @Published public private(set) var entries: [PresenceChangeEntry] = []
@@ -470,6 +479,9 @@ public final class PresenceTruthStore: ObservableObject {
         _autoAway = Published(initialValue: autoAway)
         _restoreOnActivity = Published(initialValue: restore)
         _lock = Published(initialValue: lock)
+        _resetAfter = Published(
+            initialValue: defaults.string(forKey: Self.resetAfterKey)
+                .flatMap(PresenceLockDuration.init(rawValue:)) ?? .untilOff)
         _entries = Published(initialValue: [])
         _undoOffer = Published(initialValue: nil)
         _devices = Published(initialValue: [])
@@ -528,6 +540,19 @@ public final class PresenceTruthStore: ObservableObject {
             to: status.availability, cause: .lock,
             note: until == nil ? "until off" : duration.label, undo: nil, now: now)
         fire(status: status, cause: .lock, note: "", undo: nil, now: now)
+    }
+
+    /// Picker choice honoring the status duration: a timed duration pins
+    /// the status as a lock for that long; "until off" is a plain manual
+    /// set (any lock is released first, or the drift check would put the
+    /// old status back).
+    public func choose(status: PresenceStatus, now: Date = Date()) {
+        if resetAfter == .untilOff {
+            unlock(now: now)
+            presence?.set(status: status)
+        } else {
+            lock(status: status, duration: resetAfter, now: now)
+        }
     }
 
     /// Release the lock (manual). Logs; sends nothing — the server and

@@ -312,7 +312,7 @@ final class TeamsSection: SectionProvider, InspectorCapable {
         case TeamsCommands.channelWorkflows:
             guard channelTarget(arg, m) != nil else { return false }
             // Teams' Workflows are Power Automate flows; that site is the entry.
-            if !m.options.demo, let url = Self.workflowsURL { NSWorkspace.shared.open(url) }
+            if !m.options.demo, let url = Self.workflowsURL { TeamsLinkRouter.open(url) }
         case TeamsCommands.hideTeam:
             guard let team = teamTarget(arg, m) else { return false }
             prefs(m).setHidden(team, !prefs(m).isHidden(team))

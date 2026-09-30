@@ -17,9 +17,12 @@ enum ConversationToolbar {
     /// (DL1). Demo places the demo core's call. Nil without a
     /// conversation or account, or while a call runs (that call is shown
     /// instead). `show`/`store`: tests.
+    /// `chat`: a conversation other than the main window's (a popped-out
+    /// chat's header, CHATSYNC3 R2); nil = the one on screen.
     @discardableResult
-    static func startAudioCall(_ m: WindowModel, show: Bool = true, store: CallStore? = nil) -> CallSession? {
-        guard let id = chatID(m), let slot = store ?? m.app?.call else { return nil }
+    static func startAudioCall(_ m: WindowModel, for chat: String? = nil, show: Bool = true,
+                               store: CallStore? = nil) -> CallSession? {
+        guard let id = chat ?? chatID(m), let slot = store ?? m.app?.call else { return nil }
         let name = m.graph.chats.chats.first { $0.id == id }?.name ?? ""
         guard let s = m.beginCall(.person(name: name.isEmpty ? "Call" : name, thread: id),
                                   show: show, store: store) else { return nil }
@@ -28,8 +31,8 @@ enum ConversationToolbar {
     }
 
     /// A conversation on screen, an account, and no call running.
-    static func canStartCall(_ m: WindowModel) -> Bool {
-        chatID(m) != nil && m.app != nil && (m.call.map(\.ended) ?? true)
+    static func canStartCall(_ m: WindowModel, for chat: String? = nil) -> Bool {
+        (chat ?? chatID(m)) != nil && m.app != nil && (m.call.map(\.ended) ?? true)
     }
 
     /// Video Call: a video call on the conversation's thread
@@ -37,8 +40,9 @@ enum ConversationToolbar {
     /// gets the 1:1 stage (VIDEO1); a group or meeting chat joins the
     /// thread's call with Audio + Video and gets the tile grid (MEETVIDEO).
     @discardableResult
-    static func startVideoCall(_ m: WindowModel, show: Bool = true, store: CallStore? = nil) -> CallSession? {
-        guard let id = chatID(m), let slot = store ?? m.app?.call else { return nil }
+    static func startVideoCall(_ m: WindowModel, for chat: String? = nil, show: Bool = true,
+                               store: CallStore? = nil) -> CallSession? {
+        guard let id = chat ?? chatID(m), let slot = store ?? m.app?.call else { return nil }
         let name = m.graph.chats.chats.first { $0.id == id }?.name ?? ""
         guard let s = m.beginCall(.person(name: name.isEmpty ? "Call" : name, thread: id),
                                   show: show, store: store, video: true, group: !isOneOnOne(id, m))
@@ -48,24 +52,62 @@ enum ConversationToolbar {
     }
 
     /// Video Call is available: a call could start (any conversation).
-    static func canStartVideoCall(_ m: WindowModel) -> Bool {
-        canStartCall(m)
+    static func canStartVideoCall(_ m: WindowModel, for chat: String? = nil) -> Bool {
+        canStartCall(m, for: chat)
     }
 
-    /// Meet now (group chats, Teams parity): starts a meeting on the
-    /// chat's thread immediately. The call goes to the thread, so every
-    /// member of the chat is invited (rings / sees the meeting to join);
-    /// hosted as a group call (tile grid), audio first like Teams. Nil
-    /// outside a group chat, without an account, or while a call runs.
+    /// Meet now (group chats, Teams parity, CAL2): starts a real Teams
+    /// meeting now — an online meeting is created on the user's calendar
+    /// (no invitation mail), its join link is posted in the chat so every
+    /// member can join, and the user joins it in-app. If the meeting
+    /// can't be created, falls back to a call on the chat's thread.
+    /// False outside a group chat, without an account, or while a call runs.
     @discardableResult
-    static func meetNow(_ m: WindowModel, show: Bool = true, store: CallStore? = nil) -> CallSession? {
-        guard let id = chatID(m), isGroupChat(id, m), let slot = store ?? m.app?.call else { return nil }
+    static func meetNow(_ m: WindowModel, flow: MeetNowFlow? = nil) -> Bool {
+        guard canStartCall(m), let id = chatID(m), isGroupChat(id, m), let app = m.app else { return false }
         let name = m.graph.chats.chats.first { $0.id == id }?.name ?? ""
-        guard let s = m.beginCall(.person(name: name.isEmpty ? "Meeting" : name, thread: id),
-                                  show: show, store: store, video: false, group: true)
-        else { return nil }
-        slot.placeLive(threadID: id)
-        return s
+        let f = flow ?? MeetNowFlow.live(app: app, model: m)
+        Task { @MainActor in
+            let outcome = await GroupMeetNow.run(
+                chatID: id, chatName: name, create: f.create, createError: f.createError, post: f.post, join: f.join)
+            if case .failed = outcome { f.fallback(id, name) }
+            f.finished(outcome)
+        }
+        return true
+    }
+
+    /// The Meet now steps (tests inject recording fakes).
+    struct MeetNowFlow {
+        var create: (String) async -> MeetingItem?
+        var createError: () -> String?
+        var post: (String, String) async throws -> Void
+        var join: (MeetingItem) -> Void
+        /// Thread call when no meeting could be created.
+        var fallback: (String, String) -> Void
+        var finished: (GroupMeetNow.Outcome) -> Void = { _ in }
+
+        @MainActor
+        static func live(app: AppState, model m: WindowModel) -> MeetNowFlow {
+            MeetNowFlow(
+                create: { await app.calWeek.meetNow(subject: $0) },
+                createError: { app.calWeek.meetNowError },
+                post: { chat, text in
+                    // The chat is on screen: its store posts (reconciled
+                    // bubble); otherwise one verified post.
+                    if app.isDemo || app.conv.chatID == chat {
+                        if app.conv.chatID == chat { app.conv.send(text: text) }
+                        return
+                    }
+                    try await Task.blocking { try GroupMeetNow.post(chatID: chat, text: text) }.value
+                },
+                join: { [weak m] row in if let m { CalendarSection.join(row, m) } },
+                fallback: { [weak m] chat, name in
+                    guard let m, let slot = m.app?.call else { return }
+                    guard m.beginCall(.person(name: name.isEmpty ? "Meeting" : name, thread: chat),
+                                      video: false, group: true) != nil else { return }
+                    slot.placeLive(threadID: chat)
+                })
+        }
     }
 
     /// Meet now is available: a group chat on screen and no call running.

@@ -102,42 +102,106 @@ struct MentionPicker: View {
     static let rowHeight: CGFloat = 30
 }
 
-/// Reaction More…: the full catalog with a filter field.
+/// What the emoji picker shows for a search + tab: pure, so the guard
+/// tests can drive it (REGFIX-B R5).
+enum EmojiPage {
+    static let recentsID = "recents"
+
+    /// Search hits while a query is typed, else the tab: Recent (the
+    /// per-account ring, seeded) or one category.
+    static func entries(query: String, tab: String, recents: [String]) -> [ReactionEntry] {
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !q.isEmpty { return ReactionCatalog.search(q) }
+        if tab == recentsID {
+            let all = ReactionCatalog.all
+            return recents.map { e in all.first { $0.emoji == e } ?? ReactionEntry(e, "") }
+        }
+        return ReactionCatalog.entries(forCategory: tab) ?? []
+    }
+}
+
+/// Reaction More… / emoji picker: search field, a segmented Recent +
+/// category control, the grid; arrows move a highlight, Return picks it.
 struct ReactionPicker: View {
     let pick: (String) -> Void
     @State private var query = ""
+    @State private var tab = EmojiPage.recentsID
+    @State private var highlight = 0
+    private let recents: [String]
 
-    private var entries: [ReactionEntry] {
-        query.isEmpty ? ReactionCatalog.all : ReactionCatalog.search(query)
+    static let columns = 8
+    static let cell: CGFloat = 34
+
+    init(recents: [String] = ReactionRecents.load(), pick: @escaping (String) -> Void) {
+        self.recents = recents
+        self.pick = pick
     }
+
+    private var entries: [ReactionEntry] { EmojiPage.entries(query: query, tab: tab, recents: recents) }
+    private var searching: Bool { !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
     var body: some View {
         VStack(spacing: 8) {
-            SearchField(text: $query, placeholder: "Search Reactions")
+            SearchField(text: $query, placeholder: "Search Emoji", onSubmit: pickHighlighted, onMove: move,
+                        focusOnAppear: true)
                 .frame(height: 24)
-            ScrollView {
-                LazyVGrid(columns: Array(repeating: GridItem(.fixed(32), spacing: 4), count: 8), spacing: 4) {
-                    ForEach(entries, id: \.emoji) { e in
-                        Button { pick(e.emoji) } label: {
-                            Text(e.emoji).font(.title2).frame(width: 32, height: 32)
+            if !searching {
+                Picker("Category", selection: $tab) {
+                    Text("Recent").tag(EmojiPage.recentsID)
+                    ForEach(ReactionCatalog.categories, id: \.id) { Text($0.title).tag($0.id) }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+            }
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVGrid(columns: Array(repeating: GridItem(.fixed(Self.cell), spacing: 2), count: Self.columns),
+                              spacing: 2) {
+                        ForEach(Array(entries.enumerated()), id: \.offset) { i, e in
+                            Button { pick(e.emoji) } label: {
+                                Text(e.emoji).font(.title2).frame(width: Self.cell, height: Self.cell)
+                            }
+                            .buttonStyle(.borderless)
+                            .background(i == highlight
+                                ? RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                    .fill(Color(nsColor: .selectedContentBackgroundColor).opacity(0.35))
+                                : nil)
+                            .help(e.keywords)
+                            .accessibilityLabel(e.keywords.isEmpty ? e.emoji : e.keywords)
+                            .id(i)
                         }
-                        .buttonStyle(.borderless)
-                        .help(e.keywords)
-                        .accessibilityLabel(e.keywords)
+                    }
+                }
+                .onChange(of: highlight) { _, i in proxy.scrollTo(i, anchor: .center) }
+            }
+            .overlay {
+                if entries.isEmpty {
+                    if searching { ContentUnavailableView.search(text: query) } else {
+                        Text("No recent emoji yet.").foregroundStyle(.secondary)
                     }
                 }
             }
-            .overlay {
-                if entries.isEmpty { ContentUnavailableView.search(text: query) }
-            }
         }
         .padding(12)
-        .frame(width: 320, height: 300)
+        .frame(width: 338, height: 330)
+        .onChange(of: query) { highlight = 0 }
+        .onChange(of: tab) { highlight = 0 }
+    }
+
+    private func move(_ dx: Int, _ dy: Int) -> Bool {
+        highlight = GridNav.move(current: highlight, dx: dx, dy: dy, columns: Self.columns, count: entries.count)
+        return true
+    }
+
+    private func pickHighlighted() {
+        guard entries.indices.contains(highlight) else { return }
+        pick(entries[highlight].emoji)
     }
 }
 
 /// GIF search (Klipy). Results load when the person searches, never
-/// on appear (R24).
+/// on appear (R24). Arrows move a highlight over the results; Return
+/// searches, or picks the highlighted GIF once its results are showing.
 struct GIFPicker: View {
     let services: ConversationServices
     let pick: (KlipyGIF) -> Void
@@ -145,11 +209,14 @@ struct GIFPicker: View {
     @State private var results: [KlipyGIF] = []
     @State private var searched = ""
     @State private var searching = false
+    @State private var highlight = 0
+
+    static let columns = 3
 
     var body: some View {
         VStack(spacing: 8) {
             // Return searches (a network call per query, not per keystroke).
-            SearchField(text: $query, placeholder: "Search GIFs", onSubmit: search)
+            SearchField(text: $query, placeholder: "Search GIFs", onSubmit: submit, onMove: move, focusOnAppear: true)
                 .frame(height: 24)
             Group {
                 if searching && results.isEmpty {
@@ -159,17 +226,29 @@ struct GIFPicker: View {
                                            systemImage: "photo.on.rectangle.angled",
                                            description: Text(searched.isEmpty ? "Results come from Klipy." : ""))
                 } else {
-                    ScrollView {
-                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 110), spacing: 6)], spacing: 6) {
-                            ForEach(results) { g in
-                                Button { pick(g) } label: {
-                                    GIFThumb(model: services.media.image(url: g.previewURL, messageID: "gif-picker"))
+                    ScrollViewReader { proxy in
+                        ScrollView {
+                            LazyVGrid(columns: Array(repeating: GridItem(.fixed(110), spacing: 6), count: Self.columns),
+                                      spacing: 6) {
+                                ForEach(Array(results.enumerated()), id: \.element.id) { i, g in
+                                    Button { pick(g) } label: {
+                                        GIFThumb(model: services.media.image(url: g.previewURL, messageID: "gif-picker"))
+                                            .overlay {
+                                                if i == highlight {
+                                                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                                        .strokeBorder(Color(nsColor: .selectedContentBackgroundColor),
+                                                                      lineWidth: 3)
+                                                }
+                                            }
+                                    }
+                                    .buttonStyle(.plain)
+                                    .help(g.title)
+                                    .accessibilityLabel(g.title.isEmpty ? "GIF" : g.title)
+                                    .id(i)
                                 }
-                                .buttonStyle(.plain)
-                                .help(g.title)
-                                .accessibilityLabel(g.title.isEmpty ? "GIF" : g.title)
                             }
                         }
+                        .onChange(of: highlight) { _, i in proxy.scrollTo(i, anchor: .center) }
                     }
                 }
             }
@@ -177,6 +256,22 @@ struct GIFPicker: View {
         }
         .padding(12)
         .frame(width: 380, height: 320)
+    }
+
+    private func move(_ dx: Int, _ dy: Int) -> Bool {
+        guard !results.isEmpty else { return false }
+        highlight = GridNav.move(current: highlight, dx: dx, dy: dy, columns: Self.columns, count: results.count)
+        return true
+    }
+
+    /// Return: results for THIS query showing -> pick the highlighted one;
+    /// otherwise run the search.
+    private func submit() {
+        if !results.isEmpty, searched == query, results.indices.contains(highlight) {
+            pick(results[highlight])
+        } else {
+            search()
+        }
     }
 
     private func search() {
@@ -188,6 +283,7 @@ struct GIFPicker: View {
             // Stale results are dropped (R12): only the latest query lands.
             guard q == query else { return }
             results = found
+            highlight = 0
             searched = q
             searching = false
             for g in found { services.media.image(url: g.previewURL, messageID: "gif-picker").load() }

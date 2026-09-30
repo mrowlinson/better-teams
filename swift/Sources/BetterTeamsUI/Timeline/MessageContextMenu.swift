@@ -2,8 +2,9 @@
 // and the actions behind it.
 //
 // React ▸ (six quick + More…), Reply, Forward…, Copy, Copy Link ·
-// Save/Unsave, Pin/Unpin, Translate, Mark Unread from Here · Edit,
-// Delete… (own only). A failed send shows Retry and Delete instead.
+// Save/Unsave, Pin/Unpin, Translate, Mark as Unread · Edit,
+// Delete… (own only). A failed send shows Retry and Delete instead; a
+// failed delete adds Retry Delete above the normal actions.
 // Three separator groups, one submenu level, no shortcuts (§6 context
 // menus). Destructive actions confirm through `SheetPresenter` (R17).
 import AppKit
@@ -22,9 +23,15 @@ struct MessageContextMenu: View {
             Button("Copy") { actions.copy(m) }
             Divider()
             Button("Delete", role: .destructive) { actions.discard(m) }
-        } else if m.deleted {
+        } else if m.deleted && !row.deleteFailed {
             Button("Copy Link") { actions.copyLink(m) }
         } else {
+            // A delete the server did not confirm restores the message: it
+            // keeps every normal action, with Retry Delete on top.
+            if row.deleteFailed {
+                Button("Retry Delete") { actions.retryDelete(m) }
+                Divider()
+            }
             Menu("React") {
                 ForEach(Indexed.wrap(ConversationStore.reactionEmojis)) { e in
                     Button(e.value) { actions.react(m, e.value) }
@@ -42,7 +49,7 @@ struct MessageContextMenu: View {
             if MessageTranslation.isEligible(m) {
                 Button(actions.translateTitle(m)) { actions.translate(m) }
             }
-            Button("Mark Unread from Here") { actions.markUnread(from: m) }
+            Button("Mark as Unread") { actions.markUnread(from: m) }
             if m.isOwn && row.send == .none {
                 Divider()
                 Button("Edit") { actions.edit(m) }
@@ -122,9 +129,18 @@ final class TimelineActions {
         Task { await store.toggle(m) }
     }
 
+    /// Teams "Mark as unread" on a message (CHATSYNC2b R5). In a chat the
+    /// Teams web client writes the chat's bookmark just behind its NEWEST
+    /// message (prod config, not the clicked one), and the open chat stays
+    /// unread until a newer message arrives or the owner leaves it.
+    /// Channels keep the local-only mark.
     func markUnread(from m: ChatMessage) {
         guard let id = chatID else { return }
-        graph?.unread.markUnread(chatID: id)
+        if let app = model?.app, app.chats.chat(id: id) != nil {
+            app.setChatUnread(id, unread: true, newest: ReadSync.latest(conv.messages))
+        } else {
+            graph?.unread.markUnread(chatID: id)
+        }
     }
 
     func edit(_ m: ChatMessage) {
@@ -151,6 +167,13 @@ final class TimelineActions {
                       }, finished: { [weak composer = services.composer] in
                           composer?.markedMessageID = nil
                       })
+    }
+
+    /// Retries a delete the server did not confirm (same bubble).
+    func retryDelete(_ m: ChatMessage) {
+        guard let model else { return }
+        let oneToOne = conv.chatID.flatMap { model.graph.chats.chat(id: $0) }.map { !$0.is_group } ?? false
+        conv.retryDelete(id: m.id, isOneToOne: oneToOne)
     }
 
     /// Re-sends in place of the failed bubble (never a duplicate row):

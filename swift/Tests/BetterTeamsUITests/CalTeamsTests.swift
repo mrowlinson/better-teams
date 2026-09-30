@@ -19,7 +19,7 @@ final class CalTeamsTests: XCTestCase {
     /// thread inspector must open there, narrower, with the window as is.
     func testInspectorFitsAtMinimumAndOpensWithoutWideningWindow() {
         let split = ShellSplitViewController(rail: Blank())
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1060, height: 700),
+        let window = OffscreenWindow(contentRect: NSRect(x: 0, y: 0, width: 1060, height: 700),
                               styleMask: [.titled, .resizable], backing: .buffered, defer: true)
         window.contentViewController = split
         window.setFrame(NSRect(x: 0, y: 0, width: 1060, height: 700), display: false)

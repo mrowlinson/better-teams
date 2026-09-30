@@ -1,6 +1,7 @@
 // Palette.swift — the only literal colors in the UI target (UI-SPEC
 // R14). Everything else uses semantic styles.
 import AppKit
+import OstMacCore
 import SwiftUI
 
 public enum Palette {
@@ -42,6 +43,21 @@ public enum Palette {
     public static let presenceOffline = Color(nsColor: .secondaryLabelColor)
 
     public static let failed = Color(nsColor: .systemRed)
+    /// Syntax colors for code in message bodies (`codeToken` runs): adaptive
+    /// system colors, so light and dark follow the appearance. `.plain` has
+    /// none (the bubble's own text color).
+    public static func codeTokenNS(_ token: CodeHighlight.Token) -> NSColor? {
+        switch token {
+        case .keyword: .systemPurple
+        case .string: .systemRed
+        case .comment: .systemGray
+        case .number: .systemOrange
+        case .title: .systemBlue
+        case .type: .systemTeal
+        case .tag: .systemGreen
+        case .plain: nil
+        }
+    }
     /// Activity kind badge disc (mention, reply, reaction, saved): a
     /// fixed system hue that keeps a white glyph legible in light and
     /// dark, whatever the accent (§10 contrast).

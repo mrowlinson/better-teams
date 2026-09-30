@@ -11,8 +11,11 @@ public struct RowHeightKey: Hashable, Sendable {
     public var width: Int
     /// Scale in hundredths.
     public var scale: Int
+    /// `MessageDensity` ordinal (Compact rows are shorter).
+    public var density: Int
 
-    public init(id: String, revision: Int, width: CGFloat, scale: Double) {
+    public init(id: String, revision: Int, width: CGFloat, scale: Double, density: Int = 0) {
+        self.density = density
         self.id = id
         self.revision = revision
         self.width = Int(width.rounded())
@@ -38,10 +41,10 @@ public final class RowHeightCache {
 
     /// Drops entries for other widths/scales (bounded memory after a
     /// resize or text-size change).
-    public func retain(width: CGFloat, scale: Double) {
+    public func retain(width: CGFloat, scale: Double, density: Int = 0) {
         let w = Int(width.rounded())
         let s = Int((scale * 100).rounded())
-        store = store.filter { $0.key.width == w && $0.key.scale == s }
+        store = store.filter { $0.key.width == w && $0.key.scale == s && $0.key.density == density }
     }
 
     public func removeAll() { store.removeAll() }

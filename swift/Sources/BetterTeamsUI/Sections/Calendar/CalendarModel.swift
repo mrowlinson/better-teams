@@ -189,6 +189,22 @@ enum CalendarFormat {
         return "\(s.formatted(dayF)) \(time(s)) \u{2013} \(e.formatted(dayF)) \(time(e))"
     }
 
+    /// Same-day timed meeting as two lines: date, then the time range.
+    static func whenLines(_ m: MeetingItem) -> (day: String, range: String)? {
+        guard !m.isAllDay, let s = date(m.start), let e = date(m.end),
+              Calendar.current.isDate(s, inSameDayAs: e) else { return nil }
+        let dayF = Date.FormatStyle.dateTime.weekday(.abbreviated).month(.defaultDigits).day().year()
+        return (s.formatted(dayF), "\(time(s)) \u{2013} \(time(e))")
+    }
+
+    /// `when` with the time range held together: a narrow pane breaks
+    /// after the date, never inside "9:30 AM \u{2013} 9:45 AM".
+    static func whenUnbroken(_ m: MeetingItem) -> String {
+        var t = when(m)
+        for suffix in ["AM", "PM"] { t = t.replacingOccurrences(of: " \(suffix)", with: "\u{00A0}\(suffix)") }
+        return t.replacingOccurrences(of: " \u{2013} ", with: "\u{00A0}\u{2013}\u{00A0}")
+    }
+
     /// The same meeting in the organizer's zone, when that differs:
     /// "12:30 AM – 1:30 AM Pacific Daylight Time".
     static func organizerTime(_ m: MeetingItem) -> String? {
@@ -227,10 +243,14 @@ enum CalendarFormat {
 /// Pure lane assignment for overlapping meetings in one day column:
 /// meetings that overlap (transitively) form a cluster; each gets the
 /// first free lane, and every meeting in a cluster shares its lane count.
+/// Like Calendar.app, a meeting widens across the lanes to its right that
+/// are free for its whole time (`span`).
 enum WeekGridLanes {
     struct Slot: Equatable {
         var lane: Int
         var lanes: Int
+        /// Lanes covered, starting at `lane` (1 = just its own).
+        var span: Int = 1
     }
 
     /// `intervals` = (start, end) minutes, any order; result is aligned.
@@ -243,7 +263,21 @@ enum WeekGridLanes {
         var laneEnds: [Int] = []
         var clusterEnd = Int.min
         func close() {
-            for i in cluster { out[i].lanes = max(1, laneEnds.count) }
+            for i in cluster {
+                out[i].lanes = max(1, laneEnds.count)
+                // Widen over free lanes to the right (no cluster meeting
+                // in that lane overlaps this one).
+                var span = 1
+                let a = intervals[i].0, b = max(intervals[i].1, a + 1)
+                while out[i].lane + span < laneEnds.count,
+                      !cluster.contains(where: { j in
+                          j != i && out[j].lane == out[i].lane + span
+                              && intervals[j].0 < b && max(intervals[j].1, intervals[j].0 + 1) > a
+                      }) {
+                    span += 1
+                }
+                out[i].span = span
+            }
             cluster = []
             laneEnds = []
         }
@@ -263,5 +297,49 @@ enum WeekGridLanes {
         }
         close()
         return out
+    }
+}
+
+/// Pure week-grid geometry (CALGRID): a meeting's block is proportional to
+/// its duration, like Calendar.app, with a floor of one 15-minute slot so a
+/// shorter meeting stays visible and never spills into the next slot, and
+/// its columns split the day's width by lane.
+enum WeekGridMath {
+    /// Shortest span drawn, minutes (also what lane assignment treats as
+    /// the meeting's length, so two tiny meetings never overlap visually).
+    static let minimumMinutes = 15
+    /// Vertical air between stacked blocks, points (total).
+    static let gap: CGFloat = 1
+    /// Horizontal air between side-by-side blocks, points.
+    static let laneGap: CGFloat = 2
+
+    /// The span the grid draws: at least one 15-minute slot.
+    static func visualSpan(start: Int, end: Int) -> (start: Int, end: Int) {
+        (start, max(end, start + minimumMinutes))
+    }
+
+    /// Smallest block that keeps one line of the chip font readable: a
+    /// 15-minute slot at the standard hour height, growing with text scale.
+    static func minimumHeight(scale: Double) -> CGFloat {
+        max(13, (12.5 * scale).rounded(.up))
+    }
+
+    /// Top and height of a block for a span (minutes after midnight).
+    static func vertical(start: Int, end: Int, minuteHeight: CGFloat,
+                         minimumHeight: CGFloat = 13) -> (y: CGFloat, height: CGFloat) {
+        let v = visualSpan(start: start, end: end)
+        return (CGFloat(v.start) * minuteHeight + gap / 2,
+                max(minimumHeight, CGFloat(v.end - v.start) * minuteHeight - gap))
+    }
+
+    /// Left edge and width of a block in lane `lane` of `lanes` covering
+    /// `span` lanes, inside a column `width` wide.
+    static func horizontal(lane: Int, lanes: Int, span: Int = 1, width: CGFloat,
+                           inset: CGFloat = laneGap) -> (x: CGFloat, width: CGFloat) {
+        let n = CGFloat(max(1, lanes))
+        // `inset` at both edges and between lanes.
+        let laneWidth = max(0, (width - 2 * inset - (n - 1) * inset) / n)
+        let covered = CGFloat(max(1, min(span, max(1, lanes) - lane)))
+        return (inset + (laneWidth + inset) * CGFloat(lane), laneWidth * covered + inset * (covered - 1))
     }
 }

@@ -8,7 +8,7 @@
 use serde_json::json;
 
 use super::apps::{install_app_for_user, INSTALL_CALLER};
-use super::chat::set_chat_hidden_with_client;
+use super::chat::{delete_message_with_client, set_chat_hidden_with_client};
 use super::fake_transport::{Fake, Recorded, AAD, GRAPH, SKYPE};
 use super::teams::{
     create_team_body, create_team_data, delete_channel_body, delete_channel_data, update_channel_data,
@@ -293,4 +293,29 @@ async fn pins_never_call_graph() {
             assert!(!r.haystack().contains(GRAPH));
         }
     }
+}
+
+// ---- MSGDELETE: own-message delete is the web client's softDelete ----
+
+/// DELETE carries `behavior=softDelete` and the percent-encoded conversation id.
+#[tokio::test]
+async fn delete_message_sends_soft_delete_with_encoded_conversation() {
+    let fake = Fake::start(vec![("DELETE", "/chat/v1/users/ME/conversations/", 200, "{}".into())]).await;
+    delete_message_with_client(&fake.client(), "19:abc@thread.v2", "1700000000000").await.expect("delete ok");
+    let reqs = fake.requests();
+    assert_eq!(reqs.len(), 1);
+    assert_eq!(reqs[0].method, "DELETE");
+    assert_eq!(
+        reqs[0].path,
+        "/chat/v1/users/ME/conversations/19%3Aabc%40thread.v2/messages/1700000000000?behavior=softDelete"
+    );
+    assert_eq!(reqs[0].headers.get("authentication").map(String::as_str), Some(format!("skypetoken={SKYPE}").as_str()));
+    assert!(!reqs[0].headers.contains_key("authorization"));
+}
+
+/// A refused delete is an error, never swallowed.
+#[tokio::test]
+async fn delete_message_failure_is_surfaced() {
+    let fake = Fake::start(vec![("DELETE", "/chat/v1/users/ME/conversations/", 403, "no".into())]).await;
+    assert!(delete_message_with_client(&fake.client(), "19:abc@thread.v2", "1").await.is_err());
 }

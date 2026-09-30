@@ -13,17 +13,50 @@ public struct CalendarRunners: Sendable {
     public var update: @Sendable (String, CalendarEventPatch) throws -> MeetingItem
     /// Meet now: create a solo online meeting from now, `subject` named.
     public var meetNow: @Sendable (String) throws -> MeetingItem
+    /// `(event id, recipients, comment)`.
+    public var forward: @Sendable (String, [String], String) throws -> Void
+    /// Remove an invitation from the user's own calendar (no response).
+    public var remove: @Sendable (String) throws -> Void
+    /// `(event id, attachment id)` → file bytes.
+    public var attachment: @Sendable (String, String) throws -> Data
+    /// `(addresses, from, to)` → free/busy.
+    public var schedule: @Sendable ([String], Date, Date) throws -> [CalendarFreeBusy]
+    public var categories: @Sendable () throws -> [CalendarCategory]
+    /// A full new event (Duplicate: attendees, location, body kept).
+    public var create: @Sendable (CalendarEventDraft) throws -> MeetingItem
+    /// `(title, start, end)` → draft webinar id.
+    public var webinar: @Sendable (String, Date, Date) throws -> String
+    /// `(series master id, from, to)` → the series' occurrences.
+    public var instances: @Sendable (String, Date, Date) throws -> [MeetingItem]
+
+    public static let unsupported: @Sendable () -> Error = { CoreCallError.failed("calendar: not available") }
 
     public init(
         detail: @escaping @Sendable (String) throws -> CalendarEventDetail,
         respond: @escaping @Sendable (String, RSVPAction) throws -> Void,
         update: @escaping @Sendable (String, CalendarEventPatch) throws -> MeetingItem,
-        meetNow: @escaping @Sendable (String) throws -> MeetingItem
+        meetNow: @escaping @Sendable (String) throws -> MeetingItem,
+        forward: @escaping @Sendable (String, [String], String) throws -> Void = { _, _, _ in throw unsupported() },
+        remove: @escaping @Sendable (String) throws -> Void = { _ in throw unsupported() },
+        attachment: @escaping @Sendable (String, String) throws -> Data = { _, _ in throw unsupported() },
+        schedule: @escaping @Sendable ([String], Date, Date) throws -> [CalendarFreeBusy] = { _, _, _ in throw unsupported() },
+        categories: @escaping @Sendable () throws -> [CalendarCategory] = { throw unsupported() },
+        create: @escaping @Sendable (CalendarEventDraft) throws -> MeetingItem = { _ in throw unsupported() },
+        webinar: @escaping @Sendable (String, Date, Date) throws -> String = { _, _, _ in throw unsupported() },
+        instances: @escaping @Sendable (String, Date, Date) throws -> [MeetingItem] = { _, _, _ in throw unsupported() }
     ) {
         self.detail = detail
         self.respond = respond
         self.update = update
         self.meetNow = meetNow
+        self.forward = forward
+        self.remove = remove
+        self.attachment = attachment
+        self.schedule = schedule
+        self.categories = categories
+        self.create = create
+        self.webinar = webinar
+        self.instances = instances
     }
 
     /// Signed-in profile over Graph.
@@ -36,7 +69,15 @@ public struct CalendarRunners: Sendable {
                 let now = Date()
                 return try CalendarGraph.production().create(
                     subject: subject, start: now, end: now.addingTimeInterval(3600), online: true)
-            })
+            },
+            forward: { try CalendarGraph.production().forward(id: $0, to: $1, comment: $2) },
+            remove: { try CalendarGraph.production().delete(id: $0) },
+            attachment: { try CalendarGraph.production().attachment(eventID: $0, attachmentID: $1) },
+            schedule: { try CalendarGraph.production().schedule(for: $0, from: $1, to: $2) },
+            categories: { try CalendarGraph.production().masterCategories() },
+            create: { try CalendarGraph.production().create($0) },
+            webinar: { try CalendarGraph.production().createWebinar(title: $0, start: $1, end: $2) },
+            instances: { try CalendarGraph.production().instances(seriesID: $0, from: $1, to: $2) })
     }
 
     /// New-meeting sheet over Graph (`start`/`end` local datetimes in `tz`).
@@ -258,6 +299,7 @@ extension CalendarWeekStore {
     /// The row for `id` wherever it is shown.
     public func row(id: String) -> MeetingItem? {
         meetings.first { $0.id == id } ?? monthMeetings.first { $0.id == id } ?? details[id]?.event
+            ?? seriesInstances.values.lazy.flatMap { $0 }.first { $0.id == id }
     }
 
     /// Apply `change` to every shown/cached copy of rows matching `match`
@@ -288,7 +330,7 @@ extension CalendarWeekStore {
     public func loadDetail(id: String, force: Bool = false) {
         guard force || details[id] == nil, !detailLoading.contains(id) else { return }
         if localEdits {
-            if let gate = demoGate, let row = row(id: id) {
+            if let gate = demoGate, let row = row(id: id) ?? CalendarDemo.seriesMaster(id, from: meetings + monthMeetings) {
                 details[id] = CalendarDemo.detail(gate, for: row)
             } else if let row = row(id: id) {
                 details[id] = CalendarEventDetail(event: row)
@@ -314,6 +356,27 @@ extension CalendarWeekStore {
             case .failure(let e):
                 detailErrors[id] = Self.message(for: e)
             }
+        }
+    }
+
+    /// False in demo: local data has no event beyond the loaded rows.
+    public var canResolveEventsByID: Bool { !localEdits }
+
+    /// Make the event `id` resolvable by `row(id:)` when a link names an
+    /// event that is not in any loaded range: one read-only GET of the
+    /// event by id (the same read the details sheet makes). True when the
+    /// row is available afterwards; false when the read fails or in demo.
+    /// Never writes.
+    public func resolveEvent(id: String) async -> Bool {
+        if row(id: id) != nil { return true }
+        if localEdits { return false }
+        let runner = runners.detail
+        do {
+            let d = try await Task.blocking { try runner(id) }.value
+            details[id] = d
+            return true
+        } catch {
+            return false
         }
     }
 
@@ -374,14 +437,7 @@ extension CalendarWeekStore {
         updateError = nil
         if localEdits {
             let p = patch
-            mutateRows({ seriesWide ? $0.info?.seriesMasterID == master : $0.id == row.id }) { m in
-                var m = m
-                if let s = p.subject { m.subject = s }
-                if let s = p.start { m.start = s }
-                if let e = p.end { m.end = e }
-                if let l = p.location { m.info?.location = l.isEmpty ? nil : l }
-                return m
-            }
+            mutateRows({ seriesWide ? $0.info?.seriesMasterID == master : $0.id == row.id }) { p.applied(to: $0) }
             return true
         }
         updating = true
@@ -392,12 +448,7 @@ extension CalendarWeekStore {
         do {
             let updated = try await Task.blocking { try runner(target, sent) }.value
             if seriesWide {
-                mutateRows({ $0.info?.seriesMasterID == master }) { m in
-                    var m = m
-                    if let s = sent.subject { m.subject = s }
-                    if let l = sent.location { m.info?.location = l.isEmpty ? nil : l }
-                    return m
-                }
+                mutateRows({ $0.info?.seriesMasterID == master }) { sent.applied(to: $0) }
             } else {
                 mutateRows({ $0.id == row.id }, { _ in updated })
             }

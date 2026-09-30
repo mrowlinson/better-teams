@@ -56,12 +56,16 @@ public struct SendTransport: Sendable {
         post: { r in
             switch r.route {
             case .plain:
-                return try RustCore.sendIdem(
+                let id = try RustCore.sendIdem(
                     chatID: r.chatID, text: r.text, clientMessageID: r.clientMessageID).id
+                MeetingChatUnmute.after(.send, chatID: r.chatID) // CHATSYNC3 R1
+                return id
             case .reply(let pid, let sender, let ptext):
-                return try RustCore.replyIdem(
+                let id = try RustCore.replyIdem(
                     chatID: r.chatID, parentID: pid, parentSender: sender, parentText: ptext,
                     text: r.text, clientMessageID: r.clientMessageID).id
+                MeetingChatUnmute.after(.send, chatID: r.chatID) // CHATSYNC3 R1
+                return id
             case .thread(let root):
                 return try RustCore.threadReplyIdem(
                     channelID: r.chatID, rootID: root, text: r.text,

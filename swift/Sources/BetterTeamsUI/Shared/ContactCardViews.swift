@@ -67,7 +67,7 @@ enum ContactActions {
     static func email(_ address: String) {
         ContactHover.shared.dismiss()
         guard let url = URL(string: "mailto:" + address) else { return }
-        NSWorkspace.shared.open(url)
+        TeamsLinkRouter.open(url)
     }
 
     /// `tel:` link for a directory phone number (digits and a leading +).
@@ -80,7 +80,7 @@ enum ContactActions {
 
     static func phone(_ number: String) {
         ContactHover.shared.dismiss()
-        if let url = telURL(number) { NSWorkspace.shared.open(url) }
+        if let url = telURL(number) { TeamsLinkRouter.open(url) }
     }
 
     static func copy(_ text: String) {
@@ -141,7 +141,7 @@ enum ContactActions {
         ContactHover.shared.dismiss()
         let url = card?.linkedIn?.profileURL
             ?? ContactLinkedIn.searchURL(name: card?.profile.displayName ?? ref.name, company: card?.profile.companyName)
-        if let url { NSWorkspace.shared.open(url) }
+        if let url { TeamsLinkRouter.open(url) }
     }
 
     static func hourMinute(_ s: String) -> Int? {
@@ -352,7 +352,7 @@ private struct QuickMessageField: View {
     }
 }
 
-/// Teams' availability box: bordered, presence dot + bold
+/// The availability box (a native `GroupBox`): presence dot + bold
 /// "presence • availability", work hours, then a divider and the
 /// person's local time.
 private struct ContactStatusLines: View {
@@ -366,6 +366,7 @@ private struct ContactStatusLines: View {
         let hours = ContactActions.workingHours(for: card)
         let time = ContactActions.localTime(for: card)
         if line != nil || hours != nil || time != nil {
+            GroupBox {
             VStack(alignment: .leading, spacing: 8) {
                 if line != nil || hours != nil {
                     VStack(alignment: .leading, spacing: 4) {
@@ -392,9 +393,8 @@ private struct ContactStatusLines: View {
                 }
             }
             .font(AppFont.subheadline(scale))
-            .padding(12)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Palette.panelEdge))
+            }
             .accessibilityElement(children: .combine)
         }
     }
@@ -439,6 +439,7 @@ struct ContactHoverCard: View {
                     .padding(14)
                     .frame(width: 320, alignment: .leading)
             }
+            .background { CardWindowReporter(hover: hover) }
         }
     }
 
@@ -566,31 +567,22 @@ struct ContactCardSheet: View {
         }
     }
 
-    /// Teams' underline tabs: brand-colored label and bar on the selected tab.
-    private struct TabStrip: View {
+    /// The card's sections as a native segmented control (system accent
+    /// for the selected segment), left-aligned above the scrolling content.
+    private struct SectionPicker: View {
         let tabs: [Tab]
         @Binding var selection: Tab
-        @Environment(\.contentTextScale) private var scale
 
         var body: some View {
-            HStack(spacing: 18) {
-                ForEach(tabs) { tab in
-                    let on = tab == selection
-                    Button { selection = tab } label: {
-                        VStack(spacing: 5) {
-                            Text(tab.rawValue)
-                                .font(on ? AppFont.bodyEmphasized(scale) : AppFont.body(scale))
-                                .foregroundStyle(on ? Palette.mention : Color.secondary)
-                            Rectangle()
-                                .fill(on ? Palette.mention : Color.clear)
-                                .frame(height: 2)
-                        }
-                        .fixedSize()
-                        .contentShape(Rectangle())
+            HStack(spacing: 0) {
+                Picker("Section", selection: $selection) {
+                    ForEach(tabs) { tab in
+                        Text(tab.rawValue).tag(tab)
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityAddTraits(on ? .isSelected : [])
                 }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .fixedSize()
                 Spacer(minLength: 0)
             }
         }
@@ -634,7 +626,7 @@ struct ContactCardSheet: View {
                     ContactHeader(ref: ref, card: card, presence: store.presence(for: ref), diameter: 88)
                         .padding(.trailing, 28)
                     ContactActionBar(ref: target, card: card, own: own) { tab = .organization }
-                    TabStrip(tabs: tabs, selection: $tab)
+                    SectionPicker(tabs: tabs, selection: Binding(get: { shown }, set: { tab = $0 }))
                 }
                 .padding([.horizontal, .top], 20)
                 Divider()
@@ -868,7 +860,7 @@ struct ContactCardSheet: View {
                         .font(AppFont.body(scale)).foregroundStyle(.secondary)
                     Button("Find \(name) on LinkedIn") { ContactActions.linkedIn(ref, card) }
                     if let li = card?.linkedIn, !li.bound, let bind = li.bindURL {
-                        Button("Connect your LinkedIn account") { NSWorkspace.shared.open(bind) }
+                        Button("Connect your LinkedIn account") { TeamsLinkRouter.open(bind) }
                             .buttonStyle(.link)
                             .help("Opens LinkedIn in the browser to link your account, so matched profiles show here")
                     }
@@ -891,7 +883,7 @@ struct ContactCardSheet: View {
 
         private func fileRow(_ file: ContactSharedFile) -> some View {
             Button {
-                if let url = file.webURL { NSWorkspace.shared.open(url) }
+                if let url = file.webURL { TeamsLinkRouter.open(url) }
             } label: {
                 HStack(spacing: 8) {
                     Image(systemName: ContactActions.fileSymbol(file.type))

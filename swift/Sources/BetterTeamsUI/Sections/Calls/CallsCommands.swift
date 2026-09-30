@@ -8,6 +8,7 @@ public enum CallsCommands {
     public static let callBack: CommandID = "calls.callBack"
     public static let message: CommandID = "calls.message"
     public static let removeFromRecents: CommandID = "calls.removeFromRecents"
+    public static let clearHistory: CommandID = "calls.clearHistory"
     public static let addToSpeedDial: CommandID = "calls.addToSpeedDial"
     public static let removeFromSpeedDial: CommandID = "calls.removeFromSpeedDial"
 
@@ -25,5 +26,6 @@ public enum CallsCommands {
         Command(addToSpeedDial, "Add to Speed Dial", menu: .init(.call, group: 4, order: 0), owner: .calls),
         Command(removeFromSpeedDial, "Remove from Speed Dial", menu: .init(.call, group: 4, order: 1), owner: .calls),
         Command(removeFromRecents, "Remove from Recents", menu: .init(.call, group: 4, order: 2), owner: .calls),
+        Command(clearHistory, "Clear Call History\u{2026}", menu: .init(.call, group: 4, order: 3), owner: .calls),
     ]
 }

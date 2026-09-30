@@ -161,7 +161,7 @@ public final class AuthViewModel: ObservableObject {
     /// Public: Swift requires default-argument callees of a public init to be public.
     public nonisolated static let defaultOpenURL: OpenURLFn = { url in
         if NSClassFromString("XCTestCase") != nil { return false }
-        return NSWorkspace.shared.open(url)
+        return TeamsLinkRouter.open(url)
     }
 
     public init(
@@ -400,6 +400,11 @@ public final class AuthViewModel: ObservableObject {
         }
     }
 
+    /// The last best-effort core cancel `cancelBrowser` started. Runs on the
+    /// blocking executor, so callers that need it done await this instead
+    /// of guessing how long it takes.
+    public private(set) var browserCancelTask: Task<Void, Never>?
+
     /// Leave browser/browserWorking: drop the core session (best-effort),
     /// back to wherever sign-in started.
     public func cancelBrowser() {
@@ -407,7 +412,7 @@ public final class AuthViewModel: ObservableObject {
         case let .browser(info), let .browserWorking(info):
             let fn = browserCancelFn
             let session = info.session
-            Task.blocking { _ = try? fn(session) }
+            browserCancelTask = Task.blocking { _ = try? fn(session) }
             state = stateBeforeSignIn ?? .signedOut
             stateBeforeSignIn = nil
         default: break

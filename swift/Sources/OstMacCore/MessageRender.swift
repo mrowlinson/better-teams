@@ -326,7 +326,7 @@ public enum MessageRender {
     /// the bubble shows. `highlighting` names the owner; nil (or blank)
     /// marks every mention `.other`.
     public static func attributedBody(for message: ChatMessage, highlighting ownName: String? = nil) -> AttributedString {
-        attributedBody(text: renderText(for: message), raw: message.raw, highlighting: ownName)
+        return attributedBody(text: renderText(for: message), raw: message.raw, highlighting: ownName)
     }
 
     /// One mined mention name against the owner name: trimmed, one
@@ -387,12 +387,10 @@ public enum MessageRender {
         if names.isEmpty {
             names = mentionTokens(in: clean)
         }
-        for n in names {
+        for (n, r) in mentionRanges(names, in: clean) {
             let role: MentionRole = isOwnerMention(n, ownName: ownName) ? .own : .other
-            for r in ranges(of: n, in: clean) {
-                guard let ar = convert(r) else { continue }
-                a[ar].mention = role
-            }
+            guard let ar = convert(r) else { continue }
+            a[ar].mention = role
         }
         // Code blocks from <pre> + backtick spans. Server snippets get
         // auto-detected token colors too (top10-code; foreground only,
@@ -456,12 +454,10 @@ public enum MessageRender {
         if names.isEmpty {
             names = mentionTokens(in: clean)
         }
-        for n in names {
+        for (n, r) in mentionRanges(names, in: clean) {
             let role: MentionRole = isOwnerMention(n, ownName: ownName) ? .own : .other
-            for r in ranges(of: n, in: clean) {
-                guard let ar = convert(r) else { continue }
-                a[ar].mention = role
-            }
+            guard let ar = convert(r) else { continue }
+            a[ar].mention = role
         }
         // Server `<pre>` snippets: same mono as the fence-less path,
         // plus auto-detected token colors (foreground only).
@@ -747,49 +743,81 @@ public enum MessageRender {
         return out
     }
 
-    /// `@Name` tokens when no `<at>` tags exist (plain-text path).
-    /// Matches @ + letters/spaces/commas/dots/apostrophes, up to 40 chars.
-    static func mentionTokens(in text: String) -> [String] {
+    /// Display names of people seen in conversations (message senders).
+    /// The plain-text mention fallback extends past the first word only
+    /// when the following words complete one of these names.
+    private static var knownNames: Set<String> = []
+
+    public static func registerKnownNames(_ names: [String]) {
+        renderLock.lock()
+        for n in names where !n.isEmpty { knownNames.insert(n) }
+        renderLock.unlock()
+    }
+
+    static func knownNamesSnapshot() -> Set<String> {
+        renderLock.lock(); defer { renderLock.unlock() }
+        return knownNames
+    }
+
+    /// Exact ranges for entity-carried mention names (`<at>` / Mention
+    /// spans): each name is placed at its next occurrence after the
+    /// previous one, in span order, so only the mentioned occurrences
+    /// highlight (a bare "Jordan" elsewhere in the text stays plain).
+    /// A name not found after the cursor is searched from the start.
+    static func mentionRanges(_ names: [String], in text: String) -> [(String, Range<String.Index>)] {
+        var out: [(String, Range<String.Index>)] = []
+        var cursor = text.startIndex
+        for n in names where !n.isEmpty {
+            if let r = text.range(of: n, range: cursor ..< text.endIndex)
+                ?? text.range(of: n)
+            {
+                out.append((n, r))
+                if r.upperBound > cursor { cursor = r.upperBound }
+            }
+        }
+        return out
+    }
+
+    /// `@Name` tokens when no entities exist (plain-text path, last
+    /// resort). Never guesses past the first word: "@Jordan Please
+    /// confirm" is "Jordan". The name extends over following words only
+    /// when the text there spells a known member display name (longest
+    /// match wins), e.g. "@Jordan Fox can you ..." with "Jordan Fox" known.
+    static func mentionTokens(in text: String, knownNames: Set<String>? = nil) -> [String] {
+        let known = knownNames ?? knownNamesSnapshot()
         var out: [String] = []
         var i = text.startIndex
         while i < text.endIndex {
             guard text[i] == "@" else { i = text.index(after: i); continue }
-            var j = text.index(after: i)
-            var count = 0
-            while j < text.endIndex, count < 40 {
-                let c = text[j]
-                if c.isLetter || c == " " || c == "," || c == "." || c == "'" || c == "-" {
-                    j = text.index(after: j); count += 1
-                } else { break }
+            let start = text.index(after: i)
+            // "a@b.com" is an address, not a mention.
+            if i > text.startIndex {
+                let prev = text[text.index(before: i)]
+                if prev.isLetter || prev.isNumber || prev == "." || prev == "_" { i = start; continue }
             }
-            // The greedy scan above overshoots into the sentence ("@Jordan
-            // Fox can you confirm ..."). Keep the first word plus following
-            // capitalized name words (or name particles), at most 4 words.
-            let raw = String(text[text.index(after: i) ..< j])
-            let particles: Set<String> = ["van", "von", "de", "der", "den", "da", "di", "la", "le", "del", "bin", "al"]
-            var kept: [Substring] = []
-            var end = raw.startIndex
-            var pos = raw.startIndex
-            while pos < raw.endIndex, kept.count < 4 {
-                while pos < raw.endIndex, raw[pos] == " " { pos = raw.index(after: pos) }
-                guard pos < raw.endIndex else { break }
-                var q = pos
-                while q < raw.endIndex, raw[q] != " " { q = raw.index(after: q) }
-                let word = raw[pos ..< q]
-                let ok = kept.isEmpty || (word.first?.isUppercase ?? false) || particles.contains(word.lowercased())
-                guard ok else { break }
-                kept.append(word)
-                end = q
-                pos = q
-                // A word ending in "," or "." (sentence punctuation) ends the
-                // name unless it is "Last," in a "Last, First" pair.
-                if word.hasSuffix(".") { break }
-                if word.hasSuffix(","), kept.count > 1 { break }
+            var j = start
+            while j < text.endIndex, text[j].isLetter || text[j].isNumber || text[j] == "'" || text[j] == "-" || text[j] == "_" {
+                j = text.index(after: j)
             }
-            let name = String(raw[raw.startIndex ..< end])
-                .trimmingCharacters(in: CharacterSet(charactersIn: " ,."))
-            if !name.isEmpty { out.append(name) }
-            i = text.index(text.index(after: i), offsetBy: raw.distance(from: raw.startIndex, to: end))
+            // Trailing apostrophes/hyphens and a possessive "'s" are prose.
+            while j > start, text[text.index(before: j)] == "'" || text[text.index(before: j)] == "-" {
+                j = text.index(before: j)
+            }
+            if j > text.index(start, offsetBy: 2, limitedBy: j) ?? j, text[start ..< j].hasSuffix("'s") {
+                j = text.index(j, offsetBy: -2)
+            }
+            guard j > start else { i = start; continue }
+            var end = j
+            let rest = text[start...]
+            var best = 0
+            for n in known where n.count > best && rest.hasPrefix(n) {
+                let after = text.index(start, offsetBy: n.count)
+                // Whole-word match: the name must not run into more letters.
+                if after == text.endIndex || !text[after].isLetter { best = n.count }
+            }
+            if best > 0 { end = text.index(start, offsetBy: best) }
+            out.append(String(text[start ..< end]))
+            i = end
         }
         return out
     }
@@ -928,6 +956,7 @@ public enum MessageRender {
     /// (the quote block owns attribution; never rewrite reply bodies).
     public static func bubbleText(for message: ChatMessage) -> String {
         renderLock.lock()
+        knownNames.insert(message.sender)
         if let e = bubbleTextCache[message.id],
            e.content == message.content, e.raw == message.raw
         {

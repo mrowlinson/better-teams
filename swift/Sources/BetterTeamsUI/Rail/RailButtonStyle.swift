@@ -118,9 +118,14 @@ struct RailButtonLabel: View {
             .foregroundStyle(symbolStyle)
     }
 
+    /// Unselected (and selected in an inactive window): `.primary`, the
+    /// label's own ink. `.secondary` drew nearly invisible in light mode:
+    /// the rail is a sidebar split item whose pane gets a vibrant
+    /// appearance over the sidebar material. The selection stays marked by
+    /// the tint, the filled symbol variant and the background.
     private var symbolStyle: AnyShapeStyle {
-        if selected { return key ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary) }
-        return AnyShapeStyle(.secondary)
+        if selected, key { return AnyShapeStyle(.tint) }
+        return AnyShapeStyle(.primary)
     }
 }
 

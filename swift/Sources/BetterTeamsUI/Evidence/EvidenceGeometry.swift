@@ -37,6 +37,9 @@ enum EvidenceGeometry {
                             pane("detail", split.detailItem), pane("inspector", split.inspectorItem)]
             .joined(separator: " ") + "]"
         out += " needForInspector=\(Int(split.widthNeededForInspector.rounded()))"
+        // Chrome (TOOLBARLINE): rail and inspector frames and the traffic
+        // lights, y measured from the window top, so overlap is a number.
+        out += " chrome[" + ChromeGeometry.describe(w, split: split) + "]"
         // In-window web views (app frames, channel web tabs): window rect.
         if let root = w.contentView {
             let webs = collect(root) { $0 is WKWebView }.map { $0.convert($0.bounds, to: nil) }
@@ -120,5 +123,31 @@ enum EvidenceGeometry {
         var out: [NSView] = match(v) ? [v] : []
         for s in v.subviews { out += collect(s, match) }
         return out
+    }
+}
+
+/// Window-top-based rects of the rail, the inspector and the three traffic
+/// lights (TOOLBARLINE): the rail's icon stack must never sit under them.
+@MainActor
+enum ChromeGeometry {
+    static func topRect(_ v: NSView, in w: NSWindow) -> NSRect {
+        let r = v.convert(v.bounds, to: nil)
+        return NSRect(x: r.minX, y: w.frame.height - r.maxY, width: r.width, height: r.height)
+    }
+
+    static func trafficLights(_ w: NSWindow) -> [NSRect] {
+        [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton]
+            .compactMap { w.standardWindowButton($0) }.map { topRect($0, in: w) }
+    }
+
+    static func describe(_ w: NSWindow, split: ShellSplitViewController) -> String {
+        func r(_ x: NSRect) -> String { "\(Int(x.minX)),\(Int(x.minY)),\(Int(x.width)),\(Int(x.height))" }
+        let rail = split.railItem.viewController.view
+        var parts = ["rail=\(r(topRect(rail, in: w))) railSafeTop=\(Int(rail.safeAreaInsets.top))"]
+        if !split.inspectorItem.isCollapsed {
+            parts.append("inspector=\(r(topRect(split.inspectorItem.viewController.view, in: w)))")
+        }
+        parts.append("lights=" + trafficLights(w).map(r).joined(separator: ";"))
+        return parts.joined(separator: " ")
     }
 }

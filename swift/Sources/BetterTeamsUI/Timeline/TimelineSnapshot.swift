@@ -75,9 +75,11 @@ public enum TimelineSnapshot {
         return out
     }
 
-    /// Same sender within the grouping window.
+    /// Same sender within the grouping window of the message before
+    /// (Teams' worker `attached`: same creator, previous not deleted,
+    /// arrival within 5 minutes of the previous message, chained).
     static func continues(_ a: ChatMessage?, _ b: ChatMessage) -> Bool {
-        guard let a, a.sender == b.sender, a.isOwn == b.isOwn,
+        guard let a, !a.deleted, a.sender == b.sender, a.isOwn == b.isOwn,
               let ta = TeamsTime.parseISO(a.timestamp), let tb = TeamsTime.parseISO(b.timestamp)
         else { return false }
         return abs(tb.timeIntervalSince(ta)) <= groupWindow

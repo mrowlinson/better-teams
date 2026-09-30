@@ -49,11 +49,29 @@ enum CallEvidence {
     static func apply(_ route: Route, _ wc: ShellWindowController) {
         let m = wc.model
         guard m.options.demo else { return }
+        if route.head == "calls", route.query["confirm"] == "clear" {
+            // Evidence: the Clear Call History confirmation alert.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { CallsSection.clearHistory(m) }
+        }
         switch route.head {
         case "settings":
+            CallsSettingsPane.evidenceOpenTest = route.query["test"] == "1"
             if let p = presentation(route.query["presentation"]) { CallSettings.shared.presentation = p }
             SettingsWindowController.shared.show(pane: route.tail.first, evidence: m.options.evidence)
             focus(SettingsWindowController.shared.window, over: wc)
+            // ?seed=windows: two quiet-hours windows + a presence schedule (demo stores are empty).
+            if route.query["seed"] == "windows", let app = m.app {
+                app.quietHours.windows[0] = QuietHoursWindow(enabled: true, startMinutes: 22 * 60, endMinutes: 7 * 60)
+                app.quietHours.addWindow(QuietHoursWindow(enabled: true, startMinutes: 12 * 60, endMinutes: 13 * 60,
+                                                          days: [7, 1]))
+                _ = app.presenceSchedule.addEntry(PresenceScheduleEntry(
+                    window: QuietHoursWindow(enabled: true, startMinutes: 9 * 60, endMinutes: 17 * 60, days: [2, 3, 4, 5, 6]),
+                    status: .busy))
+            }
+            // ?scroll=0…1 scrolls the pane (tall panes; Notifications is ~2.5 screens).
+            if let f = route.query["scroll"].flatMap(Double.init), let w = SettingsWindowController.shared.window {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { scrollPane(in: w.contentView, to: f) }
+            }
         case "call" where route.query["state"] == "incoming":
             if let p = presentation(route.query["presentation"]) { CallSettings.shared.presentation = p }
             m.app?.call.seedDemo(state: "incoming")
@@ -69,6 +87,19 @@ enum CallEvidence {
         default:
             break
         }
+    }
+
+    private static func scrollPane(in view: NSView?, to fraction: Double) {
+        guard let view else { return }
+        if let sv = view as? NSScrollView, let doc = sv.documentView {
+            let room = max(0, doc.frame.height - sv.contentView.bounds.height)
+            var y = room * min(max(fraction, 0), 1)
+            if !doc.isFlipped { y = room - y }
+            sv.contentView.scroll(to: NSPoint(x: 0, y: y))
+            sv.reflectScrolledClipView(sv.contentView)
+            return
+        }
+        for sub in view.subviews { scrollPane(in: sub, to: fraction) }
     }
 
     /// Demo meeting roster: one speaking, two muted (deterministic).

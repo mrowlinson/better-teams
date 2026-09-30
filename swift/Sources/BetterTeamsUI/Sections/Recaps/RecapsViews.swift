@@ -14,18 +14,25 @@ import SwiftUI
 /// hits show unfiltered, as they may match inside the file. Clearing
 /// the field restores the lists.
 struct RecapsListPane: View {
+    static func chatsError(_ s: ChatListState) -> String? {
+        if case .error(let m) = s { return m }
+        return nil
+    }
+
     @ObservedObject var recordings: RecordingsViewModel
     @ObservedObject var transcripts: TranscriptsViewModel
+    @ObservedObject var chats: ChatListViewModel
     @State private var filter = ""
     @State private var debounce = Debounce(milliseconds: 250)
     @Environment(\.windowModel) private var model
 
     var body: some View {
         if let model {
-            let all = RecapsSection.recaps(recordings, transcripts)
+            let all = Recap.withMeetingChats(RecapsSection.recaps(recordings, transcripts), chats: chats.chats)
             let resolved = RecapsListState.resolve(
                 recordings: recordings.state, transcripts: transcripts.state, count: all.count,
-                forced: model.forced(.native(.recaps)), offline: model.connection == .offline)
+                forced: model.forced(.native(.recaps)), offline: model.connection == .offline,
+                chatsLoading: chats.state == .loading, chatsError: Self.chatsError(chats.state))
             // A search (field text or server hits) keeps the search UI:
             // zero hits read "No Results", never the no-recaps pane.
             let searching = !filter.isEmpty || recordings.isSearchResults || transcripts.isSearchResults
@@ -99,7 +106,7 @@ struct RecapsListPane: View {
                       message: f.isEmpty ? "No recaps found." : "No recaps match \u{201C}\(f)\u{201D}.")
         } else {
             let selection = Binding<String?>(
-                get: { RecapsSection.recapID(m) },
+                get: { RecapsSection.recapID(m).map { id in RecapsSection.row(id, in: rows)?.id ?? id } },
                 set: { RecapsSection.select($0, m) })
             List(rows, selection: selection) { recap in
                 RecapRow(recap: recap).tag(recap.id)
@@ -147,98 +154,43 @@ enum RecapDetailState {
     static let playerErrorTitle = "Couldn\u{2019}t Load Recording"
 }
 
-/// The recording's player above the transcript turns; a turn click
-/// seeks the player to the turn's start.
+/// The selected recap in the unified viewer (MeetingRecapView).
 struct RecapDetailPane: View {
+    static func listError(_ s: RecordingsState) -> String? {
+        if case .error(let m) = s { return m }
+        return nil
+    }
+
+    static func listError(_ s: TranscriptsState) -> String? {
+        if case .error(let m) = s { return m }
+        return nil
+    }
+
     @ObservedObject var recordings: RecordingsViewModel
     @ObservedObject var transcripts: TranscriptsViewModel
-    /// A fixed recap (a meeting chat's Recap tab) instead of the Recaps
-    /// selection.
-    var pinned: Recap?
+    @ObservedObject var chats: ChatListViewModel
+    let store: MeetingRecapStore
     @Environment(\.windowModel) private var model
 
     var body: some View {
         if let model {
-            if let recap = pinned ?? (model.forced(.native(.recaps)) == nil ? RecapsSection.current(model) : nil) {
-                VStack(spacing: 0) {
-                    if let r = recap.recording {
-                        player(r)
-                        Divider()
+            if model.forced(.native(.recaps)) == nil, let recap = RecapsSection.current(model) {
+                let vm = RecapsSection.model(for: recap, store)
+                MeetingRecapView(recap: vm, recordings: recordings)
+                    .id(recap.id)
+                    .task(id: (recap.recording?.id ?? "-") + "|" + (recap.transcript?.id ?? "-") + "|"
+                          + (Self.listError(recordings.state) ?? "") + "|" + (Self.listError(transcripts.state) ?? "")) {
+                        if recap.threadID != nil {
+                            vm.updateFiles(recording: recap.recording, transcript: recap.transcript)
+                        } else {
+                            vm.updateListErrors(recordings: Self.listError(recordings.state),
+                                                transcripts: Self.listError(transcripts.state))
+                        }
                     }
-                    turns(recap)
-                }
-                // Idempotent: re-opens this recap when the shared stores
-                // were pointed elsewhere (a meeting chat's Recap tab).
-                .task(id: recap.id) { RecapsSection.open(recap.id, recordings, transcripts) }
             } else {
                 NoSelectionPane(RecapDetailState.noSelectionTitle)
             }
         }
-    }
-
-    @ViewBuilder
-    private func player(_ r: RecordingItem) -> some View {
-        Group {
-            if recordings.selectedID == r.id, let p = recordings.player {
-                RecapPlayerView(player: p)
-            } else if recordings.selectedID == r.id, case .failed(let message) = recordings.playback {
-                EmptyPane(RecapDetailState.playerErrorTitle, systemImage: "exclamationmark.triangle",
-                          message: message) {
-                    Button("Try Again") { recordings.play(r, autoplay: false) }
-                }
-            } else {
-                LoadingPane("Loading Recording\u{2026}", rows: false)
-            }
-        }
-        .aspectRatio(16 / 9, contentMode: .fit)
-        .frame(maxWidth: .infinity, maxHeight: 360)
-        .background(.black)
-    }
-
-    @ViewBuilder
-    private func turns(_ recap: Recap) -> some View {
-        if let t = recap.transcript {
-            if transcripts.selectedID != t.id {
-                LoadingPane("Loading Transcript\u{2026}", rows: false)
-            } else {
-                switch transcripts.content {
-                case .idle, .loading: LoadingPane("Loading Transcript\u{2026}", rows: false)
-                case .failed(let message):
-                    ErrorPane(title: RecapDetailState.transcriptErrorTitle, message: message) {
-                        transcripts.select(t)
-                    }
-                case .loaded:
-                    let current = recap.recording != nil && recordings.selectedID == recap.recording?.id
-                        ? TranscriptPlayhead.currentCueID(transcripts.cues, at: recordings.playheadMs) : nil
-                    ScrollViewReader { proxy in
-                        List(transcripts.cues) { cue in
-                            TranscriptTurnRow(cue: cue, seekable: recordings.player != nil,
-                                              isCurrent: cue.id == current) { seek(to: cue) }
-                                .listRowBackground(cue.id == current
-                                    ? RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                        .fill(Palette.messageHighlight).padding(.horizontal, 4)
-                                    : nil)
-                        }
-                        .listStyle(.inset)
-                        // Follow the turn under the playhead (it moves only
-                        // while playing or on a seek).
-                        .onChange(of: current) { _, id in
-                            guard let id else { return }
-                            proxy.scrollTo(id)
-                        }
-                    }
-                }
-            }
-        } else {
-            EmptyPane(RecapDetailState.noTranscriptTitle, systemImage: "doc.text",
-                      message: RecapDetailState.noTranscriptMessage)
-        }
-    }
-
-    private func seek(to cue: TranscriptCue) {
-        guard let p = recordings.player else { return }
-        p.seek(to: CMTime(value: CMTimeValue(cue.startMs), timescale: 1000),
-               toleranceBefore: .zero, toleranceAfter: .zero)
     }
 }
 
@@ -310,20 +262,34 @@ struct RecapInspector: View {
     @ObservedObject var recordings: RecordingsViewModel
     @ObservedObject var transcripts: TranscriptsViewModel
     @ObservedObject var actionItems: ActionItemsStore
-    /// A fixed recap (a meeting chat's Recap tab).
-    var pinned: Recap?
+    @ObservedObject var chats: ChatListViewModel
+    let store: MeetingRecapStore
     @Environment(\.windowModel) private var model
     @Environment(\.contentTextScale) private var scale
 
     var body: some View {
-        if let recap = pinned ?? model.flatMap({ $0.forced(.native(.recaps)) == nil ? RecapsSection.current($0) : nil }) {
-            detail(recap)
+        if let recap = model.flatMap({ $0.forced(.native(.recaps)) == nil ? RecapsSection.current($0) : nil }) {
+            RecapInspectorDetail(recap: recap, vm: RecapsSection.model(for: recap, store), recordings: recordings,
+                                 transcripts: transcripts, actionItems: actionItems, scale: scale)
         } else {
             NoSelectionPane(RecapDetailState.noSelectionTitle)
         }
     }
+}
 
-    private func detail(_ recap: Recap) -> some View {
+private struct RecapInspectorDetail: View {
+    let recap: Recap
+    @ObservedObject var vm: MeetingRecapViewModel
+    @ObservedObject var recordings: RecordingsViewModel
+    @ObservedObject var transcripts: TranscriptsViewModel
+    @ObservedObject var actionItems: ActionItemsStore
+    let scale: Double
+
+    /// The recording the viewer plays (the organizer's file for a
+    /// meeting chat, else the drive row).
+    private var recording: RecordingItem? { vm.recording.value ?? recap.recording }
+
+    var body: some View {
         Form {
             Section {
                 Text(recap.title)
@@ -332,13 +298,13 @@ struct RecapInspector: View {
                     .padding(.vertical, 4)
             }
             Section {
-                LabeledContent("Contains", value: recap.kind)
-                if let d = recap.recording?.durationLabel { LabeledContent("Duration", value: d) }
-                if let s = recap.source { LabeledContent("Location", value: s) }
+                LabeledContent("Contains", value: contains)
+                if let d = recording?.durationLabel { LabeledContent("Duration", value: d) }
+                if let s = recording?.source ?? recap.source { LabeledContent("Location", value: s) }
             }
-            Section("Action Items") { items(recap) }
+            Section("Action Items") { items }
             Section {
-                if let r = recap.recording {
+                if let r = recording {
                     Button("Save Recording to Downloads") { recordings.save(r) }
                         .disabled(r.drive_id == nil)
                 }
@@ -356,27 +322,38 @@ struct RecapInspector: View {
                         .foregroundStyle(.secondary)
                 }
                 Button("Open in Browser") {
-                    if let r = recap.recording { recordings.open(r) } else if let t = recap.transcript { transcripts.open(t) }
+                    if let r = recording { recordings.open(r) } else if let t = recap.transcript { transcripts.open(t) }
                 }
-                .disabled(recap.webURL == nil)
+                .disabled(recording?.web_url == nil && recap.transcript?.web_url == nil)
             }
         }
         .formStyle(.grouped)
+        // Action items belong to one meeting: another recap starts clean.
+        .onChange(of: recap.id) { _, _ in actionItems.reset() }
+    }
+
+    /// What the viewer found (parts read so far).
+    private var contains: String {
+        var parts: [String] = []
+        if vm.recording.value != nil { parts.append("Recording") }
+        if vm.transcript.value != nil { parts.append("Transcript") }
+        if vm.notes.value != nil { parts.append("Notes") }
+        if vm.aiRecap.value != nil { parts.append("Intelligent recap") }
+        if parts.isEmpty { return vm.isLoading ? "Reading\u{2026}" : recap.kind }
+        return ListFormatter.localizedString(byJoining: parts)
     }
 
     @ViewBuilder
-    private func items(_ recap: Recap) -> some View {
-        let ready = recap.transcript != nil && transcripts.selectedID == recap.transcript?.id
-            && transcripts.content == .loaded
+    private var items: some View {
+        let cues = vm.transcript.value ?? []
         switch actionItems.state {
         case .idle:
-            if recap.transcript == nil {
-                Text("Action items come from the meeting transcript.").foregroundStyle(.secondary)
+            if cues.isEmpty {
+                Text("Action items need a transcript.").foregroundStyle(.secondary)
             } else {
                 Button("Find Action Items") {
-                    Task { await transcripts.extractActionItems() }
+                    Task { await actionItems.extractFromCues(cues, transcriptID: recap.id) }
                 }
-                .disabled(!ready)
                 .help("Finds action items on this Mac")
             }
         case .loading:

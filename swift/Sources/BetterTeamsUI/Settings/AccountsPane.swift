@@ -52,6 +52,8 @@ struct AccountsPane: View {
                 HStack {
                     Button("Add Account\u{2026}") { shell(arg: "add") }
                         .disabled(demo)
+                    Button("Open in New Window") { openWindow() }
+                        .disabled(demo || model == nil || accounts.accounts.count < 2 || (selection ?? accounts.activeID) == nil)
                     Button("Sign Out\u{2026}") { signOut() }
                         .disabled(demo || accounts.activeID == nil)
                     Button("Remove\u{2026}") { remove() }
@@ -68,12 +70,10 @@ struct AccountsPane: View {
                         .disabled(demo || model == nil)
                 }
             } header: {
-                Text("Web Apps")
+                InfoHeader(title: "Web Apps", subject: "web app sign-in",
+                           text: "Sign in once and every web app in this account uses that sign-in. Clearing website data signs them out.")
             } footer: {
-                Text(cleared ? "Website data cleared. Web apps sign in again when you open them."
-                     : "Sign in once and every web app in this account uses that sign-in.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                if cleared { Text("Website data cleared.").font(.caption).foregroundStyle(.secondary) }
             }
         }
         .formStyle(.grouped)
@@ -85,6 +85,11 @@ struct AccountsPane: View {
     /// the main window: their sheets need its sheet host (R23).
     private func shell(arg: String) {
         (model?.navigator?.host as? ShellWindowController)?.perform(ShellCommand.account, arg: arg)
+    }
+
+    private func openWindow() {
+        guard let m = model, let id = selection ?? accounts.activeID else { return }
+        AccountWindowController.show(m, accountID: id)
     }
 
     private func signOut() {

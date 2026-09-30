@@ -10,15 +10,24 @@ import Combine
 import OstMacCore
 import SwiftUI
 
+extension Notification.Name {
+    /// File ▸ New Quick Message… asks the controller to open the panel.
+    static let showQuickComposer = Notification.Name("bt.showQuickComposer")
+}
+
 @MainActor
 final class QuickComposerController {
     private weak var shell: ShellWindowController?
     private let hotKey = QuickComposerHotKey()
     private var panel: NSPanel?
     private var sub: AnyCancellable?
+    private var menuObserver: NSObjectProtocol?
 
     init(shell: ShellWindowController) {
         self.shell = shell
+        menuObserver = NotificationCenter.default.addObserver(forName: .showQuickComposer, object: nil, queue: .main) {
+            [weak self] _ in MainActor.assumeIsolated { self?.show() }
+        }
         hotKey.onFire = { [weak self] in MainActor.assumeIsolated { self?.show() } }
         guard !shell.model.options.demo, !shell.model.options.evidence else { return }
         sub = AppSettings.shared.changes.sink { [weak self] in
@@ -33,6 +42,9 @@ final class QuickComposerController {
     static func setCombo(_ c: QuickComposeCombo) {
         QuickComposerPrefs.saveCombo(c, defaults: AppSettings.shared.defaults)
     }
+
+    /// Settings ▸ Reset to Default: back to the shipped combo (⌃⌘M).
+    static func resetCombo() { setCombo(.default) }
 
     func sync() {
         hotKey.update(combo: Self.combo(), enabled: AppSettings.shared.quickComposer)

@@ -140,13 +140,15 @@ final class HoverToolbarTests: XCTestCase {
         }
     }
 
-    func testWideContinuationReservesStripInsideItsRow() {
+    func testWideContinuationFloatsOverItsBubbleWithoutGrowingTheRow() {
+        // CHATSYNC3 R3: a same-sender run stays tight (Teams floats its
+        // bar over the message); no reserved strip mid-run.
         for own in [false, true] {
             let p = plan(600, card: CGSize(width: 600, height: 60), own: own)
-            XCTAssertEqual(p.placement, .strip)
-            XCTAssertGreaterThanOrEqual(p.toolbar!.minY, -2)   // 2 pt row padding
-            XCTAssertEqual(p.size.height, 60 + tb.height + 1 - 2)
-            assertClear(p)
+            XCTAssertEqual(p.placement, .overlay)
+            XCTAssertGreaterThanOrEqual(p.toolbar!.minY, -2)   // inside its own row (2 pt padding)
+            XCTAssertEqual(p.size.height, 60)
+            XCTAssertEqual(p.card.minY, 0)
         }
     }
 

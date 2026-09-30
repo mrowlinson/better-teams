@@ -13,6 +13,8 @@ public enum ChatCommands {
     public static let catchUp: CommandID = "chat.catchUp"
     /// The cross-conversation Catch Up in its own window (AICATCH).
     public static let catchUpWindow: CommandID = "chat.catchUpWindow"
+    /// ⇧⌘U (Mail-style). Mark as Unread only: no Mark as Read here (owner).
+    public static let markUnread: CommandID = "chat.markUnread"
     public static let pin: CommandID = "chat.pin"
     /// Chat-level actions on the selected chat (same as the row menu).
     public static let mute: CommandID = "chat.mute"
@@ -54,6 +56,8 @@ public enum ChatCommands {
                 menu: .init(.conversation, group: 2, order: 0), toolbar: .detail, owner: .chat),
         Command(catchUpWindow, "Open Catch Up in New Window", symbol: "sparkles.rectangle.stack",
                 menu: .init(.window, group: 2, order: 0), owner: .chat),
+        Command(markUnread, "Mark as Unread", key: "u", modifiers: [.command, .shift],
+                menu: .init(.conversation, group: 0, order: 0), owner: .chat),
         Command(pin, "Pin Chat", alternateTitle: "Unpin Chat",
                 menu: .init(.conversation, group: 0, order: 1), owner: .chat),
         Command(mute, "Mute", alternateTitle: "Unmute",

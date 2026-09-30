@@ -161,7 +161,7 @@ public enum InlineDocs {
     /// (bytes move only via the Shared tab's explicit Save).
     public static func open(_ doc: InlineDoc) {
         if let url = openTarget(for: doc) {
-            NSWorkspace.shared.open(url)
+            TeamsLinkRouter.open(url)
         }
     }
 }

@@ -108,7 +108,7 @@ public final class MeetingsViewModel: ObservableObject {
         parseFetcher: @escaping ParseFetcher = { try RustCore.meetingJoinParse(raw: $0) },
         joinRunner: @escaping JoinRunner = { try MeetingsViewModel.runCoreJoin(.liveAudio, threadID: $0) },
         videoJoinRunner: @escaping JoinRunner = { try MeetingsViewModel.runCoreJoin(.liveVideo, threadID: $0) },
-        opener: @escaping Opener = { NSWorkspace.shared.open($0) },
+        opener: @escaping Opener = { TeamsLinkRouter.open($0) },
         lobbyGraceSecs: Double = 8,
         meetingIDResolver: @escaping MeetingIDResolver = {
             try RustCore.meetingResolveID(meetingID: $0, passcode: $1)

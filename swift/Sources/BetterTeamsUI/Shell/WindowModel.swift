@@ -1,6 +1,7 @@
 // WindowModel.swift — UI-only state for one account window (UI-SPEC
 // §11.3). Domain state stays in the core's ObservableObject stores,
 // reached through `graph`; nothing here mirrors a store field (R3).
+import Combine
 import Foundation
 import Observation
 import OstMacCore
@@ -28,6 +29,10 @@ public final class WindowModel {
     public internal(set) var sheet: SheetRequest?
     /// Text size (§10): 1.0 … 2.0.
     public internal(set) var textScale: Double = 1.0
+    /// Message density (Settings ▸ Chats): mirrors `app.density` so views
+    /// that read it through `HostedRoot` re-render when it flips.
+    public internal(set) var messageDensity: MessageDensity = .comfortable
+    @ObservationIgnored private var densityWatch: AnyCancellable?
     /// Evidence-forced pane states (demo only, §11.3 `state=`).
     public internal(set) var forcedState: [SectionID: ForcedPaneState] = [:]
     /// Inspector segment requested by a route (`inspector=<segment>`).
@@ -46,6 +51,10 @@ public final class WindowModel {
         self.frameHost = FrameHost(accountKey: accountKey)
         search.window = self
         frameHost.window = self
+        if let store = (graph as? AppState)?.density {
+            messageDensity = store.mode
+            densityWatch = store.$mode.sink { [weak self] in self?.messageDensity = $0 }
+        }
         if !options.evidence {
             frameHost.library.onCatalogPinned = { [weak self] ids in self?.seedCatalogPins(ids) }
         }

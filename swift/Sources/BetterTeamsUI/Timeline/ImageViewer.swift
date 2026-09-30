@@ -46,6 +46,9 @@ final class ImageViewerController: NSWindowController, NSWindowDelegate {
     private let status = NSTextField(labelWithString: "")
     private let retry = NSButton(title: "Retry", target: nil, action: nil)
     private let position = NSTextField(labelWithString: "")
+    /// Zoom slider in the bar (logarithmic between min and max magnification).
+    private let zoomSlider = NSSlider(value: 0, minValue: 0, maxValue: 1, target: nil, action: nil)
+    private var applyingSlider = false
     private var prevButton: NSButton!
     private var nextButton: NSButton!
     private var actionButtons: [NSButton] = []
@@ -192,6 +195,11 @@ final class ImageViewerController: NSWindowController, NSWindowDelegate {
         position.stringValue = nav.position ?? ""
         prevButton.isEnabled = nav.canPrevious
         nextButton.isEnabled = nav.canNext
+        // A single image has nothing to step to: no arrows, no counter.
+        let stepping = nav.items.count > 1
+        prevButton.isHidden = !stepping
+        nextButton.isHidden = !stepping
+        position.isHidden = !stepping
         let hasOriginal = m.originalData != nil
         for b in actionButtons { b.isEnabled = hasOriginal }
     }
@@ -200,6 +208,7 @@ final class ImageViewerController: NSWindowController, NSWindowDelegate {
     /// on-screen size (re-fit when untouched, else scale-compensated) so
     /// the swap happens in place.
     private func layoutImage(_ img: NSImage, model m: FullResImageModel, isFull: Bool) {
+        defer { syncZoomSlider() }
         let old = docSize
         let oldMag = scroll.magnification
         let clip = scroll.contentView
@@ -289,6 +298,25 @@ final class ImageViewerController: NSWindowController, NSWindowDelegate {
         scroll.animator().setMagnification(target, centeredAt: CGPoint(x: c.midX, y: c.midY))
     }
 
+    @objc func zoomSliderMoved(_ sender: NSSlider) {
+        let (fit, _) = zoomBounds()
+        let target = ImageViewerZoomSlider.magnification(value: sender.doubleValue, min: scroll.minMagnification,
+                                                         max: scroll.maxMagnification)
+        userZoomed = abs(target - fit) > 0.001
+        applyingSlider = true
+        let c = scroll.contentView.bounds
+        scroll.setMagnification(target, centeredAt: CGPoint(x: c.midX, y: c.midY))
+        applyingSlider = false
+    }
+
+    /// Slider follows every magnification change (buttons, pinch, keys,
+    /// double-click, a new image); the slider's own drag is left alone.
+    @objc private func syncZoomSlider(_ n: Notification? = nil) {
+        guard !applyingSlider else { return }
+        zoomSlider.doubleValue = ImageViewerZoomSlider.value(
+            magnification: scroll.magnification, min: scroll.minMagnification, max: scroll.maxMagnification)
+    }
+
     @objc func retryLoad(_ sender: Any?) {
         guard let nav, let m = models[nav.current] else { return }
         Task { await m.reload() }
@@ -376,6 +404,17 @@ final class ImageViewerController: NSWindowController, NSWindowDelegate {
         NotificationCenter.default.addObserver(self, selector: #selector(didEndPinch(_:)),
                                                name: NSScrollView.didEndLiveMagnifyNotification, object: scroll)
 
+        scroll.contentView.postsBoundsChangedNotifications = true
+        NotificationCenter.default.addObserver(self, selector: #selector(syncZoomSlider(_:)),
+                                               name: NSView.boundsDidChangeNotification, object: scroll.contentView)
+        zoomSlider.target = self
+        zoomSlider.action = #selector(zoomSliderMoved(_:))
+        zoomSlider.controlSize = .small
+        zoomSlider.isContinuous = true
+        zoomSlider.toolTip = "Zoom"
+        zoomSlider.setAccessibilityLabel("Zoom")
+        zoomSlider.widthAnchor.constraint(equalToConstant: 110).isActive = true
+
         let bar = ImageViewerChrome.makeBar()
 
         func button(_ symbol: String, _ label: String, _ action: Selector) -> NSButton {
@@ -419,7 +458,7 @@ final class ImageViewerController: NSWindowController, NSWindowDelegate {
             v.widthAnchor.constraint(equalToConstant: 1).isActive = true
             return v
         }
-        let stack = NSStackView(views: [prevButton, position, nextButton, sep(), zoomOutB, zoomInB, fitB, actualB,
+        let stack = NSStackView(views: [prevButton, position, nextButton, sep(), zoomOutB, zoomSlider, zoomInB, fitB, actualB,
                                         sep(), saveB, copyB, shareB, sep(), spinner, status, retry])
         stack.orientation = .horizontal
         stack.spacing = 8

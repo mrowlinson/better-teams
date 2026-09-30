@@ -225,13 +225,7 @@ struct FileTableView: View {
     @ViewBuilder
     private func location(_ f: FileItem, _ m: WindowModel) -> some View {
         if linksLocation, let id = f.locationID {
-            // One line, tail-truncated: a wrapped location made rows uneven.
-            Button { FilesSection.openSource(id, name: f.location, m) } label: {
-                Text(f.location).lineLimit(1).truncationMode(.tail)
-            }
-                .buttonStyle(.link)
-                .help("Open \(f.location)")
-                .accessibilityLabel("in \(f.location)")
+            FileLocationLabel(name: f.location) { FilesSection.openSource(id, name: f.location, m) }
         } else {
             Text(f.location).foregroundStyle(.secondary).lineLimit(1).truncationMode(.tail)
         }
@@ -296,23 +290,18 @@ struct FilesContextMenu: View {
     }
 }
 
-/// Folder drill-in breadcrumb (§6.6): borderless buttons.
+/// Folder drill-in breadcrumb (§6.6): the native Finder-style `NSPathControl`
+/// (path bar). Item 0 = root (`goToRoot`), item i = crumb i (`goTo(depth:)`);
+/// the last item is the current folder (click = no-op).
 struct FolderCrumbs: View {
     @ObservedObject var store: SharedFilesStore
     let root: String
 
     var body: some View {
-        HStack(spacing: 4) {
-            Button(root) { store.goToRoot() }
-            ForEach(crumbs) { c in
-                Image(systemName: "chevron.right").foregroundStyle(.tertiary).accessibilityHidden(true)
-                Button(c.name) { store.goTo(depth: c.id) }
-                    .disabled(c.id == store.crumbs.count)
-            }
-            Spacer(minLength: 0)
+        FolderPathBar(titles: [root] + crumbs.map(\.name)) { index in
+            if index == 0 { store.goToRoot() } else { store.goTo(depth: index) }
         }
-        .buttonStyle(.borderless)
-        .lineLimit(1)
+        .frame(height: 24)
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
     }
@@ -366,9 +355,9 @@ struct FilesInspector: View {
                 if let created = it.row?.file.created { LabeledContent("Created", value: FilesFormat.date(iso: created)) }
                 LabeledContent("Location") {
                     if let id = it.locationID {
-                        Button(it.location) { FilesSection.openSource(id, name: it.location, m) }
-                            .buttonStyle(.link)
-                            .accessibilityLabel("in \(it.location)")
+                        FileLocationLabel(name: it.location, alwaysShowsArrow: true) {
+                            FilesSection.openSource(id, name: it.location, m)
+                        }
                     } else {
                         Text(it.location)
                     }
@@ -425,5 +414,74 @@ struct FilesInspector: View {
                 .buttonStyle(.borderless)
             }
         }
+    }
+}
+
+/// Standard-style `NSPathControl` over folder titles; reports the clicked
+/// item index. Clicking the last (current) item does nothing.
+struct FolderPathBar: NSViewRepresentable {
+    let titles: [String]
+    let onSelect: (Int) -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeNSView(context: Context) -> NSPathControl {
+        let c = NSPathControl()
+        c.pathStyle = .standard
+        c.isEditable = false
+        c.lineBreakMode = .byTruncatingMiddle
+        c.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        c.target = context.coordinator
+        c.action = #selector(Coordinator.clicked(_:))
+        return c
+    }
+
+    func updateNSView(_ c: NSPathControl, context: Context) {
+        context.coordinator.onSelect = onSelect
+        let icon = NSImage(systemSymbolName: "folder", accessibilityDescription: nil)
+        c.pathItems = titles.map { t in
+            let item = NSPathControlItem()
+            item.title = t
+            item.image = icon
+            return item
+        }
+        c.setAccessibilityLabel("Folder path")
+    }
+
+    final class Coordinator: NSObject {
+        var onSelect: (Int) -> Void = { _ in }
+
+        @objc func clicked(_ sender: NSPathControl) {
+            guard let item = sender.clickedPathItem,
+                  let i = sender.pathItems.firstIndex(where: { $0 === item }),
+                  i < sender.pathItems.count - 1 else { return }
+            onSelect(i)
+        }
+    }
+}
+
+/// A file's location as plain text (no link styling) with a Finder/Music
+/// style "go to" arrow that opens the source. In the table the arrow
+/// shows while the pointer is over the cell; one line, tail-truncated so
+/// rows stay even.
+struct FileLocationLabel: View {
+    let name: String
+    var alwaysShowsArrow = false
+    let reveal: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Text(name).foregroundStyle(.secondary).lineLimit(1).truncationMode(.tail)
+            Button(action: reveal) {
+                Image(systemName: "arrow.forward.circle.fill")
+            }
+            .buttonStyle(.borderless)
+            .foregroundStyle(.secondary)
+            .opacity(alwaysShowsArrow || hovering ? 1 : 0)
+            .help("Show \(name)")
+            .accessibilityLabel("Show \(name)")
+        }
+        .onHover { hovering = $0 }
     }
 }

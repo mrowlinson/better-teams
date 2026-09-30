@@ -68,6 +68,18 @@ final class PresenceScheduleTests: XCTestCase {
         }
     }
 
+    /// Poll until the applier's fire has fully completed (result bookkeeping
+    /// landed, inflight cleared). The fetcher logs its call BEFORE the result
+    /// returns to the main actor, so a log count alone can be observed while
+    /// the fire is still in flight - and a tick then is (correctly) ignored.
+    func awaitIdle(_ store: PresenceScheduleStore, timeout: TimeInterval = 5) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while store.inflight, Date() < deadline {
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+        XCTAssertFalse(store.inflight, "applier fire never completed")
+    }
+
     /// Poll until the log holds `count` calls.
     fileprivate func awaitCalls(_ log: SetCallLog, _ count: Int, timeout: TimeInterval = 5) async {
         let deadline = Date().addingTimeInterval(timeout)
@@ -205,6 +217,7 @@ final class PresenceScheduleTests: XCTestCase {
         XCTAssertEqual(log.values, ["busy"])
         store.tick(now: dt(25, 23, 0, cal), calendar: cal)
         await awaitCalls(log, 2)
+        await awaitIdle(store)
         XCTAssertEqual(log.values, ["busy", "offline"])
     }
 
@@ -229,6 +242,7 @@ final class PresenceScheduleTests: XCTestCase {
         // Past the 50-min refresh line: re-set before PT1H lapses.
         store.tick(now: t0.addingTimeInterval(51 * 60), calendar: cal)
         await awaitCalls(log, 2)
+        await awaitIdle(store)
         XCTAssertEqual(log.count, 2)
         XCTAssertEqual(PresenceScheduleStore.refreshInterval, 50 * 60)
     }
@@ -264,6 +278,7 @@ final class PresenceScheduleTests: XCTestCase {
         // Next boundary resumes the schedule.
         store.tick(now: dt(25, 17, 5, cal), calendar: cal)
         await awaitCalls(log, 2)
+        await awaitIdle(store)
         XCTAssertEqual(log.values, ["busy", "away"])
     }
 
@@ -303,6 +318,7 @@ final class PresenceScheduleTests: XCTestCase {
         // One retry allowed…
         store.tick(now: dt(25, 9, 5, cal), calendar: cal)
         await awaitCalls(log, 2)
+        await awaitIdle(store)
         // …then the window holds (no retry storm).
         store.tick(now: dt(25, 9, 10, cal), calendar: cal)
         store.tick(now: dt(25, 10, 0, cal), calendar: cal)
@@ -334,10 +350,12 @@ final class PresenceScheduleTests: XCTestCase {
         await awaitError(store)
         store.tick(now: dt(25, 9, 1, cal), calendar: cal)
         await awaitCalls(log, 2)
+        await awaitIdle(store)
         XCTAssertEqual(log.count, 2)
         // New window: fresh budget (attempt fires again).
         store.tick(now: dt(25, 17, 5, cal), calendar: cal)
         await awaitCalls(log, 3)
+        await awaitIdle(store)
         XCTAssertEqual(log.count, 3)
     }
 

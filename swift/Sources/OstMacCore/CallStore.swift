@@ -556,13 +556,19 @@ public final class CallStore: ObservableObject {
     }
 
     public func placeLive(threadID: String, timeoutSecs: Int32 = 30) {
-        run("place-live") { try RustCore.callPlaceLive(threadID: threadID, timeoutSecs: timeoutSecs) }
+        run("place-live") {
+            MeetingChatUnmute.after(.join, chatID: threadID) // CHATSYNC3 R1: joining a meeting
+            return try RustCore.callPlaceLive(threadID: threadID, timeoutSecs: timeoutSecs)
+        }
     }
 
     /// 1:1 video call with live media (VIDEO1): the invitation carries
     /// Audio + Video; the host pushes camera NALs and decodes remote AUs.
     public func placeLiveVideo(threadID: String, timeoutSecs: Int32 = 30) {
-        run("place-video") { try RustCore.callPlaceLiveVideo(threadID: threadID, timeoutSecs: timeoutSecs) }
+        run("place-video") {
+            MeetingChatUnmute.after(.join, chatID: threadID) // CHATSYNC3 R1: joining a meeting
+            return try RustCore.callPlaceLiveVideo(threadID: threadID, timeoutSecs: timeoutSecs)
+        }
     }
 
     public func echo(timeoutSecs: Int32 = 30) {

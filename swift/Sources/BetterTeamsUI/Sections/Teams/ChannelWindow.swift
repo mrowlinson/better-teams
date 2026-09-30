@@ -17,8 +17,7 @@ final class ChannelWindowController: NSWindowController, NSWindowDelegate {
     static func show(_ m: WindowModel, team: TeamItem, channel: TeamChannel) {
         guard let app = m.app else { return }
         if let c = open[channel.channelId] {
-            c.showWindow(nil)
-            c.window?.makeKeyAndOrderFront(nil)
+            PopOutPresenter.present(c)
             return
         }
         guard app.popOut(chatID: channel.channelId) != nil else { return }
@@ -26,9 +25,11 @@ final class ChannelWindowController: NSWindowController, NSWindowDelegate {
         let c = ChannelWindowController(model: m, app: app, team: team, channel: channel)
         open[channel.channelId] = c
         if UserDefaults.standard.string(forKey: "NSWindow Frame ChannelWindow") == nil { c.window?.center() }
-        c.showWindow(nil)
-        c.window?.makeKeyAndOrderFront(nil)
+        PopOutPresenter.present(c)
     }
+
+    /// The open channel window for a channel, if any (tests, evidence).
+    static func window(for channelID: String) -> NSWindow? { open[channelID]?.window }
 
     private init(model m: WindowModel, app: AppState, team: TeamItem, channel: TeamChannel) {
         self.app = app

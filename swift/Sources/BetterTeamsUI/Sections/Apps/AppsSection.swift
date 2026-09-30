@@ -6,6 +6,7 @@
 // an unpinned app becomes the rail's transient item). Also owns the
 // web-app commands (§7.3) and forwards them to the web app on screen.
 import AppKit
+import OstMacCore
 import SwiftUI
 
 @MainActor
@@ -89,7 +90,7 @@ final class AppsSection: SectionProvider {
 enum AppActions {
     static func open(_ item: LibraryItem, _ m: WindowModel) {
         if let launch = item.launch, !launch.runsInApp {
-            if !m.options.demo { NSWorkspace.shared.open(launch.url) }
+            if !m.options.demo { TeamsLinkRouter.open(launch.url) }
             return
         }
         m.navigator?.select(section: item.entry.section)
@@ -105,7 +106,7 @@ enum AppActions {
 
     static func openInBrowser(_ item: LibraryItem, _ m: WindowModel) {
         guard !m.options.demo, let url = item.launch?.url else { return }
-        NSWorkspace.shared.open(url)
+        TeamsLinkRouter.openInBrowser(url)
     }
 
     static func remove(_ item: LibraryItem, _ m: WindowModel) {

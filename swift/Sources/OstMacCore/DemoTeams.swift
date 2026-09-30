@@ -221,8 +221,19 @@ public enum DemoTeams {
     /// channel threads, `ost` chat.rs `message_parent_id`).
     public static let threadedPosts: [ChatMessage] = {
         func m(_ id: String, _ sender: String, _ time: String, _ text: String,
-               own: Bool = false, parent: String? = nil) -> ChatMessage {
-            ChatMessage(id: id, sender: sender, timestamp: time, content: text, isOwn: own, reply_to: parent)
+               own: Bool = false, parent: String? = nil, mentions: [String] = []) -> ChatMessage {
+            var msg = ChatMessage(id: id, sender: sender, timestamp: time, content: text, isOwn: own, reply_to: parent)
+            if !mentions.isEmpty {
+                // Wire shape: each mention is a Mention span with its itemid.
+                var html = text
+                for (i, n) in mentions.enumerated() {
+                    html = html.replacingOccurrences(
+                        of: "@" + n,
+                        with: "<span itemtype=\"http://schema.skype.com/Mention\" itemid=\"\(i)\">@\(n)</span>")
+                }
+                msg.raw = "<p>" + html + "</p>"
+            }
+            return msg
         }
         return [
             m("ship-q1", "Luis Ortega", "2026-09-17T14:05:00Z",
@@ -231,11 +242,12 @@ public enum DemoTeams {
               parent: "ship-q1"),
             m("ship-q2", "Paula Norris", "2026-09-18T18:40:00Z",
               "Heads-up: the certificate for the update server renews on October 3. "
-                  + "@Jordan Fox can you confirm the change window works for the release?"),
+                  + "@Jordan Fox can you confirm the change window works for the release?",
+              mentions: ["Jordan Fox"]),
             m("ship-q3", "Ava Lindqvist", "2026-09-19T15:12:00Z",
               "Updated the release checklist template: accessibility audit and localization sign-off are now required steps."),
             m("ship-q3-r1", "Tom Becker", "2026-09-19T15:30:00Z", "Good call. @Jordan Fox can you add the VoiceOver pass to RC testing?",
-              parent: "ship-q3"),
+              parent: "ship-q3", mentions: ["Jordan Fox"]),
             m("ship-q3-r2", "Luis Ortega", "2026-09-19T15:48:00Z", "Localization vendor confirmed a two-day turnaround.",
               parent: "ship-q3"),
             m("ship-p0", "Tom Becker", "2026-09-21T19:02:00Z",

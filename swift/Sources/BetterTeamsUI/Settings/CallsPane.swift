@@ -14,6 +14,9 @@ struct CallsSettingsPane: View {
     let devices: CallDevices
     let model: WindowModel?
     @State private var previewOn = false
+    /// Evidence (demo route `settings/calls?test=1`): open the device test sheet at once.
+    @MainActor static var evidenceOpenTest = false
+    @State private var testing = CallsSettingsPane.evidenceOpenTest
 
     /// The pane's device model: live devices for a live account, the
     /// demo fixtures otherwise.
@@ -34,13 +37,13 @@ struct CallsSettingsPane: View {
                     }
                 }
                 .pickerStyle(.radioGroup)
-            } footer: {
-                Text("Applies to your next call.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
             Section("Devices") {
                 CallDevicesForm(devices: devices)
+                LabeledContent("Test") {
+                    Button("Test Speaker and Microphone\u{2026}") { testing = true }
+                        .disabled(!devices.loaded)
+                }
             }
             Section("Camera") {
                 Toggle("Preview camera", isOn: $previewOn)
@@ -52,20 +55,22 @@ struct CallsSettingsPane: View {
                     .frame(maxWidth: .infinity)
             }
             Section {
-                LabeledContent("Test call") {
+                LabeledContent {
                     Button("Start Test Call") { startTestCall() }
                         .disabled(model?.app == nil || model?.call?.ended == false)
+                } label: {
+                    InfoLabel(title: "Test call", subject: "the test call",
+                              text: "Calls an echo service so you can hear yourself and check your devices.")
                 }
-            } footer: {
-                Text("Calls an echo service so you can hear yourself and check your devices.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
         .scrollDisabled(true)
         .frame(width: SettingsWindowController.paneWidth)
         .fixedSize(horizontal: false, vertical: true)
+        .sheet(isPresented: $testing) {
+            CallDeviceTestSheet(devices: devices, callActive: model?.call?.ended == false) { testing = false }
+        }
         .onAppear { devices.setLevelWanted(true, by: .settings) }
         .onDisappear {
             devices.setLevelWanted(false, by: .settings)

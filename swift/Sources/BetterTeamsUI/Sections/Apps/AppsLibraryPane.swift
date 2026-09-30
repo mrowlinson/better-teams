@@ -259,8 +259,8 @@ private struct AppCard: View {
                 }
             }
             if !item.runsInApp {
-                Text("Apps that open in your browser can't be pinned to the tab bar.")
-                    .font(.callout)
+                InfoLabel(title: "Can\u{2019}t pin to the tab bar", subject: "pinning browser apps",
+                          text: "Apps that open in your browser can\u{2019}t be pinned to the tab bar.")
                     .foregroundStyle(.secondary)
             }
         }

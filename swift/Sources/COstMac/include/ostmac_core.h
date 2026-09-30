@@ -286,6 +286,26 @@ char *ostmac_transcripts_list(int limit);
 // Returns {ok,query,transcripts:[...]} (same row shape). Caller frees.
 char *ostmac_transcripts_search(const char *query, int limit);
 
+// RECAP2: one meeting's recap, read the way Teams reads it (GET only).
+// Every call returns {ok:false,error,detail} on a failed read. Caller frees.
+// Recap-bearing meeting-chat messages (recording/transcript/Loop links) and
+// the meeting-artifacts resources: {ok,messages:[{id,messagetype,content,
+// composetime}],pages,complete,meeting,collab:{ok,resources}|{ok:false,error}|null}.
+char *ostmac_meeting_recap_sources(const char *thread_id);
+// The organizer's recording; arg = JSON {file_url?,drive_id?,item_id?}: {ok,item:{recording row}}.
+char *ostmac_meeting_recap_recording(const char *file_url);
+// The newest transcript; arg = JSON {file_url?,drive_id?,item_id?,location?}: {ok,found,content?}.
+char *ostmac_meeting_recap_transcript(const char *file_url);
+// Meeting notes content (Loop page HTML snapshot); arg = JSON
+// {url,drive_id?,item_id?}: {ok,html} (html null: a Loop page address).
+char *ostmac_meeting_recap_notes(const char *target);
+// Intelligent recap; file_url = the recording as JSON {file_url?,drive_id?,item_id?}
+// (or a bare address): {ok,available,notes?,follow_ups?,reason?}.
+char *ostmac_meeting_recap_ai(const char *thread_id, const char *file_url);
+// Diagnostic (RECAP_FIELDS_LIVE probe): field NAMES, counts and status codes
+// of one meeting chat's recap sources; never values.
+char *ostmac_meeting_recap_field_shape(const char *thread_id);
+
 // Create a view-only sharing link for one driveItem (Graph createLink).
 // scope NULL/empty = organization (org-only); "anonymous" = anyone link.
 // Returns {ok, link, scope}. Caller frees.

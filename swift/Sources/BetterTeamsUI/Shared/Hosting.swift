@@ -2,7 +2,7 @@
 //
 // `NSHostingController(` and `NSHostingView(` appear only here. Every
 // host: `sceneBridgingOptions = []` (SwiftUI never touches the window
-// title or toolbar); `sizingOptions` per role (panes `[]` so content
+// title or toolbar; the event details window alone bridges `.toolbars`); `sizingOptions` per role (panes `[]` so content
 // never resizes split items or the window; sheets, popovers, Settings
 // `[.preferredContentSize]`; overlay cells `[.intrinsicContentSize]`;
 // timeline rows `[]`, filled to their explicit row height);
@@ -10,6 +10,7 @@
 // does not cross an AppKit boundary on its own (`ContentTextScale`,
 // `WindowModel`).
 import AppKit
+import OstMacCore
 import SwiftUI
 
 public enum HostingRole: Sendable {
@@ -31,6 +32,11 @@ public struct HostedRoot<Content: View>: View {
             .focusEffectDisabled()
             .environment(\.windowModel, model)
             .environment(\.contentTextScale, model?.textScale ?? 1.0)
+            .environment(\.messageDensity, model?.messageDensity ?? .comfortable)
+            // Every link tapped in hosted text or a `Link` goes through the
+            // one router (LINKGUARD): Teams / Microsoft 365 links open
+            // natively, never the browser.
+            .environment(\.openURL, OpenURLAction { url in ContactLinks.open(url, model) })
             // Evidence only: captures may run with the screen locked, where
             // no app can become active; content-layer SwiftUI renders with
             // the key-window appearance. AppKit chrome and the sidebar's
@@ -53,11 +59,14 @@ public enum Hosting {
         HostedRoot(content: v, model: model)
     }
 
-    public static func controller<V: View>(_ v: V, role: HostingRole, model: WindowModel?)
+    /// `bridging`: `[]` everywhere except a window whose SwiftUI content
+    /// owns the window's toolbar (`[.toolbars]`, the event details window).
+    public static func controller<V: View>(_ v: V, role: HostingRole, model: WindowModel?,
+                                           bridging: NSHostingSceneBridgingOptions = [])
         -> NSHostingController<HostedRoot<V>>
     {
         let c = NSHostingController(rootView: root(v, model: model))
-        c.sceneBridgingOptions = []
+        c.sceneBridgingOptions = bridging
         c.sizingOptions = sizing(role)
         return c
     }

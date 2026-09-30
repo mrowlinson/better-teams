@@ -20,7 +20,7 @@ final class DemoShowTests: XCTestCase {
 
         let vc = TimelineViewController(conv: conv, model: nil)
         _ = vc.view // loaded with no size: the jump arrives before any geometry
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 300),
+        let window = OffscreenWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 300),
                               styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         addTeardownBlock { window.close() }

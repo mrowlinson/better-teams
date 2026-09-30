@@ -42,6 +42,7 @@ final class NotificationRouter {
             app.unread.markRead(chatID: id)
             app.mentions.markRead(chatID: id)
         }
+        observe(.omNotifPresenceUndo) { _ in app.presenceTruth.undoLastAutoChange() }
         observe(.omNotifShowCall) { [weak self] _ in
             self?.shell?.model.call?.show()
         }
@@ -63,6 +64,17 @@ final class NotificationRouter {
         if Self.postsSystemNotifications(m.options) {
             reminders = MeetingReminders(meetings: app.meetings)
             SystemNotificationCenter.senderImage = { Self.avatarPNG($0) }
+            // Quiet banner with Undo for every automatic status change;
+            // withdrawn once the offer is used, dismissed or expired.
+            app.presenceTruth.$undoOffer.dropFirst().removeDuplicates().sink { offer in
+                let center = UNUserNotificationCenter.current()
+                guard let offer, !offer.isExpired() else {
+                    center.removeDeliveredNotifications(withIdentifiers: [PresenceUndoInfo.requestID])
+                    return
+                }
+                center.add(UNNotificationRequest(identifier: PresenceUndoInfo.requestID,
+                                                 content: PresenceUndoInfo.makeContent(offer), trigger: nil))
+            }.store(in: &subs)
         }
     }
 

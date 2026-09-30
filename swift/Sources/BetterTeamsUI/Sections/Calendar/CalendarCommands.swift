@@ -16,6 +16,8 @@ public enum CalendarCommands {
     public static let copyJoinLink: CommandID = "calendar.copyJoinLink"
     public static let showDetails: CommandID = "calendar.showDetails"
     public static let cancelMeeting: CommandID = "calendar.cancelMeeting"
+    /// The meeting in its own window (R1).
+    public static let openWindow: CommandID = "calendar.openWindow"
 
     /// Sheet and popover names (evidence routes, §12).
     public static let newMeetingSheet = "newMeeting"
@@ -23,6 +25,13 @@ public enum CalendarCommands {
     public static let meetNowSheet = "meetNow"
     public static let detailsSheet = "eventDetails"
     public static let editSheet = "editEvent"
+    /// CALDETAIL: Duplicate (new-event sheet prefilled), scheduling
+    /// assistant, new webinar.
+    public static let duplicateSheet = "duplicateEvent"
+    public static let schedulerSheet = "schedulingAssistant"
+    public static let webinarSheet = "newWebinar"
+    /// Show all instances of a recurring event.
+    public static let instancesSheet = "seriesInstances"
 
     @MainActor
     public static let all: [Command] = [
@@ -40,9 +49,11 @@ public enum CalendarCommands {
                 menu: .init(.view, group: 3, order: 2), owner: .calendar),
         Command(viewMode, "Calendar View", symbol: "calendar",
                 menu: .init(.view, group: 3, order: 3), isSubmenu: true, owner: .calendar),
-        Command(join, "Join Meeting", menu: .init(.call, group: 1, order: 0), owner: .calendar),
+        Command(join, "Join Meeting", key: "j", menu: .init(.call, group: 1, order: 0), owner: .calendar),
         Command(copyJoinLink, "Copy Join Link", menu: .init(.call, group: 1, order: 1), owner: .calendar),
         Command(showDetails, "Meeting Details…", menu: .init(.call, group: 1, order: 2), owner: .calendar),
+        Command(openWindow, "Open Meeting in New Window", symbol: "macwindow.badge.plus",
+                menu: .init(.call, group: 1, order: 3), owner: .calendar),
         Command(cancelMeeting, "Cancel Meeting…", menu: .init(.file, group: 1, order: 0), owner: .calendar),
     ]
 }

@@ -15,11 +15,9 @@ struct CustomizeTabBarSheet: View {
         if let m = model {
             let pins = draft ?? m.rail.pinned
             VStack(alignment: .leading, spacing: 12) {
-                Text("Customize Tab Bar").font(.headline)
-                Text("Drag to reorder pinned apps. The first three open with ⌘7, ⌘8 and ⌘9.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                InfoLabel(title: "Customize Tab Bar", subject: "customizing the tab bar",
+                          text: "Drag to reorder pinned apps. The first three open with ⌘7, ⌘8 and ⌘9.")
+                    .font(.headline)
                 list(pins)
                 HStack(spacing: 8) {
                     Button("Add from Library…") {

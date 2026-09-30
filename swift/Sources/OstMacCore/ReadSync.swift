@@ -62,6 +62,8 @@ public final class ReadSync: ObservableObject {
     public private(set) var bookmarked: Set<String> = []
     /// Property writes sent (Diagnostics).
     @Published public private(set) var writes = 0
+    /// Automatic resends after a failed horizon write (Diagnostics, R6).
+    @Published public private(set) var retries = 0
     /// Last write failure (Diagnostics; menu actions also throw).
     @Published public private(set) var lastError: String?
 
@@ -74,6 +76,30 @@ public final class ReadSync: ObservableObject {
     private var horizonSent: [String: Int64] = [:]
     private var horizonQueued: [String: Int64] = [:]
     private var chains: [String: Task<Void, Never>] = [:]
+    /// Identity of each chat's newest chain link: the link that finishes
+    /// last drops the chain (an idle chat keeps no task; CHATSYNC2b R6).
+    private var chainTokens: [String: UUID] = [:]
+
+    /// One horizon write: the position and how it was reached.
+    struct HorizonWrite: Equatable {
+        var arrival: Int64
+        var clientID: String?
+        var clearBookmark: Bool
+    }
+    /// CHATSYNC2b R6: newest view-driven position per chat not yet acked.
+    /// A failed horizon write resends it after `retryDelayNs` (up to
+    /// `maxRetries`), so a newer position is never silently lost until
+    /// the next view.
+    private var desiredView: [String: HorizonWrite] = [:]
+    private var retryAttempts: [String: Int] = [:]
+    public nonisolated static let maxRetries = 2
+    public var retryDelayNs: UInt64 = 3_000_000_000
+
+    /// CHATSYNC2b R5: chats marked unread while open, with the newest
+    /// message they were marked at. Like Teams, the open chat is not
+    /// marked read again until a newer message arrives or the owner
+    /// leaves it (`releaseHolds`).
+    public private(set) var holds: [String: Int64] = [:]
 
     private let writer: Writer
     private let now: @Sendable () -> Int64
@@ -147,6 +173,10 @@ public final class ReadSync: ObservableObject {
         let chat = chatID.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !chat.isEmpty, Self.shouldMarkViewed(gate),
               let last = Self.latest(messages), let at = Self.arrivalMs(last) else { return nil }
+        if let hold = holds[chat] {
+            guard at > hold else { return nil }
+            holds[chat] = nil
+        }
         let clearBookmark = bookmarked.contains(chat)
         guard clearBookmark || at > (readThrough[chat] ?? 0) else { return nil }
         if let ghost, ghost.shouldSuppressReceipts {
@@ -164,13 +194,35 @@ public final class ReadSync: ObservableObject {
     }
 
     /// Mark as unread: the Teams bookmark just behind the newest message.
-    public func markUnread(chatID: String, lastMessageMs: Int64?) async throws {
+    /// `holdWhileOpen`: the chat is on screen; keep it unread there (R5).
+    public func markUnread(chatID: String, lastMessageMs: Int64?, clientMessageID: String? = nil,
+                           holdWhileOpen: Bool = false) async throws {
         let chat = chatID.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !chat.isEmpty else { return }
         let at = lastMessageMs ?? now()
-        let value = Self.bookmarkValue(arrivalMs: at, nowMs: now(), clientMessageID: nil)
-        try await write(chat, [("consumptionHorizonBookmark", Self.body("consumptionHorizonBookmark", value))])
+        let value = Self.bookmarkValue(arrivalMs: at, nowMs: now(), clientMessageID: clientMessageID)
+        // Held before the write: a view reported while it is in flight
+        // must not undo it.
+        let heldBefore = holds[chat]
+        if holdWhileOpen { holds[chat] = max(heldBefore ?? 0, at) }
+        // The owner's newer intent: a pending resend of an older view
+        // (which would clear this bookmark) is dropped.
+        desiredView[chat] = nil
+        retryAttempts[chat] = nil
+        do {
+            try await write(chat, [("consumptionHorizonBookmark", Self.body("consumptionHorizonBookmark", value))])
+        } catch {
+            if holdWhileOpen { holds[chat] = heldBefore }
+            throw error
+        }
         bookmarked.insert(chat)
+        if !holdWhileOpen { holds[chat] = nil }
+    }
+
+    /// The owner left these chats (none of `openIDs` any more): views of
+    /// them move the read position again.
+    public func releaseHolds(keeping openIDs: Set<String>) {
+        for id in holds.keys where !openIDs.contains(id) { holds[id] = nil }
     }
 
     /// Delete chat (for the owner only), as Teams does: history cleared
@@ -194,15 +246,24 @@ public final class ReadSync: ObservableObject {
 
     private func send(_ chat: String, arrival: Int64, clientID: String?, clearBookmark: Bool) -> Task<Void, Never> {
         // Claimed before the write: a second report while it is in
-        // flight sends nothing. A failure releases the claim.
+        // flight sends nothing. A failure releases the claim (and the
+        // newest view position is resent, R6).
         let before = readThrough[chat]
         readThrough[chat] = max(before ?? 0, arrival)
         let wasBookmarked = bookmarked.remove(chat) != nil
+        let hw = HorizonWrite(arrival: arrival, clientID: clientID, clearBookmark: clearBookmark)
+        if arrival >= (desiredView[chat]?.arrival ?? 0) {
+            // A newer position gets its own retry budget.
+            if desiredView[chat] != hw { retryAttempts[chat] = nil }
+            desiredView[chat] = hw
+        }
         let list = pairs(arrival: arrival, clientID: clientID, clearBookmark: clearBookmark)
         return Task {
             do {
                 try await self.write(chat, list, horizon: arrival)
             } catch {
+                // A resend (R6) that already landed keeps its claim.
+                guard (self.horizonSent[chat] ?? 0) < arrival else { return }
                 if self.readThrough[chat] == arrival { self.readThrough[chat] = before }
                 if wasBookmarked { self.bookmarked.insert(chat) }
             }
@@ -215,6 +276,7 @@ public final class ReadSync: ObservableObject {
         try await write(c, pairs(arrival: arrival, clientID: clientID, clearBookmark: clearBookmark), horizon: arrival)
         readThrough[c] = max(readThrough[c] ?? 0, arrival)
         bookmarked.remove(c)
+        holds[c] = nil
     }
 
     /// One serial chain per chat. A horizon write (`horizon` = its arrival
@@ -227,7 +289,16 @@ public final class ReadSync: ObservableObject {
             await prev?.value
             return await perform(chat, list, horizon: horizon)
         }
-        chains[chat] = Task { _ = await job.value }
+        let token = UUID()
+        chainTokens[chat] = token
+        chains[chat] = Task { [self] in
+            _ = await job.value
+            // R6: the newest link, finished: the chat's chain is idle.
+            if chainTokens[chat] == token {
+                chains[chat] = nil
+                chainTokens[chat] = nil
+            }
+        }
         try await job.value.get()
     }
 
@@ -239,16 +310,59 @@ public final class ReadSync: ObservableObject {
                    h < (horizonSent[chat] ?? 0) || h < (horizonQueued[chat] ?? 0) { continue }
                 try await Task.blocking { try w(chat, name, body) }.value
                 writes += 1
-                if name == "consumptionhorizon", let h = horizon { horizonSent[chat] = max(horizonSent[chat] ?? 0, h) }
+                if name == "consumptionhorizon", let h = horizon {
+                    horizonSent[chat] = max(horizonSent[chat] ?? 0, h)
+                    if let d = desiredView[chat], d.arrival <= h {
+                        desiredView[chat] = nil
+                        retryAttempts[chat] = nil
+                    }
+                }
             }
             lastError = nil
             return .success(())
         } catch {
             if let h = horizon, horizonQueued[chat] == h { horizonQueued[chat] = horizonSent[chat] ?? 0 }
             lastError = "read state: \(error)"
+            if horizon != nil { scheduleRetry(chat) }
             return .failure(error)
         }
     }
+
+    /// R6: after a failed horizon write, resend the newest view position
+    /// Teams has not acked, unless a write at or past it is queued (that
+    /// one carries it). Bounded by `maxRetries` per position.
+    private func scheduleRetry(_ chat: String) {
+        guard let d = desiredView[chat], d.arrival > (horizonSent[chat] ?? 0) else { return }
+        let attempt = (retryAttempts[chat] ?? 0) + 1
+        guard attempt <= Self.maxRetries else {
+            desiredView[chat] = nil
+            retryAttempts[chat] = nil
+            return
+        }
+        retryAttempts[chat] = attempt
+        let delay = retryDelayNs
+        Task { [weak self] in
+            if delay > 0 { try? await Task.sleep(nanoseconds: delay) }
+            await self?.retry(chat, d)
+        }
+    }
+
+    private func retry(_ chat: String, _ d: HorizonWrite) async {
+        guard desiredView[chat] == d, d.arrival > (horizonSent[chat] ?? 0),
+              (horizonQueued[chat] ?? 0) < d.arrival, holds[chat] == nil else { return }
+        retries += 1
+        do {
+            try await write(chat, pairs(arrival: d.arrival, clientID: d.clientID, clearBookmark: d.clearBookmark),
+                            horizon: d.arrival)
+            readThrough[chat] = max(readThrough[chat] ?? 0, d.arrival)
+            if d.clearBookmark { bookmarked.remove(chat) }
+        } catch {
+            // perform() scheduled the next attempt (or gave up).
+        }
+    }
+
+    /// Test/Diagnostics: chats with a write chain still alive.
+    var activeChains: Int { chains.count }
 
     // MARK: live transport
 

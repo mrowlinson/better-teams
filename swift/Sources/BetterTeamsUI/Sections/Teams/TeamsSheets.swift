@@ -76,9 +76,11 @@ struct CreateTeamSheet: View {
                     .lineLimit(2...4)
             }
             .formStyle(.columns)
-            Text("A standard team with a General channel. You're its owner.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            HStack {
+                Spacer()
+                InfoButton(subject: "the new team",
+                           text: "A standard team with a General channel. You\u{2019}re its owner.")
+            }
         }
     }
 

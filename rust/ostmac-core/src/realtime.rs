@@ -140,6 +140,34 @@ pub struct RosterEvent {
     pub present: Option<bool>,
 }
 
+/// The owner's read state for one chat, from a chat-service
+/// `ConversationUpdate` (CHATSYNC2b R3): Teams pushes one whenever the
+/// owner's `consumptionhorizon` / `consumptionHorizonBookmark` changes,
+/// here or on another device (proven live on the test chat). The host
+/// re-derives the row's unread state from these plus the frame's
+/// `lastMessage` (same rule as a fetched chat list) and applies it as a
+/// diff. Fields the frame lacks are None (host keeps what it knows).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ReadStateEvent {
+    pub chat_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub horizon: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bookmark: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_message_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_message_time: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_message_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_message_from: Option<String>,
+    /// Server event time (ISO 8601): the host orders pushes against its
+    /// own local changes with it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub time: Option<String>,
+}
+
 /// Result of parsing one batch of raw events.
 #[derive(Debug, Default)]
 pub struct ParsedBatch {
@@ -151,6 +179,9 @@ pub struct ParsedBatch {
     /// teams tree on any entry; an id may be empty when the frame
     /// carried none.
     pub threads: Vec<String>,
+    /// Read-state changes (`ConversationUpdate` with a horizon or
+    /// bookmark property), in arrival order; never messages.
+    pub read_states: Vec<ReadStateEvent>,
     pub resync: bool,
     pub skipped: usize,
 }
@@ -184,6 +215,12 @@ fn parse_value(v: &Value, batch: &mut ParsedBatch) {
                 if !batch.threads.contains(&id) {
                     batch.threads.push(id);
                 }
+                return;
+            }
+            // ConversationUpdate carrying the owner's read position: a
+            // read-state event (CHATSYNC2b R3), never a bubble.
+            if let Some(rs) = read_state_update(map) {
+                batch.read_states.push(rs);
                 return;
             }
             // ThreadActivity/* system messages (channel added, renamed,
@@ -354,6 +391,48 @@ fn thread_update_id(map: &serde_json::Map<String, Value>) -> Option<String> {
             .map(|t| t.split(['?', '/']).next().unwrap_or("").to_string())
     };
     Some(from_resource.or_else(from_link).unwrap_or_default())
+}
+
+/// `ConversationUpdate` whose resource carries `consumptionhorizon` or
+/// `consumptionHorizonBookmark` → one read-state event. Other
+/// ConversationUpdates (and frames without a chat id) are not read state.
+fn read_state_update(map: &serde_json::Map<String, Value>) -> Option<ReadStateEvent> {
+    let kind = get_ci(map, "resourceType").and_then(|v| v.as_str())?;
+    if !kind.eq_ignore_ascii_case("ConversationUpdate") {
+        return None;
+    }
+    let res = get_ci(map, "resource").and_then(|r| r.as_object())?;
+    let props = get_ci(res, "properties").and_then(|p| p.as_object())?;
+    let s = |m: &serde_json::Map<String, Value>, k: &str| {
+        get_ci(m, k).and_then(|v| v.as_str()).map(str::to_string)
+    };
+    let horizon = s(props, "consumptionhorizon");
+    let bookmark = s(props, "consumptionHorizonBookmark");
+    if horizon.is_none() && bookmark.is_none() {
+        return None;
+    }
+    let from_link = || {
+        get_ci(map, "resourceLink")
+            .and_then(|v| v.as_str())
+            .and_then(|l| l.rsplit("/conversations/").next().filter(|t| *t != l))
+            .map(|t| t.split(['?', '/']).next().unwrap_or("").to_string())
+    };
+    let chat_id = s(res, "id").filter(|t| !t.is_empty()).or_else(from_link)?;
+    if chat_id.is_empty() {
+        return None;
+    }
+    let last = get_ci(res, "lastMessage").and_then(|v| v.as_object());
+    let lm = |k: &str| last.and_then(|m| s(m, k)).filter(|t| !t.is_empty());
+    Some(ReadStateEvent {
+        chat_id,
+        horizon,
+        bookmark,
+        last_message_id: lm("id"),
+        last_message_time: lm("originalarrivaltime").or_else(|| lm("composetime")),
+        last_message_type: lm("messagetype"),
+        last_message_from: lm("from"),
+        time: get_ci(map, "time").and_then(|v| v.as_str()).map(str::to_string).filter(|t| !t.is_empty()),
+    })
 }
 
 fn has_loss_marker(map: &serde_json::Map<String, Value>) -> bool {
@@ -1468,6 +1547,41 @@ mod tests {
         let b = parse_batch(&[json!({"resourceType": "ConversationUpdate",
                                      "resource": {"id": "19:c@thread.v2"}})]);
         assert!(b.threads.is_empty());
+    }
+
+    #[test]
+    fn conversation_update_with_read_position_is_a_read_state_event() {
+        // Live shape (CHATSYNC2b R3 probe, values synthetic).
+        let ev = json!({"type": "EventMessage", "resourceType": "ConversationUpdate", "time": "t",
+            "resourceLink": "https://x/v1/users/ME/conversations/19:a_b.gbl.spaces",
+            "resource": {"id": "19:a_b.gbl.spaces", "messages": "https://x/messages",
+                "properties": {"consumptionhorizon": "1760000000100;1760000000999;0",
+                               "consumptionHorizonBookmark": "1760000000099;1760000000999;0"},
+                "propertiesUpdated": ["consumptionHorizonBookmark"],
+                "lastMessage": {"id": "1760000000100", "originalarrivaltime": "2025-10-09T08:53:20.100Z",
+                                "messagetype": "RichText/Html", "content": "hi",
+                                "from": "https://x/v1/users/ME/contacts/8:orgid:b"}}});
+        let b = parse_batch(&[json!({"eventMessages": [ev]})]);
+        assert_eq!(b.read_states.len(), 1);
+        let r = &b.read_states[0];
+        assert_eq!(r.chat_id, "19:a_b.gbl.spaces");
+        assert_eq!(r.horizon.as_deref(), Some("1760000000100;1760000000999;0"));
+        assert_eq!(r.bookmark.as_deref(), Some("1760000000099;1760000000999;0"));
+        assert_eq!(r.last_message_id.as_deref(), Some("1760000000100"));
+        assert_eq!(r.last_message_type.as_deref(), Some("RichText/Html"));
+        assert_eq!(r.time.as_deref(), Some("t"));
+        assert!(b.messages.is_empty(), "never a bubble");
+        assert_eq!(b.skipped, 0);
+        // Chat id from resourceLink when the resource has none.
+        let b = parse_batch(&[json!({"resourceType": "conversationupdate",
+            "resourceLink": "https://x/v1/users/ME/conversations/19:c.v2?x=1",
+            "resource": {"properties": {"consumptionhorizon": "1;2;0"}}})]);
+        assert_eq!(b.read_states[0].chat_id, "19:c.v2");
+        assert_eq!(b.read_states[0].bookmark, None);
+        // A ConversationUpdate without read properties is not read state.
+        let b = parse_batch(&[json!({"resourceType": "ConversationUpdate",
+            "resource": {"id": "19:c.v2", "properties": {"alerts": "false"}}})]);
+        assert!(b.read_states.is_empty());
     }
 
     #[test]

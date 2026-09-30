@@ -29,6 +29,44 @@ struct TeamsInspectorPane: View {
 
 // MARK: thread
 
+/// Thread title, reply count and the Close Thread (x) button.
+struct ThreadInspectorHeader: View {
+    let channel: String
+    let replies: Int
+    let close: () -> Void
+    @Environment(\.contentTextScale) private var scale
+
+    static let closeLabel = "Close Thread"
+
+    /// Close Thread (x): back to the channel's own inspector.
+    static func closeThread(_ sel: TeamsSelection, _ model: WindowModel?) {
+        var s = sel
+        s.threadID = nil
+        model?.navigator?.select(s.selection, in: .teams)
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Thread").font(AppFont.headline(scale))
+                Text("#\(channel) · \(replies == 1 ? "1 reply" : "\(replies) replies")")
+                    .font(AppFont.caption(scale))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 8)
+            Button(action: close) {
+                Image(systemName: "xmark")
+            }
+            .buttonStyle(.borderless)
+            .help(Self.closeLabel)
+            .accessibilityLabel(Self.closeLabel)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+    }
+}
+
 struct ThreadInspector: View {
     let team: TeamItem
     let channelID: String
@@ -46,18 +84,9 @@ struct ThreadInspector: View {
         let replies = threads.replies[rootID]?.count ?? 0
         let channel = team.channels.first { $0.channelId == channelID }?.name ?? "Channel"
         VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("Thread").font(AppFont.headline(scale))
-                    Text("#\(channel) · \(replies == 1 ? "1 reply" : "\(replies) replies")")
-                        .font(AppFont.caption(scale))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-                Spacer(minLength: 8)
+            ThreadInspectorHeader(channel: channel, replies: replies) {
+                ThreadInspectorHeader.closeThread(sel, model)
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
             Divider()
             if !loaded {
                 LoadingPane("Loading Members\u{2026}")
@@ -88,7 +117,7 @@ struct ThreadReplyComposer: View {
     let rootID: String
     @ObservedObject var conv: ConversationStore
     let state: TeamsSectionState
-    @State private var fieldHeight: CGFloat = 18
+    @State private var fieldHeight: CGFloat = ComposerTextView.minFieldHeight(1)
     @Environment(\.contentTextScale) private var scale
 
     private var draft: Binding<String> {
@@ -113,12 +142,7 @@ struct ThreadReplyComposer: View {
                             .accessibilityHidden(true)
                     }
                 }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 7)
-                .background(.fill.quinary, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(.separator, lineWidth: 1)
-                }
+                .groupBoxed()
             Button(action: send) {
                 Image(systemName: "paperplane.fill")
             }
@@ -258,4 +282,9 @@ struct TeamInspector: View {
         }
         .accessibilityElement(children: .contain)
     }
+}
+
+private extension View {
+    /// Native `GroupBox` container (replaces the hand-drawn fill + stroke card).
+    func groupBoxed() -> some View { GroupBox { self } }
 }

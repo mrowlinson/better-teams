@@ -37,15 +37,12 @@ struct AIPane: View {
     var body: some View {
         Form {
             Section {
-                Picker("Catch Up", selection: $catchUp.mode) {
+                Picker(selection: $catchUp.mode) {
                     ForEach(CatchUpMode.allCases) { Text($0.title).tag($0) }
+                } label: {
+                    InfoLabel(title: "Catch Up", subject: "Catch Up", text: Self.footer(catchUp.mode))
                 }
                 .pickerStyle(.radioGroup)
-            } footer: {
-                Text(Self.footer(catchUp.mode))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
             }
             if catchUp.mode != .off {
                 Section {
@@ -55,7 +52,7 @@ struct AIPane: View {
                         HStack {
                             Spacer()
                             if availability == .disabled || availability == .downloading {
-                                Button("Open System Settings\u{2026}") { NSWorkspace.shared.open(Self.systemSettingsURL) }
+                                Button("Open System Settings\u{2026}") { TeamsLinkRouter.open(Self.systemSettingsURL) }
                             }
                             Button("Check Again") { availability = Self.currentAvailability() }
                         }
@@ -70,11 +67,9 @@ struct AIPane: View {
                                 .disabled(feedback.count == 0)
                         }
                     }
-                } footer: {
-                    Text("Catch Up hides items you mark Not Important and shows fewer like them. Reset brings them back.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                } header: {
+                    InfoHeader(title: "Not Important", subject: "Not Important items",
+                               text: "Catch Up hides items you mark Not Important and shows fewer like them. Reset brings them back.")
                 }
             }
             if catchUp.deprecatedProvidersEnabled {

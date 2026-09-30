@@ -80,11 +80,23 @@ private struct CallPeopleList: View {
 
 /// Chat: the meeting chat thread (read + send); person calls have no
 /// meeting chat (their chat stays in Chat).
-private struct CallChatList: View {
+struct CallChatList: View {
     @ObservedObject var chat: MeetingChatStore
     let isMeeting: Bool
     @State private var draft = ""
+    @State private var atBottom = true
     @Environment(\.contentTextScale) private var scale
+
+    /// Within this many points of the end counts as "at the newest message".
+    static let bottomSlack: CGFloat = 24
+
+    /// True when the scroll position is at (within slack of) the newest message.
+    static func isAtNewest(offsetY: CGFloat, containerHeight: CGFloat, contentHeight: CGFloat) -> Bool {
+        offsetY + containerHeight >= contentHeight - bottomSlack
+    }
+
+    /// A new message scrolls the list only while at the end, or when it is yours.
+    static func followsNewMessage(atNewest: Bool, lastIsOwn: Bool) -> Bool { atNewest || lastIsOwn }
 
     var body: some View {
         if !isMeeting || chat.threadID == nil {
@@ -95,15 +107,36 @@ private struct CallChatList: View {
                 if chat.messages.isEmpty {
                     EmptyPane("No Messages", systemImage: "bubble.left.and.bubble.right")
                 } else {
-                    List(chat.messages) { m in
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(m.isOwn ? "You" : m.sender)
-                                .font(AppFont.bodyEmphasized(scale))
-                            Text(m.content)
-                                .font(AppFont.body(scale))
-                                .textSelection(.enabled)
+                    ScrollViewReader { proxy in
+                        List(chat.messages) { m in
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(m.isOwn ? "You" : m.sender)
+                                    .font(AppFont.bodyEmphasized(scale))
+                                Text(m.content)
+                                    .font(AppFont.body(scale))
+                                    .textSelection(.enabled)
+                            }
+                            .padding(.vertical, 2)
+                            .id(m.id)
                         }
-                        .padding(.vertical, 2)
+                        .onScrollGeometryChange(for: Bool.self) { g in
+                            Self.isAtNewest(offsetY: g.contentOffset.y, containerHeight: g.containerSize.height, contentHeight: g.contentSize.height)
+                        } action: { _, now in atBottom = now }
+                        // Opens at the newest message; a new one follows only
+                        // while you are at the end (or when it is yours).
+                        .onAppear { scrollToNewest(proxy) }
+                        .onChange(of: chat.messages.last?.id) {
+                            if Self.followsNewMessage(atNewest: atBottom, lastIsOwn: chat.messages.last?.isOwn == true) { scrollToNewest(proxy) }
+                        }
+                        .overlay(alignment: .bottom) {
+                            if !atBottom {
+                                Button("Jump to Latest", systemImage: "chevron.down") { scrollToNewest(proxy) }
+                                    .buttonStyle(.borderedProminent)
+                                    .buttonBorderShape(.capsule)
+                                    .controlSize(.small)
+                                    .padding(.bottom, 8)
+                            }
+                        }
                     }
                 }
                 Divider()
@@ -118,5 +151,13 @@ private struct CallChatList: View {
                     }
             }
         }
+    }
+}
+
+extension CallChatList {
+    fileprivate func scrollToNewest(_ proxy: ScrollViewProxy) {
+        guard let id = chat.messages.last?.id else { return }
+        // After layout: the first pass has no row heights yet.
+        DispatchQueue.main.async { proxy.scrollTo(id, anchor: .bottom) }
     }
 }

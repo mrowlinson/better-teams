@@ -159,6 +159,29 @@ final class CallsSection: SectionProvider {
         }
     }
 
+    /// Clear Call History…: confirm, then drop every recent call (records
+    /// and the realtime missed-call rows; the Activity feed keeps them).
+    /// The selection clears when it pointed at a removed row.
+    static func clearHistory(_ m: WindowModel) {
+        guard let app = m.app else { return }
+        m.confirm(title: "Clear call history?", message: "Every recent call is removed from Calls. Missed calls stay in Activity.",
+                  action: "Clear History") { [weak m] in
+            guard let m else { return }
+            performClearHistory(m)
+        }
+    }
+
+    /// The confirmed clear (also the test seam: no alert).
+    static func performClearHistory(_ m: WindowModel) {
+        guard let app = m.app else { return }
+        let feed = Set(app.activity.items.filter { $0.kind == .missedCall }.map(\.id))
+        app.history.clear()
+        app.history.remove(recordIDs: [], feedIDs: feed)
+        if let sel = m.nav.selection(in: .calls)?.id, isRecent(sel) {
+            m.navigator?.select(nil, in: .calls)
+        }
+    }
+
     static func isRecent(_ id: String?) -> Bool {
         guard let id else { return false }
         return id.hasPrefix(CallsRowModel.recordPrefix) || id.hasPrefix(CallsRowModel.activityPrefix)
@@ -203,6 +226,8 @@ final class CallsSection: SectionProvider {
         case CallsCommands.removeFromRecents:
             guard let id = selectedID(m), Self.isRecent(id) else { return false }
             Self.removeFromRecents([id], m)
+        case CallsCommands.clearHistory:
+            Self.clearHistory(m)
         default:
             return false
         }
@@ -227,6 +252,8 @@ final class CallsSection: SectionProvider {
         case CallsCommands.removeFromSpeedDial:
             guard let p = selected(m) else { return .disabled }
             return CommandValidation(enabled: Self.isPinned(p, m))
+        case CallsCommands.clearHistory:
+            return CommandValidation(enabled: !Self.rows(m).isEmpty)
         case CallsCommands.removeFromRecents:
             return CommandValidation(enabled: Self.isRecent(selectedID(m)) && selected(m) != nil)
         default:

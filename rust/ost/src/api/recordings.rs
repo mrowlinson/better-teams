@@ -17,7 +17,7 @@
 //! - channel filesFolder:
 //!   `GET /teams/{team}/channels/{channel}/filesFolder`
 //! - folder children: `GET /drives/{d}/items/{i}/children?$top=N`
-//! - playback length: the driveItem `video` facet (`durationMillis`)
+//! - playback length: the driveItem `video` facet (`duration`, ms)
 //! - playback bytes: the pre-authenticated `@microsoft.graph.downloadUrl`
 //!   (streams directly) or `/drives/{d}/items/{i}/content` via the
 //!   existing files download when it expired.
@@ -154,7 +154,9 @@ struct FileFacet {
 
 #[derive(Debug, Deserialize, Default)]
 struct VideoFacet {
-    #[serde(rename = "durationMillis", default)]
+    // Graph's driveItem `video` facet names it `duration` (milliseconds);
+    // `durationMillis` is kept for older fixtures.
+    #[serde(rename = "duration", alias = "durationMillis", default)]
     duration_millis: Option<u64>,
 }
 
@@ -573,6 +575,21 @@ mod tests {
         assert_eq!(r.duration_ms, Some(3723000));
         assert_eq!(r.download_url.as_deref(), Some("https://x/dl1"));
         assert_eq!(r.source.label(), "OneDrive");
+    }
+
+    #[test]
+    fn video_facet_duration_reads_graph_field_name() {
+        // Real Graph shape: the `video` facet carries `duration` (ms)
+        // beside bitrate/size fields, not `durationMillis`.
+        let value = json!({"value": [{
+            "id": "r1", "name": "Weekly Sync.mp4", "size": 48211,
+            "file": {"mimeType": "video/mp4"},
+            "video": {"audioBitsPerSample": 16, "audioChannels": 2, "bitrate": 1200000,
+                      "duration": 1122000, "fourCC": "avc1", "frameRate": 30.0,
+                      "height": 720, "width": 1280},
+            "parentReference": {"driveId": "d1"}}]});
+        let rows = parse_recordings_response(&value, RecordingSource::OneDrive);
+        assert_eq!(rows[0].duration_ms, Some(1122000));
     }
 
     #[test]

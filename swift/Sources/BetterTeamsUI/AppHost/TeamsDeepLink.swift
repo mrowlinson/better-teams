@@ -1,7 +1,8 @@
 // TeamsDeepLink.swift — Teams deep links (`https://teams.microsoft.com/l/…`)
 // opened by hosted apps (openLink / executeDeepLink / navigateToApp),
 // parsed into native targets (APPHOST-B2). Pure parsing here; routing
-// lives in `DeepLinkRouter`. Unknown kinds go to the default browser.
+// lives in `DeepLinkRouter`. A link with no native view is refused with an
+// error by `TeamsLinkRouter` (LINKGUARD), never sent to the browser.
 import AppKit
 import Foundation
 import OstMacCore
@@ -20,6 +21,10 @@ public enum TeamsDeepLink: Equatable, Sendable {
     case team(threadID: String, groupID: String?)
     /// `/l/channel/<threadId>/<name>?groupId=`.
     case channel(threadID: String, name: String, groupID: String?)
+    /// `/l/profile/<userId>` (also `/l/user/<userId>`): a person's card.
+    case profile(userID: String)
+    /// `/l/file/<id>?objectUrl=<SharePoint/OneDrive url>`: the file.
+    case file(URL)
 
     static let hosts = ["teams.microsoft.com", "teams.cloud.microsoft", "teams.live.com"]
 
@@ -38,6 +43,8 @@ public enum TeamsDeepLink: Equatable, Sendable {
             path = parts[0]
             c?.percentEncodedQuery = parts.count > 1 ? parts[1] : nil
         }
+        // Top-level meeting links: `/meet/<id>?p=…`, `/meetup-join/<thread>/0`.
+        if path.hasPrefix("/meet/") || path.hasPrefix("/meetup-join/") { return .meetupJoin(url) }
         guard path.hasPrefix("/l/") else { return nil }
         let seg = path.split(separator: "/").map { String($0).removingPercentEncoding ?? String($0) }
         guard seg.count >= 2 else { return nil }
@@ -70,6 +77,13 @@ public enum TeamsDeepLink: Equatable, Sendable {
         case "channel":
             guard let t = rest.first, !t.isEmpty else { return nil }
             return .channel(threadID: t, name: rest.count > 1 ? rest[1] : "", groupID: q["groupid"])
+        case "profile", "user":
+            guard let u = rest.first, !u.isEmpty, u != "0" else { return nil }
+            return .profile(userID: u)
+        case "file":
+            guard let raw = q["objecturl"], let object = URL(string: raw),
+                  TeamsLinkRouter.family(object) == .files else { return nil }
+            return .file(object)
         default:
             return nil
         }
@@ -88,7 +102,8 @@ extension TeamsDeepLink {
 /// Routes a parsed deep link to a native screen of one window.
 @MainActor
 enum DeepLinkRouter {
-    /// True when handled natively; false → the caller opens the browser.
+    /// True when handled natively; false → no native view (the caller
+    /// refuses it: `TeamsLinkRouter`), never the browser.
     @discardableResult
     static func route(_ url: URL, _ m: WindowModel) -> Bool {
         guard let link = TeamsDeepLink.parse(url) else { return false }
@@ -118,6 +133,15 @@ enum DeepLinkRouter {
                 return true
             }
             return false
+        case .profile(let userID):
+            ContactActions.openCard(ContactRef(name: "", userID: userID), m)
+            return true
+        case .file(let object):
+            return TeamsLinkFiles.open(object, m)
+        case .chat(nil, let users) where users.count == 1:
+            // A 1:1 chat by address: the person's card (Message from there).
+            ContactActions.openCard(ContactRef(name: users[0], email: users[0].contains("@") ? users[0] : nil), m)
+            return true
         case .chat(let chatID, _):
             guard let chatID else { return false }
             m.navigator?.select(section: .chat)

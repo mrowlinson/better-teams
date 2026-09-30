@@ -49,7 +49,9 @@ struct AdvancedPane: View {
             Section("MCP") {
                 LabeledContent("Server", value: Self.mcpHelper == nil ? "Not included in this build" : "Installed")
                 if let url = Self.mcpHelper {
-                    Text(url.path).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                    LabeledContent("Location") {
+                        Text(url.path).foregroundStyle(.secondary).textSelection(.enabled)
+                    }
                 }
             }
             Section {
@@ -58,11 +60,10 @@ struct AdvancedPane: View {
                         .disabled(demo || app.store.conv.chatID == nil)
                 }
             } header: {
-                Text("Data")
+                InfoHeader(title: "Data", subject: "exporting an archive",
+                           text: "Saves the open conversation\u{2019}s loaded messages as a compressed archive.")
             } footer: {
-                Text(exportResult ?? "Saves the open conversation\u{2019}s loaded messages as a compressed archive.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                if let exportResult { Text(exportResult).font(.caption).foregroundStyle(.secondary) }
             }
             Section {
                 LabeledContent("Offline search") {
@@ -87,11 +88,12 @@ struct AdvancedPane: View {
                         .disabled(demo)
                 }
             } header: {
-                Text("Maintenance")
+                InfoHeader(title: "Maintenance", subject: "maintenance",
+                           text: "Resetting caches keeps your sign-in and settings. Search keeps working while the index rebuilds.")
             } footer: {
-                Text(maintenanceFooter)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                if let status = maintenanceFooter {
+                    Text(status).font(.caption).foregroundStyle(.secondary)
+                }
             }
         }
         .formStyle(.grouped)
@@ -100,16 +102,16 @@ struct AdvancedPane: View {
         .fixedSize(horizontal: false, vertical: true)
     }
 
-    private var maintenanceFooter: String {
+    private var maintenanceFooter: String? {
         if let p = rebuild.progress {
-            return "Rebuilding the index: \(p.done) of \(p.total) conversations. Search keeps working meanwhile."
+            return "Rebuilding the index: \(p.done) of \(p.total) conversations."
         }
         if let r = maintenanceResult { return r }
         switch rebuild.outcome {
         case .finished(let docs)?: return "Index rebuilt: \(docs) messages."
         case .failed(let e)?: return "Couldn\u{2019}t rebuild: \(e)"
-        case .cancelled?: return "Index rebuild cancelled; the previous index is kept."
-        case nil: return "Resetting caches keeps your sign-in and settings."
+        case .cancelled?: return "Index rebuild cancelled."
+        case nil: return nil
         }
     }
 
@@ -204,7 +206,7 @@ enum LogsFolder {
                 if let file {
                     NSWorkspace.shared.activateFileViewerSelecting([file])
                 } else {
-                    NSWorkspace.shared.open(dir)
+                    TeamsLinkRouter.open(dir)
                 }
             }
         }

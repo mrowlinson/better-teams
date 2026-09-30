@@ -90,7 +90,12 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         if route?.head == "evidence" {
             EvidenceHarness.showControl(in: wc)
         } else if route?.head == "signin", options.demo {
-            wc.showSignIn(evidence: route?.query["state"] == "code" ? .code("K7QP2M4XD") : .start)
+            let port = route?.query["port"].flatMap { Int($0) }
+            if route?.query["state"] == "web", let port, let url = URL(string: "http://127.0.0.1:\(port)/authorize") {
+                wc.showSignIn(evidence: .web(url))
+            } else {
+                wc.showSignIn(evidence: route?.query["state"] == "code" ? .code("K7QP2M4XD") : .start)
+            }
         } else if options.demo || state.accounts.activeID != nil {
             wc.showShell()
             if let route, route.head != "signin" {
@@ -147,6 +152,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             CatchUpEvidence.apply(route, wc)
             CallEvidence.apply(route, wc)
         }
+        if options.demo, let route, let t = route.query["recapTab"] {
+            // Evidence: `?recapTab=notes|recap` opens the recap viewer on that tab.
+            MeetingRecapTab.evidenceInitial = MeetingRecapTab.allCases.first { $0.rawValue.lowercased() == t.lowercased() }
+        }
         if options.demo, let route, let name = route.query["sheet"], let s = route.section {
             // Evidence: `<route>?sheet=<name>` opens a section sheet.
             // `contact=<name>` names the person for `sheet=contactCard`.
@@ -158,10 +167,17 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             if options.demo, wc.isShowingShell {
                 ConversationEvidence.afterStartup(wc.model)
                 CatchUpEvidence.afterStartup(wc)
+                ChatSyncEvidence.afterStartup(wc)
             }
             if options.demo, wc.isShowingShell, wc.model.nav.section == .files {
                 // Evidence: Files popover / Quick Look once the window is up.
                 (wc.model.provider(.files) as? FilesSection)?.applyEvidence(wc.model)
+            }
+            if options.demo, wc.isShowingShell, route?.query["window"] == "eventDetails",
+               let id = route?.query["contact"] ?? CalendarSection.current(wc.model).meetingID {
+                // Evidence: `<route>?window=eventDetails` opens the pop-out
+                // details window (ordered in, never key or activating).
+                EventDetailsWindowController.show(eventID: id, wc.model, activate: false)
             }
             if options.evidence { EvidenceHarness.settle(wc, options: options) }
         }

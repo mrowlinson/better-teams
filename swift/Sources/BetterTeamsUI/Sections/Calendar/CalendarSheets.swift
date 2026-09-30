@@ -153,9 +153,11 @@ struct JoinMeetingSheet: View {
                 }
             }
             .formStyle(.columns)
-            Text("The meeting opens where you chose to show calls in Settings.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            HStack {
+                Spacer()
+                InfoButton(subject: "joining by link",
+                           text: "The meeting opens where you chose to show calls in Settings.")
+            }
         }
         .onChange(of: meetings.resolvingMeetingID) { _, busy in
             guard !busy, submitted, mode == .meetingID, meetings.meetingIDError == nil else { return }
@@ -348,9 +350,11 @@ struct EditEventSheet: View {
             }
             .formStyle(.columns)
             if wholeSeries {
-                Text("Series times stay as they are; title and location change for every event.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                HStack {
+                    Spacer()
+                    InfoButton(subject: "editing a series",
+                               text: "Series times stay as they are; title and location change for every event.")
+                }
             }
         }
     }
@@ -362,5 +366,128 @@ struct EditEventSheet: View {
                 model?.dismissSheet()
             }
         }
+    }
+}
+
+/// Duplicate event (CALDETAIL): the new-event form prefilled with a copy
+/// of an event — title, time, Teams meeting, location, people and rooms;
+/// the description, categories, show-as, reminder and sensitivity carry
+/// over unseen. Also the scheduling assistant's "New meeting at this time".
+struct DuplicateEventSheet: View {
+    @ObservedObject var week: CalendarWeekStore
+    let draft: CalendarEventDraft
+    var title = "Duplicate Event"
+    @State private var subject: String
+    @State private var start: Date
+    @State private var end: Date
+    @State private var online: Bool
+    @State private var location: String
+    @State private var people: [EventAttendee]
+    @State private var typed = ""
+    @Environment(\.windowModel) private var model
+
+    init(week: CalendarWeekStore, draft: CalendarEventDraft, title: String = "Duplicate Event") {
+        self.week = week
+        self.draft = draft
+        self.title = title
+        _subject = State(initialValue: draft.subject)
+        _start = State(initialValue: draft.start)
+        _end = State(initialValue: draft.end)
+        _online = State(initialValue: draft.online)
+        _location = State(initialValue: draft.location ?? "")
+        _people = State(initialValue: draft.attendees.filter { !$0.isRoom })
+    }
+
+    /// The draft as edited: the chips plus any address still typed.
+    var edited: CalendarEventDraft {
+        var d = draft
+        d.subject = trimmed(subject)
+        d.start = start
+        d.end = end
+        d.online = online
+        d.location = trimmed(location).isEmpty ? nil : trimmed(location)
+        let pending = CalendarWeekStore.recipients(typed)
+            .filter { a in !people.contains { $0.email.lowercased() == a.lowercased() } }
+            .map { EventAttendee(name: $0, email: $0) }
+        d.attendees = people + pending + draft.attendees.filter(\.isRoom)
+        return d
+    }
+
+    var body: some View {
+        CalendarSheetFrame(title: title, action: "Save",
+                           enabled: !trimmed(subject).isEmpty && end > start,
+                           busy: week.creating ? "Saving\u{2026}" : nil,
+                           error: week.createError, perform: save) {
+            Form {
+                TextField("Title", text: $subject, prompt: prompt("Add a title"))
+                if draft.isAllDay {
+                    DatePicker("Starts", selection: $start, displayedComponents: .date)
+                    DatePicker("Ends", selection: $end, displayedComponents: .date)
+                } else {
+                    DatePicker("Starts", selection: $start)
+                    DatePicker("Ends", selection: $end)
+                }
+                AttendeeChipsEditor(people: $people, typed: $typed)
+                TextField("Location", text: $location, prompt: prompt("Add a location"))
+                Toggle("Teams meeting", isOn: $online)
+            }
+            .formStyle(.columns)
+            if !draft.attendees.isEmpty || draft.bodyHTML != nil {
+                Text("Saving sends the invitation to the attendees. The description and categories are copied.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .onAppear { week.clearCreateError() }
+    }
+
+    private func save() {
+        let d = edited
+        Task {
+            if await week.create(d) != nil { model?.dismissSheet() }
+        }
+    }
+}
+
+/// New webinar (CAL2-4): a draft Teams webinar (title, time). Graph
+/// virtual events create it unpublished; registration and publishing
+/// stay in Teams.
+struct NewWebinarSheet: View {
+    @ObservedObject var week: CalendarWeekStore
+    @State private var title = ""
+    @State private var start = NewMeetingSheet.nextHalfHour(RelativeClock.shared.now).addingTimeInterval(86_400)
+    @State private var end = NewMeetingSheet.nextHalfHour(RelativeClock.shared.now).addingTimeInterval(86_400 + 3600)
+    @State private var createdID: String?
+    @Environment(\.windowModel) private var model
+
+    var body: some View {
+        CalendarSheetFrame(title: "New Webinar", action: createdID == nil ? "Create Draft" : "Done",
+                           enabled: createdID != nil || (!trimmed(title).isEmpty && end > start),
+                           busy: week.creating ? "Creating\u{2026}" : nil,
+                           error: week.createError, perform: create) {
+            if createdID != nil {
+                Label("Draft webinar created. Finish registration and publish it in Teams.",
+                      systemImage: "checkmark.circle")
+            } else {
+                Form {
+                    TextField("Title", text: $title, prompt: prompt("Webinar title"))
+                    DatePicker("Starts", selection: $start)
+                    DatePicker("Ends", selection: $end)
+                }
+                .formStyle(.columns)
+                Text("Webinars need a Teams webinar license. Attendees register on the event page.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .onAppear { week.clearCreateError() }
+    }
+
+    private func create() {
+        if createdID != nil {
+            model?.dismissSheet()
+            return
+        }
+        Task { createdID = await week.createWebinar(title: title, start: start, end: end) }
     }
 }

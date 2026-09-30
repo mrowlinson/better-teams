@@ -169,6 +169,10 @@ enum ToolbarPlacement: Equatable {
     case header
     /// A strip reserved above the lane (no empty space anywhere else).
     case strip
+    /// A run's continuation bubble with no room beside it: the bar sits
+    /// over the bubble's top free-side corner, as Teams floats its bar,
+    /// so a same-sender run stays tight (CHATSYNC3 R3).
+    case overlay
 }
 
 /// Frames for one lane, in lane coordinates (the bar may sit outside
@@ -225,7 +229,19 @@ struct LanePlan: Equatable {
                 return plan
             }
         }
-        // 3. A strip above the lane, reserved in the row's height.
+        // 3. A run's continuation (no header): over the bubble's top
+        //    free-side corner, inside the row, no reserved height. Teams
+        //    keeps same-sender runs tight and floats its bar over the
+        //    message; a reserved strip opened a ~25 pt gap mid-run in
+        //    narrow windows (the pop-out).
+        if header == nil {
+            // At the far edge of the free side: as little bubble under it as fits.
+            let x = ownTrailing ? min(lo, laneW - tb.width) : max(0, hi - tb.width)
+            plan.toolbar = CGRect(x: x, y: cardRect.minY - min(topPadding, 2), width: tb.width, height: tb.height)
+            plan.placement = .overlay
+            return plan
+        }
+        // 4. A strip above the lane, reserved in the row's height.
         let reserve = max(0, tb.height + 1 - topPadding)
         plan.shift(reserve)
         let x = ownTrailing ? min(cardRect.minX, laneW - tb.width) : max(0, cardRect.maxX - tb.width)

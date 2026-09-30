@@ -13,6 +13,7 @@
 //! for Skype/Graph/IC3/Recorder. `cancel` is pure session drop.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -58,11 +59,16 @@ pub(crate) fn clear_browser_sessions_for(profile: &str) {
 }
 
 fn new_browser_session_id() -> String {
+    // The clock alone is not unique: two starts inside one tick (macOS clock
+    // is microsecond-grained) would share an id and the later insert would
+    // replace the earlier session. The process-wide counter makes it unique.
+    static SEQ: AtomicU64 = AtomicU64::new(0);
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.subsec_nanos())
         .unwrap_or(0);
-    format!("ba-{}-{:08x}", now_secs(), nanos)
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+    format!("ba-{}-{:08x}-{:x}", now_secs(), nanos, seq)
 }
 
 fn rand_verifier() -> String {
@@ -514,6 +520,30 @@ mod tests {
         assert_eq!(parse_callback("https://h/n?code=&state=S"), None);
         assert_eq!(parse_callback("https://h/nothing-here"), None);
         assert_eq!(parse_callback(""), None);
+    }
+
+    #[test]
+    fn concurrent_starts_never_share_a_session_id() {
+        // Session ids used to be second + sub-second clock only: two starts
+        // inside one clock tick (parallel tests, or two windows) got the same
+        // id and the second insert silently replaced the first session.
+        use std::sync::{Arc, Barrier};
+        const N: usize = 64;
+        let gate = Arc::new(Barrier::new(N));
+        let ids: Vec<String> = (0..N)
+            .map(|_| {
+                let gate = Arc::clone(&gate);
+                std::thread::spawn(move || {
+                    gate.wait();
+                    new_browser_session_id()
+                })
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|h| h.join().unwrap())
+            .collect();
+        let distinct: std::collections::HashSet<&String> = ids.iter().collect();
+        assert_eq!(distinct.len(), N, "duplicate browser session ids");
     }
 
     #[test]

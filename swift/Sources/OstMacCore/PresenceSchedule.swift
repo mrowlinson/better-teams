@@ -68,13 +68,20 @@ public final class PresenceScheduleStore: ObservableObject {
     /// this id (contract (i) — cleared at the next boundary).
     private var pausedEntryID: UUID?
     /// Set in flight (synchronous guard: ticks never stack network).
-    private var inflight = false
+    /// Read by tests (`@testable`) to wait for a fire to finish.
+    private(set) var inflight = false
+    /// Clock for edit re-arm (tests pin it; `tick` takes `now` directly).
+    var clock: () -> Date = { Date() }
+    var clockCalendar: Calendar = .current
 
     @Published public var enabled = false {
         didSet { defaults.set(enabled, forKey: Self.enabledKey) }
     }
     @Published public var entries: [PresenceScheduleEntry] = [] {
-        didSet { persistEntries() }
+        didSet {
+            persistEntries()
+            rearmIfActiveEntryChanged(from: oldValue)
+        }
     }
     /// Entry whose status was last applied (session-only).
     @Published public private(set) var appliedEntryID: UUID?
@@ -220,6 +227,24 @@ public final class PresenceScheduleStore: ObservableObject {
                 self.error = String(describing: error)
             }
         }
+    }
+
+    /// An edit (or add/remove) that changes which entry is active, or the
+    /// active entry's own status/window, drops the applied state so the next
+    /// tick (2 s) re-applies at once instead of waiting for the next window
+    /// transition or the 50-minute refresh. An edit also ends a manual pause
+    /// (the owner just told the schedule what to do) and refills the
+    /// failure budget for that entry.
+    private func rearmIfActiveEntryChanged(from old: [PresenceScheduleEntry]) {
+        let now = clock()
+        let calendar = clockCalendar
+        let oldActive = old.first { $0.window.contains(now, calendar: calendar) }
+        let newActive = activeEntry(at: now, calendar: calendar)
+        guard oldActive != newActive else { return }
+        if appliedEntryID != nil { appliedEntryID = nil }
+        if lastSetAt != nil { lastSetAt = nil }
+        pausedEntryID = nil
+        if let newActive { failures[newActive.id] = 0 }
     }
 
     private func persistEntries() {

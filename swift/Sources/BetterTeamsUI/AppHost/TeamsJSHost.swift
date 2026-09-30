@@ -106,13 +106,18 @@ public final class TeamsJSHost: NSObject {
     public func install(into controller: WKUserContentController) {
         controller.add(WeakScriptHandler(self), name: Self.handlerName)
         controller.add(WeakScriptHandler(self, probe: true), name: Self.probeHandlerName)
-        controller.addUserScript(WKUserScript(source: Self.paintProbe, injectionTime: .atDocumentEnd,
-                                              forMainFrameOnly: false))
+        controller.addUserScript(Self.paintProbeScript)
         if transport == .frameless {
-            controller.addUserScript(WKUserScript(source: Self.framelessShim, injectionTime: .atDocumentStart,
-                                                  forMainFrameOnly: true))
+            controller.addUserScript(Self.framelessShimScript)
         }
     }
+
+    /// One instance of each page script, shared by every pane (APPEFF R6):
+    /// nothing per pane is baked into a script; context goes over the
+    /// bridge on request.
+    static let paintProbeScript = WKUserScript(source: paintProbe, injectionTime: .atDocumentEnd, forMainFrameOnly: false)
+    static let framelessShimScript = WKUserScript(source: framelessShim, injectionTime: .atDocumentStart,
+                                                  forMainFrameOnly: true)
 
     public static func uninstall(from controller: WKUserContentController) {
         controller.removeScriptMessageHandler(forName: handlerName)
@@ -551,7 +556,7 @@ public final class TeamsJSHost: NSObject {
     /// process (a test once opened a browser and wrote to ~/Downloads).
     var openExternal: (URL) -> Void = { url in
         guard !UserFolders.isTestProcess else { return }
-        NSWorkspace.shared.open(url)
+        TeamsLinkRouter.open(url)
     }
 
     /// The link a navigation call carries: a URL string (openLink,

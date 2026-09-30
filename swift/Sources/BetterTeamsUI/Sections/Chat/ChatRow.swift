@@ -25,6 +25,7 @@ struct ChatRow: View {
     var conv: ConversationStore?
     let now: Date
     @Environment(\.contentTextScale) private var scale
+    @Environment(\.messageDensity) private var density
 
     private var style: ChatRowStyle {
         ChatRowStyle(unread: unread, muted: muted, hasPresence: presence != nil)
@@ -38,7 +39,7 @@ struct ChatRow: View {
                 .frame(width: 7, height: 7)
                 .opacity(style.showsUnreadDot ? 1 : 0)
                 .accessibilityHidden(true)
-            Avatar(name: chat.name, isGroup: chat.is_group)
+            Avatar(name: chat.name, isGroup: chat.is_group, diameter: density.metrics.chatAvatar)
                 .contactHover(name: chat.is_group ? "" : chat.name, arrowEdge: .bottom)
                 .overlay(alignment: .bottomTrailing) {
                     // 4 pt out, as in Search People: at 2 pt the ring
@@ -97,7 +98,7 @@ struct ChatRow: View {
                 }
             }
         }
-        .padding(.vertical, 3)
+        .padding(.vertical, density.metrics.chatRowVertical)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(accessibility)
     }
