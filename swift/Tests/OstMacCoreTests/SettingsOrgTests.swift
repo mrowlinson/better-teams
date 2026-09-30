@@ -50,7 +50,11 @@ final class SettingsOrgTests: XCTestCase {
             },
             teamsFetcher: { TeamsResponse(ok: true, teams: []) },
             chatsFetcher: { _ in ChatsResponse(ok: true, chats: []) },
-            timeoutSeconds: 0.05)
+            // Every probe is raced against this deadline, including the
+            // instant ones. 0.05 s let the instant probes lose the race under
+            // machine load (load 700: the run failed as a whole). The wedge
+            // sleeps 30 s, so any deadline well under that still times it out.
+            timeoutSeconds: 5)
         await store.run()
         XCTAssertFalse(store.running)
         XCTAssertNotNil(store.report)

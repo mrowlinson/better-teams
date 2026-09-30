@@ -56,10 +56,7 @@ final class FileVersionsTests: XCTestCase {
     func testListErrorSurfacesMessage() async {
         let store = FileVersionsStore(list: { _, _ in throw CoreCallError.failed("versions: boom") })
         store.open(driveID: "D1", itemID: "I1", filename: "deck.pdf")
-        for _ in 0 ..< 50 {
-            if case .error = store.state { break }
-            try? await Task.sleep(nanoseconds: 20_000_000)
-        }
+        await TestWait.until(interval: 0.02) { if case .error = store.state { return true } else { return false } }
         if case let .error(m) = store.state {
             XCTAssertEqual(m, "versions: boom")
         } else {
@@ -73,16 +70,10 @@ final class FileVersionsTests: XCTestCase {
             restore: { _, _, ver in FileVersionRestoreResponse(ok: true, version_id: ver) }
         )
         store.open(driveID: "D1", itemID: "I1", filename: "deck.pdf")
-        for _ in 0 ..< 50 {
-            if case .loaded = store.state { break }
-            try? await Task.sleep(nanoseconds: 20_000_000)
-        }
+        await TestWait.until(interval: 0.02) { store.state == .loaded }
         XCTAssertEqual(store.state, .loaded)
         store.restore(store.versions[0])
-        for _ in 0 ..< 50 {
-            if store.restoredID != nil { break }
-            try? await Task.sleep(nanoseconds: 20_000_000)
-        }
+        await TestWait.until(interval: 0.02) { store.restoredID != nil }
         XCTAssertEqual(store.restoredID, "2.0")
     }
 

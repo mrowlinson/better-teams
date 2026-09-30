@@ -244,10 +244,7 @@ final class Top10FilesTests: XCTestCase {
     private func poll(
         _ store: UnifiedFilesStore, until: (SharedFilesState) -> Bool = { $0 != .loading }
     ) async {
-        for _ in 0 ..< 50 {
-            if until(store.state) { break }
-            try? await Task.sleep(nanoseconds: 20_000_000)
-        }
+        await TestWait.until { until(store.state) }
     }
 
     /// Acceptance: a chat file + a channel file land in ONE recents view.
@@ -366,10 +363,7 @@ final class Top10FilesTests: XCTestCase {
         await poll(store)
         XCTAssertEqual(store.state, .empty)
         store.upload(paths: ["/tmp/sent.pdf"])
-        for _ in 0 ..< 50 {
-            if !store.rows.isEmpty { break }
-            try? await Task.sleep(nanoseconds: 20_000_000)
-        }
+        await TestWait.until { !store.rows.isEmpty }
         XCTAssertEqual(store.rows.count, 1)
         XCTAssertEqual(store.rows[0].file.name, "sent.pdf")
         XCTAssertEqual(store.rows[0].source, .chat)

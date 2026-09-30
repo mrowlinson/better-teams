@@ -26,6 +26,17 @@ final class ImageHeaderProbeTests: XCTestCase {
         var log: [String] { lock.withLock { _log } }
     }
 
+    private final class Wedge: @unchecked Sendable {
+        private let lock = NSLock()
+        private var _released = false
+        private var _expired = false
+        var released: Bool { lock.withLock { _released } }
+        /// True when the read ran to the hang ceiling (probe never gave up).
+        var expired: Bool { lock.withLock { _expired } }
+        func release() { lock.withLock { _released = true } }
+        func expire() { lock.withLock { _expired = true } }
+    }
+
     private func model(_ head: @escaping FullResImageModel.HeadFetcher) -> FullResImageModel {
         FullResImageModel(thumbURL: thumb, messageID: "m1", headFetcher: head)
     }
@@ -57,14 +68,23 @@ final class ImageHeaderProbeTests: XCTestCase {
     }
 
     func testSlowSourceGivesUpAtTheDeadlineAndFallsBack() async {
+        // The read wedges (cancellable park) until released. The probe must
+        // give up at its own deadline while the wedge is still closed; a
+        // stopwatch would only measure scheduler load. The 60 s bound only
+        // stops a hang if the probe fails to cancel the read.
+        let wedge = Wedge()
+        defer { wedge.release() }
         let m = model { _, _, _ in
-            try await Task.sleep(for: .seconds(5))
+            let t0 = DispatchTime.now().uptimeNanoseconds
+            while !wedge.released, DispatchTime.now().uptimeNanoseconds &- t0 < 60_000_000_000 {
+                try await Task.sleep(nanoseconds: 10_000_000)
+            }
+            if !wedge.released { wedge.expire() }
             return Data()
         }
-        let t0 = Date()
         let size = await m.headPixelSize(timeout: .milliseconds(100))
         XCTAssertNil(size)
-        XCTAssertLessThan(Date().timeIntervalSince(t0), 2, "did not wait for the slow read")
+        XCTAssertFalse(wedge.expired, "did not wait for the slow read")
     }
 
     func testFailureAndGarbageFallBackToNil() async {

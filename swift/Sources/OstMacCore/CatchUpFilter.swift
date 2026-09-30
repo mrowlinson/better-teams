@@ -13,8 +13,9 @@
 //    down. When a conversation overflows the model window, the lowest
 //    scores drop first (not simply the oldest).
 // 4. Bullet pass after the model: deterministic social bullets and
-//    bullets like a dismissed one drop, then the model rates the rest
-//    0–3 (plain text, "number: rating") and only ≥ 2 stay.
+//    bullets like a dismissed one drop. (A second model call rating
+//    each bullet 0–3 was measured on a held-out set and removed: it
+//    lowered F1 in every run and cost ~30% more CPU per summary.)
 import Foundation
 
 // MARK: - Periods
@@ -331,17 +332,8 @@ public enum CatchUpPipeline {
     }
 
     /// Bullet pass: drops social bullets and ones like a dismissed
-    /// bullet, then (when a transport is given) has the model rate the
-    /// rest 0–3 and keeps ≥ 2. A bullet with a strong deterministic cue
-    /// (ask, mention, decision, deadline, blocker, plan change: salience
-    /// ≥ 3) has a floor of 2, so the model can't drop it — and isn't
-    /// asked about it (no call at all when every bullet is strong; the
-    /// model's ratings measured noisy on decisions and plan changes).
-    /// Unrated bullets stay (fail-open: a parse miss never blanks a
-    /// summary). Returns the rebuilt plain text.
-    public static func refine(_ text: String, _ ctx: CatchUpFilterContext,
-                              rater: (any CatchUpTransport)?) async -> String
-    {
+    /// bullet. Returns the rebuilt plain text.
+    public static func refine(_ text: String, _ ctx: CatchUpFilterContext) -> String {
         var parsed = CatchUpSummaryParser.parse(text)
         guard !parsed.points.isEmpty || !parsed.actions.isEmpty else { return text }
         func keepDeterministic(_ s: String) -> Bool {
@@ -349,69 +341,7 @@ public enum CatchUpPipeline {
         }
         parsed.points = parsed.points.filter(keepDeterministic)
         parsed.actions = parsed.actions.filter(keepDeterministic)
-        let uncertain = Array(Set(parsed.points + parsed.actions).filter { !CatchUpRating.isStrong($0, ctx) }).sorted()
-        if let rater, !uncertain.isEmpty {
-            let prompt = CatchUpRating.prompt(uncertain)
-            if let reply = try? await rater.complete(baseURL: "", apiKey: "", model: "", prompt: prompt) {
-                let ratings = CatchUpRating.parse(reply, count: uncertain.count)
-                var drop = Set<String>()
-                for (i, b) in uncertain.enumerated() {
-                    if let r = ratings[i + 1], r < CatchUpRating.keepAtLeast { drop.insert(b) }
-                }
-                parsed.points.removeAll { drop.contains($0) }
-                parsed.actions.removeAll { drop.contains($0) }
-            }
-        }
-        return CatchUpRating.render(parsed)
-    }
-}
-
-// MARK: - Rating pass
-
-public enum CatchUpRating {
-    public static let keepAtLeast = 2
-    public static let responseTokens = 80
-
-    /// Deterministic floor: salience ≥ 3 reads as at least a 2.
-    public static func isStrong(_ bullet: String, _ ctx: CatchUpFilterContext) -> Bool {
-        CatchUpNoise.salience(ChatMessage(id: "", sender: "", timestamp: "", content: bullet), ctx) >= 3
-    }
-
-    /// Plain-text prompt (the system model refuses @Generable often).
-    /// No example content, like the summary prompts.
-    static let promptLead = "Below are numbered points from a catch-up of a work conversation."
-
-    public static func prompt(_ bullets: [String]) -> String {
-        let list = bullets.enumerated().map { "\($0.offset + 1). \($0.element)" }.joined(separator: "\n")
-        return """
-            \(promptLead) Rate how much each point needs the reader's attention now:
-            3 means a request or question for the reader, a decision, a deadline or a blocker.
-            2 means useful work news or a change of plan.
-            1 means a minor detail.
-            0 means social chat, food or drink, greetings, thanks, celebrations, or something whose moment has passed.
-            Write one line per point with the point's number, a colon and the rating, and nothing else.
-
-            Points:
-            \(list)
-            """
-    }
-
-    /// "3: 2", "Point 3 - 2", "3) 2 (reason)", "#3: rating 2" → [3: 2].
-    /// Ratings outside 0–3 and numbers outside 1…count are ignored.
-    public static func parse(_ reply: String, count: Int) -> [Int: Int] {
-        var out: [Int: Int] = [:]
-        let pattern = #"^\s*[-*•]?\s*(?:point|item|#)?\s*(\d{1,2})\s*[:.)\-–—=]\s*(?:rating\s*[:=]?\s*)?\**\s*([0-3])\b"#
-        guard let re = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { return out }
-        for line in reply.components(separatedBy: .newlines) {
-            let ns = line as NSString
-            guard let m = re.firstMatch(in: line, range: NSRange(location: 0, length: ns.length)),
-                  let n = Int(ns.substring(with: m.range(at: 1))),
-                  let r = Int(ns.substring(with: m.range(at: 2))),
-                  (1 ... count).contains(n), out[n] == nil
-            else { continue }
-            out[n] = r
-        }
-        return out
+        return render(parsed)
     }
 
     /// Parsed parts back to the SUMMARY / POINTS / ACTIONS layout.

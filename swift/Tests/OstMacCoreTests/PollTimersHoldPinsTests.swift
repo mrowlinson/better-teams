@@ -26,10 +26,7 @@ final class PollTimersHoldPinsTests: XCTestCase {
         feed.pollInterval = 60 // timer armed-but-idle; must never fire here
         feed.start()
         XCTAssertEqual(feed.currentState, .live)
-        let end = Date().addingTimeInterval(2)
-        while c.waits < 2, Date() < end {
-            Thread.sleep(forTimeInterval: 0.02)
-        }
+        TestWait.untilBlocking(interval: 0.02) { c.waits >= 2 }
         feed.stop()
         XCTAssertGreaterThanOrEqual(c.waits, 2, "live loop must chain pollWait")
         XCTAssertEqual(c.polls, 1, "poll runs once (initial drain); timer stays idle")

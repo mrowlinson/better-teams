@@ -67,15 +67,9 @@ final class SharedFileLinkTests: XCTestCase {
             copyLink: { s in copied.mutate { $0.append(s) } }
         )
         store.open(chatID: "19:x")
-        for _ in 0 ..< 50 {
-            if store.state == .loaded { break }
-            try? await Task.sleep(nanoseconds: 20_000_000)
-        }
+        await TestWait.until { store.state == .loaded }
         store.shareLink(file)
-        for _ in 0 ..< 50 {
-            if store.link(for: file) != nil { break }
-            try? await Task.sleep(nanoseconds: 20_000_000)
-        }
+        await TestWait.until { store.link(for: file) != nil }
         XCTAssertEqual(store.link(for: file), "https://sp/share/ABC")
         XCTAssertEqual(copied.value, ["https://sp/share/ABC"])
         XCTAssertEqual(calls.value, 1)
@@ -97,7 +91,7 @@ final class SharedFileLinkTests: XCTestCase {
             copyLink: { s in copied.mutate { $0.append(s) } }
         )
         store.shareLink(SharedFile(id: "i9", name: "nodrive"))
-        try? await Task.sleep(nanoseconds: 50_000_000)
+        try? await Task.sleep(nanoseconds: 50_000_000) // negative window: proves no core call is made
         XCTAssertEqual(calls.value, 0)
         XCTAssertTrue(copied.value.isEmpty)
     }
@@ -119,15 +113,9 @@ final class SharedFileLinkTests: XCTestCase {
             link: { _, _, _ in throw CoreCallError.failed("files_link: boom") }
         )
         store.open(chatID: "19:x")
-        for _ in 0 ..< 50 {
-            if store.state == .loaded { break }
-            try? await Task.sleep(nanoseconds: 20_000_000)
-        }
+        await TestWait.until { store.state == .loaded }
         store.shareLink(file)
-        for _ in 0 ..< 50 {
-            if case .error = store.state { break }
-            try? await Task.sleep(nanoseconds: 20_000_000)
-        }
+        await TestWait.until { if case .error = store.state { return true } else { return false } }
         if case let .error(m) = store.state {
             XCTAssertEqual(m, "files_link: boom")
         } else {

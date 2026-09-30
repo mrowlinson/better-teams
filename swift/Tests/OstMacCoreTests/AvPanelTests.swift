@@ -5,6 +5,14 @@ import XCTest
 
 @testable import OstMacCore
 
+/// Thread-safe one-way flag for gating fake runners (they run off-main).
+private final class LockedFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var flag = false
+    func set() { lock.lock(); flag = true; lock.unlock() }
+    var value: Bool { lock.lock(); defer { lock.unlock() }; return flag }
+}
+
 @MainActor
 final class AvPanelTests: XCTestCase {
     // MARK: - Model decode (pure)
@@ -218,10 +226,7 @@ final class AvPanelTests: XCTestCase {
 
     /// Poll `devicesLoaded` (the scan completes off-main). Returns loaded.
     private func waitLoaded(_ m: AvPanelModel, timeout: TimeInterval = 5) async -> Bool {
-        let start = Date()
-        while !m.devicesLoaded, Date().timeIntervalSince(start) < timeout {
-            try? await Task.sleep(nanoseconds: 50_000_000)
-        }
+        await TestWait.until(ceiling: max(timeout, TestWait.hangCeiling)) { m.devicesLoaded }
         return m.devicesLoaded
     }
 
@@ -243,15 +248,20 @@ final class AvPanelTests: XCTestCase {
         // Wedged runner (never returns in-test) -> honest UI at N sec.
         let m = withCleanMicDefaults { AvPanelModel() }
         m.scanTimeout = 0.2
+        // Wedge is an explicit gate (closed until the end of the test), not a
+        // 30 s sleep raced against a stopwatch.
+        let wedge = DispatchSemaphore(value: 0)
+        let wedgeReturned = LockedFlag()
         m.deviceRunner = {
-            Thread.sleep(forTimeInterval: 30)
+            _ = wedge.wait(timeout: .now() + TestWait.hangCeiling)
+            wedgeReturned.set()
             throw CoreCallError.failed("scan_stuck: forced hang")
         }
-        let start = Date()
         m.refreshDevices()
         let wedgedLoaded = await waitLoaded(m)
         XCTAssertTrue(wedgedLoaded, "scan must resolve even when the runner wedges")
-        XCTAssertLessThan(Date().timeIntervalSince(start), 5, "UI must give up at N sec, not at the wedge")
+        XCTAssertFalse(wedgeReturned.value, "UI must give up at N sec, not at the wedge")
+        wedge.signal()
         XCTAssertEqual(m.devicesError, AvSummary.scanTimedOut)
         XCTAssertTrue(m.micDevices.isEmpty)
         XCTAssertTrue(m.speakerDevices.isEmpty)
@@ -267,18 +277,18 @@ final class AvPanelTests: XCTestCase {
         // Timeout fires first, then the slow scan lands and self-heals.
         let m = withCleanMicDefaults { AvPanelModel() }
         m.scanTimeout = 0.2
+        // The slow scan is held on a gate so the timeout provably fires first.
+        let slow = DispatchSemaphore(value: 0)
         m.deviceRunner = {
-            Thread.sleep(forTimeInterval: 0.6)
+            _ = slow.wait(timeout: .now() + TestWait.hangCeiling)
             return try self.fakeDevices()
         }
         m.refreshDevices()
         let lateLoaded = await waitLoaded(m)
         XCTAssertTrue(lateLoaded)
         XCTAssertEqual(m.devicesError, AvSummary.scanTimedOut)
-        let start = Date()
-        while m.devicesError != nil, Date().timeIntervalSince(start) < 5 {
-            try? await Task.sleep(nanoseconds: 50_000_000)
-        }
+        slow.signal()
+        await TestWait.until { m.devicesError == nil }
         XCTAssertNil(m.devicesError, "late success must clear the timeout error")
         XCTAssertEqual(m.micDevices, ["Mic A"])
         XCTAssertEqual(m.speakerDevices, ["Spk B"])
@@ -316,8 +326,11 @@ final class AvPanelTests: XCTestCase {
         // Slow first scan + fast rescan: the late first result must not clobber.
         let m = withCleanMicDefaults { AvPanelModel() }
         m.scanTimeout = 10
+        let staleGate = DispatchSemaphore(value: 0)
+        let staleReturned = LockedFlag()
         m.deviceRunner = {
-            Thread.sleep(forTimeInterval: 1.0)
+            _ = staleGate.wait(timeout: .now() + TestWait.hangCeiling)
+            staleReturned.set()
             return try self.fakeDevices(inputs: ["Old Mic"], outputs: ["Old Spk"])
         }
         m.refreshDevices()
@@ -326,7 +339,11 @@ final class AvPanelTests: XCTestCase {
         let rescanLoaded = await waitLoaded(m)
         XCTAssertTrue(rescanLoaded)
         XCTAssertEqual(m.micDevices, ["New Mic"])
-        try? await Task.sleep(nanoseconds: 1_500_000_000) // let the stale scan land
+        staleGate.signal() // now let the stale scan finish
+        await TestWait.until { staleReturned.value }
+        // Negative window: the stale result must not land. Its main-actor hop
+        // has no observable (the generation guard drops it silently).
+        try? await Task.sleep(nanoseconds: 500_000_000)
         XCTAssertEqual(m.micDevices, ["New Mic"], "stale completion must drop")
         XCTAssertEqual(m.speakerDevices, ["New Spk"])
         m.stopLevelPolling()

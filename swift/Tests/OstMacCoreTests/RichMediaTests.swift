@@ -122,15 +122,22 @@ final class RichMediaTests: XCTestCase {
         let cache = RichMediaCache(diskDir: nil, memory: .pinned)
         let calls = Counter()
         let bytes = Data([1, 2, 3, 4])
+        // Fetch is held open until the test releases it (after all three
+        // callers have been issued and given ample scheduling turns to join
+        // the in-flight fetch), so dedupe never races a wall-clock delay.
+        let release = Counter()
         let fetcher: RichMediaCache.Fetcher = { _ in
             calls.inc()
-            try await Task.sleep(nanoseconds: 50_000_000)
+            await TestWait.until { release.count > 0 }
             return bytes
         }
-        async let a = cache.data(url: "https://h/x.png", messageID: "m1", fetcher: fetcher)
-        async let b = cache.data(url: "https://h/x.png", messageID: "m1", fetcher: fetcher)
-        async let c = cache.data(url: "https://h/x.png", messageID: "m1", fetcher: fetcher)
-        let got = try await [a, b, c]
+        let ta = Task { try await cache.data(url: "https://h/x.png", messageID: "m1", fetcher: fetcher) }
+        let tb = Task { try await cache.data(url: "https://h/x.png", messageID: "m1", fetcher: fetcher) }
+        let tc = Task { try await cache.data(url: "https://h/x.png", messageID: "m1", fetcher: fetcher) }
+        for _ in 0 ..< 500 { await Task.yield() }
+        try? await Task.sleep(nanoseconds: 200_000_000) // let b and c reach the cache and join the in-flight fetch
+        release.inc()
+        let got = try await [ta.value, tb.value, tc.value]
         XCTAssertEqual(got, [bytes, bytes, bytes])
         XCTAssertEqual(calls.count, 1)
         // Second wave hits memory: still 1.

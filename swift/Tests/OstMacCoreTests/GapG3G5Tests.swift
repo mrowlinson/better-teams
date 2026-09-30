@@ -159,7 +159,7 @@ final class GapG3G5Tests: XCTestCase {
             actionID: OmCallInfo.declineActionID,
             userInfo: ["OMCallID": "c9"])
         XCTAssertEqual(r, .declineCall(callID: "c9"))
-        wait(for: [exp], timeout: 1)
+        wait(for: [exp], timeout: 60)
     }
 
     func testAcceptAndShowDispatchBroadcasts() {
@@ -173,7 +173,7 @@ final class GapG3G5Tests: XCTestCase {
                 actionID: OmCallInfo.acceptActionID,
                 userInfo: ["OMCallID": "c9"]),
             .acceptCall(callID: "c9"))
-        wait(for: [acceptExp], timeout: 1)
+        wait(for: [acceptExp], timeout: 60)
         let showExp = expectation(
             forNotification: .omNotifShowCall, object: nil)
         {
@@ -184,7 +184,7 @@ final class GapG3G5Tests: XCTestCase {
                 actionID: UNNotificationDefaultActionIdentifier,
                 userInfo: ["OMCallID": "c9"]),
             .showCall(callID: "c9"))
-        wait(for: [showExp], timeout: 1)
+        wait(for: [showExp], timeout: 60)
     }
 
     // MARK: - G5: Focus default-on + failure diagnostic

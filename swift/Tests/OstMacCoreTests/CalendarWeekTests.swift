@@ -56,10 +56,7 @@ final class CalendarWeekTests: XCTestCase {
     }
 
     func waitFor(_ what: String, _ cond: @escaping () -> Bool) async throws {
-        for _ in 0 ..< 200 {
-            if cond() { return }
-            try await Task.sleep(nanoseconds: 10_000_000)
-        }
+        if await TestWait.until(cond) { return }
         XCTFail("timed out waiting for \(what)")
     }
 
@@ -257,7 +254,8 @@ final class CalendarWeekTests: XCTestCase {
             prefetchAdjacentWeeks: true)
         await store.load()
         try await waitFor("neighbors prefetched") { box.count == 3 }
-        try await Task.sleep(nanoseconds: 50_000_000) // let cache writes land
+        // Cache writes land when the prefetch entries clear (cache is written in the same step).
+        try await waitFor("prefetch cache writes landed") { store.prefetching.isEmpty }
         let prev = Int64(monday.timeIntervalSince1970) - 7 * 86_400
         store.prevWeek()
         XCTAssertEqual(store.weekStart, monday.addingTimeInterval(-7 * 86_400))

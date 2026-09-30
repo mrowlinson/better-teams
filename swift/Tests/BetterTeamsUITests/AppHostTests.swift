@@ -19,6 +19,19 @@ final class AppHostTests: XCTestCase {
                        resource: resource, validDomains: domains, transport: transport)
     }
 
+    /// Polls a JS probe until `done` accepts its text. The ceiling only bounds
+    /// a hang; returns the last text read.
+    private func pollText(_ web: WKWebView, _ probe: String, _ done: (String) -> Bool) async throws -> String {
+        var text = ""
+        let t0 = DispatchTime.now().uptimeNanoseconds
+        while true {
+            text = (try? await web.evaluateJavaScript(probe)) as? String ?? ""
+            if done(text) { return text }
+            if Double(DispatchTime.now().uptimeNanoseconds &- t0) / 1e9 >= TestWait.hangCeiling { return text }
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+    }
+
     func testPlaceholdersExpandEncodedInOnePass() {
         var c = TeamsJSAppContext()
         c.tenantId = "t-1"
@@ -100,14 +113,8 @@ final class AppHostTests: XCTestCase {
             let container = NSView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
             host.attach(key, to: container)
             let web = try XCTUnwrap(host.webView(key))
-            var text = ""
-            let deadline = Date().addingTimeInterval(15)
             let probe = "(document.querySelector('iframe') ? document.querySelector('iframe').contentDocument.body.innerText : document.body.innerText)"
-            while Date() < deadline {
-                text = (try? await web.evaluateJavaScript(probe)) as? String ?? ""
-                if text.components(separatedBy: "Token received").count == 3 { break }
-                try await Task.sleep(nanoseconds: 100_000_000)
-            }
+            let text = try await pollText(web, probe) { $0.components(separatedBy: "Token received").count == 3 }
             XCTAssertTrue(text.contains("Connected"), "\(app.id): \(text.prefix(300))")
             XCTAssertTrue(text.contains("alex.morgan@contoso.example"), app.id)
             XCTAssertEqual(text.components(separatedBy: "Token received").count, 3, "\(app.id): \(text.prefix(400))")
@@ -146,8 +153,7 @@ final class AppHostTests: XCTestCase {
             if case .failed(let m, _) = host.page(fkey)?.state { return m }
             return nil
         }
-        let deadline = Date().addingTimeInterval(10)
-        while failedMessage() == nil, Date() < deadline { try await Task.sleep(nanoseconds: 100_000_000) }
+        await TestWait.until(interval: 0.1) { failedMessage() != nil }
         XCTAssertEqual(failedMessage(), "The app reported a problem: Other.")
         XCTAssertEqual(host.hostFailure(appID: "b3-failing"), "app reported Other")
         XCTAssertTrue(host.isNativelyHosted(fkey), "still the native host")
@@ -329,13 +335,8 @@ final class AppHostTests: XCTestCase {
         XCTAssertTrue(host.isNativelyHosted(key))
         host.attach(key, to: NSView(frame: NSRect(x: 0, y: 0, width: 400, height: 300)))
         let web = try XCTUnwrap(host.webView(key))
-        var text = ""
-        let deadline = Date().addingTimeInterval(10)
-        while Date() < deadline {
-            text = (try? await web.evaluateJavaScript("document.getElementById('o').textContent")) as? String ?? ""
-            if text.contains("user") { break }
-            try await Task.sleep(nanoseconds: 100_000_000)
-        }
+        var text = try await pollText(web, "document.getElementById('o').textContent") { $0.contains("user") }
+        // Negative window: no later reply may arrive (cannot be made load-proof).
         try await Task.sleep(nanoseconds: 800_000_000)
         text = (try? await web.evaluateJavaScript("document.getElementById('o').textContent")) as? String ?? ""
         XCTAssertEqual(text, "joined ok storage ok user ok", "control: unknown APIs stay unanswered")
@@ -347,7 +348,7 @@ final class AppHostTests: XCTestCase {
     /// meeting" empty state instead of a "couldn't load" error (R3).
     /// Negative control: an app that never calls `meeting.*` stays unmarked.
     func testMeetingContextIsMarkedOnlyByMeetingApps() async throws {
-        func run(_ script: String, id: String) async throws -> Bool {
+        func run(_ script: String, id: String, expectFlag: Bool) async throws -> Bool {
             var l = launch(resource: "https://tasks.example.com")
             l.appID = id
             l.demoHTML = "<html><body><script>var n=0;" +
@@ -358,18 +359,20 @@ final class AppHostTests: XCTestCase {
             host.registerApp(FrameApp(id: id, label: "M", symbol: "app", source: .personal, launch: .teamsApp(l)))
             host.attach(key, to: NSView(frame: NSRect(x: 0, y: 0, width: 400, height: 300)))
             _ = try XCTUnwrap(host.webView(key))
-            let deadline = Date().addingTimeInterval(6)
-            while Date() < deadline {
-                if host.teamsJSHost(key)?.wantsMeetingContext == true { host.unload(key); return true }
-                try await Task.sleep(nanoseconds: 100_000_000)
+            if expectFlag {
+                // Positive case: wait on the flag itself (ceiling only bounds a hang).
+                await TestWait.until(interval: 0.1) { host.teamsJSHost(key)?.wantsMeetingContext == true }
+            } else {
+                // Negative control: nothing to wait on; fixed window that the flag stays unset.
+                try await Task.sleep(nanoseconds: 6_000_000_000)
             }
             let flag = host.teamsJSHost(key)?.wantsMeetingContext ?? false
             host.unload(key)
             return flag
         }
-        let meeting = try await run("send('initialize',['2.49.0']);send('meeting.getMeetingDetails',[]);", id: "an5-meeting")
+        let meeting = try await run("send('initialize',['2.49.0']);send('meeting.getMeetingDetails',[]);", id: "an5-meeting", expectFlag: true)
         XCTAssertTrue(meeting, "a meeting.* call marks the host as a meeting app")
-        let plain = try await run("send('initialize',['2.49.0']);send('getContext',[]);", id: "an5-plain")
+        let plain = try await run("send('initialize',['2.49.0']);send('getContext',[]);", id: "an5-plain", expectFlag: false)
         XCTAssertFalse(plain, "control: an app with no meeting.* call is not a meeting app")
     }
 

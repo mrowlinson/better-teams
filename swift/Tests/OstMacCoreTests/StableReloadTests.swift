@@ -45,9 +45,7 @@ final class StableReloadTests: XCTestCase {
                 return DriveRecentsResponse(ok: true, files: [])
             })
         func settle() async {
-            for _ in 0 ..< 100 where store.state == .loading {
-                try? await Task.sleep(nanoseconds: 10_000_000)
-            }
+            await TestWait.until { store.state != .loading }
         }
         store.load(chats: [("chat-1", "Design Sync")], channels: [])
         await settle()

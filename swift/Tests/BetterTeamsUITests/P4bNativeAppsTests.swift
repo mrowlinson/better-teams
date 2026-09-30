@@ -10,10 +10,27 @@ import OstMacCore
 
 @MainActor
 final class P4bNativeAppsTests: XCTestCase {
-    private func waitUntil(_ cond: () -> Bool) async {
-        for _ in 0 ..< 300 where !cond() {
+    /// Waits on the condition itself. The ceiling only bounds a hang: the
+    /// old 300 x 10 ms poll ran out under machine load (load 500+, a store
+    /// fetch hops through the blocking executor), leaving the store
+    /// mid-fetch when the assertions ran. Returns whether the condition held.
+    @discardableResult
+    private func waitUntil(ceiling: Double = 60, _ cond: () -> Bool) async -> Bool {
+        let t0 = DispatchTime.now().uptimeNanoseconds
+        while !cond() {
+            if Double(DispatchTime.now().uptimeNanoseconds &- t0) / 1e9 >= ceiling { return false }
             try? await Task.sleep(nanoseconds: 10_000_000)
         }
+        return true
+    }
+
+    /// Control for the helper: it reports a condition that never holds
+    /// (instead of passing silently) and returns at once for one that does.
+    func testWaitUntilReportsATimeoutAndReturnsPromptlyWhenMet() async {
+        let missed = await waitUntil(ceiling: 0.05) { false }
+        XCTAssertFalse(missed, "a condition that never holds is reported")
+        let met = await waitUntil(ceiling: 0.05) { true }
+        XCTAssertTrue(met)
     }
 
     /// Checkbox toggles complete → reopen; a list-selected plan from
@@ -56,7 +73,8 @@ final class P4bNativeAppsTests: XCTestCase {
                                 members: { DemoTeams.roster(teamID: $0) })
         store.setTeams([ShiftTeam(id: "demo-team-eng", name: "Engineering")])
         store.open(teamID: "demo-team-eng")
-        await waitUntil { store.state == .loaded && !store.memberNames.isEmpty }
+        let loaded = await waitUntil { store.state == .loaded && !store.memberNames.isEmpty }
+        XCTAssertTrue(loaded, "week loaded")
         guard let week = store.week else { return XCTFail("no week") }
         let rows = ShiftsRow.rows(week: week, reasons: store.reasons, names: store.memberNames)
         // One row per person: time off sits in the member's own row,
@@ -78,11 +96,13 @@ final class P4bNativeAppsTests: XCTestCase {
         let next = cal.date(byAdding: .weekOfYear, value: 1, to: start)!
         // LEFT2: the weeks either side are prefetched, so ‹ › shows them
         // at once; the grid never blanks to the loading pane.
-        await waitUntil { asked.all.contains(next) }
+        let prefetched = await waitUntil { asked.all.contains(next) }
+        XCTAssertTrue(prefetched, "next week prefetched")
         store.showWeek(offset: 1)
         XCTAssertNotEqual(store.state, .loading)
         XCTAssertNotNil(store.week)
-        await waitUntil { store.weekStart == next }
+        let atNext = await waitUntil { store.weekStart == next }
+        XCTAssertTrue(atNext, "showing next week")
         XCTAssertFalse(store.isCurrentWeek)
         XCTAssertTrue(store.week.map {
             ShiftsRow.rows(week: $0, reasons: store.reasons, names: store.memberNames).isEmpty
@@ -93,7 +113,8 @@ final class P4bNativeAppsTests: XCTestCase {
         XCTAssertEqual(store.weekStart, next)
         XCTAssertTrue(store.isLoadingWeek)
         XCTAssertNotNil(store.week)
-        await waitUntil { store.weekStart == far }
+        let atFar = await waitUntil { store.weekStart == far }
+        XCTAssertTrue(atFar, "far week landed")
         XCTAssertFalse(store.isLoadingWeek)
         XCTAssertTrue(asked.all.contains(far))
         store.showCurrentWeek()

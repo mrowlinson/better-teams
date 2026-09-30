@@ -58,18 +58,12 @@ final class PresenceTruthTests: XCTestCase {
 
     /// Poll for async fire-and-forget sets (PresenceTests precedent).
     func waitForWants(_ log: TruthCallLog, count: Int) async {
-        for _ in 0 ..< 100 {
-            if log.count >= count { break }
-            try? await Task.sleep(nanoseconds: 20_000_000)
-        }
+        await TestWait.until { log.count >= count }
     }
 
     /// Poll for an echo adoption (fires complete async).
     func waitForEcho(_ presence: PresenceStore, availability: String) async {
-        for _ in 0 ..< 100 {
-            if presence.own?.availability == availability { break }
-            try? await Task.sleep(nanoseconds: 20_000_000)
-        }
+        await TestWait.until { presence.own?.availability == availability }
     }
 
     // MARK: Durations + lock math
@@ -155,7 +149,7 @@ final class PresenceTruthTests: XCTestCase {
         current = now.addingTimeInterval(30 * 60)
         truth.tick(now: current)
         sched.tick(now: current)
-        try? await Task.sleep(nanoseconds: 50_000_000)
+        try? await Task.sleep(nanoseconds: 50_000_000) // negative window: proves nothing is sent
         XCTAssertEqual(calls.count, 1) // no idle-away, no schedule set
         XCTAssertEqual(presence.own?.availability, "DoNotDisturb")
         // Server drifts to Away (the DND->Away flip): reasserted.
@@ -197,7 +191,7 @@ final class PresenceTruthTests: XCTestCase {
         let now = Date()
         truth.lock(status: .available, duration: .fifteenMinutes, now: now)
         sched.tick(now: now)
-        try? await Task.sleep(nanoseconds: 50_000_000)
+        try? await Task.sleep(nanoseconds: 50_000_000) // negative window: proves nothing is sent
         XCTAssertEqual(log.count, 0) // held, unspent
         truth.unlock(now: now)
         sched.tick(now: now)
@@ -382,7 +376,7 @@ final class PresenceTruthTests: XCTestCase {
         presence.adoptOwn(truthEcho(.available))
         let now = Date()
         truth.lock(status: .dnd, duration: .oneHour, now: now)
-        try? await Task.sleep(nanoseconds: 50_000_000)
+        try? await Task.sleep(nanoseconds: 50_000_000) // negative window: proves nothing is sent
         XCTAssertEqual(calls.count, 0)
         XCTAssertEqual(ghost.heldPresence, 1)
         XCTAssertTrue(truth.isLocked(now: now)) // intent recorded
@@ -430,7 +424,7 @@ final class PresenceTruthTests: XCTestCase {
         truth.lock(status: .busy, duration: .fifteenMinutes, now: now)
         await waitForWants(calls, count: 1)
         truth.tick(now: now.addingTimeInterval(16 * 60))
-        try? await Task.sleep(nanoseconds: 50_000_000)
+        try? await Task.sleep(nanoseconds: 50_000_000) // negative window: proves nothing is sent
         XCTAssertFalse(truth.isLocked(now: now.addingTimeInterval(16 * 60)))
         XCTAssertEqual(truth.entries.first?.cause, .lockExpired)
         XCTAssertEqual(calls.count, 1) // expiry sends nothing

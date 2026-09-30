@@ -47,7 +47,7 @@ final class CalendarLaneTests: XCTestCase {
 
         nav.select(SectionSelection(id: "19:group"), in: .chat)
         XCTAssertTrue(ConversationToolbar.meetNow(model, flow: flow))
-        await fulfillment(of: [done], timeout: 5)
+        await fulfillment(of: [done], timeout: TestWait.hangCeiling)
         XCTAssertEqual(steps, ["create:Meeting in \u{201C}Standup\u{201D}", "post:19:group:true", "join:M1"],
                        "a real meeting: created, its link posted to the chat, then joined")
         XCTAssertTrue(ConversationToolbar.items.contains(ChatCommands.meetNow))

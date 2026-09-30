@@ -26,18 +26,12 @@ final class SharedFilesRowDepthTests: XCTestCase {
             },
             sizeProbe: sizeProbe ?? { _ in 100 })
         store.open(chatID: "19:x")
-        for _ in 0 ..< 50 {
-            if store.state == .loaded || store.state == .empty { break }
-            try? await Task.sleep(nanoseconds: 20_000_000)
-        }
+        await TestWait.until { store.state == .loaded || store.state == .empty }
         return store
     }
 
     private func waitForUploads(_ store: SharedFilesStore, count: Int) async {
-        for _ in 0 ..< 100 {
-            if !store.uploading, store.files.count >= count { break }
-            try? await Task.sleep(nanoseconds: 20_000_000)
-        }
+        await TestWait.until { !store.uploading && store.files.count >= count }
     }
 
     // MARK: - Multi-upload (match composer)
@@ -67,7 +61,7 @@ final class SharedFilesRowDepthTests: XCTestCase {
                 throw CoreCallError.failed("must not be called")
             })
         store.upload(paths: [])
-        try? await Task.sleep(nanoseconds: 50_000_000)
+        try? await Task.sleep(nanoseconds: 50_000_000) // negative window: proves no upload call is made
         XCTAssertEqual(calls.value, 0)
         XCTAssertFalse(store.uploading)
     }
@@ -112,10 +106,7 @@ final class SharedFilesRowDepthTests: XCTestCase {
     func testClearUploadErrorDismissesBanner() async {
         let store = await openedStore(sizeProbe: { _ in Self.cap + 1 })
         store.upload(paths: ["/tmp/big.mov"])
-        for _ in 0 ..< 100 {
-            if !store.gatedUploads.isEmpty { break }
-            try? await Task.sleep(nanoseconds: 20_000_000)
-        }
+        await TestWait.until { !store.gatedUploads.isEmpty }
         XCTAssertNotNil(store.uploadError)
         store.clearUploadError()
         XCTAssertNil(store.uploadError)
@@ -144,10 +135,7 @@ final class SharedFilesRowDepthTests: XCTestCase {
                 return SharedFileDownloadResponse(ok: true, path: dest, bytes: 10)
             })
         store.saveAs(store.files[0], to: "/tmp/picked/deck.pdf")
-        for _ in 0 ..< 100 {
-            if store.savedPath != nil { break }
-            try? await Task.sleep(nanoseconds: 20_000_000)
-        }
+        await TestWait.until { store.savedPath != nil }
         XCTAssertEqual(dests.value, ["/tmp/picked/deck.pdf"])
         XCTAssertEqual(store.savedPath, "/tmp/picked/deck.pdf")
     }

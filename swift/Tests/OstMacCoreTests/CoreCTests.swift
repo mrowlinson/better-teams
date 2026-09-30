@@ -18,12 +18,11 @@ private final class CoreCBox<T>: @unchecked Sendable {
 @MainActor
 final class CoreCTests: XCTestCase {
     private func spinUntil(_ done: @escaping () -> Bool, timeout: TimeInterval = 10) async {
-        let end = Date().addingTimeInterval(timeout)
-        while !done() {
-            if Date() > end { return }
-            await Task.yield()
-            try? await Task.sleep(nanoseconds: 1_000_000)
-        }
+        // Waits on the condition; the ceiling only bounds a hang. A deliberately
+        // tiny timeout (the 0.05 s control below = a fixed negative window that
+        // proves a stale write never lands) stays as given.
+        await TestWait.until(ceiling: timeout <= 1 ? timeout : max(timeout, TestWait.hangCeiling),
+                             interval: 0.001) { done() }
     }
 
     // MARK: 1. Organizer identity

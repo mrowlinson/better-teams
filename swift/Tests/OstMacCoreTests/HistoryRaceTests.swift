@@ -14,6 +14,9 @@ private final class GatedRunner: AccountCoreRunner, @unchecked Sendable {
     private let lock = NSLock()
     private var calls = 0
     var pageCalls: Int { lock.withLock { calls } }
+    private var done = 0
+    /// Page calls whose result has been handed back to the store.
+    var finishedCalls: Int { lock.withLock { done } }
 
     private func page(_ ids: [String], token: String?) -> MessagesResponse {
         MessagesResponse(ok: true, chat_id: "c",
@@ -32,8 +35,10 @@ private final class GatedRunner: AccountCoreRunner, @unchecked Sendable {
         switch n {
         case 1: // loadMore from the snapshot cursor: slow, lands last
             Thread.sleep(forTimeInterval: 0.3)
+            lock.withLock { done += 1 }
             return page(["old1", "old2"], token: "tokOlder") as! T
         case 2: // the open's fresh newest page: not contiguous with the snapshot
+            lock.withLock { done += 1 }
             return page(["m9", "m10"], token: "tokF") as! T
         default: // never: the fresh page covers the (old-stamped) window
             return page([], token: nil) as! T
@@ -54,13 +59,19 @@ final class HistoryRaceTests: XCTestCase {
         XCTAssertEqual(s.messages.map(\.id), ["m1", "m2"]) // snapshot painted
         s.loadMore() // scrolled to the top at once
         XCTAssertTrue(s.loadingMore)
-        let deadline = Date().addingTimeInterval(5)
-        while runner.pageCalls < 1, Date() < deadline { try await Task.sleep(nanoseconds: 2_000_000) }
+        let started = await TestWait.until(interval: 0.002) { runner.pageCalls >= 1 }
+        XCTAssertTrue(started, "loadMore never reached the core")
         runner.gate.signal() // now the open proceeds to its fresh page
-        while (s.refreshing || s.loadingMore || runner.pageCalls < 2), Date() < deadline {
-            try await Task.sleep(nanoseconds: 5_000_000)
+        let drained = await TestWait.until(interval: 0.005) {
+            !(s.refreshing || s.loadingMore || runner.pageCalls < 2)
         }
-        try await Task.sleep(nanoseconds: 500_000_000) // the slow older page lands
+        XCTAssertTrue(drained, "open + loadMore never drained")
+        // The slow older page lands: both page calls have handed their
+        // result back; then drain the main-actor hops that apply them.
+        let landed = await TestWait.until { runner.finishedCalls >= 2 }
+        XCTAssertTrue(landed, "slow older page never returned")
+        for _ in 0 ..< 200 { await Task.yield() }
+        try? await Task.sleep(nanoseconds: 200_000_000) // negative window: a stale page must NOT land; yields alone are microseconds
         XCTAssertEqual(s.messages.map(\.id), ["m9", "m10"], "no snapshot-older page before the fresh page")
         XCTAssertEqual(s.pageToken, "tokF") // the fresh cursor, not the dropped page's
         XCTAssertFalse(s.loadingMore)

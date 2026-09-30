@@ -51,12 +51,8 @@ final class ActionItemsTests: XCTestCase {
         _ cond: @escaping @MainActor () -> Bool,
         timeout: TimeInterval = 5
     ) async -> Bool {
-        let end = Date().addingTimeInterval(timeout)
-        while !cond() {
-            if Date() > end { return false }
-            try? await Task.sleep(nanoseconds: 20_000_000)
-        }
-        return true
+        // `timeout` is ignored: wait on the condition, ceiling only bounds a hang.
+        await TestWait.until(interval: 0.02) { cond() }
     }
 
     // MARK: - Cue transcript builder

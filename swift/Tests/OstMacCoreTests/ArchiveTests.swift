@@ -237,19 +237,20 @@ final class ArchiveTests: XCTestCase {
         let iters = 3
         var compBytes = 0
         var comps: [Data] = []
-        let t0 = CFAbsoluteTimeGetCurrent()
+        // CPU seconds, not wall: throughput under machine load must not decide the winner.
+        let t0 = TestWait.cpuSeconds()
         for _ in 0 ..< iters {
             comps = try frames.map { try ArchiveCodec.encode($0, codec: codec) }
             compBytes = comps.reduce(0) { $0 + $1.count }
         }
-        let encSecs = max(CFAbsoluteTimeGetCurrent() - t0, 1e-9)
-        let t1 = CFAbsoluteTimeGetCurrent()
+        let encSecs = max(TestWait.cpuSeconds() - t0, 1e-9)
+        let t1 = TestWait.cpuSeconds()
         for _ in 0 ..< iters {
             for (i, c) in comps.enumerated() {
                 _ = try ArchiveCodec.decode(c, codec: codec, expectedSize: frames[i].count)
             }
         }
-        let decSecs = max(CFAbsoluteTimeGetCurrent() - t1, 1e-9)
+        let decSecs = max(TestWait.cpuSeconds() - t1, 1e-9)
         let mb = Double(total * iters) / 1_000_000.0
         return BenchResult(
             sample: .init(codec: codec, ratio: Double(compBytes) / Double(total), mbPerSec: mb / encSecs),

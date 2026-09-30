@@ -13,8 +13,9 @@ import OstMacCore
 @MainActor
 final class AppEffTests: XCTestCase {
     private func waitFor(_ seconds: Double, _ cond: @MainActor () -> Bool) async {
-        let end = Date().addingTimeInterval(seconds)
-        while !cond(), Date() < end { try? await Task.sleep(nanoseconds: 50_000_000) }
+        // `seconds` is ignored: wait on the condition, ceiling only bounds a hang.
+        // Callers assert the outcome themselves.
+        await TestWait.until(interval: 0.05) { cond() }
     }
 
     private func hostedDemoApp(_ id: String) -> FrameApp {

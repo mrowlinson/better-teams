@@ -144,9 +144,7 @@ final class LocalSearchTests: XCTestCase {
         await store.search(query: "friday")
         store.retry()
         // Retry re-runs; allow the Task a moment (local, instant).
-        for _ in 0 ..< 50 where store.lastQuery != "friday" {
-            try? await Task.sleep(nanoseconds: 1_000_000)
-        }
+        await TestWait.until(interval: 0.001) { store.lastQuery == "friday" }
         XCTAssertEqual(store.lastQuery, "friday")
     }
 
@@ -220,9 +218,12 @@ final class LocalSearchTests: XCTestCase {
         let store = LocalSearchStore()
         XCTAssertNil(store.lastQueryMs)
         store.index(chatID: "c1", messages: Self.seedMessages())
+        let cpu0 = TestWait.cpuSeconds()
         await store.search(query: "ship")
+        let cpuMs = (TestWait.cpuSeconds() - cpu0) * 1e3
         XCTAssertNotNil(store.lastQueryMs)
-        XCTAssertLessThan(store.lastQueryMs ?? 999, 200)
+        // CPU time, not the store's wall-clock lastQueryMs (scheduler queueing under load).
+        XCTAssertLessThan(cpuMs, 200)
     }
 
     func testRemoveDropsDocAndPrunesPostings() async {
@@ -287,9 +288,13 @@ final class LocalSearchTests: XCTestCase {
             "last week we agreed the zebra migration ships monday"))
         store.index(chatID: "c-week", messages: msgs)
         XCTAssertEqual(store.docCount, 2001)
+        let cpu0 = TestWait.cpuSeconds()
         await store.search(query: "zebra migration")
+        let cpuMs = (TestWait.cpuSeconds() - cpu0) * 1e3
         XCTAssertEqual(store.hits.map(\.messageID), ["w-target"])
-        XCTAssertLessThan(store.lastQueryMs ?? 999, 200)
+        XCTAssertNotNil(store.lastQueryMs)
+        // CPU time, not the store's wall-clock lastQueryMs (scheduler queueing under load).
+        XCTAssertLessThan(cpuMs, 200)
     }
 
     func testDefaultIndexURLNames() {

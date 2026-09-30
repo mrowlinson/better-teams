@@ -57,7 +57,7 @@ final class FakeAuthServer: @unchecked Sendable {
         }
         listener.newConnectionHandler = { [weak self] conn in self?.serve(conn) }
         listener.start(queue: queue)
-        guard ready.wait(timeout: .now() + 5) == .success, let p = listener.port?.rawValue else {
+        guard ready.wait(timeout: .now() + TestWait.hangCeiling) == .success, let p = listener.port?.rawValue else {
             throw NSError(domain: "FakeAuthServer", code: 1)
         }
         port = p
@@ -182,8 +182,9 @@ final class SignInEmbedTests: XCTestCase {
     }
 
     private func until(_ timeout: TimeInterval = 10, _ what: String = "", _ check: () async -> Bool) async throws {
-        let deadline = Date().addingTimeInterval(timeout)
-        while Date() < deadline {
+        // `timeout` is ignored: wait on the condition, ceiling only bounds a hang.
+        let t0 = DispatchTime.now().uptimeNanoseconds
+        while Double(DispatchTime.now().uptimeNanoseconds &- t0) / 1e9 < TestWait.hangCeiling {
             if await check() { return }
             try await Task.sleep(nanoseconds: 50_000_000)
         }

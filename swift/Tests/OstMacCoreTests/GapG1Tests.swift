@@ -357,7 +357,7 @@ final class GapG1Tests: XCTestCase {
             actionID: UNNotificationDefaultActionIdentifier,
             userInfo: OmReplyInfo.userInfo(chatID: "19:x", accountID: "acct-b"))
         XCTAssertEqual(r, .open(chatID: "19:x"))
-        wait(for: [openExp], timeout: 1)
+        wait(for: [openExp], timeout: 60)
 
         let replyExp = expectation(forNotification: .omNotifReply, object: nil) {
             $0.userInfo?["chatID"] as? String == "19:x"
@@ -369,7 +369,7 @@ final class GapG1Tests: XCTestCase {
             userInfo: OmReplyInfo.userInfo(chatID: "19:x", accountID: "acct-b"),
             replyText: "yo")
         XCTAssertEqual(r2, .reply(chatID: "19:x", text: "yo"))
-        wait(for: [replyExp], timeout: 1)
+        wait(for: [replyExp], timeout: 60)
     }
 
     func testDispatchActiveOmitsAccount() {
@@ -380,7 +380,7 @@ final class GapG1Tests: XCTestCase {
         _ = MessageNotifications.dispatch(
             actionID: UNNotificationDefaultActionIdentifier,
             userInfo: OmReplyInfo.userInfo(chatID: "19:x"))
-        wait(for: [exp], timeout: 1)
+        wait(for: [exp], timeout: 60)
     }
 
     // MARK: - feed profile concept

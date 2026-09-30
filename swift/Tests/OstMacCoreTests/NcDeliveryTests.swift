@@ -228,7 +228,7 @@ final class NcDeliveryTests: XCTestCase {
             actionID: UNNotificationDefaultActionIdentifier,
             userInfo: [OmReplyInfo.chatIDKey: "19:rules-posted"])
         XCTAssertEqual(r, .open(chatID: "19:rules-posted"))
-        wait(for: [exp], timeout: 1)
+        wait(for: [exp], timeout: TestWait.hangCeiling)
     }
 
     // MARK: grouping

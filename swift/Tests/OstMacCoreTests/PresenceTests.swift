@@ -138,10 +138,7 @@ final class PresenceTests: XCTestCase {
             })
         store.set(status: .busy)
         // set() is fire-and-forget; poll briefly for the echo.
-        for _ in 0 ..< 50 {
-            if store.own?.availability == "Busy" { break }
-            try? await Task.sleep(nanoseconds: 20_000_000)
-        }
+        await TestWait.until { store.own?.availability == "Busy" }
         XCTAssertEqual(store.own?.availability, "Busy")
         XCTAssertFalse(store.setting)
     }
@@ -155,10 +152,7 @@ final class PresenceTests: XCTestCase {
                 return PresenceResponse(ok: true, availability: "BeRightBack", activity: "BeRightBack")
             })
         store.set(status: .brb)
-        for _ in 0 ..< 50 {
-            if store.own?.availability == "BeRightBack" { break }
-            try? await Task.sleep(nanoseconds: 20_000_000)
-        }
+        await TestWait.until { store.own?.availability == "BeRightBack" }
         XCTAssertEqual(store.own?.availability, "BeRightBack")
         XCTAssertEqual(PresenceStatus.from(availability: "BeRightBack"), .brb)
         XCTAssertFalse(store.setting)

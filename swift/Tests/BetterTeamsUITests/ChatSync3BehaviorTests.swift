@@ -57,12 +57,23 @@ final class ChatSync3BehaviorTests: XCTestCase {
         return app
     }
 
-    /// Waits up to `ticks` x 10 ms for `done` (a negative check waits the
-    /// short default: pushes land within one main-actor hop).
-    private func settle(ticks: Int = 300, _ done: () -> Bool) async {
-        for _ in 0 ..< ticks where !done() {
+    /// Waits for `done` itself (ceiling only bounds a hang), pumping the main
+    /// run loop and yielding to main-actor tasks between checks.
+    private func settle(_ done: () -> Bool) async {
+        let t0 = DispatchTime.now().uptimeNanoseconds
+        while !done() {
+            if Double(DispatchTime.now().uptimeNanoseconds &- t0) / 1e9 >= TestWait.hangCeiling { return }
             RunLoop.main.run(until: Date().addingTimeInterval(0.01)) // main-queue sinks
             await Task.yield() // main-actor tasks
+        }
+    }
+
+    /// Negative window: nothing to wait on (the test proves a push is
+    /// ignored), so it pumps a fixed 30 x 10 ms. Cannot be made load-proof.
+    private func quiet() async {
+        for _ in 0 ..< 30 {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+            await Task.yield()
         }
     }
 
@@ -102,7 +113,7 @@ final class ChatSync3BehaviorTests: XCTestCase {
 
         // A chat the list does not show is ignored.
         _ = try feed.pollOnce()
-        await settle(ticks: 30) { false }
+        await quiet()
         XCTAssertNil(app.chats.chat(id: "19:not-listed@thread.v2"))
         XCTAssertFalse(app.unread.isUnread(chatID: "19:not-listed@thread.v2"))
 
@@ -110,7 +121,7 @@ final class ChatSync3BehaviorTests: XCTestCase {
         app.unread.markUnread(chatID: other)
         frames.push(envelope(other, bookmark: nil, time: "2030-01-01T00:00:00.000Z"))
         _ = try feed.pollOnce()
-        await settle(ticks: 30) { false }
+        await quiet()
         XCTAssertTrue(app.unread.isUnread(chatID: other), "bookmark-less push keeps the local mark")
     }
 
@@ -136,13 +147,13 @@ final class ChatSync3BehaviorTests: XCTestCase {
         window.setContentSize(NSSize(width: 520, height: 400))
         window.orderFront(nil) // recorded only
         window.layoutIfNeeded()
-        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
 
         // Background pop-out: reported, but never as active. (The first
-        // report waits for the cold first layout, a few seconds.)
+        // report waits for the cold first layout, a few seconds.) Wait for
+        // the loaded, at-latest report itself, not a fixed settle.
         reports.removeAll()
         NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: window)
-        await settle { !reports.isEmpty }
+        await settle { reports.last.map { $0.atLatest && $0.loaded } == true }
         let background = try XCTUnwrap(reports.last, "control: the timeline reports")
         XCTAssertEqual(background.chatID, chat)
         XCTAssertFalse(background.windowActive, "not the key window")
@@ -221,14 +232,18 @@ final class ChatSync3BehaviorTests: XCTestCase {
         window.setContentSize(NSSize(width: 180, height: 500))
         window.orderFront(nil) // recorded only
         window.layoutIfNeeded()
-        await settle(ticks: 30) { false }
+        func auditWidth() -> Int {
+            let a = vc.geometryAudit()
+            return a.range(of: #"(?<= w=)\d+"#, options: .regularExpression).map { Int(a[$0]) ?? 0 } ?? 0
+        }
+        await settle { auditWidth() > 0 && auditWidth() < 200 }
         let narrow = vc.geometryAudit()
         let narrowW = narrow.range(of: #"(?<= w=)\d+"#, options: .regularExpression).map { Int(narrow[$0]) ?? 0 } ?? 0
         XCTAssertLessThan(narrowW, 200, "control: laid out narrow first: \(narrow)")
 
         window.setContentSize(NSSize(width: 640, height: 500))
         window.layoutIfNeeded()
-        await settle(ticks: 30) { false }
+        await settle { auditWidth() > 600 && vc.geometryAudit().contains("colW=\(auditWidth()) ") }
         let audit = vc.geometryAudit()
         let w = try XCTUnwrap(audit.range(of: #"(?<= w=)\d+"#, options: .regularExpression).map { String(audit[$0]) })
         XCTAssertGreaterThan(Int(w) ?? 0, 600, audit)

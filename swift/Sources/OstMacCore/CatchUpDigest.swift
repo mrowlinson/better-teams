@@ -22,7 +22,7 @@
 // each period keeps its own summaries, so switching tabs paints from
 // cache at once and only the selected period is kept current. Model
 // input passes the deterministic noise filter + salience ranking and
-// every summary gets the bullet rating pass (CatchUpFilter.swift).
+// every summary gets the deterministic bullet pass (CatchUpFilter.swift).
 // Nothing older than the longest period is held. Older history for the
 // longer periods comes from a bounded, utility-priority backfill.
 //
@@ -443,7 +443,6 @@ public final class CatchUpDigestStore: ObservableObject {
                 return .init(text: e.text, afterMessageID: last)
             }()
             let engine = OnDeviceCatchUpEngine(transport: transport)
-            let rater = transport
             do {
                 // Utility, not background: the request's QoS carries into
                 // the system inference service, and background QoS starved
@@ -458,7 +457,7 @@ public final class CatchUpDigestStore: ObservableObject {
                             self.streamingText = snapshot
                         }
                     }
-                    return await CatchUpPipeline.refine(raw, ctx, rater: rater)
+                    return CatchUpPipeline.refine(raw, ctx)
                 }.value
                 guard mode() != .off else { break }
                 apply(chatID: chatID, name: t.name, text: text, lastActivity: input.last?.timestamp ?? "", period: p)

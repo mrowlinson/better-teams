@@ -66,7 +66,6 @@ final class DropQuickTests: XCTestCase {
     }
 
     private func settle(_ cond: @MainActor () -> Bool) async {
-        let deadline = Date().addingTimeInterval(10)
-        while !cond(), Date() < deadline { try? await Task.sleep(nanoseconds: 10_000_000) }
+        await TestWait.until { cond() }
     }
 }

@@ -237,6 +237,8 @@ final class MeetingsTests: XCTestCase {
             return parsed
         })
         quiet.joinMeeting(Self.meetingsJSON().meetings[1])
+        // Negative window: a linkless row must stay a no-op; a wait for
+        // "nothing happens" cannot be a condition wait.
         try? await Task.sleep(nanoseconds: 50_000_000)
         XCTAssertNil(quiet.target)
         XCTAssertFalse(quiet.showPreJoin)
@@ -358,15 +360,12 @@ final class MeetingsTests: XCTestCase {
         init(_ value: T) { self.value = value }
     }
 
-    /// Spin until `cond` holds (mock fetchers resolve in ms; 2s cap).
+    /// Wait until `cond` holds (mock fetchers resolve in ms; the ceiling only bounds a hang).
     private func waitFor(
         _ cond: () -> Bool,
         file: StaticString = #filePath, line: UInt = #line
     ) async {
-        for _ in 0 ..< 100 {
-            if cond() { return }
-            try? await Task.sleep(nanoseconds: 20_000_000)
-        }
-        XCTFail("condition not met in 2s", file: file, line: line)
+        if await TestWait.until(interval: 0.02, cond) { return }
+        XCTFail("condition not met before the hang ceiling", file: file, line: line)
     }
 }

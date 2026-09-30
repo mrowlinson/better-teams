@@ -155,17 +155,27 @@ final class BlockingExecutorTests: XCTestCase {
 
     func testInteractiveJobNotStuckBehindBackgroundSaturation() async {
         let exec = BlockingExecutor(name: "test.blocking", width: 6, backgroundWidth: 3)
+        // Progress, not wall clock: background jobs park on a gate (closed until
+        // the interactive probe has finished), so "not stuck behind background
+        // saturation" is a fact rather than a stopwatch bound.
+        let gate = SatGate()
+        let started = BEDone()
+        let bgDone = BEDone()
         var bg: [Task<Void, Never>] = []
         for _ in 0..<12 {
             bg.append(Task.detached(executorPreference: exec, priority: .utility) {
-                Thread.sleep(forTimeInterval: 0.5)
+                started.bump(); gate.wait(); bgDone.bump()
             })
         }
-        try? await Task.sleep(nanoseconds: 100_000_000)
-        let t0 = DispatchTime.now()
-        await Task.detached(executorPreference: exec, priority: .userInitiated) { () -> Int in 1 }.value
-        let dt = seconds(t0)
-        XCTAssertLessThan(dt, 0.25, "interactive job waited \(dt)s behind background")
+        // Background is saturated once its cap (3) of jobs are running.
+        let saturated = await TestWait.until { started.count >= 3 }
+        XCTAssertTrue(saturated, "background jobs never saturated")
+        let probe = BEFlag()
+        Task.detached(executorPreference: exec, priority: .userInitiated) { () -> Void in probe.set() }
+        let finished = await TestWait.until { probe.value }
+        XCTAssertTrue(finished, "interactive job stuck behind background saturation")
+        XCTAssertEqual(bgDone.count, 0, "interactive job only ran after background drained")
+        gate.openAll(12)
         for t in bg { await t.value }
     }
 
@@ -219,8 +229,7 @@ final class BlockingExecutorTests: XCTestCase {
     }
 
     private func drain(_ done: BEDone, _ n: Int) async {
-        let t0 = DispatchTime.now()
-        while done.count < n, seconds(t0) < 15 { try? await Task.sleep(nanoseconds: 5_000_000) }
+        await TestWait.until(interval: 0.005) { done.count >= n }
     }
 
     /// Saturate blocking calls (fake core = calls parked on a gate, more
@@ -238,16 +247,21 @@ final class BlockingExecutorTests: XCTestCase {
         defer { dog.stop() }
 
         let done = BEDone()
+        let started = BEDone()
         let gate = SatGate()
         // 2n blocked calls must stay under the executor's 32 threads (interactive
         // probes need a free one) yet exceed the cooperative pool for the legacy control.
         let n = min(ProcessInfo.processInfo.activeProcessorCount + 4, 12)
         defer { gate.openAll(2 * n) }
         for _ in 0..<n {
-            Task.blocking(priority: .utility) { gate.wait(); done.bump() }
-            Task.blocking(priority: .userInitiated) { gate.wait(); done.bump() }
+            Task.blocking(priority: .utility) { started.bump(); gate.wait(); done.bump() }
+            Task.blocking(priority: .userInitiated) { started.bump(); gate.wait(); done.bump() }
         }
-        try? await Task.sleep(nanoseconds: 150_000_000)
+        // Wait until the saturating calls are actually running (was a fixed
+        // 150 ms sleep). The legacy pattern can only start a pool's worth, so
+        // wait for min(2n, cores) with a short ceiling instead of all 2n.
+        let saturated = await TestWait.until { started.count >= min(2 * n, ProcessInfo.processInfo.activeProcessorCount) }
+        XCTAssertTrue(saturated, "saturating calls never started")
 
         // All three probes start together, right after saturation begins.
         let t0 = DispatchTime.now()
@@ -277,7 +291,7 @@ final class BlockingExecutorTests: XCTestCase {
 
         // Open the gate so the saturating calls (and any starved probe) drain.
         gate.openAll(2 * n)
-        for f in [fa, fb, fc] { _ = await waitSeconds(f, from: DispatchTime.now(), limit: 15) }
+        for f in [fa, fb, fc] { _ = await waitSeconds(f, from: DispatchTime.now(), limit: TestWait.hangCeiling) }
         await drain(done, 2 * n)
         if !legacy { XCTAssertTrue(ok.value) }
         return m
@@ -287,7 +301,7 @@ final class BlockingExecutorTests: XCTestCase {
     /// are still blocked (gate closed => satDone == 0). No wall-clock bound
     /// beyond the harness' generous wait ceiling.
     func testSaturatedBlockingCallsDoNotStarveUnrelatedWork() async {
-        let m = await measureUnderSaturation(legacy: false, probeLimit: 20)
+        let m = await measureUnderSaturation(legacy: false, probeLimit: TestWait.hangCeiling)
         print("CHATPERF-STARVE new unrelated=\(m.unrelated) mainHop=\(m.mainHop) list=\(m.chatList) lateness=\(m.lateness) satDone=\(m.satDoneAtUnrelated)/\(m.satDoneAtMainHop)/\(m.satDoneAtChatList)")
         XCTAssertTrue(m.unrelatedFinished, "unrelated async work stalled")
         XCTAssertTrue(m.mainHopFinished, "MainActor hop to nonisolated work stalled")

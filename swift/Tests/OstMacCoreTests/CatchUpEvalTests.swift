@@ -145,9 +145,8 @@ final class CatchUpEvalTests: XCTestCase {
                 let input = CatchUpPipeline.prepare(t.messages, period: p, ctx)
                 guard !input.isEmpty else { continue }
                 let raw = try await engine.summarize(messages: input)
-                let rateCalls = RatingCounter(inner: transport)
-                let refined = await CatchUpPipeline.refine(raw, ctx, rater: rateCalls)
-                calls += 1 + rateCalls.count
+                let refined = CatchUpPipeline.refine(raw, ctx)
+                calls += 1
                 out.append("AFTER-\(p.rawValue) \(t.chatID) raw: " + bullets(raw).joined(separator: " | "))
                 out.append("AFTER-\(p.rawValue) \(t.chatID) kept: " + bullets(refined).joined(separator: " | "))
                 Self.score(&sr, chatID: t.chatID, bullets: bullets(raw), period: p)

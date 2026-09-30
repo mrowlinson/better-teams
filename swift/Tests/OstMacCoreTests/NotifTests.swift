@@ -89,7 +89,7 @@ final class NotifTests: XCTestCase {
         MessageNotifications.dispatch(
             actionID: UNNotificationDefaultActionIdentifier,
             userInfo: ["chatID": "19:abc@thread.v2"])
-        wait(for: [exp], timeout: 1)
+        wait(for: [exp], timeout: TestWait.hangCeiling)
     }
 
     func testReplyRoutes() {
@@ -101,7 +101,7 @@ final class NotifTests: XCTestCase {
             actionID: SystemNotificationCenter.replyActionID,
             userInfo: ["chatID": "19:x"], replyText: "yo")
         XCTAssertEqual(r, .reply(chatID: "19:x", text: "yo"))
-        wait(for: [exp], timeout: 1)
+        wait(for: [exp], timeout: TestWait.hangCeiling)
     }
 
     func testEmptyReplyIsNone() {
@@ -141,7 +141,7 @@ final class NotifTests: XCTestCase {
             actionID: OmReplyInfo.openActionID,
             userInfo: [OmReplyInfo.chatIDKey: "19:abc@thread.v2"])
         XCTAssertEqual(r, .open(chatID: "19:abc@thread.v2"))
-        wait(for: [exp], timeout: 1)
+        wait(for: [exp], timeout: TestWait.hangCeiling)
     }
 
     func testRulesBannerReplyRoutes() {
@@ -153,7 +153,7 @@ final class NotifTests: XCTestCase {
             actionID: OmReplyInfo.replyActionID,
             userInfo: [OmReplyInfo.chatIDKey: "19:x"], replyText: "yo")
         XCTAssertEqual(r, .reply(chatID: "19:x", text: "yo"))
-        wait(for: [exp], timeout: 1)
+        wait(for: [exp], timeout: TestWait.hangCeiling)
     }
 
     func testEmptyOMChatIDIsNone() {

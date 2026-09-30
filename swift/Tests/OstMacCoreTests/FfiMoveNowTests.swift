@@ -437,9 +437,10 @@ final class FfiMoveNowTests: XCTestCase {
         token = "g"
         expires_at = \(future)
         """
-        let t0 = Date()
-        for _ in 0 ..< 1000 { _ = try TomlConfig.parse(body) }
-        XCTAssertLessThan(Date().timeIntervalSince(t0), 2.0)
+        let cpu = try Self.cpuTime {
+            for _ in 0 ..< 1000 { _ = try TomlConfig.parse(body) }
+        }
+        XCTAssertLessThan(cpu, 2.0, "CPU seconds, not wall: load-independent")
     }
 
     // MARK: - B2: tone_check (mirror of Rust av_tone_check_detects + test_tone)
@@ -495,12 +496,45 @@ final class FfiMoveNowTests: XCTestCase {
         XCTAssertGreaterThan(r.delayMs, 0)
     }
 
+    /// Process CPU seconds. The perf bounds below measure CPU time, not
+    /// wall time: on a loaded machine (load 500+) a wall clock counts the
+    /// scheduler's queueing, which says nothing about the code under test
+    /// (a 0.25 s loop once took 6.4 s of wall and failed a 5 s bound).
+    private static func cpuSeconds() -> Double {
+        Double(clock_gettime_nsec_np(CLOCK_PROCESS_CPUTIME_ID)) / 1e9
+    }
+
+    /// Runs `body` and returns the CPU seconds it used.
+    static func cpuTime(_ body: () throws -> Void) rethrows -> Double {
+        let t0 = cpuSeconds()
+        try body()
+        return cpuSeconds() - t0
+    }
+
     func testToneCheckPerf() throws {
-        // Release tier: ~26µs/run (measured standalone); debug is ~40ms.
-        // Loose bound guards against algorithmic regressions only.
-        let t0 = Date()
-        for _ in 0 ..< 30 { _ = try RustCore.toneCheck() }
-        XCTAssertLessThan(Date().timeIntervalSince(t0), 5.0)
+        // Release tier: ~26µs/run (measured standalone); debug is ~8ms.
+        // Loose CPU-time bound guards against algorithmic regressions only.
+        var last: ToneCheckResult?
+        let cpu = try Self.cpuTime {
+            for _ in 0 ..< 30 { last = try RustCore.toneCheck() }
+        }
+        XCTAssertEqual(last?.detected, true, "the loop ran the real check")
+        XCTAssertLessThan(cpu, 5.0, "CPU seconds, not wall: load-independent")
+    }
+
+    /// Control for the two perf bounds: CPU time is not wall time. Sleeping
+    /// (what a starved scheduler looks like) costs wall but ~no CPU, so it
+    /// passes; burning CPU is what a real regression looks like, and is
+    /// seen.
+    func testCpuTimeIgnoresWaitingButSeesWork() throws {
+        let waited = Self.cpuTime { Thread.sleep(forTimeInterval: 0.3) }
+        XCTAssertLessThan(waited, 0.15, "waiting is not CPU")
+        var sink = 0.0
+        let burned = Self.cpuTime {
+            let end = Self.cpuSeconds() + 0.2
+            while Self.cpuSeconds() < end { sink += 1 }
+        }
+        XCTAssertGreaterThanOrEqual(burned, 0.2, "work is CPU (\(sink))")
     }
 
     func testJoinParsePerf() {
@@ -510,10 +544,11 @@ final class FfiMoveNowTests: XCTestCase {
             "https://teams.live.com/meet/9347123456789",
             "hello",
         ]
-        let t0 = Date()
-        for _ in 0 ..< 2500 {
-            for u in urls { _ = JoinParse.parse(raw: u) }
+        let cpu = Self.cpuTime {
+            for _ in 0 ..< 2500 {
+                for u in urls { _ = JoinParse.parse(raw: u) }
+            }
         }
-        XCTAssertLessThan(Date().timeIntervalSince(t0), 2.0)
+        XCTAssertLessThan(cpu, 2.0, "CPU seconds, not wall: load-independent")
     }
 }

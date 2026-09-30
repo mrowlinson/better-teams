@@ -85,15 +85,12 @@ final class AlignTests: XCTestCase {
 
     // MARK: - Helpers
 
-    /// Spin until `cond` holds (mock fetchers resolve in ms; 2s cap).
+    /// Spin until `cond` holds (ceiling only bounds a hang).
     private func waitFor(
         _ cond: () -> Bool,
         file: StaticString = #filePath, line: UInt = #line
     ) async {
-        for _ in 0 ..< 100 {
-            if cond() { return }
-            try? await Task.sleep(nanoseconds: 20_000_000)
-        }
-        XCTFail("condition not met in 2s", file: file, line: line)
+        if await TestWait.until(interval: 0.02, { cond() }) { return }
+        XCTFail("condition not met (hang ceiling)", file: file, line: line)
     }
 }

@@ -70,12 +70,7 @@ final class RecordingsTests: XCTestCase {
         _ cond: @escaping @MainActor () -> Bool,
         timeout: TimeInterval = 5
     ) async -> Bool {
-        let end = Date().addingTimeInterval(timeout)
-        while !cond() {
-            if Date() > end { return false }
-            try? await Task.sleep(nanoseconds: 20_000_000)
-        }
-        return true
+        await TestWait.until(ceiling: max(timeout, TestWait.hangCeiling)) { cond() }
     }
 
     // MARK: - Decode
@@ -274,6 +269,7 @@ final class RecordingsTests: XCTestCase {
 
     func testSupersededPlayDropsFirst() async throws {
         let gate = DispatchSemaphore(value: 0)
+        let aEntered = Box<Bool>(false)
         let m = Self.model(
             list: {
                 RecordingsResponse(ok: true, recordings: [
@@ -282,12 +278,14 @@ final class RecordingsTests: XCTestCase {
                 ])
             },
             download: { _, item, _ in
-                if item == "a" { gate.wait() } // first stalls…
+                if item == "a" { aEntered.value = true; gate.wait() } // first stalls…
                 return "/tmp/om-test-\(item).mp4"
             })
         await m.load()
         m.play(m.items[0])
-        try? await Task.sleep(nanoseconds: 100_000_000)
+        // First download must be in flight (stalled) before the second play.
+        let stalled = await waitFor({ aEntered.value })
+        XCTAssertTrue(stalled)
         m.play(m.items[1]) // …second wins before it lands
         gate.signal()
         let ok = await waitFor { m.playback == .playing }

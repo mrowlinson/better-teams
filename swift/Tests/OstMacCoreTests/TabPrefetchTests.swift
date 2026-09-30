@@ -16,10 +16,7 @@ final class TabPrefetchTests: XCTestCase {
     }
 
     private func loaded(_ store: SharedFilesStore) async {
-        for _ in 0 ..< 100 {
-            if store.state == .loaded || store.state == .empty { return }
-            try? await Task.sleep(nanoseconds: 10_000_000)
-        }
+        await TestWait.until { store.state == .loaded || store.state == .empty }
     }
 
     private func ids(_ store: SharedFilesStore) -> [String] {
@@ -50,10 +47,7 @@ final class TabPrefetchTests: XCTestCase {
 
         // Background refresh still refetches (freshness), rows stay.
         await loaded(store)
-        for _ in 0 ..< 100 {
-            if calls.value.count >= 3 { break }
-            try? await Task.sleep(nanoseconds: 10_000_000)
-        }
+        await TestWait.until { calls.value.count >= 3 }
         XCTAssertEqual(calls.value, ["19:a", "19:b", "19:a"])
         XCTAssertEqual(ids(store), ["19:a-f"])
         XCTAssertEqual(store.state, .loaded)

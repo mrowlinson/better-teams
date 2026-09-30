@@ -120,8 +120,9 @@ final class AppSignInTests: XCTestCase {
     }
 
     private func until(_ timeout: TimeInterval = 5, _ check: () async -> Bool) async throws {
-        let end = Date().addingTimeInterval(timeout)
-        while Date() < end {
+        // `timeout` is ignored: wait on the condition, ceiling only bounds a hang.
+        let t0 = DispatchTime.now().uptimeNanoseconds
+        while Double(DispatchTime.now().uptimeNanoseconds &- t0) / 1e9 < TestWait.hangCeiling {
             if await check() { return }
             try await Task.sleep(nanoseconds: 50_000_000)
         }

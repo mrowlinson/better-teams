@@ -50,8 +50,9 @@ final class AppNative6Tests: XCTestCase {
     }
 
     private func waitFor(_ seconds: Double, _ done: () -> Bool) async {
-        let end = Date().addingTimeInterval(seconds)
-        while !done(), Date() < end { try? await Task.sleep(nanoseconds: 50_000_000) }
+        // `seconds` is ignored: wait on the condition, ceiling only bounds a hang.
+        // Callers assert the outcome themselves.
+        await TestWait.until(interval: 0.05) { done() }
     }
 
     /// A pane's subframes (R8): a Teams web iframe is refused, the
@@ -199,7 +200,7 @@ final class AppNative6Tests: XCTestCase {
         let store = WKWebsiteDataStore.nonPersistent()
         XCTAssertTrue(sessions.mustWait(hosts), "never tried: the page waits")
         let first = Task { @MainActor in await sessions.prepare(hosts, broker: broker, store: store) }
-        for _ in 0 ..< 100 where broker.release == nil { await Task.yield() }
+        await TestWait.until { broker.release != nil }
         XCTAssertNotNil(broker.release, "first sign-in is running")
         XCTAssertTrue(sessions.mustWait(hosts), "sign-in in flight: a second page waits (was: loaded at once)")
         let next = Task { @MainActor in

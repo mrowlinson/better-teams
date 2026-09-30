@@ -64,7 +64,7 @@ final class SendReconcileTests: XCTestCase {
 
     private func settle(_ s: ConversationStore, file: StaticString = #filePath, line: UInt = #line,
                         until done: @escaping () -> Bool) async {
-        for _ in 0..<200 where !done() { try? await Task.sleep(nanoseconds: 10_000_000) }
+        await TestWait.until { done() }
         XCTAssertTrue(done(), "did not settle", file: file, line: line)
     }
 
@@ -99,7 +99,7 @@ final class SendReconcileTests: XCTestCase {
         XCTAssertTrue(s.messages[0].isOwn)
         svc.gate?.signal()
         await settle(s) { svc.postCount == 1 }
-        try? await Task.sleep(nanoseconds: 50_000_000)
+        try? await Task.sleep(nanoseconds: 50_000_000) // negative window: proves the late answer adds no row
         XCTAssertEqual(s.messages.count, 1, "answer after echo must not add a row")
         XCTAssertTrue(s.failedIDs.isEmpty)
     }
