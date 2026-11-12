@@ -542,6 +542,12 @@ char *ostmac_call_place_live(const char *thread_id, int timeout_secs);
 // with code "unsupported". Caller frees.
 char *ostmac_call_place_live_video(const char *thread_id, int timeout_secs);
 
+// Join a meeting with live media in the meeting's own call (organizer,
+// tenant, reply chain from its join link). req_json: {thread_id,
+// message_id?, organizer_oid?, tenant_id?, video}. Same envelope as
+// ostmac_call_place_live. Caller frees.
+char *ostmac_call_join_meeting(const char *req_json, int timeout_secs);
+
 // Place the echo-bot test call with live media. Same envelope as
 // ostmac_call_place_live. Caller frees.
 char *ostmac_call_echo_live(int timeout_secs);

@@ -1675,6 +1675,28 @@ Notes:
     (real-shaped facet with bitrate/frame fields).
     UPSTREAM: PR https://github.com/eisbaw/ost/pull/86 (fix/recording-duration-field, stacks on #48)
 
+94. [fix] `src/calling/signaling.rs` (+ `call_test.rs`, `recording.rs`
+    struct-literal updates) -- **meeting joins land in the meeting's own
+    call** (MEETFIX lane). Joining a scheduled / Meet now meeting posted
+    `groupChat.messageId: null` in both the epconv create and the
+    conversation join, and named the CALLER as `meetingInfo.organizerId`
+    / `tenantId`. The conversation service then started a separate,
+    empty group call on the meeting thread: joiner saw/heard nobody, got
+    zero roster frames, and lobby guests had no one to admit them. New
+    `MeetingCoordinates { message_id, organizer_oid, tenant_id }` as
+    `ConversationCallParams.meeting: Option<_>`; when set, both phases
+    send `groupChat {threadId, messageId}` (reply chain, "0" for
+    meetings) and `meetingInfo {organizerId, tenantId}` from the join
+    link's `context.Oid`/`Tid` (caller fallback). `None` keeps the
+    ad-hoc group-call shape byte-for-byte. Phase-1 body split out as pure
+    `create_conversation_payload` for testing. Shape source: Teams
+    traffic dictionary (`groupChat {"messageId":"0",...}`,
+    `meetingInfo {"organizerId",...,"replyChainMessageId":"0"}`) and
+    Graph comms join (`chatInfo.messageId "0"` + `organizerMeetingInfo`).
+    Test (host crate): `ostmac-core calls::tests::meeting_join_names_the_meetings_call`
+    (negative control: messageId back to null => fails).
+    UPSTREAM: pending
+
 ## Upstream PRs, wave 9 (2026-09-25 R10 audit; base 0892144; origin/main still 0892144)
 
 No-file wave. `git diff 307d221..db62ed7 -- rust/ost` is empty (wave-8

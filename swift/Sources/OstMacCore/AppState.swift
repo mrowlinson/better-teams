@@ -516,8 +516,8 @@ public final class AppState: ObservableObject {
             // echoes an accepted signaling leg so the lobby flow runs.
             meetings = MeetingsViewModel(
                 meetingsFetcher: { DemoData.meetingsResponse() },
-                joinRunner: { DemoData.demoJoinResult(threadID: $0) },
-                videoJoinRunner: { DemoData.demoJoinResult(threadID: $0) },
+                joinRunner: { DemoData.demoJoinResult(threadID: $0.threadID) },
+                videoJoinRunner: { DemoData.demoJoinResult(threadID: $0.threadID) },
                 // Demo join-by-ID resolves in memory (never Graph).
                 meetingIDResolver: { _, _ in DemoData.meetingIDResolution() })
             let calendarGate = demoGate!

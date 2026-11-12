@@ -921,6 +921,14 @@ public enum RustCore {
         }
     }
 
+    /// Meeting join with live media, in the meeting's own call.
+    public static func callJoinMeeting(_ request: MeetingJoinRequest, timeoutSecs: Int32 = 30) throws -> CallResult {
+        let json = String(decoding: try JSONEncoder().encode(request), as: UTF8.self)
+        return try json.withCString { ptr in
+            try call(ostmac_call_join_meeting(ptr, timeoutSecs), as: CallResult.self)
+        }
+    }
+
     /// 1:1 video call with live media (VIDEO1).
     public static func callPlaceLiveVideo(threadID: String, timeoutSecs: Int32 = 30) throws -> CallResult {
         try threadID.withCString { ptr in

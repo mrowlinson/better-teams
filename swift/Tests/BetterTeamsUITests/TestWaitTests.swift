@@ -50,15 +50,18 @@ final class UITestWaitTests: XCTestCase {
         XCTAssertTrue(TestWait.spinUntil(ceiling: 30) { f.on })
     }
 
-    /// CPU time ignores waiting but sees work.
+    /// CPU time ignores waiting but sees work. The process-wide CPU clock is
+    /// sampled per thread and can read a hair behind under load (observed
+    /// 0.1999 for a 0.2 burn), so the burn is 0.4 s and the bound leaves
+    /// margin while staying far above the 0.15 s waiting bound.
     func testCpuTimeIgnoresWaitingButSeesWork() {
         let waited = TestWait.cpuTime { Thread.sleep(forTimeInterval: 0.3) }
         XCTAssertLessThan(waited, 0.15, "waiting is not CPU")
         var sink = 0.0
         let burned = TestWait.cpuTime {
-            let end = TestWait.cpuSeconds() + 0.2
+            let end = TestWait.cpuSeconds() + 0.4
             while TestWait.cpuSeconds() < end { sink += 1 }
         }
-        XCTAssertGreaterThanOrEqual(burned, 0.2, "work is CPU (\(sink))")
+        XCTAssertGreaterThanOrEqual(burned, 0.3, "work is CPU (\(sink))")
     }
 }

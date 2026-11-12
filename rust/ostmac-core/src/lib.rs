@@ -4234,6 +4234,20 @@ pub extern "C" fn ostmac_call_place_live_video(
     }
 }
 
+/// Join a meeting with live media in the meeting's own call. `req_json`:
+/// `{thread_id, message_id?, organizer_oid?, tenant_id?, video}` from the
+/// join link. See [`calls::call_join_meeting_json`].
+#[no_mangle]
+pub extern "C" fn ostmac_call_join_meeting(
+    req_json: *const c_char,
+    timeout_secs: c_int,
+) -> *mut c_char {
+    match cstr_to_string(req_json) {
+        Ok(r) => string_to_c(calls::call_join_meeting_json(&r, timeout_secs as i32)),
+        Err(e) => string_to_c(err_json("arg", e)),
+    }
+}
+
 /// Place the echo-bot test call with live media. See [`calls::call_echo_live_json`].
 #[no_mangle]
 pub extern "C" fn ostmac_call_echo_live(timeout_secs: c_int) -> *mut c_char {

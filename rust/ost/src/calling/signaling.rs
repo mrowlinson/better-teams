@@ -142,6 +142,46 @@ pub struct ConversationCallParams<'a> {
     pub tenant_id: &'a str,
     /// Teams cloud region for the `ms-teams-*` headers on every request.
     pub region: &'a TeamsRegion,
+    /// Set for a scheduled / Meet now meeting join; `None` keeps the
+    /// ad-hoc group-call shape (reply chain null, caller as organizer).
+    pub meeting: Option<MeetingCoordinates<'a>>,
+}
+
+/// Where a meeting's call lives. The conversation service keys a group
+/// call by thread + reply-chain message id under the meeting organizer
+/// (Graph `chatInfo` + `organizerMeetingInfo`; Teams traffic carries
+/// `groupChat.messageId "0"` and the organizer's `meetingInfo`). A
+/// meeting-thread join sent with a null message id and the caller as
+/// organizer lands in a separate, empty call on that thread.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MeetingCoordinates<'a> {
+    /// Reply-chain root of the meeting call ("0" for meetings).
+    pub message_id: &'a str,
+    /// Organizer AAD object id (join link `context.Oid`); `None` falls
+    /// back to the caller.
+    pub organizer_oid: Option<&'a str>,
+    /// Organizer tenant (join link `context.Tid`); `None` falls back to
+    /// the caller's tenant.
+    pub tenant_id: Option<&'a str>,
+}
+
+/// `groupChat` of a conversation request: the meeting's reply chain for
+/// a meeting join, null for an ad-hoc group call.
+fn group_chat_value(params: &ConversationCallParams<'_>) -> serde_json::Value {
+    serde_json::json!({
+        "threadId": params.thread_id,
+        "messageId": params.meeting.map(|m| m.message_id)
+    })
+}
+
+/// `meetingInfo` of a join: the meeting organizer (and tenant) when the
+/// join names one, else the caller.
+fn meeting_info_value(params: &ConversationCallParams<'_>) -> serde_json::Value {
+    let m = params.meeting;
+    serde_json::json!({
+        "organizerId": m.and_then(|m| m.organizer_oid).unwrap_or(params.caller_oid),
+        "tenantId": m.and_then(|m| m.tenant_id).unwrap_or(params.tenant_id)
+    })
 }
 
 /// Build a Trouter callback URL for a specific path.
@@ -164,20 +204,15 @@ pub(crate) fn trouter_callback(trouter_surl: &str, endpoint_id: &str, path: &str
     )
 }
 
-/// Phase 1: Create a conversation by POSTing to /api/v2/epconv.
-///
-/// Returns the conversationController URL from the response.
-pub async fn create_conversation(
-    http: &reqwest::Client,
-    epconv_url: &str,
-    params: &ConversationCallParams<'_>,
-) -> Result<ConversationCreated> {
+/// The phase 1 body (pure, no network). A meeting join names the
+/// meeting's call (`groupChat` reply chain + organizer `meetingInfo`).
+pub fn create_conversation_payload(params: &ConversationCallParams<'_>) -> serde_json::Value {
     let tc = |path: &str| trouter_callback(params.trouter_surl, params.endpoint_id, path);
     let cause_id = &params.message_id[..8.min(params.message_id.len())];
 
     // Note: conversationRequest contains only subject/roster/properties/links.
     // Other fields (groupChat, participants, etc.) are siblings, not nested inside.
-    let payload = serde_json::json!({
+    serde_json::json!({
         "conversationRequest": {
             "subject": null,
             "roster": {
@@ -200,10 +235,7 @@ pub async fn create_conversation(
             }
         },
         "groupContext": null,
-        "groupChat": {
-            "threadId": params.thread_id,
-            "messageId": null
-        },
+        "groupChat": group_chat_value(params),
         "participants": {
             "from": {
                 "id": params.caller_mri,
@@ -218,7 +250,11 @@ pub async fn create_conversation(
         "endpointCapabilities": 73463,
         "clientEndpointCapabilities": 9336554,
         "endpointMetadata": { "holographicCapabilities": 3 },
-        "meetingInfo": null,
+        "meetingInfo": if params.meeting.is_some() {
+            meeting_info_value(params)
+        } else {
+            serde_json::Value::Null
+        },
         "endpointState": {
             "endpointStateSequenceNumber": 0,
             "endpointProperties": {
@@ -231,7 +267,18 @@ pub async fn create_conversation(
             "ecsEtag": "\"0\"",
             "causeId": cause_id
         }
-    });
+    })
+}
+
+/// Phase 1: Create a conversation by POSTing to /api/v2/epconv.
+///
+/// Returns the conversationController URL from the response.
+pub async fn create_conversation(
+    http: &reqwest::Client,
+    epconv_url: &str,
+    params: &ConversationCallParams<'_>,
+) -> Result<ConversationCreated> {
+    let payload = create_conversation_payload(params);
 
     tracing::info!("Phase 1: POST {} (create conversation)", epconv_url);
     tracing::debug!(
@@ -451,10 +498,7 @@ pub fn join_conversation_payload_with_modalities(
             }
         },
         "groupContext": null,
-        "groupChat": {
-            "threadId": params.thread_id,
-            "messageId": null
-        },
+        "groupChat": group_chat_value(params),
         "participants": {
             "from": {
                 "id": params.caller_mri,
@@ -470,10 +514,7 @@ pub fn join_conversation_payload_with_modalities(
         "endpointCapabilities": 73463,
         "clientEndpointCapabilities": 9336554,
         "endpointMetadata": { "holographicCapabilities": 3 },
-        "meetingInfo": {
-            "organizerId": params.caller_oid,
-            "tenantId": params.tenant_id
-        },
+        "meetingInfo": meeting_info_value(params),
         "endpointState": {
             "endpointStateSequenceNumber": 0,
             "endpointProperties": {
@@ -1484,6 +1525,7 @@ mod tests {
             caller_oid: "",
             tenant_id: "",
             region: &eu,
+            meeting: None,
         };
         // Same call pattern as all 8 signaling request sites.
         let h = headers_for(params.region);
