@@ -438,6 +438,7 @@ pub async fn start_call_recording(
                 caller_oid: "", // not needed for acknowledgement
                 tenant_id: "",  // not needed for acknowledgement
                 region,
+                meeting: None,
             };
             wait_for_recorder_info(
                 ws,

@@ -49,6 +49,34 @@ enum JoinParse {
         return Target(kind: "unknown", url: trimmed)
     }
 
+    /// Meeting coordinates a join link carries: the reply chain after the
+    /// thread (`…/meetup-join/<thread>/<message>`) and the organizer
+    /// (`context={"Tid":…,"Oid":…}`). Each nil when absent or malformed.
+    static func meetingCoordinates(_ raw: String) -> (messageID: String?, organizerOID: String?, tenantID: String?) {
+        var s = raw
+        for _ in 0..<3 {
+            let d = pctDecode(s)
+            if d == s { break }
+            s = d
+        }
+        var messageID: String?
+        if let r = s.range(of: "meetup-join/", options: .caseInsensitive) {
+            let parts = s[r.upperBound...].split(separator: "/", maxSplits: 2, omittingEmptySubsequences: false)
+            if parts.count >= 2 {
+                let m = parts[1].prefix { $0.isASCII && $0.isNumber }
+                if !m.isEmpty { messageID = String(m) }
+            }
+        }
+        func field(_ key: String) -> String? {
+            let pattern = "\"\(key)\"\\s*:\\s*\"([0-9A-Fa-f-]{8,64})\""
+            guard let re = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]),
+                  let m = re.firstMatch(in: s, range: NSRange(s.startIndex..., in: s)),
+                  let r = Range(m.range(at: 1), in: s) else { return nil }
+            return String(s[r])
+        }
+        return (messageID, field("Oid"), field("Tid"))
+    }
+
     /// Percent-decode %XX runs (best-effort; malformed runs pass through).
     static func pctDecode(_ s: String) -> String {
         let bytes = Array(s.utf8)

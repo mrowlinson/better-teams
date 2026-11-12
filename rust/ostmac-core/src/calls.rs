@@ -1163,6 +1163,61 @@ fn with_share_offer(sdp: &str, section: &str) -> String {
     out
 }
 
+/// A meeting join from its link (`…/meetup-join/<thread>/<message>?
+/// context={"Tid","Oid"}`), parsed host-side.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
+pub struct MeetingJoin {
+    pub thread_id: String,
+    #[serde(default)]
+    pub message_id: Option<String>,
+    #[serde(default)]
+    pub organizer_oid: Option<String>,
+    #[serde(default)]
+    pub tenant_id: Option<String>,
+    #[serde(default)]
+    pub video: bool,
+}
+
+/// Meeting coordinates for a group join: (reply chain, organizer,
+/// tenant). A meeting thread (`19:meeting_…`) always joins the meeting's
+/// call, reply chain "0" unless the link names another; an ad-hoc group
+/// chat without link coordinates stays a group call (`None`).
+fn meeting_coordinates(
+    thread_id: &str,
+    m: Option<&MeetingJoin>,
+) -> Option<(String, Option<String>, Option<String>)> {
+    let clean = |v: &Option<String>| v.as_deref().map(str::trim).filter(|x| !x.is_empty()).map(String::from);
+    let (msg, org, ten) = match m {
+        Some(m) => (clean(&m.message_id), clean(&m.organizer_oid), clean(&m.tenant_id)),
+        None => (None, None, None),
+    };
+    if msg.is_none() && org.is_none() && !thread_id.starts_with("19:meeting_") {
+        return None;
+    }
+    Some((msg.unwrap_or_else(|| "0".to_string()), org, ten))
+}
+
+/// Join a meeting with live media, in the meeting's own call (organizer,
+/// tenant and reply chain from its link). `req_json`: [`MeetingJoin`].
+/// Same envelope as [`call_place_live_json`].
+pub fn call_join_meeting_json(req_json: &str, timeout_secs: i32) -> String {
+    let req: MeetingJoin = match serde_json::from_str(req_json) {
+        Ok(r) => r,
+        Err(e) => return err_json("arg", format!("meeting join: {}", e)),
+    };
+    if req.thread_id.trim().is_empty() {
+        return err_json("arg", "empty thread_id");
+    }
+    place_inner(
+        Some(req.thread_id.as_str()),
+        false,
+        clamp_timeout(timeout_secs),
+        true,
+        req.video,
+        Some(&req),
+    )
+}
+
 fn clamp_timeout(secs: i32) -> Duration {
     Duration::from_secs((secs.max(5).min(120)) as u64)
 }
@@ -1179,6 +1234,7 @@ pub fn call_place_json(thread_id: &str, timeout_secs: i32) -> String {
         clamp_timeout(timeout_secs),
         false,
         false,
+        None,
     )
 }
 
@@ -1195,6 +1251,7 @@ pub fn call_place_live_json(thread_id: &str, timeout_secs: i32) -> String {
         clamp_timeout(timeout_secs),
         true,
         false,
+        None,
     )
 }
 
@@ -1216,18 +1273,19 @@ pub fn call_place_live_video_json(thread_id: &str, timeout_secs: i32) -> String 
         clamp_timeout(timeout_secs),
         true,
         true,
+        None,
     )
 }
 
 /// Place the echo-bot test call (`UserInitiatedTestCall` via 1:1 epconv
 /// + `invite_echo_bot`, same as `ost call --echo` up to the media leg).
 pub fn call_echo_json(timeout_secs: i32) -> String {
-    place_inner(None, true, clamp_timeout(timeout_secs), false, false)
+    place_inner(None, true, clamp_timeout(timeout_secs), false, false, None)
 }
 
 /// Place the echo-bot test call with live media attached on acceptance.
 pub fn call_echo_live_json(timeout_secs: i32) -> String {
-    place_inner(None, true, clamp_timeout(timeout_secs), true, false)
+    place_inner(None, true, clamp_timeout(timeout_secs), true, false, None)
 }
 
 fn place_inner(
@@ -1236,6 +1294,7 @@ fn place_inner(
     timeout: Duration,
     live: bool,
     video: bool,
+    meeting: Option<&MeetingJoin>,
 ) -> String {
     {
         let guard = lock_current();
@@ -1297,6 +1356,12 @@ fn place_inner(
                     if a == caller_oid || b == caller_oid)
             })
             .unwrap_or(false);
+    // Meeting threads join the meeting's own call (never a fresh group
+    // call on the thread).
+    let coords = if is_1to1 { None } else { meeting_coordinates(&thread_id, meeting) };
+    if let Some((_, None, _)) = coords {
+        crate::call_roster::diag("meeting join: organizer unknown, caller stands in");
+    }
     // Live group / meeting joins receive screen shares on a third leg.
     let offers_share = live && !is_1to1;
     let display_name = display_name_or("(unknown)");
@@ -1492,6 +1557,11 @@ fn place_inner(
                 caller_oid: &caller_oid,
                 tenant_id: &tenant_id,
                 region: &region,
+                meeting: coords.as_ref().map(|(m, o, t)| signaling::MeetingCoordinates {
+                    message_id: m,
+                    organizer_oid: o.as_deref(),
+                    tenant_id: t.as_deref(),
+                }),
             };
             let controller = if is_1to1 {
                 let (created, _) =
@@ -2034,6 +2104,71 @@ mod tests {
     /// and dominant speaker land) and the roster link, and carries the
     /// offer blob; an audio join still asks Audio only.
     #[test]
+    fn meeting_join_names_the_meetings_call() {
+        let region = signaling::TeamsRegion::default();
+        let join = MeetingJoin {
+            thread_id: "19:meeting_x@thread.v2".into(),
+            message_id: Some("0".into()),
+            organizer_oid: Some("org-oid".into()),
+            tenant_id: Some("org-tenant".into()),
+            video: false,
+        };
+        let coords = meeting_coordinates(&join.thread_id, Some(&join)).expect("meeting coords");
+        let params = signaling::ConversationCallParams {
+            ic3_token: "t",
+            trouter_surl: "https://trouter.example/s",
+            caller_mri: "8:orgid:me",
+            caller_display_name: "Me",
+            endpoint_id: "ep",
+            participant_id: "pa",
+            thread_id: &join.thread_id,
+            chain_id: "ch",
+            message_id: "0123456789",
+            caller_oid: "me",
+            tenant_id: "tn",
+            region: &region,
+            meeting: Some(signaling::MeetingCoordinates {
+                message_id: &coords.0,
+                organizer_oid: coords.1.as_deref(),
+                tenant_id: coords.2.as_deref(),
+            }),
+        };
+        let p1 = signaling::create_conversation_payload(&params);
+        let p2 = signaling::join_conversation_payload(&params, "v=0 offer", false);
+        for v in [&p1, &p2] {
+            assert_eq!(v["groupChat"]["threadId"], "19:meeting_x@thread.v2");
+            assert_eq!(v["groupChat"]["messageId"], "0");
+            assert_eq!(v["meetingInfo"]["organizerId"], "org-oid");
+            assert_eq!(v["meetingInfo"]["tenantId"], "org-tenant");
+        }
+        // A meeting thread with no link coordinates still joins the
+        // meeting's call (reply chain "0"); the caller stands in.
+        assert_eq!(
+            meeting_coordinates("19:meeting_x@thread.v2", None),
+            Some(("0".to_string(), None, None))
+        );
+        let bare = MeetingJoin { thread_id: "19:meeting_x@thread.v2".into(), ..Default::default() };
+        assert_eq!(
+            meeting_coordinates(&bare.thread_id, Some(&bare)),
+            Some(("0".to_string(), None, None))
+        );
+        // Ad-hoc group chat: a group call on the thread, as before.
+        assert_eq!(meeting_coordinates("19:abc@thread.v2", None), None);
+        let adhoc = signaling::ConversationCallParams { meeting: None, thread_id: "19:abc@thread.v2", ..params };
+        let a1 = signaling::create_conversation_payload(&adhoc);
+        let a2 = signaling::join_conversation_payload(&adhoc, "v=0 offer", false);
+        assert!(a1["groupChat"]["messageId"].is_null());
+        assert!(a1["meetingInfo"].is_null());
+        assert!(a2["groupChat"]["messageId"].is_null());
+        assert_eq!(a2["meetingInfo"]["organizerId"], "me");
+        // Envelope: a join request without a thread never dials.
+        let e: serde_json::Value = serde_json::from_str(&call_join_meeting_json("{\"thread_id\":\"\"}", 5)).unwrap();
+        assert_eq!(e["ok"], false);
+        let e: serde_json::Value = serde_json::from_str(&call_join_meeting_json("nope", 5)).unwrap();
+        assert_eq!(e["ok"], false);
+    }
+
+    #[test]
     fn group_join_payload_carries_video() {
         let region = signaling::TeamsRegion::default();
         let params = signaling::ConversationCallParams {
@@ -2049,6 +2184,7 @@ mod tests {
             caller_oid: "me",
             tenant_id: "tn",
             region: &region,
+            meeting: None,
         };
         let v = signaling::join_conversation_payload(&params, "v=0 offer", true);
         assert_eq!(v["callInvitation"]["callModalities"], serde_json::json!(["Audio", "Video"]));

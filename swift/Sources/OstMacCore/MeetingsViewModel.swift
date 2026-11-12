@@ -32,7 +32,7 @@ public final class MeetingsViewModel: ObservableObject {
     /// Sync fetch (runs off-main). Throws `CoreCallError` on core failure.
     public typealias MeetingsFetcher = @Sendable () throws -> MeetingsResponse
     public typealias ParseFetcher = @Sendable (String) throws -> JoinParseResponse
-    public typealias JoinRunner = @Sendable (String) throws -> CallResult
+    public typealias JoinRunner = @Sendable (MeetingJoinRequest) throws -> CallResult
     public typealias Opener = (URL) -> Void
     /// FIXPACK F12: short-link resolver (start URL -> thread-bearing URL).
     public typealias LinkResolver = @Sendable (URL) async -> String?
@@ -106,8 +106,8 @@ public final class MeetingsViewModel: ObservableObject {
     public init(
         meetingsFetcher: @escaping MeetingsFetcher = { try RustCore.meetings() },
         parseFetcher: @escaping ParseFetcher = { try RustCore.meetingJoinParse(raw: $0) },
-        joinRunner: @escaping JoinRunner = { try MeetingsViewModel.runCoreJoin(.liveAudio, threadID: $0) },
-        videoJoinRunner: @escaping JoinRunner = { try MeetingsViewModel.runCoreJoin(.liveVideo, threadID: $0) },
+        joinRunner: @escaping JoinRunner = { try MeetingsViewModel.runCoreJoin(.liveAudio, request: $0) },
+        videoJoinRunner: @escaping JoinRunner = { try MeetingsViewModel.runCoreJoin(.liveVideo, request: $0) },
         opener: @escaping Opener = { TeamsLinkRouter.open($0) },
         lobbyGraceSecs: Double = 8,
         meetingIDResolver: @escaping MeetingIDResolver = {
@@ -307,12 +307,19 @@ public final class MeetingsViewModel: ObservableObject {
     /// The leg for a join: `video` = Join with Video.
     public nonisolated static func joinLeg(video: Bool) -> JoinLeg { video ? .liveVideo : .liveAudio }
 
-    /// Dials `leg` on the core (blocking; runs off-main).
-    public nonisolated static func runCoreJoin(_ leg: JoinLeg, threadID: String) throws -> CallResult {
-        switch leg {
-        case .liveAudio: try RustCore.callPlaceLive(threadID: threadID)
-        case .liveVideo: try RustCore.callPlaceLiveVideo(threadID: threadID)
+    /// Dials `leg` on the core (blocking; runs off-main). A meeting
+    /// (meeting thread, or a link naming organizer / reply chain) joins
+    /// the meeting's own call; other threads place as before.
+    public nonisolated static func runCoreJoin(_ leg: JoinLeg, request: MeetingJoinRequest) throws -> CallResult {
+        guard request.isMeeting else {
+            switch leg {
+            case .liveAudio: return try RustCore.callPlaceLive(threadID: request.threadID)
+            case .liveVideo: return try RustCore.callPlaceLiveVideo(threadID: request.threadID)
+            }
         }
+        var req = request
+        req.video = leg == .liveVideo
+        return try RustCore.callJoinMeeting(req)
     }
 
     /// Confirm the pre-join sheet: dial the thread leg with live media and
@@ -320,7 +327,8 @@ public final class MeetingsViewModel: ObservableObject {
     /// toggles (applied by the call slot). `video`: Join with Video
     /// (MEETVIDEO) dials the Audio + Video leg (`joinLeg(video:)`).
     public func confirmJoin(micOn: Bool, cameraOn: Bool, video: Bool = false) {
-        guard let threadID = pendingJoin?.threadID else { return }
+        guard let target = pendingJoin, target.threadID != nil else { return }
+        let request = MeetingJoinRequest(target: target)
         showPreJoin = false
         pendingJoin = nil
         _ = (micOn, cameraOn)
@@ -340,7 +348,7 @@ public final class MeetingsViewModel: ObservableObject {
         let runner = Self.joinLeg(video: video) == .liveVideo ? videoJoinRunner : joinRunner
         Task {
             do {
-                let result = try await Task.blocking { try runner(threadID) }.value
+                let result = try await Task.blocking { try runner(request) }.value
                 guard gen == self.lobbyGeneration else { return } // superseded
                 if result.accepted == true || result.call?.state == "connected" {
                     self.lobby = LobbyMachine.next(self.lobby, .placed)
@@ -373,5 +381,40 @@ public final class MeetingsViewModel: ObservableObject {
     nonisolated static func message(for error: Error) -> String {
         if case CoreCallError.failed(let m) = error { return m }
         return String(describing: error)
+    }
+}
+
+/// One meeting join: the thread plus the meeting coordinates its link
+/// carries (reply chain, organizer, tenant), so the core joins the
+/// meeting's own call instead of a fresh group call on its thread.
+public struct MeetingJoinRequest: Sendable, Equatable, Encodable {
+    public let threadID: String
+    public let messageID: String?
+    public let organizerOID: String?
+    public let tenantID: String?
+    public var video = false
+
+    enum CodingKeys: String, CodingKey {
+        case threadID = "thread_id", messageID = "message_id"
+        case organizerOID = "organizer_oid", tenantID = "tenant_id", video
+    }
+
+    public init(threadID: String, messageID: String? = nil, organizerOID: String? = nil, tenantID: String? = nil) {
+        self.threadID = threadID
+        self.messageID = messageID
+        self.organizerOID = organizerOID
+        self.tenantID = tenantID
+    }
+
+    /// Thread from the parsed target; coordinates from its link.
+    public init(target: JoinTarget) {
+        let c = JoinParse.meetingCoordinates(target.url)
+        self.init(threadID: target.threadID ?? "", messageID: c.messageID,
+                  organizerOID: c.organizerOID, tenantID: c.tenantID)
+    }
+
+    /// A meeting's call (not an ad-hoc group / 1:1 call on the thread).
+    public var isMeeting: Bool {
+        threadID.hasPrefix("19:meeting_") || messageID != nil || organizerOID != nil
     }
 }

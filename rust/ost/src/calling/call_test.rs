@@ -297,6 +297,7 @@ pub async fn run_call_test(
         caller_oid,
         tenant_id,
         region: &teams_region,
+        meeting: None,
     };
 
     // Place the call: 1:1 calls (echo or thread) use single-shot epconv, channel uses two-phase
