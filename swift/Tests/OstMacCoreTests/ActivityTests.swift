@@ -306,13 +306,15 @@ final class ActivityTests: XCTestCase {
         XCTAssertEqual(s.visibleItems[0].chatID, "c2")
     }
 
-    func testMarkAllReviewedClearsFeed() {
+    func testMarkAllReviewedKeepsRowsListed() {
         let s = store()
         ingest(s, live(msgId: "m1", raw: "<at>Smith, Alex</at> a"))
         ingest(s, live(msgId: "m2", raw: "<at>channel</at> b"))
         s.markAllReviewed()
         XCTAssertTrue(s.visibleItems.isEmpty)
         XCTAssertEqual(s.unreviewedCount, 0)
+        XCTAssertEqual(s.storedCount, 2, "read = style change, rows stay listed")
+        XCTAssertTrue(s.items.allSatisfy(\.reviewed))
     }
 
     func testLastMentionReviewFiresFlagClearHook() {

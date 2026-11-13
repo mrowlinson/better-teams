@@ -192,6 +192,8 @@ public final class ActivityStore: ObservableObject {
     /// Last-seen reaction totals per message (`chatID\0messageID`).
     /// Baseline on first sight (no item); deltas on own messages emit.
     private var reactionTotals: [String: Int] = [:]
+    /// Item ids already counted by a dismissed rail badge (persisted).
+    private var badgeSeen: Set<String>
 
     /// Main-actor init (Swift 6): View inits are main-actor, so views
     /// can still take a default; the stored state is main-actor-isolated.
@@ -205,6 +207,8 @@ public final class ActivityStore: ObservableObject {
         // directly, no publish.
         self._items = Published(
             initialValue: Self.load(defaults: defaults, key: key))
+        self.badgeSeen = Set(
+            defaults.stringArray(forKey: Self.badgeSeenKey(for: key)) ?? [])
     }
 
     // MARK: - Derived
@@ -484,15 +488,43 @@ public final class ActivityStore: ObservableObject {
         if hadMentions { onMentionFlagsCleared?(chatID) }
     }
 
-    /// Clear the whole feed (reviewed rows included). Empty is a no-op.
+    /// Mark every unreviewed row as read. Rows stay listed (read is a
+    /// style change only, never a removal). Nothing unreviewed is a
+    /// no-op. Chats that held unreviewed mentions fire the flag hook.
     public func markAllReviewed() {
-        guard !items.isEmpty else { return }
+        guard items.contains(where: { !$0.reviewed }) else { return }
         let chats = Set(items.lazy.filter { !$0.reviewed && $0.kind == .mention }.map(\.chatID))
-        items.removeAll()
-        reactionTotals.removeAll()
+        for i in items.indices { items[i].reviewed = true }
         save()
         for chatID in chats { onMentionFlagsCleared?(chatID) }
     }
+
+    // MARK: - Rail badge counter
+
+    /// Unreviewed items the rail badge counts: those that arrived after
+    /// the last badge dismissal (`dismissBadge`). Reading the feed never
+    /// changes review state; only this counter is dismissed.
+    public var badgeCount: Int {
+        items.reduce(0) { $0 + ($1.reviewed || badgeSeen.contains($1.id) ? 0 : 1) }
+    }
+
+    /// Restart the badge counter: every item present now stops counting;
+    /// only items that arrive later badge. Touches no review state (no
+    /// item is marked read, `onMentionFlagsCleared` never fires, nothing
+    /// is written to the server) and persists so a relaunch does not
+    /// re-badge the old items. No-op when nothing would newly be seen.
+    public func dismissBadge() {
+        guard badgeCount > 0 else { return }
+        badgeSeen.formUnion(items.lazy.filter { !$0.reviewed }.map(\.id))
+        // Bounded: only ids still in the feed matter.
+        let live = Set(items.lazy.map(\.id))
+        badgeSeen.formIntersection(live)
+        objectWillChange.send()
+        guard persists else { return }
+        defaults.set(Array(badgeSeen).sorted(), forKey: Self.badgeSeenKey(for: key))
+    }
+
+    nonisolated static func badgeSeenKey(for key: String) -> String { key + ".badgeSeen" }
 
     // MARK: - Reply miner (live path)
 
