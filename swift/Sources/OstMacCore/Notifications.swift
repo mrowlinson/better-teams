@@ -35,6 +35,9 @@ public extension Notification.Name {
     /// userInfo: ["meetingID": String, "join": Bool] — MEETING banner:
     /// Join (true) or a click on the banner (false, UI-SPEC §9.3).
     static let omNotifMeeting = Notification.Name("om-notif-meeting")
+    /// userInfo: ["participantID": String, "admit": Bool] — LOBBY banner:
+    /// Admit (true) or a click on the banner (false: show the call).
+    static let omNotifLobby = Notification.Name("om-notif-lobby")
     /// No userInfo — Undo on the automatic-presence-change banner.
     static let omNotifPresenceUndo = Notification.Name("om-notif-presence-undo")
 }
@@ -90,7 +93,9 @@ public final class ForegroundBannerPolicy: @unchecked Sendable {
     public func options(categoryID: String, chatID: String?) -> UNNotificationPresentationOptions {
         lock.lock()
         defer { lock.unlock() }
-        if categoryID == OmCallInfo.categoryID || categoryID == MeetingNotifyInfo.categoryID {
+        if categoryID == OmCallInfo.categoryID || categoryID == MeetingNotifyInfo.categoryID
+            || categoryID == MeetingLobbyInfo.categoryID
+        {
             return [.banner, .sound, .list]
         }
         if categoryID == PresenceUndoInfo.categoryID { return [.banner, .list] } // passive: silent
@@ -217,6 +222,7 @@ public final class SystemNotificationCenter: NotificationPosting, @unchecked Sen
                 intentIdentifiers: [], options: []),
             OmCallInfo.category,
             MeetingNotifyInfo.category,
+            MeetingLobbyInfo.category,
             PresenceUndoInfo.category,
         ]
     }
@@ -564,6 +570,16 @@ public final class MessageNotificationDelegate: NSObject, UNUserNotificationCent
             NotificationCenter.default.post(
                 name: .omNotifMeeting, object: nil,
                 userInfo: ["meetingID": id, "join": response.actionIdentifier == MeetingNotifyInfo.joinActionID])
+            completionHandler()
+            return
+        }
+        if content.categoryIdentifier == MeetingLobbyInfo.categoryID,
+           let id = content.userInfo[MeetingLobbyInfo.participantIDKey] as? String {
+            if response.actionIdentifier != UNNotificationDismissActionIdentifier {
+                NotificationCenter.default.post(
+                    name: .omNotifLobby, object: nil,
+                    userInfo: ["participantID": id, "admit": response.actionIdentifier == MeetingLobbyInfo.admitActionID])
+            }
             completionHandler()
             return
         }

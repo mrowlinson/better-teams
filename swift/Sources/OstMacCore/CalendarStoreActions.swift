@@ -269,7 +269,7 @@ extension CalendarWeekStore {
             c.timeZone = tz
             return c.date(from: p) ?? d
         }
-        let focus = rebase(focusDay), month = rebase(monthStart)
+        let focus = rebase(focusDay), month = rebase(monthStart), week = rebase(weekStart)
         calendar.timeZone = tz
         dayKeyFormatter.timeZone = tz
         meetings = meetings.map { CalendarTime.localize($0, to: tz) }
@@ -284,7 +284,9 @@ extension CalendarWeekStore {
         focusDay = focus
         monthStart = month
         monthGridStart = monthGrid(containing: month).gridStart
-        let target = calendar.startOfDay(for: CalWeek.startOfWeek(containing: focus, calendar: calendar))
+        // The shown week keeps its calendar dates (rebase, not the focus
+        // day's week: the focus day can sit outside the shown week).
+        let target = calendar.startOfDay(for: CalWeek.startOfWeek(containing: week, calendar: calendar))
         weekStart = target
         pendingWeekStart = target
         Task { await fetch(target, behind: true) }

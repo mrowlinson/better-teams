@@ -4408,6 +4408,33 @@ pub extern "C" fn ostmac_call_roster() -> *mut c_char {
     string_to_c(calls::call_roster_json())
 }
 
+/// Admit one meeting-lobby participant (`mri`, display `name`) into the
+/// active meeting call. See [`calls::call_lobby_admit_json`].
+#[no_mangle]
+pub extern "C" fn ostmac_call_lobby_admit(mri: *const c_char, name: *const c_char) -> *mut c_char {
+    match (cstr_to_string(mri), cstr_to_string(name)) {
+        (Ok(m), Ok(n)) => string_to_c(calls::call_lobby_admit_json(&m, &n)),
+        (Err(e), _) | (_, Err(e)) => string_to_c(err_json("arg", e)),
+    }
+}
+
+/// Admit everyone in the meeting lobby. See
+/// [`calls::call_lobby_admit_all_json`].
+#[no_mangle]
+pub extern "C" fn ostmac_call_lobby_admit_all() -> *mut c_char {
+    string_to_c(calls::call_lobby_admit_all_json())
+}
+
+/// Deny (remove) one meeting-lobby participant. See
+/// [`calls::call_lobby_deny_json`].
+#[no_mangle]
+pub extern "C" fn ostmac_call_lobby_deny(mri: *const c_char, name: *const c_char) -> *mut c_char {
+    match (cstr_to_string(mri), cstr_to_string(name)) {
+        (Ok(m), Ok(n)) => string_to_c(calls::call_lobby_deny_json(&m, &n)),
+        (Err(e), _) | (_, Err(e)) => string_to_c(err_json("arg", e)),
+    }
+}
+
 /// End/decline the active call. See [`calls::call_end_json`].
 #[no_mangle]
 pub extern "C" fn ostmac_call_end() -> *mut c_char {

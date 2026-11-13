@@ -21,6 +21,12 @@
 //! place (order kept, never reordered; a keyed
 //! snapshot arrives in key order). A participant whose `state`
 //! reads disconnected/left/removed, or whose `endpoints` is empty, leaves.
+//!
+//! Lobby (Microsoft ACS calling SDK `_Participant.fromRosterEndpoints`):
+//! a participant waits in the meeting lobby when some endpoint carries
+//! `lobby` and none carries `call`. Lobby participants stay out of the
+//! in-call roster and are listed under `lobby` for the organizer's
+//! admit / deny; admitted ones turn up with a `call` endpoint.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Mutex, OnceLock};
@@ -50,11 +56,20 @@ pub struct CallParticipant {
     pub is_self: bool,
 }
 
+/// One participant waiting in the meeting lobby.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct LobbyParticipant {
+    /// MRI (`8:orgid:…`, `8:teamsvisitor:…`), or the roster key.
+    pub id: String,
+    pub name: String,
+}
+
 #[derive(Default)]
 struct RosterState {
     call_id: String,
     self_mri: String,
     participants: Vec<CallParticipant>,
+    lobby: Vec<LobbyParticipant>,
     updates: u64,
     dominant_msi: Option<u32>,
     log: VecDeque<String>,
@@ -158,15 +173,16 @@ pub fn ingest(kind: &str, body: &Value) -> bool {
     let Some(root) = roster_root(k, body) else {
         return false;
     };
-    let before = s.participants.clone();
+    let before = (s.participants.clone(), s.lobby.clone());
     apply_roster(&mut s, root);
-    let changed = s.participants != before;
+    let changed = s.participants != before.0 || s.lobby != before.1;
     s.updates += 1;
     let video = s.participants.iter().filter(|p| p.video_on).count();
     let line = format!(
-        "roster #{}: {} participants, {} camera on{}",
+        "roster #{}: {} participants, {} in lobby, {} camera on{}",
         s.updates,
         s.participants.len(),
+        s.lobby.len(),
         video,
         if changed { "" } else { " (no change)" }
     );
@@ -248,16 +264,37 @@ fn apply_roster(s: &mut RosterState, root: &Value) {
         _ => Vec::new(),
     };
     for (key, pv) in entries {
-        let id = str_field(pv, &["mri", "id"]).unwrap_or(key);
+        let id = str_field(pv, &["mri", "id"])
+            .or_else(|| pv.get("details").and_then(|d| str_field(d, &["id"])))
+            .unwrap_or(key);
         if id.trim().is_empty() {
             continue;
         }
         if leaves(pv) {
             s.participants.retain(|p| p.id != id);
+            s.lobby.retain(|l| l.id != id);
             continue;
         }
         seen.push(id.clone());
-        let parsed = parse_participant(&id, pv, &s.self_mri);
+        let is_self = !s.self_mri.is_empty() && id.eq_ignore_ascii_case(&s.self_mri);
+        // A delta without endpoints keeps the participant where it is.
+        let waiting = lobby_state(pv).unwrap_or_else(|| s.lobby.iter().any(|l| l.id == id));
+        if waiting && !is_self {
+            s.participants.retain(|p| p.id != id);
+            let name = participant_name(pv);
+            match s.lobby.iter_mut().find(|l| l.id == id) {
+                Some(cur) if !name.is_empty() => cur.name = name,
+                Some(_) => {}
+                None => s.lobby.push(LobbyParticipant { id, name }),
+            }
+            continue;
+        }
+        let lobby_name = s.lobby.iter().find(|l| l.id == id).map(|l| l.name.clone());
+        s.lobby.retain(|l| l.id != id);
+        let mut parsed = parse_participant(&id, pv, &s.self_mri);
+        if parsed.name.is_empty() {
+            parsed.name = lobby_name.unwrap_or_default();
+        }
         match s.participants.iter_mut().find(|p| p.id == id) {
             Some(cur) => merge(cur, parsed, pv),
             None => s.participants.push(parsed),
@@ -265,7 +302,29 @@ fn apply_roster(s: &mut RosterState, root: &Value) {
     }
     if full {
         s.participants.retain(|p| seen.contains(&p.id));
+        s.lobby.retain(|l| seen.contains(&l.id));
     }
+}
+
+/// ACS lobby rule: some endpoint carries `lobby` and none carries `call`.
+/// `None` when the frame names no endpoints.
+fn lobby_state(pv: &Value) -> Option<bool> {
+    let eps: Vec<&Value> = match pv.get("endpoints") {
+        Some(Value::Object(m)) => m.values().collect(),
+        Some(Value::Array(a)) => a.iter().collect(),
+        _ => Vec::new(),
+    };
+    if eps.is_empty() {
+        return None;
+    }
+    let has = |k: &str| eps.iter().any(|e| e.get(k).is_some_and(|v| !v.is_null()));
+    Some(has("lobby") && !has("call"))
+}
+
+fn participant_name(pv: &Value) -> String {
+    str_field(pv, &["displayName", "name"])
+        .or_else(|| pv.get("details").and_then(|d| str_field(d, &["displayName"])))
+        .unwrap_or_default()
 }
 
 /// Leave markers: null entry, a leave state, or an empty endpoint set.
@@ -288,9 +347,7 @@ fn leaves(pv: &Value) -> bool {
 }
 
 fn parse_participant(id: &str, pv: &Value, self_mri: &str) -> CallParticipant {
-    let name = str_field(pv, &["displayName", "name"])
-        .or_else(|| pv.get("details").and_then(|d| str_field(d, &["displayName"])))
-        .unwrap_or_default();
+    let name = participant_name(pv);
     let mut p = CallParticipant {
         id: id.to_string(),
         name,
@@ -430,6 +487,7 @@ pub fn roster_json(active_call: Option<&str>) -> String {
     let log: Vec<String> = s.log.drain(..).collect();
     let current = active_call.map(|c| c == s.call_id).unwrap_or(false);
     let participants: Vec<CallParticipant> = if current { s.participants.clone() } else { Vec::new() };
+    let lobby: Vec<LobbyParticipant> = if current { s.lobby.clone() } else { Vec::new() };
     let dominant = if current { s.dominant_msi } else { None };
     let dominant_id = dominant.and_then(|m| {
         participants
@@ -442,6 +500,7 @@ pub fn roster_json(active_call: Option<&str>) -> String {
         "call_id": if current { s.call_id.clone() } else { String::new() },
         "updates": if current { s.updates } else { 0 },
         "participants": participants,
+        "lobby": lobby,
         "dominant_msi": dominant,
         "dominant_id": dominant_id,
         "log": log,
@@ -534,5 +593,53 @@ mod tests {
         let s = sanitize(&serde_json::json!({"links": {"a": "https://x"}, "u": "https://y", "n": 1}));
         assert_eq!(s, serde_json::json!({"u": "<url>", "n": 1}));
         assert_eq!(frame_kind(r#"3:::{"id":1,"url":"https://t/x/conversation/rosterUpdate/?a=1","body":"{}"}"#), "rosterUpdate");
+    }
+
+    /// ACS roster shape (`{details, role, meetingRole, endpoints:{<ep>:
+    /// {lobby|call}}}`): a lobby-only participant is listed under `lobby`
+    /// and kept out of the in-call roster; admitting turns its endpoint
+    /// to `call`; a lobby leave drops it.
+    #[test]
+    fn lobby_participants_are_listed_apart() {
+        let _g = test_guard();
+        reset("c1", "8:orgid:me");
+        let full = serde_json::json!({
+            "participants": {
+                "8:orgid:me": {"details": {"id": "8:orgid:me", "displayName": "Me", "languageId": "en-US"},
+                    "role": "admin", "meetingRole": "organizer",
+                    "endpoints": {"e0": {"call": {"mediaStreams": [
+                        {"type": "audio", "sourceId": 10, "direction": "sendrecv"}]}}}, "version": 3},
+                "8:teamsvisitor:guest1": {"details": {"id": "8:teamsvisitor:guest1", "displayName": "test"},
+                    "role": "guest", "meetingRole": "attendee",
+                    "endpoints": {"g1": {"lobby": {"mediaStreams": []}}}, "version": 1}
+            },
+            "type": "Full", "sequenceNumber": 1
+        });
+        assert!(ingest("rosterUpdate", &full));
+        let v: Value = serde_json::from_str(&roster_json(Some("c1"))).unwrap();
+        assert_eq!(v["participants"].as_array().unwrap().len(), 1, "lobby guest not in call");
+        assert_eq!(v["lobby"], serde_json::json!([{"id": "8:teamsvisitor:guest1", "name": "test"}]));
+        // Admitted: the endpoint turns to `call`.
+        let admitted = serde_json::json!({
+            "participants": {"8:teamsvisitor:guest1": {"details": {"id": "8:teamsvisitor:guest1"},
+                "endpoints": {"g1": {"call": {"mediaStreams": [
+                    {"type": "audio", "sourceId": 40, "direction": "sendrecv"}]}}}}},
+            "type": "Delta", "sequenceNumber": 2
+        });
+        assert!(ingest("rosterUpdate", &admitted));
+        let v: Value = serde_json::from_str(&roster_json(Some("c1"))).unwrap();
+        assert!(v["lobby"].as_array().unwrap().is_empty());
+        let g = v["participants"].as_array().unwrap().iter()
+            .find(|p| p["id"] == "8:teamsvisitor:guest1").expect("admitted guest in call");
+        assert_eq!(g["name"], "test", "name carried over from the lobby row");
+        // A second guest waits, then leaves (denied): gone from the lobby.
+        let wait = serde_json::json!({"participants": [{"details": {"id": "8:teamsvisitor:g2", "displayName": "Guest Two"},
+            "endpoints": {"g2": {"lobby": {}}}}], "type": "Delta"});
+        ingest("rosterUpdate", &wait);
+        let gone = serde_json::json!({"participants": [{"id": "8:teamsvisitor:g2", "endpoints": {}}], "type": "Delta"});
+        ingest("rosterUpdate", &gone);
+        let v: Value = serde_json::from_str(&roster_json(Some("c1"))).unwrap();
+        assert!(v["lobby"].as_array().unwrap().is_empty());
+        assert_eq!(v["participants"].as_array().unwrap().len(), 2);
     }
 }

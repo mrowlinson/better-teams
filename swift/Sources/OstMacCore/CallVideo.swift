@@ -59,9 +59,11 @@ public struct CallRosterPoll: Decodable, Sendable {
     public let dominantMsi: UInt32?
     public let dominantId: String?
     public let log: [String]
+    /// Meeting lobby waiters (not in the call); nil from older cores.
+    public let lobby: [CallLobbyParticipant]?
 
     enum CodingKeys: String, CodingKey {
-        case ok, updates, participants, log
+        case ok, updates, participants, log, lobby
         case callId = "call_id", dominantMsi = "dominant_msi", dominantId = "dominant_id"
     }
 }
@@ -291,9 +293,13 @@ public final class MeetingVideoModel: ObservableObject {
     private var tick = 0
     private nonisolated let loopToken = LiveLoopToken()
 
-    public init(demo: Bool, cap: Int = MeetingVideoPlan.maxVideoTiles) {
+    /// Meeting lobby (organizer admit / deny), fed by each roster poll.
+    public let lobbyQueue: MeetingLobbyModel
+
+    public init(demo: Bool, cap: Int = MeetingVideoPlan.maxVideoTiles, lobby: MeetingLobbyModel? = nil) {
         self.demo = demo
         self.cap = cap
+        self.lobbyQueue = lobby ?? MeetingLobbyModel()
     }
 
     deinit {
@@ -383,6 +389,7 @@ public final class MeetingVideoModel: ObservableObject {
         tick += 1
         if let r {
             for line in r.log { CallVideoLog.note("core: " + line) }
+            lobbyQueue.update(r.lobby ?? [])
             if r.participants != roster {
                 roster = r.participants
                 CallVideoLog.note("roster: updates=\(r.updates) " + roster.map(Self.describe).joined(separator: " "))

@@ -21,7 +21,7 @@ struct CallInspector: View {
         VStack(spacing: 0) {
             Picker("Show", selection: Binding(get: { model?.inspectorSegment == "chat" ? "chat" : "people" },
                                               set: { model?.setInspectorSegment($0) })) {
-                Text("People").tag("people")
+                PeopleSegmentLabel(lobby: session.meetingVideo?.lobbyQueue).tag("people")
                 Text("Chat").tag("chat")
             }
             .pickerStyle(.segmented)
@@ -51,6 +51,9 @@ private struct CallPeopleList: View {
             isOwn: { p in model?.isOwnID(p.id) == true || p.name == own || p.name == "Me" },
             muted: session.controls.muted, cameraOn: session.controls.cameraOn, sharing: false)
         List {
+            if let lobby = session.meetingVideo?.lobbyQueue {
+                LobbySection(lobby: lobby)
+            }
             Section("In This Call (\(people.count))") {
                 ForEach(people) { p in
                     HStack(spacing: 8) {
@@ -72,6 +75,67 @@ private struct CallPeopleList: View {
                         }
                     }
                     .padding(.vertical, 2)
+                }
+            }
+        }
+    }
+}
+
+/// "People", with the lobby count while someone waits.
+private struct PeopleSegmentLabel: View {
+    let lobby: MeetingLobbyModel?
+
+    var body: some View {
+        if let lobby {
+            Counted(lobby: lobby)
+        } else {
+            Text("People")
+        }
+    }
+
+    private struct Counted: View {
+        @ObservedObject var lobby: MeetingLobbyModel
+        var body: some View {
+            Text(lobby.waiting.isEmpty ? "People" : "People (\(lobby.waiting.count) waiting)")
+        }
+    }
+}
+
+/// Meeting lobby (organizer): Admit All in the header, Deny / Admit per
+/// row. Hidden while nobody waits.
+struct LobbySection: View {
+    @ObservedObject var lobby: MeetingLobbyModel
+    @Environment(\.contentTextScale) private var scale
+
+    var body: some View {
+        if !lobby.waiting.isEmpty {
+            Section {
+                ForEach(lobby.waiting) { p in
+                    HStack(spacing: 8) {
+                        Avatar(name: p.displayName)
+                        Text(p.displayName)
+                            .font(AppFont.body(scale))
+                            .lineLimit(1)
+                        Spacer(minLength: 4)
+                        Button("Deny") { Task { await lobby.deny(p) } }
+                            .buttonStyle(.bordered)
+                            .accessibilityLabel("Deny \(p.displayName)")
+                        Button("Admit") { Task { await lobby.admit(p) } }
+                            .buttonStyle(.borderedProminent)
+                            .accessibilityLabel("Admit \(p.displayName)")
+                    }
+                    .controlSize(.small)
+                    .disabled(lobby.pending.contains(p.id))
+                    .padding(.vertical, 2)
+                }
+            } header: {
+                HStack {
+                    Text("Waiting in Lobby (\(lobby.waiting.count))")
+                    Spacer()
+                    Button("Admit All") { Task { await lobby.admitAll() } }
+                        .buttonStyle(.borderless)
+                        .controlSize(.small)
+                        .disabled(lobby.waiting.allSatisfy { lobby.pending.contains($0.id) })
                 }
             }
         }

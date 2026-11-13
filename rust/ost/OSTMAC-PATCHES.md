@@ -1729,6 +1729,23 @@ Notes:
     `chat::mate_batch_tests::untitled_group_resolves_member_names_in_roster_order`.
     UPSTREAM: pending
 
+96. [feat] `src/calling/signaling.rs` — organizer meeting-lobby control. (Renumbered from §95 at merge 668e73ec: gapl2's naming entry already holds §95.)
+    `ConversationJoined::lobby_links()` / `LobbyLinks::from_response`
+    keep the join response's top-level `links.admit`, `links.admitAll`,
+    `links.removeParticipant` (previously the body was discarded).
+    Pure builders `lobby_admit_payload`, `lobby_admit_all_payload`,
+    `lobby_remove_payload` with `SelfParticipant` (`participants.from`
+    = the ids the join sent) match the Microsoft ACS calling SDK 2.0.0
+    bodies (`getPayload13` / `getPayload26` / `getPayload20`; callback
+    paths `conversation/admitParticipantSuccess|Failure/`,
+    `conversation/admitAllStatus/`,
+    `conversation/removeParticipantSuccess|Failure/` via
+    `trouter_callback`). `post_lobby_link` POSTs with the conversation
+    link headers (Bearer IC3 + skype chain/message ids) and never logs
+    the link. Tests: `calling::signaling::tests::lobby_payloads_match_acs_shapes`,
+    `lobby_links_come_from_the_join_response`.
+    UPSTREAM: pending
+
 ## Upstream PRs, wave 9 (2026-09-25 R10 audit; base 0892144; origin/main still 0892144)
 
 No-file wave. `git diff 307d221..db62ed7 -- rust/ost` is empty (wave-8

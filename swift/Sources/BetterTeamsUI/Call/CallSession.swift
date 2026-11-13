@@ -16,6 +16,7 @@ import AppKit
 import Combine
 import Observation
 import OstMacCore
+import UserNotifications
 
 /// What the call is (drives the stage's title and join step).
 public enum CallKind: Equatable, Sendable {
@@ -56,7 +57,9 @@ public final class CallSession {
     /// Group / meeting video tiles (nil for 1:1 and audio calls). Live
     /// polls the core roster and per-source queues once media flows; demo
     /// shows a fixed roster with synthetic video and never touches the core.
-    public private(set) var meetingVideo: MeetingVideoModel? = nil
+    public private(set) var meetingVideo: MeetingVideoModel? = nil {
+        didSet { wireLobbyBanner() }
+    }
     /// Remote video decoders keyed by remote participant id (live 1:1
     /// video calls only; demo shows synthetic frames and never touches the
     /// core video queues): one entry, the peer's MRI, created when live
@@ -113,6 +116,7 @@ public final class CallSession {
         stage.session = self
         if isVideo, self.group { meetingVideo = MeetingVideoModel(demo: !live) }
         subscribe()
+        wireLobbyBanner() // init assignments skip didSet
         // Video calls start with the camera on (camera off later sends no
         // video at all, as Teams does).
         if isVideo, self.store?.cameraOn == false { self.store?.setCameraOn(true) }
@@ -530,5 +534,21 @@ public extension WindowModel {
         s.pushTick()
         if show { s.show() }
         return s
+    }
+}
+
+// MARK: - meeting lobby banner
+
+extension CallSession {
+    /// A new lobby arrival posts "<name> is waiting in the lobby" with
+    /// Admit (live runs only; demo and evidence never post).
+    fileprivate func wireLobbyBanner() {
+        guard let lobby = meetingVideo?.lobbyQueue else { return }
+        let posts = live && model.map { NotificationRouter.postsSystemNotifications($0.options) } ?? false
+        lobby.onArrival = posts ? { p in
+            UNUserNotificationCenter.current().add(UNNotificationRequest(
+                identifier: MeetingLobbyInfo.requestID(participantID: p.id),
+                content: MeetingLobbyInfo.makeContent(p), trigger: nil))
+        } : nil
     }
 }
