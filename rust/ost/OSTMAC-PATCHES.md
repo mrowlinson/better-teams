@@ -1690,7 +1690,7 @@ Notes:
     GET returns (live read 2026-09-30); the three writes are NOT
     live-verified (lane rules: no live group writes). Tests:
     `chat::gapl2_tests::*` (5).
-    UPSTREAM: pending
+    UPSTREAM: PR https://github.com/eisbaw/ost/pull/109 (fix/group-chat-manage, stacks on #100)
 
 94. [fix] `src/calling/signaling.rs` (+ `call_test.rs`, `recording.rs`
     struct-literal updates) -- **meeting joins land in the meeting's own
@@ -1727,7 +1727,7 @@ Notes:
     live-verified (0 live sessions this lane). Tests:
     `chat::tests::conversation_name_group_uses_members_never_last_sender`,
     `chat::mate_batch_tests::untitled_group_resolves_member_names_in_roster_order`.
-    UPSTREAM: pending
+    UPSTREAM: PR https://github.com/eisbaw/ost/pull/110 (fix/untitled-group-member-names, stacks on #98)
 
 96. [feat] `src/calling/signaling.rs` — organizer meeting-lobby control. (Renumbered from §95 at merge 668e73ec: gapl2's naming entry already holds §95.)
     `ConversationJoined::lobby_links()` / `LobbyLinks::from_response`
@@ -1744,7 +1744,7 @@ Notes:
     link headers (Bearer IC3 + skype chain/message ids) and never logs
     the link. Tests: `calling::signaling::tests::lobby_payloads_match_acs_shapes`,
     `lobby_links_come_from_the_join_response`.
-    UPSTREAM: pending
+    UPSTREAM: PR https://github.com/eisbaw/ost/pull/111 (fix/lobby-signaling, directly on main)
 
 ## Upstream PRs, wave 9 (2026-09-25 R10 audit; base 0892144; origin/main still 0892144)
 
