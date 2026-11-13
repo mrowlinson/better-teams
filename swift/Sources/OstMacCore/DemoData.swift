@@ -346,6 +346,12 @@ public enum DemoData {
             UserPresenceResponse(
                 ok: true, id: "demo-u-megan", availability: "Away",
                 activity: "Away"),
+            UserPresenceResponse(
+                ok: true, id: "demo-u-daniel", availability: "Available",
+                activity: "Available"),
+            UserPresenceResponse(
+                ok: true, id: "demo-u-olivia", availability: "DoNotDisturb",
+                activity: "Presenting"),
         ]
     }
 
@@ -693,6 +699,9 @@ public enum DemoData {
         TeamMember(id: "demo-u-ava", displayName: "Ava Lindqvist", userId: "demo-u-ava", email: "ava@example.com"),
         TeamMember(id: "demo-u-tom", displayName: "Tom Becker", userId: "demo-u-tom", email: "tom@example.com"),
         TeamMember(id: "demo-u-megan", displayName: "Megan Harper", userId: "demo-u-megan", email: "megan@example.com"),
+        // Not in the demo group chats, so Add People has someone to add.
+        TeamMember(id: "demo-u-daniel", displayName: "Daniel Brooks", userId: "demo-u-daniel", email: "daniel@example.com"),
+        TeamMember(id: "demo-u-olivia", displayName: "Olivia Carter", userId: "demo-u-olivia", email: "olivia@example.com"),
     ]
 
     /// Canned version history for `--demo` file pop-outs (gap-g8).

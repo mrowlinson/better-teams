@@ -116,8 +116,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         wc.placeWindow()
         if options.evidenceActive {
             // Active-appearance capture, requested for unattended runs.
+            // ignoringOtherApps: direct-launched evidence instances have no
+            // LaunchServices activation, so plain activate() politely
+            // declines over another active app and the shot goes inactive.
             wc.window?.makeKeyAndOrderFront(nil)
-            NSApp.activate()
+            NSApp.activate(ignoringOtherApps: true)
             // No field focused: a key window's text view draws the
             // insertion point and input-source indicator in the shot.
             wc.window?.makeFirstResponder(nil)

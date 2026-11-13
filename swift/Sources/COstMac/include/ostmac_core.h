@@ -188,6 +188,20 @@ char *ostmac_delete(const char *chat_id, const char *message_id);
 // {ok, chat_id}. Caller frees.
 char *ostmac_leave(const char *chat_id);
 
+// GAPL2: rename one group chat (blank topic clears the name):
+// {ok, chat_id, topic}. 1:1 chats refused. Caller frees.
+char *ostmac_chat_rename(const char *chat_id, const char *topic);
+
+// GAPL2: add people (JSON array of UPN / AAD id / MRI) to one group chat;
+// history_mode "none" | "days" | "all" (history_days for "days"):
+// {ok, chat_id, results:[{user, ok, error?}]}. Caller frees.
+char *ostmac_chat_members_add(const char *chat_id, const char *users_json,
+                              const char *history_mode, uint32_t history_days);
+
+// GAPL2: remove one other person from a group chat (self refused; use
+// leave): {ok, chat_id, user}. Caller frees.
+char *ostmac_chat_member_remove(const char *chat_id, const char *user);
+
 // Mute (alerts "false") or unmute one chat: {ok, chat_id, muted}. Caller frees.
 char *ostmac_set_chat_muted(const char *chat_id, bool muted);
 

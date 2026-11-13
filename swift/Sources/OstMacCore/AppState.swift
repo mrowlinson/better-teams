@@ -785,6 +785,7 @@ public final class AppState: ObservableObject {
             // muted + unread): the same adoption a fetched page gets.
             rules.adoptServerMutes(DemoData.chats)
             chats.deletePolicy = .allowed
+            chats.manage = .demo // GAPL2: rename / add / remove stay in memory
             unread.seed(ChatListSeed.unreadSeeds(DemoData.chats, mutedIDs: Set(DemoData.chats.filter { $0.muted == true }.map(\.id))))
         } else {
             rules.remote = .live

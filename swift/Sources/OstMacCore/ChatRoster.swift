@@ -165,6 +165,17 @@ public final class ChatRosterStore: ObservableObject {
         }
     }
 
+    /// GAPL2 demo: people added in memory (no refetch). Present MRIs stay.
+    public func applyAdded(_ added: [ChatMember]) {
+        let known = Set(members.map { $0.mri.lowercased() })
+        members = Self.sorted(members + added.filter { !known.contains($0.mri.lowercased()) })
+    }
+
+    /// GAPL2 demo: one person removed in memory.
+    public func applyRemoved(mri: String) {
+        members.removeAll { $0.mri.caseInsensitiveCompare(mri) == .orderedSame }
+    }
+
     /// Owners first, then by name (blank names last, MRI tiebreak).
     nonisolated static func sorted(_ list: [ChatMember]) -> [ChatMember] {
         list.sorted {

@@ -99,6 +99,8 @@ struct ChatRowMenu: View {
         Divider()
         if let row = chats.chat(id: id) {
             if row.is_group {
+                Button("Rename Chat…") { ChatManageActions.rename(id, model) }
+                Button("Add People…") { ChatManageActions.addPeople(id, model) }
                 Button("Leave Chat…") { ChatRowActions.leave(id, chats, model) }
                     .disabled(chats.leavingIDs.contains(id))
             } else if !ChatListFilter.isSelfChat(id) {

@@ -1478,6 +1478,98 @@ pub fn leave_json(chat_id: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Group chat management (GAPL2): rename, add people, remove people
+// ---------------------------------------------------------------------------
+
+/// Rename one group chat (blank topic clears the name). Returns
+/// `{ok:true, chat_id, topic}` or `{ok:false}`. Empty ids and 1:1 chats
+/// are rejected before any network.
+pub fn chat_rename_json(chat_id: &str, topic: &str) -> String {
+    let id = match ost::api::group_thread_id(chat_id) {
+        Ok(id) => id.to_string(),
+        Err(e) => return err_json("arg", e),
+    };
+    let run = || -> Result<String, String> {
+        let rt = rt()?;
+        rt.block_on(async {
+            let client = ost::api::client::TeamsClient::new()
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            ost::api::rename_chat_with_client(&client, &id, topic)
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            Ok(json!({"ok": true, "chat_id": id, "topic": topic.trim()}).to_string())
+        })
+    };
+    run().unwrap_or_else(|e| err_json("rename", e))
+}
+
+/// Add people (JSON array of UPNs / AAD ids / MRIs) to one group chat
+/// with a history mode ("none" | "days" | "all"). Returns `{ok, chat_id,
+/// results:[{user, ok, error?}]}`; `ok` is true only when every add
+/// succeeded. Bad args and 1:1 chats are rejected before any network.
+pub fn chat_members_add_json(chat_id: &str, users_json: &str, history_mode: &str, history_days: u32) -> String {
+    let id = match ost::api::group_thread_id(chat_id) {
+        Ok(id) => id.to_string(),
+        Err(e) => return err_json("arg", e),
+    };
+    let users: Vec<String> = match serde_json::from_str::<Vec<String>>(users_json) {
+        Ok(u) => u.into_iter().filter(|u| !u.trim().is_empty()).collect(),
+        Err(e) => return err_json("arg", format!("users_json: {}", e)),
+    };
+    if users.is_empty() {
+        return err_json("arg", "no members");
+    }
+    let Some(history) = ost::api::ShareHistory::from_mode(history_mode, history_days) else {
+        return err_json("arg", "history_mode");
+    };
+    let run = || -> Result<String, String> {
+        let rt = rt()?;
+        rt.block_on(async {
+            let client = ost::api::client::TeamsClient::new()
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            let results = ost::api::add_chat_members_with_client(&client, &id, &users, history)
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            let all_ok = results.iter().all(|r| r.ok);
+            let rows: Vec<serde_json::Value> = results
+                .iter()
+                .map(|r| json!({"user": r.user, "ok": r.ok, "error": r.error}))
+                .collect();
+            Ok(json!({"ok": all_ok, "chat_id": id, "results": rows}).to_string())
+        })
+    };
+    run().unwrap_or_else(|e| err_json("members_add", e))
+}
+
+/// Remove one other person (UPN / AAD id / MRI) from a group chat.
+/// Returns `{ok:true, chat_id, user}` or `{ok:false}`. Self is refused
+/// (use leave); empty args and 1:1 chats fail before any network.
+pub fn chat_member_remove_json(chat_id: &str, user: &str) -> String {
+    let id = match ost::api::group_thread_id(chat_id) {
+        Ok(id) => id.to_string(),
+        Err(e) => return err_json("arg", e),
+    };
+    if ost::api::member_user_ref(user).is_empty() {
+        return err_json("arg", "empty user");
+    }
+    let run = || -> Result<String, String> {
+        let rt = rt()?;
+        rt.block_on(async {
+            let client = ost::api::client::TeamsClient::new()
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            ost::api::remove_chat_member_with_client(&client, &id, user)
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            Ok(json!({"ok": true, "chat_id": id, "user": user.trim()}).to_string())
+        })
+    };
+    run().unwrap_or_else(|e| err_json("member_remove", e))
+}
+
+// ---------------------------------------------------------------------------
 // Read receipts (om-receipts lane: consumption horizon send + list)
 // ---------------------------------------------------------------------------
 
@@ -3572,6 +3664,40 @@ pub extern "C" fn ostmac_leave(chat_id: *const c_char) -> *mut c_char {
     }
 }
 
+/// Rename one group chat. See [`chat_rename_json`]. Caller frees.
+#[no_mangle]
+pub extern "C" fn ostmac_chat_rename(chat_id: *const c_char, topic: *const c_char) -> *mut c_char {
+    match (cstr_to_string(chat_id), cstr_to_string(topic)) {
+        (Ok(c), Ok(t)) => string_to_c(chat_rename_json(&c, &t)),
+        (Err(e), _) | (_, Err(e)) => string_to_c(err_json("arg", e)),
+    }
+}
+
+/// Add people to one group chat. See [`chat_members_add_json`].
+/// Caller frees.
+#[no_mangle]
+pub extern "C" fn ostmac_chat_members_add(
+    chat_id: *const c_char,
+    users_json: *const c_char,
+    history_mode: *const c_char,
+    history_days: u32,
+) -> *mut c_char {
+    match (cstr_to_string(chat_id), cstr_to_string(users_json), cstr_to_string(history_mode)) {
+        (Ok(c), Ok(u), Ok(m)) => string_to_c(chat_members_add_json(&c, &u, &m, history_days)),
+        (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => string_to_c(err_json("arg", e)),
+    }
+}
+
+/// Remove one person from a group chat. See [`chat_member_remove_json`].
+/// Caller frees.
+#[no_mangle]
+pub extern "C" fn ostmac_chat_member_remove(chat_id: *const c_char, user: *const c_char) -> *mut c_char {
+    match (cstr_to_string(chat_id), cstr_to_string(user)) {
+        (Ok(c), Ok(u)) => string_to_c(chat_member_remove_json(&c, &u)),
+        (Err(e), _) | (_, Err(e)) => string_to_c(err_json("arg", e)),
+    }
+}
+
 /// Mark one conversation read up to a message. See [`mark_read_json`].
 #[no_mangle]
 pub extern "C" fn ostmac_mark_read(
@@ -5233,6 +5359,29 @@ mod tests {
     }
 
     #[test]
+    fn chat_manage_bad_args_fail_before_network() {
+        let one = "19:a_b@unq.gbl.spaces";
+        let g = "19:g@thread.v2";
+        for s in [
+            chat_rename_json("", "x"),
+            chat_rename_json(one, "x"),
+            chat_members_add_json("  ", "[\"a@b.c\"]", "none", 0),
+            chat_members_add_json(one, "[\"a@b.c\"]", "none", 0),
+            chat_members_add_json(g, "[]", "none", 0),
+            chat_members_add_json(g, "[\"  \"]", "all", 0),
+            chat_members_add_json(g, "not json", "all", 0),
+            chat_members_add_json(g, "[\"a@b.c\"]", "bogus", 0),
+            chat_member_remove_json("", "a@b.c"),
+            chat_member_remove_json(one, "a@b.c"),
+            chat_member_remove_json(g, " 8:orgid: "),
+        ] {
+            let v: serde_json::Value = serde_json::from_str(&s).unwrap();
+            assert_eq!(v["ok"], false, "{}", s);
+            assert_eq!(v["error"], "arg", "{}", s);
+        }
+    }
+
+    #[test]
     fn receipt_json_shape() {
         let r = ost::api::ReadReceipt {
             user: "8:orgid:a".to_string(),
@@ -5281,6 +5430,19 @@ mod tests {
             let v: serde_json::Value = serde_json::from_str(&s).unwrap();
             assert_eq!(v["ok"], false);
             assert_eq!(v["error"], "arg");
+
+            for p in [
+                ostmac_chat_rename(std::ptr::null(), std::ptr::null()),
+                ostmac_chat_members_add(std::ptr::null(), std::ptr::null(), std::ptr::null(), 0),
+                ostmac_chat_member_remove(std::ptr::null(), std::ptr::null()),
+            ] {
+                assert!(!p.is_null());
+                let s = CStr::from_ptr(p).to_string_lossy().into_owned();
+                ostmac_free(p);
+                let v: serde_json::Value = serde_json::from_str(&s).unwrap();
+                assert_eq!(v["ok"], false);
+                assert_eq!(v["error"], "arg");
+            }
         }
     }
 

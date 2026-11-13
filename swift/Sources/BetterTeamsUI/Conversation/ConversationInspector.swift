@@ -135,6 +135,9 @@ struct InfoPane: View {
                 } else {
                     senderPeople(isGroup: isGroup, messages: messages)
                 }
+                if isGroup {
+                    Button("Add People…") { ChatManageActions.addPeople(ref, model) }
+                }
             }
             Section {
                 let hidden = rules.isHidden(chatID: ref)
@@ -144,6 +147,7 @@ struct InfoPane: View {
                 // A standard push button: the destructive step is the
                 // NSAlert it opens (§9.5), which carries the red role.
                 if isGroup {
+                    Button("Rename Chat…") { ChatManageActions.rename(ref, model) }
                     Button("Leave Chat…") {
                         model?.confirm(title: "Leave \(name)?",
                                        message: "You won't get new messages from this chat.",
@@ -235,6 +239,13 @@ private struct RosterPeople<Fallback: View>: View {
                     let you = model?.isOwnID(m.presenceID) == true || model?.isOwnID(m.mri) == true
                     MemberRow(name: you ? (model?.ownDisplayName ?? m.displayName) : Self.name(m), isYou: you,
                               status: status(m, you: you), isOwner: isGroup && m.isOwner)
+                    .contextMenu {
+                        if isGroup, !you {
+                            Button("Remove from Chat…") {
+                                ChatManageActions.remove(m, name: Self.name(m), chatID: chatID, model)
+                            }
+                        }
+                    }
                 }
             }
             .task(id: roster.members.map(\.mri)) {

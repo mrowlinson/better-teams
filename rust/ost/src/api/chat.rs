@@ -178,8 +178,17 @@ fn system_label_for(chat_id: &str) -> String {
     .to_string()
 }
 
-/// Display name for a conversation: topic → resolved 1:1 mate name →
-/// last-message sender → system label. Never the raw thread id.
+/// Group-shaped thread ids (`…@thread.v2`, meeting threads): the live
+/// list names untitled ones after their members, never the last sender.
+fn is_group_id(chat_id: &str) -> bool {
+    chat_id.contains("thread") || chat_id.contains("meeting")
+}
+
+/// Display name for a conversation: topic → resolved member/mate names →
+/// (1:1 only) last-message sender → system label. Group chats never fall
+/// back to the last sender (that misattributes the chat to one member);
+/// untitled groups resolve member names in the list pass instead.
+/// Never the raw thread id.
 fn conversation_name(conv: &Conversation, mate: Option<&str>) -> String {
     if let Some(ref props) = conv.thread_properties {
         if let Some(ref topic) = props.topic {
@@ -193,14 +202,17 @@ fn conversation_name(conv: &Conversation, mate: Option<&str>) -> String {
             return m.to_string();
         }
     }
-    if let Some(ref msg) = conv.last_message {
-        if let Some(ref name) = msg.im_display_name {
-            if !name.trim().is_empty() {
-                return name.clone();
+    let id = conv.id.as_deref().unwrap_or("");
+    if !is_group_id(id) {
+        if let Some(ref msg) = conv.last_message {
+            if let Some(ref name) = msg.im_display_name {
+                if !name.trim().is_empty() {
+                    return name.clone();
+                }
             }
         }
     }
-    system_label_for(conv.id.as_deref().unwrap_or(""))
+    system_label_for(id)
 }
 
 /// List recent chats using the native Teams API (prints to stdout).
@@ -1636,6 +1648,44 @@ async fn resolve_mate_name(
         .next()
 }
 
+/// Member display names for an untitled group chat, for the live list
+/// (om-chatnames): roster MRIs minus self, each named by its newest
+/// attributed message (same attribution as [`resolve_mate_name`], in
+/// roster order). `None` when no member has a name — the list then keeps
+/// the `"[Group chat]"` system label rather than the last sender.
+async fn resolve_group_name(
+    client: &TeamsClient,
+    chat_id: &str,
+    self_oid: &str,
+) -> Option<String> {
+    let members = thread_member_mris(client, chat_id).await.ok()?;
+    let others: Vec<String> = members
+        .into_iter()
+        .filter(|m| !mri_is_self(m, self_oid))
+        .collect();
+    if others.is_empty() {
+        return None;
+    }
+    let page = read_messages_page(client, chat_id, 25, None).await.ok()?;
+    let names: Vec<String> = others
+        .iter()
+        .filter_map(|mri| {
+            let mri = mri.to_lowercase();
+            page.messages
+                .iter()
+                .rev()
+                .filter(|m| m.sender_mri.to_lowercase() == mri)
+                .map(|m| m.sender.clone())
+                .filter(|s| !s.trim().is_empty() && s != "?")
+                .next()
+        })
+        .collect();
+    if names.is_empty() {
+        return None;
+    }
+    Some(names.join(", "))
+}
+
 // ---------------------------------------------------------------------------
 // FIXPACK F8: batched, cached 1:1 mate names for chat-list paging
 // ---------------------------------------------------------------------------
@@ -1741,6 +1791,32 @@ pub(crate) async fn resolve_mates_cached(
     now: u64,
     concurrency: usize,
 ) -> HashMap<String, String> {
+    resolve_names_cached(client, ids, me, cache, now, concurrency, false).await
+}
+
+/// Member names for untitled group threads: same cache, batching, and
+/// best-effort rules as the 1:1 mate pass (a cached entry holds the
+/// resolved list name, mate or member list).
+pub(crate) async fn resolve_group_names_cached(
+    client: &TeamsClient,
+    ids: &[String],
+    me: &str,
+    cache: &std::sync::Mutex<MateNames>,
+    now: u64,
+    concurrency: usize,
+) -> HashMap<String, String> {
+    resolve_names_cached(client, ids, me, cache, now, concurrency, true).await
+}
+
+async fn resolve_names_cached(
+    client: &TeamsClient,
+    ids: &[String],
+    me: &str,
+    cache: &std::sync::Mutex<MateNames>,
+    now: u64,
+    concurrency: usize,
+    groups: bool,
+) -> HashMap<String, String> {
     use futures::StreamExt;
     let mut out = HashMap::new();
     let mut misses: Vec<String> = Vec::new();
@@ -1760,7 +1836,11 @@ pub(crate) async fn resolve_mates_cached(
     }
     let found: Vec<(String, Option<String>)> = futures::stream::iter(misses)
         .map(|id| async move {
-            let name = resolve_mate_name(client, &id, me).await;
+            let name = if groups {
+                resolve_group_name(client, &id, me).await
+            } else {
+                resolve_mate_name(client, &id, me).await
+            };
             (id, name)
         })
         .buffer_unordered(concurrency.max(1))
@@ -1774,7 +1854,7 @@ pub(crate) async fn resolve_mates_cached(
             out.insert(id, n);
             any = true;
         } else {
-            tracing::debug!("mate resolve failed for {}", id);
+            tracing::debug!("name resolve failed for {}", id);
         }
     }
     if any {
@@ -2272,10 +2352,11 @@ async fn fill_member_names(client: &TeamsClient, members: &mut [ChatMemberInfo])
 /// List recent chats and return structured data.
 ///
 /// 1:1 chats without a topic are named after the mate (roster MRI
-/// minus self, attributed through message history); every other
-/// fallback is topic → last sender → system label, never a raw id.
-/// Mate resolution is best-effort: roster/history/whoami failures
-/// keep the sender/label fallback, never fail the list.
+/// minus self, attributed through message history); untitled group chats
+/// after their members (same attribution, roster order). Otherwise the
+/// fallback is topic → (1:1 only) last sender → system label, never a
+/// raw id. Resolution is best-effort: roster/history/whoami failures
+/// keep the label fallback, never fail the list.
 pub async fn list_chats_data(client: &TeamsClient, limit: usize) -> Result<Vec<ChatInfo>> {
     // Strategy 1: CSA AFD endpoint with Bearer auth
     let csa_url = format!(
@@ -2318,9 +2399,11 @@ pub async fn list_chats_data(client: &TeamsClient, limit: usize) -> Result<Vec<C
     let conversations = body.conversations.unwrap_or_default();
 
     let mut chats = Vec::new();
-    // (chat index, conversation index) for 1:1 chats without a topic:
-    // the mate name resolves after the first pass (needs whoami OID).
+    // (chat index, conversation index) for chats without a topic:
+    // 1:1 mate names and untitled group member names resolve after the
+    // first pass (both need the whoami OID).
     let mut needs_mate: Vec<(usize, usize)> = Vec::new();
+    let mut needs_group: Vec<(usize, usize)> = Vec::new();
     for (ci, conv) in conversations.iter().enumerate() {
         let id = conv.id.as_deref().unwrap_or("").to_string();
         if id.is_empty() {
@@ -2336,8 +2419,10 @@ pub async fn list_chats_data(client: &TeamsClient, limit: usize) -> Result<Vec<C
             .unwrap_or(true);
         if topic_missing && is_onetoone_id(&id) {
             needs_mate.push((chats.len(), ci));
+        } else if topic_missing && is_group_id(&id) {
+            needs_group.push((chats.len(), ci));
         }
-        let is_group = id.contains("thread") || id.contains("meeting");
+        let is_group = is_group_id(&id);
 
         let (last_time, last_sender, last_preview) = if let Some(ref msg) = conv.last_message {
             let time = msg
@@ -2375,13 +2460,18 @@ pub async fn list_chats_data(client: &TeamsClient, limit: usize) -> Result<Vec<C
         });
     }
 
-    // Second pass: 1:1 mate names via MRI resolve. One whoami for the
-    // owner OID, then per-chat roster + history attribution. Any
-    // failure keeps the first-pass name — the list never fails here.
-    if !needs_mate.is_empty() {
+    // Second pass: 1:1 mate names and untitled group member names via
+    // MRI resolve. One whoami for the owner OID, then per-chat roster +
+    // history attribution. Any failure keeps the first-pass name — the
+    // list never fails here.
+    if !needs_mate.is_empty() || !needs_group.is_empty() {
         let cache = mate_cache_for(&crate::config::active_profile());
         let now = epoch_secs();
-        let ids: Vec<String> = needs_mate.iter().map(|&(ci, _)| chats[ci].id.clone()).collect();
+        let ids: Vec<String> = needs_mate
+            .iter()
+            .chain(needs_group.iter())
+            .map(|&(ci, _)| chats[ci].id.clone())
+            .collect();
         // Cache hits need no whoami; only misses pay for it.
         let cached_only = {
             let g = cache.lock().unwrap_or_else(|e| e.into_inner());
@@ -2393,11 +2483,36 @@ pub async fn list_chats_data(client: &TeamsClient, limit: usize) -> Result<Vec<C
             whoami_data(client).await.ok().map(|m| m.id)
         };
         if let Some(me_id) = me_id {
-            let names = resolve_mates_cached(client, &ids, &me_id, &cache, now, MATE_CONCURRENCY).await;
-            for (chat_idx, conv_idx) in needs_mate {
-                if let Some(mate) = names.get(&chats[chat_idx].id) {
-                    let conv = &conversations[conv_idx];
-                    chats[chat_idx].name = conversation_name(conv, Some(mate));
+            if !needs_mate.is_empty() {
+                let mate_ids: Vec<String> =
+                    needs_mate.iter().map(|&(ci, _)| chats[ci].id.clone()).collect();
+                let names =
+                    resolve_mates_cached(client, &mate_ids, &me_id, &cache, now, MATE_CONCURRENCY)
+                        .await;
+                for (chat_idx, conv_idx) in needs_mate {
+                    if let Some(mate) = names.get(&chats[chat_idx].id) {
+                        let conv = &conversations[conv_idx];
+                        chats[chat_idx].name = conversation_name(conv, Some(mate));
+                    }
+                }
+            }
+            if !needs_group.is_empty() {
+                let group_ids: Vec<String> =
+                    needs_group.iter().map(|&(ci, _)| chats[ci].id.clone()).collect();
+                let names = resolve_group_names_cached(
+                    client,
+                    &group_ids,
+                    &me_id,
+                    &cache,
+                    now,
+                    MATE_CONCURRENCY,
+                )
+                .await;
+                for (chat_idx, conv_idx) in needs_group {
+                    if let Some(members) = names.get(&chats[chat_idx].id) {
+                        let conv = &conversations[conv_idx];
+                        chats[chat_idx].name = conversation_name(conv, Some(members));
+                    }
                 }
             }
         }
@@ -3549,6 +3664,35 @@ src="x">"#));
     }
 
     #[test]
+    fn conversation_name_group_uses_members_never_last_sender() {
+        // Untitled group with a last message: the sender must NOT become
+        // the chat name — members resolve in the list pass instead.
+        let c = conv(
+            r#"{"id":"19:plan@thread.v2",
+                "lastMessage":{"imdisplayname":"Ava Lindqvist","messagetype":"Text","content":"hi"}}"#,
+        );
+        assert!(is_group_id("19:plan@thread.v2"));
+        assert_eq!(conversation_name(&c, None), "[Group chat]");
+        assert_eq!(
+            conversation_name(&c, Some("Ava Lindqvist, Tom Becker")),
+            "Ava Lindqvist, Tom Becker"
+        );
+        // Meeting threads are groups too.
+        let m = conv(
+            r#"{"id":"19:meeting_abc@thread.v2",
+                "lastMessage":{"imdisplayname":"Ava Lindqvist"}}"#,
+        );
+        assert!(is_group_id("19:meeting_abc@thread.v2"));
+        assert_eq!(conversation_name(&m, None), "[Meeting chat]");
+        // Topic still wins on groups.
+        let t = conv(
+            r#"{"id":"19:plan@thread.v2","threadProperties":{"topic":"Design Sync"},
+                "lastMessage":{"imdisplayname":"Ava Lindqvist"}}"#,
+        );
+        assert_eq!(conversation_name(&t, None), "Design Sync");
+    }
+
+    #[test]
     fn mri_helpers_parse_and_match() {
         // Sender MRI = last `from` segment, percent-decoded.
         assert_eq!(
@@ -4402,6 +4546,59 @@ mod mate_batch_tests {
         assert!(cache.lock().unwrap().get("19:two@unq.gbl.spaces", 1_000).is_none(), "failures are retried later");
     }
 
+    #[tokio::test]
+    async fn untitled_group_resolves_member_names_in_roster_order() {
+        const GROUP: &str = "19:standup@thread.v2";
+        const M1: &str = "bbbbbbbb-0000-0000-0000-000000000001";
+        const M2: &str = "bbbbbbbb-0000-0000-0000-000000000002";
+        let fake = Fake::start(vec![
+            (
+                "GET",
+                Box::leak(format!("/chat/v1/threads/{GROUP}/members").into_boxed_str())
+                    as &'static str,
+                200,
+                json!({"members": [
+                    {"id": format!("8:orgid:{ME}")},
+                    {"id": format!("8:orgid:{M1}")},
+                    {"id": format!("8:orgid:{M2}")},
+                ]})
+                .to_string(),
+            ),
+            (
+                "GET",
+                Box::leak(
+                    format!("/chat/v1/users/ME/conversations/{GROUP}/messages").into_boxed_str(),
+                ) as &'static str,
+                200,
+                json!({"messages": [
+                    {"id": "1", "messagetype": "Text", "content": "ship it",
+                     "imdisplayname": "Tom Becker",
+                     "from": format!("https://chat.example.com/v1/users/ME/contacts/8:orgid:{M2}"),
+                     "originalarrivaltime": "2026-09-29T10:00:00.000Z"},
+                    {"id": "2", "messagetype": "Text", "content": "noted",
+                     "imdisplayname": "Ava Lindqvist",
+                     "from": format!("https://chat.example.com/v1/users/ME/contacts/8:orgid:{M1}"),
+                     "originalarrivaltime": "2026-09-29T10:01:00.000Z"},
+                ]})
+                .to_string(),
+            ),
+        ])
+        .await;
+        let cache = Mutex::new(MateNames::default());
+        let got =
+            resolve_group_names_cached(&fake.client(), &[GROUP.to_string()], ME, &cache, 1_000, 2)
+                .await;
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[GROUP], "Ava Lindqvist, Tom Becker");
+        assert_eq!(fake.requests().len(), 2, "one roster + one history read");
+        // Refresh: served from the cache, zero requests.
+        let again =
+            resolve_group_names_cached(&fake.client(), &[GROUP.to_string()], ME, &cache, 2_000, 2)
+                .await;
+        assert_eq!(again, got);
+        assert_eq!(fake.requests().len(), 2, "cache hits make no request");
+    }
+
     #[test]
     fn names_persist_across_a_reload_and_expire() {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join(format!("mate-tests-{}", std::process::id()));
@@ -4417,5 +4614,247 @@ mod mate_batch_tests {
         std::fs::write(&path, "not json").unwrap();
         assert!(MateNames::load(Some(path)).get("19:one@unq.gbl.spaces", 20).is_none());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Group chat management (OstMac §GAPL2): rename, add people, remove people
+// ---------------------------------------------------------------------------
+//
+// Chat service thread writes, the Teams web client's shapes:
+// rename = PUT /v1/threads/{id}/properties?name=topic {"topic": ...};
+// add = PUT /v1/threads/{id}/members/8:orgid:{oid} {"role", "shareHistoryTime"};
+// remove = DELETE /v1/threads/{id}/members/8:orgid:{oid}. Group threads
+// only: 1:1 threads have a fixed roster and no topic, so they are refused
+// before any network. `shareHistoryTime` is the member key the thread GET
+// shows (live 09-30); the add request itself is not live-verified.
+
+/// Trimmed group-thread id, or an error for empty ids and 1:1 threads.
+pub fn group_thread_id(chat_id: &str) -> Result<&str> {
+    let id = chat_id.trim();
+    if id.is_empty() {
+        bail!("empty chat_id");
+    }
+    if is_onetoone_id(id) {
+        bail!("not a group chat");
+    }
+    Ok(id)
+}
+
+/// PUT target for a group thread's topic.
+pub fn thread_topic_url(base: &str, chat_id: &str) -> String {
+    format!("{}/v1/threads/{}/properties?name=topic", base, chat_id.trim())
+}
+
+/// PUT body for a topic; blank clears the group name (Teams allows it).
+pub fn thread_topic_body(topic: &str) -> serde_json::Value {
+    serde_json::json!({ "topic": topic.trim() })
+}
+
+/// How much earlier history a newly added member sees.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShareHistory {
+    /// Only messages from now on.
+    None,
+    /// The past `n` days.
+    Days(u32),
+    /// The whole chat.
+    All,
+}
+
+impl ShareHistory {
+    /// Wire mode + day count (FFI): "none" | "days" | "all".
+    pub fn from_mode(mode: &str, days: u32) -> Option<Self> {
+        match mode.trim().to_ascii_lowercase().as_str() {
+            "none" | "" => Some(Self::None),
+            "days" => Some(Self::Days(days)),
+            "all" => Some(Self::All),
+            _ => None,
+        }
+    }
+
+    /// `shareHistoryTime` (epoch ms): 0 = all history, `now` = none.
+    pub fn share_history_time(self, now_ms: u64) -> u64 {
+        match self {
+            Self::None => now_ms,
+            Self::Days(n) => now_ms.saturating_sub(u64::from(n) * 86_400_000),
+            Self::All => 0,
+        }
+    }
+}
+
+/// PUT body adding one member: `Admin`, like group create (every member
+/// manages the roster), with the history cut-off.
+pub fn chat_add_member_body(history: ShareHistory, now_ms: u64) -> serde_json::Value {
+    serde_json::json!({
+        "role": "Admin",
+        "shareHistoryTime": history.share_history_time(now_ms),
+    })
+}
+
+/// A user ref as given (UPN, AAD id, or roster MRI `8:orgid:{oid}`),
+/// with the MRI prefix stripped so it resolves like an AAD id.
+pub fn member_user_ref(user: &str) -> &str {
+    let u = user.trim();
+    u.strip_prefix("8:orgid:").unwrap_or(u)
+}
+
+/// Per-user outcome of an add.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemberAddResult {
+    pub user: String,
+    pub ok: bool,
+    pub error: Option<String>,
+}
+
+fn now_epoch_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Rename (or clear the name of) one group chat.
+pub async fn rename_chat_with_client(client: &TeamsClient, chat_id: &str, topic: &str) -> Result<()> {
+    let id = group_thread_id(chat_id)?;
+    let url = thread_topic_url(&client.chat_service_url(), id);
+    client.chat_put(&url, &thread_topic_body(topic)).await?;
+    Ok(())
+}
+
+/// Add people to one group chat, one PUT per user in order; each user's
+/// result is reported (a failure does not stop the rest).
+pub async fn add_chat_members_with_client(
+    client: &TeamsClient,
+    chat_id: &str,
+    users: &[String],
+    history: ShareHistory,
+) -> Result<Vec<MemberAddResult>> {
+    let id = group_thread_id(chat_id)?;
+    let users: Vec<&str> = users.iter().map(|u| u.trim()).filter(|u| !u.is_empty()).collect();
+    if users.is_empty() {
+        bail!("no members");
+    }
+    let base = client.chat_service_url();
+    let body = chat_add_member_body(history, now_epoch_ms());
+    let mut out = Vec::new();
+    for u in users {
+        let res = async {
+            let oid = aad_object_id(client, member_user_ref(u)).await?;
+            client
+                .chat_put(&leave_member_url(&base, id, &own_member_mri(&oid)), &body)
+                .await?;
+            Ok::<(), anyhow::Error>(())
+        }
+        .await;
+        out.push(MemberAddResult {
+            user: u.to_string(),
+            ok: res.is_ok(),
+            error: res.err().map(|e| format!("{:#}", e)),
+        });
+    }
+    Ok(out)
+}
+
+/// Remove one other person from a group chat. Removing yourself is
+/// refused (that is Leave).
+pub async fn remove_chat_member_with_client(client: &TeamsClient, chat_id: &str, user: &str) -> Result<()> {
+    let id = group_thread_id(chat_id)?;
+    let r = member_user_ref(user);
+    if r.is_empty() {
+        bail!("empty user");
+    }
+    let oid = aad_object_id(client, r).await?;
+    let me = aad_object_id(client, "me").await?;
+    if oid == me {
+        bail!("cannot remove yourself; leave the chat instead");
+    }
+    let url = leave_member_url(&client.chat_service_url(), id, &own_member_mri(&oid));
+    client.chat_delete(&url, None).await?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod gapl2_tests {
+    use super::*;
+
+    #[test]
+    fn group_thread_id_refuses_empty_and_one_to_one() {
+        assert!(group_thread_id("  ").is_err());
+        assert!(group_thread_id("19:a_b@unq.gbl.spaces").is_err());
+        assert_eq!(group_thread_id(" 19:g@thread.v2 ").unwrap(), "19:g@thread.v2");
+    }
+
+    #[test]
+    fn rename_request_shape() {
+        assert_eq!(
+            thread_topic_url("https://h", " 19:g@thread.v2 "),
+            "https://h/v1/threads/19:g@thread.v2/properties?name=topic"
+        );
+        assert_eq!(thread_topic_body("  Launch  "), serde_json::json!({"topic": "Launch"}));
+        // Blank clears the name.
+        assert_eq!(thread_topic_body("   "), serde_json::json!({"topic": ""}));
+    }
+
+    #[test]
+    fn share_history_times() {
+        let now = 10 * 86_400_000u64;
+        assert_eq!(ShareHistory::None.share_history_time(now), now);
+        assert_eq!(ShareHistory::All.share_history_time(now), 0);
+        assert_eq!(ShareHistory::Days(3).share_history_time(now), 7 * 86_400_000);
+        assert_eq!(ShareHistory::Days(400).share_history_time(now), 0);
+        assert_eq!(ShareHistory::from_mode("DAYS", 2), Some(ShareHistory::Days(2)));
+        assert_eq!(ShareHistory::from_mode("all", 0), Some(ShareHistory::All));
+        assert_eq!(ShareHistory::from_mode("none", 5), Some(ShareHistory::None));
+        assert_eq!(ShareHistory::from_mode("bogus", 0), None);
+    }
+
+    #[test]
+    fn add_member_request_shape() {
+        assert_eq!(
+            chat_add_member_body(ShareHistory::All, 5),
+            serde_json::json!({"role": "Admin", "shareHistoryTime": 0})
+        );
+        assert_eq!(
+            leave_member_url("https://h", "19:g@thread.v2", &own_member_mri("abc")),
+            "https://h/v1/threads/19:g@thread.v2/members/8:orgid:abc"
+        );
+    }
+
+    #[test]
+    fn member_user_ref_strips_mri() {
+        assert_eq!(member_user_ref(" 8:orgid:abc "), "abc");
+        assert_eq!(member_user_ref("pat@example.com"), "pat@example.com");
+    }
+
+    /// Fake server refuses one of two adds: both PUTs go out in order,
+    /// only the refused user is reported failed (the Add People sheet
+    /// then keeps just that person for a retry).
+    #[tokio::test]
+    async fn partial_add_failure_reports_only_the_refused_user() {
+        use crate::api::fake_transport::Fake;
+        const OK: &str = "cccccccc-0000-0000-0000-000000000001";
+        const NO: &str = "cccccccc-0000-0000-0000-000000000002";
+        let fake = Fake::start(vec![
+            (
+                "PUT",
+                "/chat/v1/threads/19:g@thread.v2/members/8:orgid:cccccccc-0000-0000-0000-000000000002",
+                403,
+                "{}".to_string(),
+            ),
+            ("PUT", "/chat/v1/threads/19:g@thread.v2/members/", 200, "{}".to_string()),
+        ])
+        .await;
+        let users = vec![OK.to_string(), NO.to_string()];
+        let got = add_chat_members_with_client(&fake.client(), "19:g@thread.v2", &users, ShareHistory::All)
+            .await
+            .unwrap();
+        assert_eq!(got.len(), 2);
+        assert!(got[0].ok && got[0].user == OK && got[0].error.is_none());
+        assert!(!got[1].ok && got[1].user == NO && got[1].error.is_some());
+        let puts: Vec<_> = fake.requests().into_iter().filter(|r| r.method == "PUT").collect();
+        assert_eq!(puts.len(), 2, "a refusal does not stop the rest");
+        assert!(puts[0].path.ends_with(OK) && puts[1].path.ends_with(NO));
+        assert_eq!(puts[0].json(), serde_json::json!({"role": "Admin", "shareHistoryTime": 0}));
     }
 }

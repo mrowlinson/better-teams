@@ -181,6 +181,12 @@ private struct TrailingIconLabel: LabelStyle {
 struct DirectoryResults: View {
     @ObservedObject var contacts: ContactsStore
     @Binding var people: [TeamMember]
+    /// People already in the chat (Add People hides them).
+    var members: [ChatMember] = []
+
+    private var rows: [TeamMember] {
+        members.isEmpty ? contacts.results : ChatManageRule.addable(contacts.results, members: members)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -188,7 +194,7 @@ struct DirectoryResults: View {
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.secondary)
             List {
-                ForEach(contacts.results) { p in
+                ForEach(rows) { p in
                     let added = people.contains { $0.id == p.id }
                     Button {
                         if added { people.removeAll { $0.id == p.id } } else { people.append(p) }
@@ -220,7 +226,9 @@ struct DirectoryResults: View {
                 } else if let error = contacts.error, contacts.results.isEmpty {
                     ContentUnavailableView("Couldn't Search People", systemImage: "exclamationmark.triangle",
                                            description: Text(error))
-                } else if contacts.results.isEmpty {
+                } else if rows.isEmpty, contacts.lastQuery.isEmpty {
+                    ContentUnavailableView("Search for People", systemImage: "magnifyingglass")
+                } else if rows.isEmpty {
                     ContentUnavailableView.search(text: contacts.lastQuery)
                 }
             }
