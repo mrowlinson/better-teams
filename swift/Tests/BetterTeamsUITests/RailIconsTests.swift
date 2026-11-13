@@ -186,9 +186,28 @@ final class RailIconsTests: XCTestCase {
         window.appearance = NSAppearance(named: appearance)
         window.contentView = host
         host.layoutSubtreeIfNeeded()
-        if settle { RunLoop.current.run(until: Date().addingTimeInterval(0.2)); host.layoutSubtreeIfNeeded() }
-        let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds)!
-        host.cacheDisplay(in: host.bounds, to: rep)
+        func capture() -> NSBitmapImageRep {
+            let r = host.bitmapImageRepForCachingDisplay(in: host.bounds)!
+            host.cacheDisplay(in: host.bounds, to: r)
+            return r
+        }
+        var rep = capture()
+        if settle {
+            // Settled = two consecutive captures are identical AND something
+            // is drawn (every view here carries a label, so an all-one-colour
+            // capture is a render that has not happened yet). A fixed 0.2 s
+            // spin only ever waited out the scheduler, not the render.
+            var prev: Data?
+            TestWait.spinUntil(slice: 0.02) {
+                host.layoutSubtreeIfNeeded()
+                rep = capture()
+                let bytes = Data(bytes: rep.bitmapData!, count: rep.bytesPerRow * rep.pixelsHigh)
+                defer { prev = bytes }
+                guard prev == bytes else { return false }
+                let first = bytes.prefix(4)
+                return stride(from: 4, to: bytes.count - 3, by: 4).contains { bytes[$0 ..< $0 + 4] != first }
+            }
+        }
         window.close()
         // Point → pixel rows/columns in the flipped host (top-left origin).
         let scale = Double(rep.pixelsWide) / size.width

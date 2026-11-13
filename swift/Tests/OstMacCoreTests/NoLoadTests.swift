@@ -157,61 +157,76 @@ final class NoLoadTests: XCTestCase {
         ("chats", 2.0), ("teams", 3.0), ("todo", 1.5), ("planner", 3.0),
         ("recordings", 41.8), ("transcripts", 58.1), ("files", 4.0),
     ]
-    /// 1 live second = 10 test milliseconds.
-    private static let scale = 0.01
+    /// Virtual clock (live seconds): a simulated fetch advances virtual time
+    /// instead of sleeping, so the launch model's ordering cannot be bent by
+    /// machine load. Time only moves once every participating task is blocked
+    /// in `sleep` (or finished), then jumps to the earliest wake-up.
+    private actor VirtualClock {
+        private(set) var now = 0.0
+        private var running: Int
+        private var waiters: [(due: Double, cont: CheckedContinuation<Void, Never>)] = []
 
-    /// Blocking fetch (like the FFI) on a GCD queue, not the cooperative
-    /// pool: the pool is core-count wide, so 7 blocked "fetches" would
-    /// queue behind each other on a small or loaded machine and turn the
-    /// parallel launch back into a serial one (the F10 flake). GCD adds
-    /// threads for blocked work, as the app's own off-pool reads do.
-    private static func fetch(_ seconds: Double) async {
-        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
-            DispatchQueue.global(qos: .userInitiated).async {
-                Thread.sleep(forTimeInterval: seconds * scale)
-                c.resume()
+        init(participants: Int) { running = participants }
+
+        func sleep(_ seconds: Double) async {
+            await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+                waiters.append((now + seconds, c))
+                running -= 1
+                advanceIfIdle()
             }
         }
-    }
 
-    private static func since(_ t0: UInt64) -> Double {
-        Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e9 / scale // live seconds
+        /// A participant is finished (it will never sleep again).
+        func finish() {
+            running -= 1
+            advanceIfIdle()
+        }
+
+        private func advanceIfIdle() {
+            guard running == 0, let next = waiters.map(\.due).min() else { return }
+            now = next
+            let due = waiters.filter { $0.due <= next }
+            waiters.removeAll { $0.due <= next }
+            running += due.count
+            for w in due { w.cont.resume() }
+        }
     }
 
     /// Old launch (sequential) vs new (parallel waves + idle pass), cold
     /// cache; warm = snapshot restore from disk (real SectionCache).
     func testTimeToContentBeforeAfter() async throws {
         let f = Dictionary(uniqueKeysWithValues: Self.fixture)
-        // Before: chats → teams → todo → planner → recordings →
-        // transcripts → files, each awaited.
+        // Before: chats -> teams -> todo -> planner -> recordings ->
+        // transcripts -> files, each awaited.
         var before: [String: Double] = [:]
-        var t0 = DispatchTime.now().uptimeNanoseconds
+        let seq = VirtualClock(participants: 1)
         for (name, s) in Self.fixture {
-            await Self.fetch(s)
-            before[name] = Self.since(t0)
+            await seq.sleep(s)
+            before[name] = await seq.now
         }
-        // After: chats ∥ teams; To Do ∥ Planner after chats; Files after
-        // teams; recordings ∥ transcripts after the 2s idle delay.
-        // Load only ever ADDS latency, so the honest estimate of the launch
-        // is the best of a few runs (the comparison below is unchanged).
-        func runAfter() async -> [String: Double] {
-            var out: [String: Double] = [:]
-            let start = DispatchTime.now().uptimeNanoseconds
-            await withTaskGroup(of: (String, Double).self) { g in
-                g.addTask { await Self.fetch(f["teams"]!); return ("teams", await Self.since(start)) }
-                g.addTask { await Self.fetch(f["chats"]!); return ("chats", await Self.since(start)) }
-                g.addTask { await Self.fetch(f["chats"]!); await Self.fetch(f["todo"]!); return ("todo", await Self.since(start)) }
-                g.addTask { await Self.fetch(f["chats"]!); await Self.fetch(f["planner"]!); return ("planner", await Self.since(start)) }
-                g.addTask { await Self.fetch(f["teams"]!); await Self.fetch(f["files"]!); return ("files", await Self.since(start)) }
-                g.addTask { await Self.fetch(2.0); await Self.fetch(f["recordings"]!); return ("recordings", await Self.since(start)) }
-                g.addTask { await Self.fetch(2.0); await Self.fetch(f["transcripts"]!); return ("transcripts", await Self.since(start)) }
-                for await (k, v) in g { out[k] = v }
+        await seq.finish()
+        // After: chats || teams; To Do || Planner after chats; Files after
+        // teams; recordings || transcripts after the 2s idle delay.
+        let par = VirtualClock(participants: 7)
+        let after: [String: Double] = await withTaskGroup(of: (String, Double).self) { g in
+            func chain(_ name: String, _ steps: [Double]) {
+                g.addTask {
+                    for s in steps { await par.sleep(s) }
+                    let t = await par.now
+                    await par.finish()
+                    return (name, t)
+                }
             }
+            chain("teams", [f["teams"]!])
+            chain("chats", [f["chats"]!])
+            chain("todo", [f["chats"]!, f["todo"]!])
+            chain("planner", [f["chats"]!, f["planner"]!])
+            chain("files", [f["teams"]!, f["files"]!])
+            chain("recordings", [2.0, f["recordings"]!])
+            chain("transcripts", [2.0, f["transcripts"]!])
+            var out: [String: Double] = [:]
+            for await (k, v) in g { out[k] = v }
             return out
-        }
-        var after = await runAfter()
-        for _ in 0 ..< 2 where after["files"]! >= before["files"]! / 5 || after["planner"]! >= before["planner"]! {
-            for (k, v) in await runAfter() { after[k] = min(after[k] ?? v, v) }
         }
         // Warm: real disk snapshots, fresh cache instances (no memory).
         let seed = SectionCache(directory: dir)

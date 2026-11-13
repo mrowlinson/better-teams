@@ -93,12 +93,17 @@ final class ChatListPagingTests: XCTestCase {
 
         // Superseded (account switch mid-fetch): never left on .loading.
         let gate = DispatchSemaphore(value: 0)
+        let entered = PageCallCounter()
         let slow = ChatListViewModel(fetcher: { _ in
+            entered.bump()
             gate.wait()
             return ChatsResponse(ok: true, chats: [self.chatSync("x", 1)])
         })
         let task = Task { await slow.load() }
-        await Task.yield()
+        // Reset only once the fetch is genuinely in flight (a single
+        // Task.yield does not guarantee the load task has started).
+        let inFlight = await TestWait.until { entered.value == 1 }
+        XCTAssertTrue(inFlight, "control: fetch started before the reset")
         slow.resetForAccount()
         gate.signal()
         await task.value
