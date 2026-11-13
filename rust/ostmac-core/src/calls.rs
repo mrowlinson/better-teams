@@ -92,6 +92,8 @@ struct StoredCall {
     thread_id: String,
     display_name: String,
     trouter_surl: String,
+    // Meeting lobby control links from the phase-2 join response.
+    lobby_links: signaling::LobbyLinks,
 }
 
 fn current() -> &'static Mutex<Option<StoredCall>> {
@@ -380,6 +382,7 @@ fn note_incoming(n: CallNotification) -> (CallInfo, bool) {
         thread_id: String::new(),
         display_name: String::new(),
         trouter_surl: String::new(),
+        lobby_links: signaling::LobbyLinks::default(),
     });
     (info, true)
 }
@@ -924,6 +927,126 @@ pub fn call_record_inject_json() -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Meeting lobby (organizer admit / admit all / deny)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum LobbyAction {
+    Admit,
+    AdmitAll,
+    Deny,
+}
+
+impl LobbyAction {
+    fn name(self) -> &'static str {
+        match self {
+            LobbyAction::Admit => "admit",
+            LobbyAction::AdmitAll => "admit_all",
+            LobbyAction::Deny => "deny",
+        }
+    }
+}
+
+/// Admit one lobby participant into the active meeting call.
+pub fn call_lobby_admit_json(mri: &str, name: &str) -> String {
+    lobby_json(LobbyAction::Admit, mri, name)
+}
+
+/// Admit everyone waiting in the lobby of the active meeting call.
+pub fn call_lobby_admit_all_json() -> String {
+    lobby_json(LobbyAction::AdmitAll, "", "")
+}
+
+/// Deny (remove) one lobby participant of the active meeting call.
+pub fn call_lobby_deny_json(mri: &str, name: &str) -> String {
+    lobby_json(LobbyAction::Deny, mri, name)
+}
+
+/// POST the ACS-shaped lobby body to the link the join response gave
+/// this call. Only an organizer / presenter join gets the links.
+fn lobby_json(action: LobbyAction, mri: &str, name: &str) -> String {
+    if action != LobbyAction::AdmitAll && mri.trim().is_empty() {
+        return err_json("arg", "lobby participant id is empty");
+    }
+    let stored = {
+        let guard = lock_current();
+        match guard.as_ref() {
+            Some(s) if s.info.dir == "out" && s.info.active() && !s.endpoint_id.is_empty() => {
+                let l = &s.lobby_links;
+                let link = match action {
+                    LobbyAction::Admit => l.admit.clone(),
+                    LobbyAction::AdmitAll => l.admit_all.clone(),
+                    LobbyAction::Deny => l.remove_participant.clone(),
+                };
+                (
+                    link,
+                    s.caller_mri.clone(),
+                    s.display_name.clone(),
+                    s.endpoint_id.clone(),
+                    s.participant_id.clone(),
+                    s.trouter_surl.clone(),
+                )
+            }
+            _ => return err_json("no_call", "lobby control needs a joined meeting call"),
+        }
+    };
+    let (link, caller_mri, display_name, endpoint_id, participant_id, surl) = stored;
+    let Some(link) = link else {
+        return err_json(
+            "no_link",
+            format!("the join gave no {} link (not an organizer, or not a meeting)", action.name()),
+        );
+    };
+    let me = signaling::SelfParticipant {
+        id: &caller_mri,
+        display_name: &display_name,
+        endpoint_id: &endpoint_id,
+        participant_id: &participant_id,
+    };
+    let payload = lobby_payload(action, &me, &surl, mri, name, &gen_id());
+    let cfg = match Config::load_cached() {
+        Ok(c) => c,
+        Err(e) => return err_json("auth", e),
+    };
+    let Some(ic3) = cfg.get_ic3_token().filter(|t| !t.is_expired()).map(|t| t.token) else {
+        return err_json("auth", "no usable ic3 token; sign in first");
+    };
+    let chain_id = gen_id();
+    let run = || -> Result<(), String> {
+        let rt = rt()?;
+        rt.block_on(async {
+            let region = signaling::TeamsRegion::from_config_or_env(&cfg);
+            signaling::post_lobby_link(&http(), &link, &ic3, &chain_id, &region, &payload)
+                .await
+                .map(|_| ())
+                .map_err(|e| format!("{:#}", e))
+        })
+    };
+    match run() {
+        Ok(()) => {
+            crate::call_roster::diag(format!("lobby {} sent", action.name()));
+            serde_json::json!({"ok": true, "action": action.name(), "id": mri}).to_string()
+        }
+        Err(e) => err_json("lobby", e),
+    }
+}
+
+fn lobby_payload(
+    action: LobbyAction,
+    me: &signaling::SelfParticipant<'_>,
+    surl: &str,
+    mri: &str,
+    name: &str,
+    guid: &str,
+) -> serde_json::Value {
+    match action {
+        LobbyAction::Admit => signaling::lobby_admit_payload(me, surl, mri, name, guid),
+        LobbyAction::AdmitAll => signaling::lobby_admit_all_payload(me, surl, guid),
+        LobbyAction::Deny => signaling::lobby_remove_payload(me, surl, mri, name),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Outgoing place (+ echo bot)
 // ---------------------------------------------------------------------------
 
@@ -1288,6 +1411,35 @@ pub fn call_echo_live_json(timeout_secs: i32) -> String {
     place_inner(None, true, clamp_timeout(timeout_secs), true, false, None)
 }
 
+/// Caller tenant for call placement: stored `tenant_id`, else the access
+/// token's `tid` claim (browser sign-in saves access+refresh but never
+/// writes `tenant_id`; tenancy doesn't expire, so the claims read ignores
+/// expiry like [`crate::apphost::identity_from_jwt`]). In-memory only —
+/// the call path never writes config.toml. `None` (no usable token at all)
+/// keeps the "sign in first" gate. Covers every `cfg.tenant_id` consumer
+/// (place_inner is the only one).
+fn caller_tenant_id(cfg: &Config) -> Option<String> {
+    use ost::auth::TokenStore;
+    if let Some(t) = cfg
+        .tenant_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+    {
+        return Some(t.to_string());
+    }
+    let tid = cfg
+        .get_access_token()
+        .and_then(|t| crate::apphost::identity_from_jwt(&t.token))
+        .and_then(|v| {
+            v.get("tenant_id")
+                .and_then(|x| x.as_str())
+                .map(str::to_string)
+        })?;
+    let tid = tid.trim().to_string();
+    (!tid.is_empty()).then_some(tid)
+}
+
 fn place_inner(
     thread_override: Option<&str>,
     echo: bool,
@@ -1319,7 +1471,7 @@ fn place_inner(
         Some(g) => g,
         None => return err_json("auth", "no region_gtms; sign in first"),
     };
-    let tenant_id = match cfg.tenant_id.clone() {
+    let tenant_id = match caller_tenant_id(&cfg) {
         Some(t) => t,
         None => return err_json("auth", "no tenant_id; sign in first"),
     };
@@ -1402,6 +1554,7 @@ fn place_inner(
             thread_id: thread_id.clone(),
             display_name: display_name.clone(),
             trouter_surl: String::new(),
+            lobby_links: signaling::LobbyLinks::default(),
         });
     }
 
@@ -1563,7 +1716,7 @@ fn place_inner(
                     tenant_id: t.as_deref(),
                 }),
             };
-            let controller = if is_1to1 {
+            let (controller, lobby_links) = if is_1to1 {
                 let (created, _) =
                     signaling::create_1to1_call(&http, &epconv_url, &params, &offer.sdp)
                         .await
@@ -1583,7 +1736,7 @@ fn place_inner(
                     .await
                     .map_err(|e| format!("invite: {:#}", e))?;
                 }
-                created.conversation_controller
+                (created.conversation_controller, signaling::LobbyLinks::default())
             } else {
                 let created = signaling::create_conversation(&http, &epconv_url, &params)
                     .await
@@ -1596,26 +1749,30 @@ fn place_inner(
                     &group_join_modalities(live, video, share_local.is_some()),
                 )
                 .await;
-                if let Err(e) = joined {
-                    if share_local.is_none() {
-                        return Err(format!("place phase2: {:#}", e));
+                let joined = match joined {
+                    Ok(j) => j,
+                    Err(e) => {
+                        if share_local.is_none() {
+                            return Err(format!("place phase2: {:#}", e));
+                        }
+                        // The share leg's m-line is modelled on Teams SDP, not
+                        // a spec: a join refused with it retries once without
+                        // (audio + video still join).
+                        share_local = None;
+                        join_warns.push("share leg refused at join; joined without it".to_string());
+                        signaling::join_conversation_with_modalities(
+                            &http,
+                            &created.conversation_controller,
+                            &params,
+                            &plain_offer,
+                            &group_join_modalities(live, video, false),
+                        )
+                        .await
+                        .map_err(|e| format!("place phase2: {:#}", e))?
                     }
-                    // The share leg's m-line is modelled on Teams SDP, not
-                    // a spec: a join refused with it retries once without
-                    // (audio + video still join).
-                    share_local = None;
-                    join_warns.push("share leg refused at join; joined without it".to_string());
-                    signaling::join_conversation_with_modalities(
-                        &http,
-                        &created.conversation_controller,
-                        &params,
-                        &plain_offer,
-                        &group_join_modalities(live, video, false),
-                    )
-                    .await
-                    .map_err(|e| format!("place phase2: {:#}", e))?;
-                }
-                created.conversation_controller
+                };
+                // Organizer lobby control (admit / admit all / deny).
+                (created.conversation_controller, joined.lobby_links())
             };
             // Answer wait on our own socket (bg feed has another epid).
             let acc = wait_acceptance(&mut ws, timeout).await?;
@@ -1643,6 +1800,7 @@ fn place_inner(
                     s.participant_id = participant_id;
                     s.endpoint_id = endpoint_id;
                     s.trouter_surl = surl;
+                    s.lobby_links = lobby_links;
                 }
             }
             // Live handoff: sockets (as std, runtime-free) + offer crypto /
@@ -1713,6 +1871,18 @@ fn place_inner(
             // Keep the call's Trouter leg for the call: roster, media
             // controller signals and remote end arrive (and are acked) there.
             crate::call_roster::reset(&call_id, &caller_mri);
+            let lobby_diag = lock_current().as_ref().filter(|s| s.info.id == call_id).map(|s| {
+                let l = &s.lobby_links;
+                format!(
+                    "lobby links: admit {} admitAll {} remove {}",
+                    l.admit.is_some(),
+                    l.admit_all.is_some(),
+                    l.remove_participant.is_some()
+                )
+            });
+            if let Some(line) = lobby_diag {
+                crate::call_roster::diag(line);
+            }
             spawn_call_pump(ws, call_id.clone());
             if let (true, Some(p)) = (offers_share, handoff.as_ref()) {
                 crate::call_roster::diag(if p.share.is_some() {
@@ -2168,6 +2338,51 @@ mod tests {
         assert_eq!(e["ok"], false);
     }
 
+    /// Lobby control needs a joined call that got the link; no network
+    /// is touched on any refusal.
+    #[test]
+    fn lobby_control_refuses_without_call_or_link() {
+        let _g = test_lock();
+        clear_current();
+        let e: serde_json::Value = serde_json::from_str(&call_lobby_admit_json("8:x", "X")).unwrap();
+        assert_eq!(e["error"], "no_call");
+        let e: serde_json::Value = serde_json::from_str(&call_lobby_deny_json(" ", "X")).unwrap();
+        assert_eq!(e["error"], "arg");
+        *lock_current() = Some(StoredCall {
+            info: CallInfo {
+                id: "c9".into(),
+                dir: "out".into(),
+                peer: String::new(),
+                peer_name: String::new(),
+                thread: "19:meeting_x@thread.v2".into(),
+                state: "connected".into(),
+                controller: None,
+                started_at: 0,
+                detail: None,
+                live_media: false,
+                connected_at: None,
+            },
+            end_url: None,
+            notification: None,
+            caller_mri: "8:orgid:me".into(),
+            participant_id: "pid".into(),
+            endpoint_id: "ep".into(),
+            thread_id: String::new(),
+            display_name: "Me".into(),
+            trouter_surl: "https://t/".into(),
+            lobby_links: signaling::LobbyLinks::default(),
+        });
+        let e: serde_json::Value = serde_json::from_str(&call_lobby_admit_all_json()).unwrap();
+        assert_eq!(e["error"], "no_link", "attendee join has no admitAll link");
+        let me = signaling::SelfParticipant { id: "8:orgid:me", display_name: "Me", endpoint_id: "ep", participant_id: "pid" };
+        let a = lobby_payload(LobbyAction::Admit, &me, "https://t/", "8:g", "G", "u1");
+        assert_eq!(a["participants"]["to"][0]["id"], "8:g");
+        assert!(a["links"].get("admitSuccess").is_some());
+        let d = lobby_payload(LobbyAction::Deny, &me, "https://t/", "8:g", "G", "u1");
+        assert!(d["links"].get("removeParticipantSuccess").is_some());
+        clear_current();
+    }
+
     #[test]
     fn group_join_payload_carries_video() {
         let region = signaling::TeamsRegion::default();
@@ -2253,5 +2468,44 @@ mod tests {
         assert_eq!(group_join_modalities(true, false, true), vec!["Audio", "Video", "ScreenViewer"]);
         assert_eq!(group_join_modalities(true, true, false), vec!["Audio", "Video"]);
         assert_eq!(group_join_modalities(false, false, false), vec!["Audio"]);
+    }
+
+    fn fixture_jwt(payload: &str) -> String {
+        use base64::Engine;
+        let body = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(payload);
+        format!("h.{}.sig", body)
+    }
+
+    fn cfg_with(tenant: Option<&str>, access: Option<&str>) -> Config {
+        let mut cfg = Config::default();
+        cfg.tenant_id = tenant.map(str::to_string);
+        if let Some(t) = access {
+            cfg.access_token = Some(ost::auth::StoredToken::new(t.to_string(), None));
+        }
+        cfg
+    }
+
+    #[test]
+    fn caller_tenant_prefers_stored_over_token_claim() {
+        let cfg = cfg_with(Some("stored-t"), Some(&fixture_jwt(r#"{"tid":"token-t"}"#)));
+        assert_eq!(caller_tenant_id(&cfg).as_deref(), Some("stored-t"));
+    }
+
+    #[test]
+    fn caller_tenant_falls_back_to_access_token_tid() {
+        let cfg = cfg_with(None, Some(&fixture_jwt(r#"{"tid":"t-1","oid":"o-2"}"#)));
+        assert_eq!(caller_tenant_id(&cfg).as_deref(), Some("t-1"));
+    }
+
+    #[test]
+    fn caller_tenant_gate_fires_without_usable_token() {
+        // Negative controls: the "sign in first" gate must still fire.
+        assert_eq!(caller_tenant_id(&cfg_with(None, None)), None);
+        assert_eq!(caller_tenant_id(&cfg_with(None, Some("nope"))), None);
+        assert_eq!(
+            caller_tenant_id(&cfg_with(None, Some(&fixture_jwt(r#"{"tid":""}"#)))),
+            None
+        );
+        assert_eq!(caller_tenant_id(&cfg_with(Some("  "), None)), None);
     }
 }

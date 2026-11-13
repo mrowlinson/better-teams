@@ -42,7 +42,7 @@ final class FixPack3Tests: XCTestCase {
                                                   textInputButtonTitle: "Send", textInputPlaceholder: "Message")
         let ids = Set(SystemNotificationCenter.categories(reply: reply).map(\.identifier))
         XCTAssertEqual(ids, [SystemNotificationCenter.categoryID, MentionAlert.categoryID, OmCallInfo.categoryID,
-                             MeetingNotifyInfo.categoryID, PresenceUndoInfo.categoryID])
+                             MeetingNotifyInfo.categoryID, MeetingLobbyInfo.categoryID, PresenceUndoInfo.categoryID])
         XCTAssertTrue(ids.contains("OM_MEETING"), "the Join banner keeps its category after any message post")
     }
 

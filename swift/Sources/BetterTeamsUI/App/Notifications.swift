@@ -46,6 +46,14 @@ final class NotificationRouter {
         observe(.omNotifShowCall) { [weak self] _ in
             self?.shell?.model.call?.show()
         }
+        observe(.omNotifLobby) { [weak self] info in
+            guard let call = self?.shell?.model.call, let id = info["participantID"] as? String else { return }
+            if info["admit"] as? Bool == true, let lobby = call.meetingVideo?.lobbyQueue {
+                Task { await lobby.admit(id: id) }
+            } else {
+                call.show()
+            }
+        }
         observe(.omNotifMeeting) { [weak self] info in
             guard let self, let wc = self.shell, let id = info["meetingID"] as? String else { return }
             let join = info["join"] as? Bool ?? false

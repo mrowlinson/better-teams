@@ -623,9 +623,18 @@ char *ostmac_video_subscribe(const char *msis_json);
 
 // Roster of the active placed call: {ok, call_id, updates,
 // participants:[{id, name, audio_msi?, video_msi?, video_on, screen_msi?,
-// screen_on, muted?, is_self}], dominant_msi?, dominant_id?, log:[...]}.
+// screen_on, muted?, is_self}], lobby:[{id, name}], dominant_msi?,
+// dominant_id?, log:[...]}. lobby = meeting lobby waiters (not in call).
 // log lines are drained per read. Caller frees. No network.
 char *ostmac_call_roster(void);
+
+// Meeting lobby control on the active meeting call (organizer /
+// presenter joins only; the join response carries the links).
+// -> {ok:true, action, id} | {ok:false, error:"no_call"|"no_link"|
+// "auth"|"arg"|"lobby", detail}. Blocks on the network. Caller frees.
+char *ostmac_call_lobby_admit(const char *mri, const char *name);
+char *ostmac_call_lobby_admit_all(void);
+char *ostmac_call_lobby_deny(const char *mri, const char *name);
 
 // Offline loopback: run queued send units through packetize -> SRTP ->
 // depacketize -> incoming queue (no network/auth/hardware).
