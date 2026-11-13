@@ -6,6 +6,7 @@
 // to ReadSync only while this window is key (TimelineViewController gate
 // + AppState.noteViewingLatest: popped chats count as open).
 import AppKit
+import Combine
 import OstMacCore
 import SwiftUI
 import Translation
@@ -151,6 +152,8 @@ final class PopoutToolbar: NSObject, NSToolbarDelegate, NSToolbarItemValidation 
     /// (name, presence or member count changed after opening).
     @MainActor final class IdentityRefit { weak var host: NSView? }
     private var identityBox: IdentityRefit?
+    /// Glass or Glass-free, re-applied to the toolbar items live (`Chrome`).
+    private var chromeToken: AnyCancellable?
 
     /// Sizes the identity accessory to its content, capped at
     /// `PopoutContactView.size.width`.
@@ -166,6 +169,9 @@ final class PopoutToolbar: NSObject, NSToolbarDelegate, NSToolbarItemValidation 
         toolbar.displayMode = .iconOnly
         toolbar.allowsUserCustomization = false
         toolbar.centeredItemIdentifiers = [Self.tabsItem]
+        chromeToken = Chrome.observe { [weak toolbar] glass in
+            Chrome.apply(.toolbarItems, glass: glass, to: toolbar?.items ?? [])
+        }
         return toolbar
     }
 
@@ -196,6 +202,7 @@ final class PopoutToolbar: NSObject, NSToolbarDelegate, NSToolbarItemValidation 
             item.toolTip = item.label
             item.image = NSImage(systemSymbolName: video ? "video" : "phone", accessibilityDescription: item.label)
             item.isBordered = true
+            Chrome.apply(.toolbarItems, glass: Chrome.usesGlass, to: [item])
             item.visibilityPriority = .high // the last to overflow
             item.target = self
             item.action = video ? #selector(startVideoCall(_:)) : #selector(startAudioCall(_:))

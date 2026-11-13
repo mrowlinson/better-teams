@@ -415,8 +415,6 @@ final class ImageViewerController: NSWindowController, NSWindowDelegate {
         zoomSlider.setAccessibilityLabel("Zoom")
         zoomSlider.widthAnchor.constraint(equalToConstant: 110).isActive = true
 
-        let bar = ImageViewerChrome.makeBar()
-
         func button(_ symbol: String, _ label: String, _ action: Selector) -> NSButton {
             let b = NSButton(image: NSImage(systemSymbolName: symbol, accessibilityDescription: label) ?? NSImage(),
                              target: self, action: action)
@@ -464,7 +462,7 @@ final class ImageViewerController: NSWindowController, NSWindowDelegate {
         stack.spacing = 8
         stack.edgeInsets = NSEdgeInsets(top: 6, left: 10, bottom: 6, right: 10)
         stack.translatesAutoresizingMaskIntoConstraints = false
-        bar.addSubview(stack)
+        let bar = ImageViewerChrome.makeBar(content: stack)
 
         root.addSubview(scroll)
         root.addSubview(bar)
@@ -474,10 +472,6 @@ final class ImageViewerController: NSWindowController, NSWindowDelegate {
             // Below the titlebar: the chrome is part of the window size.
             scroll.topAnchor.constraint(equalTo: (w.contentLayoutGuide as? NSLayoutGuide)?.topAnchor ?? root.topAnchor),
             scroll.bottomAnchor.constraint(equalTo: root.bottomAnchor),
-            stack.leadingAnchor.constraint(equalTo: bar.leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: bar.trailingAnchor),
-            stack.topAnchor.constraint(equalTo: bar.topAnchor),
-            stack.bottomAnchor.constraint(equalTo: bar.bottomAnchor),
             bar.centerXAnchor.constraint(equalTo: root.centerXAnchor),
             bar.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -14),
             bar.widthAnchor.constraint(lessThanOrEqualTo: root.widthAnchor, constant: -28),

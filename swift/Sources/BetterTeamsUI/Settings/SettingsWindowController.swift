@@ -26,7 +26,7 @@ public final class SettingsWindowController: NSWindowController, NSWindowDelegat
 
     /// Every pane's width: wide enough for the whole toolbar, so no tab
     /// hides behind the overflow chevron.
-    static let paneWidth: CGFloat = 640
+    static let paneWidth: CGFloat = 700
 
     /// The main window whose account the panes edit (weak; set at launch).
     static weak var model: WindowModel?
@@ -34,6 +34,9 @@ public final class SettingsWindowController: NSWindowController, NSWindowDelegat
     static let panes: [Pane] = [
         Pane(id: "general", label: "General", symbol: "gearshape") {
             host(GeneralPane(settings: .shared, login: model?.options.demo == false ? model?.app?.loginItems : nil))
+        },
+        Pane(id: "appearance", label: "Appearance", symbol: "circle.lefthalf.filled") {
+            host(AppearancePane(settings: .shared))
         },
         Pane(id: "accounts", label: "Accounts", symbol: "person.crop.circle") {
             host(AccountsPane.make(model))

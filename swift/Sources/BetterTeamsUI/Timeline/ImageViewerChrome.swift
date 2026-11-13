@@ -29,13 +29,9 @@ enum ImageViewerChrome {
 
     /// Control bar over the image (R15 exception: a media overlay). The
     /// popover material adapts to light/dark, unlike the always-dark HUD.
-    static func makeBar() -> NSView {
-        let bar = NSVisualEffectView()
-        bar.material = .popover
-        bar.blendingMode = .withinWindow
-        bar.state = .active
-        bar.wantsLayer = true
-        bar.layer?.cornerRadius = 10
+    /// Glass, or (Glass-free) that popover material, via `Chrome`.
+    static func makeBar(content: NSView) -> ChromeBackgroundView {
+        let bar = ChromeBackgroundView(site: .imageViewerBar, cornerRadius: 10, contentView: content)
         bar.translatesAutoresizingMaskIntoConstraints = false
         return bar
     }

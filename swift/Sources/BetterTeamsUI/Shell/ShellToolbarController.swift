@@ -26,6 +26,7 @@
 // the trailing group, which only holds always-visible items. Pinned by
 // `testToolbarTrailingGroupEndsWithSearch`.
 import AppKit
+import Combine
 
 extension NSToolbarItem.Identifier {
     static let listDetailSeparator = NSToolbarItem.Identifier("shell.listDetailSeparator")
@@ -48,6 +49,8 @@ final class ShellToolbarController: NSObject, NSToolbarDelegate, NSSearchFieldDe
     private weak var splitView: NSSplitView?
     private weak var owner: ShellWindowController?
     private let debounce = Debounce(milliseconds: 250)
+    /// Glass or Glass-free, re-applied to every item live (`Chrome`).
+    private var chromeToken: AnyCancellable?
 
     init(splitView: NSSplitView, owner: ShellWindowController) {
         self.splitView = splitView
@@ -60,6 +63,10 @@ final class ShellToolbarController: NSObject, NSToolbarDelegate, NSSearchFieldDe
         toolbar.displayMode = .iconOnly
         toolbar.allowsUserCustomization = false
         toolbar.autosavesConfiguration = false
+        chromeToken = Chrome.observe { [weak self] glass in
+            guard let self else { return }
+            Chrome.apply(.toolbarItems, glass: glass, to: Array(items.values))
+        }
     }
 
     static func ident(_ id: CommandID) -> NSToolbarItem.Identifier { .init(id.rawValue) }
@@ -207,6 +214,7 @@ final class ShellToolbarController: NSObject, NSToolbarDelegate, NSSearchFieldDe
             m.label = cmd.title
             m.toolTip = cmd.title
             m.showsIndicator = true
+            Chrome.apply(.toolbarItems, glass: Chrome.usesGlass, to: [m])
             return m
         }
         let t = NSToolbarItem(itemIdentifier: ident)
@@ -243,6 +251,7 @@ final class ShellToolbarController: NSObject, NSToolbarDelegate, NSSearchFieldDe
             t.style = .prominent
             t.backgroundTintColor = .systemRed
         }
+        Chrome.apply(.toolbarItems, glass: Chrome.usesGlass, to: [t])
         t.action = #selector(ShellWindowController.performCommand(_:))
         t.target = nil
         return t
