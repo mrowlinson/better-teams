@@ -167,39 +167,28 @@ APP="${APP:-$ROOT/swift/.build/release/Better Teams.app}"
 APP="$(cd -P "$APP" && pwd)"
 BIN="$APP/Contents/MacOS/OstMac"
 [ -x "$BIN" ] || { echo "ui-shot: no app binary at $BIN (run scripts/build-app.sh)" >&2; exit 2; }
-BUNDLE_ID=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Contents/Info.plist" 2>/dev/null || true)
 mkdir -p "$ROOT/tmp" "$(dirname "$OUT")"
 LOG="$ROOT/tmp/ui-shot.$$.log"
 EXTRA=""
 if [ "${INPROC:-0}" = 1 ]; then EXTRA="--evidence-out $OUT"; fi
 
-# Launched through LaunchServices (`open -g -n`): never activated, so the
-# capture shows the inactive window appearance (accepted: no focus theft).
+# Launched by direct exec of the bundle binary in the BACKGROUND (never
+# activated, so the capture shows the inactive window appearance (accepted:
+# no focus theft); NOT via `open`: `open --stdout/--stderr` fails with
+# -10810 on macOS 27.2, and plain `open` leaves stdout uncapturable).
 : >"$LOG"
-# PIDs of this bundle already running, so the new instance is the one
-# not in this list (robust to `open -n` and to path spelling).
-pids_now() {
-    { pgrep -f "^$BIN( |\$)" 2>/dev/null
-      [ -n "$BUNDLE_ID" ] && lsappinfo list 2>/dev/null | awk -v id="\"$BUNDLE_ID\"" \
-          '/bundleID=/ { f = (index($0, "bundleID=" id) > 0) } f && /pid = / { sub(/.*pid = /, ""); sub(/[^0-9].*/, ""); print; f = 0 }'
-    } | sort -u
-}
-BEFORE=" $(pids_now | tr '\n' ' ') "
+# Direct background exec (no `open -n` indirection, so no PID scan: the new
+# process IS $!). stdin from /dev/null, matching `open`'s default. Activation
+# behavior is the app's own: evidence mode never activates unless
+# --evidence-active is passed (verified by the frontmost checks below).
 front_pid() { lsappinfo info -only pid "$(lsappinfo front)" 2>/dev/null | sed -n 's/.*pid = \([0-9][0-9]*\).*/\1/p'; }
-BG="-g"
-if [ "${ACTIVE:-0}" = 1 ]; then BG=""; EXTRA="$EXTRA --evidence-active"; fi
+if [ "${ACTIVE:-0}" = 1 ]; then EXTRA="$EXTRA --evidence-active"; fi
 # shellcheck disable=SC2086
-open $BG -n -a "$APP" --stdout "$LOG" --stderr "$LOG" --args --demo --evidence --route "$ROUTE" \
-    --appearance "$LOOK" --window-size "${SIZE:-1280x820}" $EXTRA "$@" -ApplePersistenceIgnoreState YES
-PID=""
-DEADLINE=$((SECONDS + 10))
-while [ -z "$PID" ] && [ $SECONDS -lt $DEADLINE ]; do
-    for p in $(pids_now); do
-        case "$BEFORE" in *" $p "*) ;; *) PID=$p ;; esac
-    done
-    [ -z "$PID" ] && sleep 0.2
-done
-[ -n "$PID" ] || { echo "ui-shot: app did not start ($ROUTE)" >&2; exit 1; }
+"$BIN" --demo --evidence --route "$ROUTE" \
+    --appearance "$LOOK" --window-size "${SIZE:-1280x820}" $EXTRA "$@" -ApplePersistenceIgnoreState YES \
+    < /dev/null >>"$LOG" 2>&1 &
+PID=$!
+kill -0 "$PID" 2>/dev/null || { echo "ui-shot: app did not start ($ROUTE)" >&2; exit 1; }
 
 READY=""
 DEADLINE=$((SECONDS + 40))
@@ -370,5 +359,6 @@ kill "$PID" 2>/dev/null
 QUIT=$((SECONDS + 5))
 while kill -0 "$PID" 2>/dev/null && [ $SECONDS -lt $QUIT ]; do sleep 0.2; done
 kill -9 "$PID" 2>/dev/null
+wait "$PID" 2>/dev/null
 [ $status -eq 0 ] && rm -f "$LOG"
 exit $status
