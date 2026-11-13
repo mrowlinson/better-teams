@@ -183,7 +183,7 @@ struct GifBubblePlayer: View {
                 Image(systemName: clock.playing ? "pause.fill" : "play.fill").frame(width: 22, height: 22)
             }
             .buttonStyle(.borderless)
-            .background(.regularMaterial, in: Circle())
+            .chromeBackground(.mediaPlayButton, in: Circle()) { Circle().fill(.regularMaterial) }
             .padding(6)
             .help(clock.playing ? "Pause GIF" : "Play GIF")
             .accessibilityLabel(clock.playing ? "Pause GIF" : "Play GIF")

@@ -209,9 +209,12 @@ struct Composer: View {
             }
             .padding(.horizontal, 10)
             .padding(.vertical, Self.fieldInset)
-            .background(.fill.quinary, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(.separator, lineWidth: 1)
+            .chromeBackground(.composerField, in: RoundedRectangle(cornerRadius: 8, style: .continuous)) {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(.fill.quinary)
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(.separator, lineWidth: 1)
+                    }
             }
             // Mention suggestions open near the start of the field, where
             // the text is; reactions More… anchors to the composer (§6.2.2).

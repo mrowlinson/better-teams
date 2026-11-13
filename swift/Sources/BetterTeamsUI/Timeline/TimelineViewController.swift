@@ -81,7 +81,7 @@ struct JumpToLatestButton: View {
                 if count > 0 { Text("\(count)").monospacedDigit() }
             }
         }
-        .buttonStyle(.bordered)
+        .chromeButtonStyle(.jumpToLatest)
         .controlSize(.large)
         .help("Jump to Latest")
         .accessibilityLabel(count > 0 ? "Jump to latest, \(count) new" : "Jump to latest")

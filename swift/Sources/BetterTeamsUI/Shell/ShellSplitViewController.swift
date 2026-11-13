@@ -235,13 +235,17 @@ final class RailContainerViewController: NSViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         addChild(rail)
-        rail.view.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(rail.view)
+        // Glass: the rail floats in an inset glass pane on the material;
+        // Glass-free: the rail sits directly on the material (no backing).
+        let pane = ChromeBackgroundView(site: .rail, cornerRadius: 12, contentView: rail.view,
+                                        glassInset: 6, plainBacking: false)
+        pane.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(pane)
         NSLayoutConstraint.activate([
-            rail.view.topAnchor.constraint(equalTo: view.topAnchor),
-            rail.view.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            rail.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            rail.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            pane.topAnchor.constraint(equalTo: view.topAnchor),
+            pane.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            pane.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            pane.trailingAnchor.constraint(equalTo: view.trailingAnchor),
         ])
     }
 }

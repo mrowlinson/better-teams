@@ -50,9 +50,8 @@ struct PinnedMessageBar: View {
                     }
                     .padding(.horizontal, 12)
                     .padding(.vertical, 6)
-                    Divider()
                 }
-                .background(.bar)
+                .chromeBar(.pinnedMessageBar)
             }
         }
     }

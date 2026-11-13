@@ -38,6 +38,7 @@ final class AppSettings {
         static let defaultSection = "bt.settings.defaultSection"
         static let returnSends = "bt.settings.returnSends"
         static let quickComposer = "bt.settings.quickComposer"
+        static let glassFree = "bt.settings.glassFree"
     }
 
     @ObservationIgnored let defaults: UserDefaults
@@ -59,6 +60,9 @@ final class AppSettings {
     var returnSends: Bool { didSet { save(returnSends, Key.returnSends, oldValue) } }
     /// Chats ▸ Quick composer (on by default): the global hotkey panel.
     var quickComposer: Bool { didSet { save(quickComposer, Key.quickComposer, oldValue) } }
+    /// Appearance ▸ Glass-free (off by default): the control layer drops
+    /// Liquid Glass for the plain standard look (`Chrome`), live.
+    var glassFree: Bool { didSet { save(glassFree, Key.glassFree, oldValue) } }
     /// Demo only: General ▸ Open at login, never the real login item.
     var demoLaunchAtLogin = false
 
@@ -72,6 +76,7 @@ final class AppSettings {
         defaultSection = defaults.string(forKey: Key.defaultSection) ?? SectionID.chat.key
         returnSends = bool(Key.returnSends, true)
         quickComposer = bool(Key.quickComposer, Self.quickComposerDefault)
+        glassFree = bool(Key.glassFree, false)
     }
 
     /// The quick-composer shortcut changed (stored with the core prefs).

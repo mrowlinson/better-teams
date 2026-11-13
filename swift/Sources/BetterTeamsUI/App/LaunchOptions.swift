@@ -8,6 +8,7 @@
 //   --evidence-out <png>   in-process window snapshot after READY
 //   --evidence-active      evidence: activate + key window (active look)
 //   --rail-size small|medium|large   (demo only) sidebar icon size
+//   --glass-free           (demo only) Settings ▸ Appearance ▸ Glass-free on
 //   --dump-menus           print the validated menu bar after READY
 //   --coldstart-quit       launch timeline, then exit (AppState)
 // Core flags (--chat, --name, --say) are read by AppState.
@@ -24,6 +25,9 @@ public struct LaunchOptions: Sendable {
     public var appearance: String?
     public var windowSize: NSSize?
     public var railSize: RailSize?
+    /// Demo only (`--glass-free`): captures of the plain, glass-free look
+    /// (demo settings live in memory, so defaults can't set it).
+    public var glassFree = false
     public var snapshotPath: String?
     public var dumpMenus = false
     public var coldstartQuit = false
@@ -43,6 +47,7 @@ public struct LaunchOptions: Sendable {
             if p.count == 2 { windowSize = NSSize(width: p[0], height: p[1]) }
         }
         if demo { railSize = value("--rail-size").flatMap(RailSize.init(rawValue:)) }
+        glassFree = demo && args.contains("--glass-free")
         snapshotPath = value("--evidence-out")
         dumpMenus = args.contains("--dump-menus")
         coldstartQuit = args.contains("--coldstart-quit")

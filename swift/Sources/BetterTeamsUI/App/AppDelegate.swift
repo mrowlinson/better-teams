@@ -75,6 +75,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         if options.demo {
             // Demo: every setting lives in memory (never `.standard`).
             AppSettings.useDemoStorage()
+            if options.glassFree { AppSettings.shared.glassFree = true }
         }
         CallEvidence.prepare(options)
         if options.evidence {

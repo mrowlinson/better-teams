@@ -386,12 +386,15 @@ struct MessageHoverToolbar: View {
         .font(AppFont.body(scale))
         .padding(.horizontal, 6)
         .padding(.vertical, 3)
-        .background(.background, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-        .overlay {
+        .chromeBackground(.messageHoverBar, in: RoundedRectangle(cornerRadius: 6, style: .continuous)) {
             RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .strokeBorder(contrast == .increased ? AnyShapeStyle(.primary) : AnyShapeStyle(.separator))
+                .fill(.background)
+                .overlay {
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .strokeBorder(contrast == .increased ? AnyShapeStyle(.primary) : AnyShapeStyle(.separator))
+                }
+                .shadow(color: .black.opacity(0.12), radius: 3, y: 1)
         }
-        .shadow(color: .black.opacity(0.12), radius: 3, y: 1)
         // VoiceOver reaches the same items as named row actions.
         .accessibilityHidden(true)
     }

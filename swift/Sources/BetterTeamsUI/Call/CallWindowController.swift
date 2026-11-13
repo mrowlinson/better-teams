@@ -6,6 +6,7 @@
 // title = call name, subtitle = duration. Closing the window asks
 // "Leave the call?" (Leave, Cancel).
 import AppKit
+import Combine
 
 @MainActor
 public final class CallWindowController: NSWindowController, NSWindowDelegate, NSToolbarDelegate,
@@ -15,6 +16,8 @@ public final class CallWindowController: NSWindowController, NSWindowDelegate, N
     private let slot = CallStageHostController()
     private let split = NSSplitViewController()
     private var leaving = false
+    /// Glass or Glass-free, re-applied to the toolbar items live (`Chrome`).
+    private var chromeToken: AnyCancellable?
 
     static let leaveItem = NSToolbarItem.Identifier(CallCommands.leave.rawValue)
     static let controlItems: [CommandID] = [CallCommands.mute, CallCommands.camera, CallCommands.share,
@@ -51,6 +54,9 @@ public final class CallWindowController: NSWindowController, NSWindowDelegate, N
         toolbar.displayMode = .iconOnly
         toolbar.allowsUserCustomization = false
         window.toolbar = toolbar
+        chromeToken = Chrome.observe { [weak toolbar] glass in
+            Chrome.apply(.toolbarItems, glass: glass, to: toolbar?.items ?? [])
+        }
         slot.attach(session.stage)
         window.center()
     }
@@ -139,6 +145,7 @@ public final class CallWindowController: NSWindowController, NSWindowDelegate, N
             item.toolTip = c.menuTitle
             item.image = NSImage(systemSymbolName: c.symbol, accessibilityDescription: c.label)
         }
+        Chrome.apply(.toolbarItems, glass: Chrome.usesGlass, to: [item])
         return item
     }
 

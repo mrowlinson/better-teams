@@ -260,8 +260,10 @@ struct CallTileView: View {
         .font(AppFont.subheadline(scale))
         .padding(.horizontal, 6)
         .padding(.vertical, 3)
-        .background(Color(nsColor: .windowBackgroundColor).opacity(0.85),
-                    in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+        .chromeBackground(.callNameChip, in: RoundedRectangle(cornerRadius: 5, style: .continuous)) {
+            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                .fill(Color(nsColor: .windowBackgroundColor).opacity(0.85))
+        }
     }
 
     private var accessibility: String {
