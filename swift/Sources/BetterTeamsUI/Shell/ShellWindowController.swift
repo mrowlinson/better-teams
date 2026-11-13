@@ -28,6 +28,8 @@ public final class ShellWindowController: NSWindowController, NSWindowDelegate, 
     private var showingShell = false
     private var cancellables = Set<AnyCancellable>()
     private var titleRefreshQueued = false
+    /// Dismisses the rail Activity badge after >1 s of viewing Activity.
+    private var activityDwell: ActivityBadgeDwell?
     /// An inspector open requested before the window's frame was final.
     private var inspectorFitDeferred = false
     /// The deferred open was explicit (it may grow the window).
@@ -249,6 +251,7 @@ public final class ShellWindowController: NSWindowController, NSWindowDelegate, 
         guard showingShell, let window else { return }
         if window.title != title { window.title = title }
         if window.subtitle != subtitle { window.subtitle = subtitle }
+        refreshActivityDwell()  // every navigation change lands here
     }
 
     /// AppKit ignores a `contentMinSize` equal to the value it stored
@@ -287,6 +290,7 @@ public final class ShellWindowController: NSWindowController, NSWindowDelegate, 
             .sink { [weak self] _ in self?.queueTitleRefresh() }
             .store(in: &cancellables)
         guard let app = model.app else { return }
+        observeActivityDwell(app)
         // Teams subtitle ("N unread") follows the teams list live.
         app.teams.objectWillChange
             .sink { [weak self] _ in self?.queueTitleRefresh() }
@@ -308,6 +312,43 @@ public final class ShellWindowController: NSWindowController, NSWindowDelegate, 
         app.$signedIn
             .sink { [weak self] signed in self?.signedInChanged(signed) }
             .store(in: &cancellables)
+    }
+
+    /// Activity badge dwell (owner 09-30): viewing Activity (selected,
+    /// app active, window on screen) for over a second dismisses the rail
+    /// badge and restarts its counter; nothing is marked read.
+    private func observeActivityDwell(_ app: AppState) {
+        let activity = app.activity
+        activityDwell = ActivityBadgeDwell(
+            badgeCount: { activity.badgeCount },
+            dismiss: { activity.dismissBadge() })
+        let nc = NotificationCenter.default
+        for name in [NSApplication.didBecomeActiveNotification, NSApplication.didResignActiveNotification,
+                     NSApplication.didHideNotification, NSApplication.didUnhideNotification] {
+            nc.publisher(for: name).sink { [weak self] _ in self?.refreshActivityDwell() }
+                .store(in: &cancellables)
+        }
+        if let window {
+            for name in [NSWindow.didChangeOcclusionStateNotification, NSWindow.didMiniaturizeNotification,
+                         NSWindow.didDeminiaturizeNotification] {
+                nc.publisher(for: name, object: window).sink { [weak self] _ in self?.refreshActivityDwell() }
+                    .store(in: &cancellables)
+            }
+        }
+        // willSet: re-check after the new value lands.
+        activity.objectWillChange.sink { [weak self] _ in
+            DispatchQueue.main.async { self?.activityDwell?.storeChanged() }
+        }.store(in: &cancellables)
+    }
+
+    private func refreshActivityDwell() {
+        guard let dwell = activityDwell, let window else { return }
+        dwell.update(viewing: ActivityBadgeDwell.isViewing(
+            activitySelected: showingShell && model.nav.section == .activity,
+            searching: model.nav.search != nil,
+            appActive: NSApp.isActive,
+            windowVisible: window.isVisible && !window.isMiniaturized
+                && window.occlusionState.contains(.visible)))
     }
 
     /// Store publishers fire in willSet; refresh after the value lands.

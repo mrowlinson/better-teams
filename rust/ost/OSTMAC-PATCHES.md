@@ -1695,7 +1695,7 @@ Notes:
     Graph comms join (`chatInfo.messageId "0"` + `organizerMeetingInfo`).
     Test (host crate): `ostmac-core calls::tests::meeting_join_names_the_meetings_call`
     (negative control: messageId back to null => fails).
-    UPSTREAM: pending
+    UPSTREAM: PR https://github.com/eisbaw/ost/pull/108 (fix/meeting-call-coordinates, stacks on #73)
 
 ## Upstream PRs, wave 9 (2026-09-25 R10 audit; base 0892144; origin/main still 0892144)
 

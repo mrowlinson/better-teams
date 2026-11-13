@@ -3,9 +3,10 @@
 // List = the feed (filter pop-up + Mark All as Read); detail = the
 // conversation landed on the item's message (jump API + highlight), a
 // missed call's person with Call Back, or "No Item Selected"; inspector
-// = the item's conversation info (§5.3). The rail badge and the list
-// read one source: `ActivityStore` unreviewed items. Loads and jumps
-// start in `selectionDidChange` (R24).
+// = the item's conversation info (§5.3). The list, subtitle and Mark
+// All as Read read `ActivityStore` unreviewed items; the rail badge
+// counts those that arrived since its last dwell dismissal
+// (`badgeCount`). Loads and jumps start in `selectionDidChange` (R24).
 import Combine
 import Observation
 import OstMacCore
@@ -46,7 +47,7 @@ final class ActivitySection: SectionProvider, InspectorCapable {
         return n > 0 ? "\(n) unread" : ""
     }
 
-    /// Unreviewed feed items: the one source for the rail badge, the
+    /// Unreviewed feed items: the source for the
     /// subtitle, Mark All as Read and the listed rows. A failed refresh
     /// keeps the cached feed listed (R12), so its count stays; a forced
     /// empty/loading state, or an error with nothing cached, has no
@@ -124,8 +125,12 @@ final class ActivitySection: SectionProvider, InspectorCapable {
         }
     }
 
+    /// Rail badge: unreviewed items that arrived since the last dwell
+    /// dismissal (`ActivityBadgeDwell`) — not the unread total. Viewing
+    /// only restarts this counter; it never marks anything read.
     func badge(_ m: WindowModel) -> Int? {
-        let n = unread(m)
+        guard showsFeed(m) else { return nil }
+        let n = m.app?.activity.badgeCount ?? 0
         return n > 0 ? n : nil
     }
 
