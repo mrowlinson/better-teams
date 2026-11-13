@@ -232,6 +232,32 @@ final class BlockingExecutorTests: XCTestCase {
         await TestWait.until(interval: 0.005) { done.count >= n }
     }
 
+    /// Pool-independent wait for the legacy negative control: poll `cond`
+    /// while pumping the main run loop, so ceilings are enforced with ZERO
+    /// pool threads involved (every one parks in SatGate.wait). Task.sleep
+    /// waits deadlock here (a sleep needs a pool thread to resume); a GCD
+    /// timer + continuation was tried and its resumption stranded the same
+    /// way. Sync + pumping, like TestWait.spinUntil. Note the pump does NOT
+    /// run MainActor work (verified by probe telemetry: MainActor probes
+    /// start only after the pump returns), so B/C starve while pumping and
+    /// the drain below waits on pool-side signals only. Legacy path only;
+    /// the new path keeps TestWait/waitSeconds exactly.
+    private func legacyPump(limit: Double, _ cond: () -> Bool) -> Bool {
+        let t0 = DispatchTime.now().uptimeNanoseconds
+        while !cond() {
+            if Double(DispatchTime.now().uptimeNanoseconds &- t0) / 1e9 >= limit { return false }
+            RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.002))
+        }
+        return true
+    }
+
+    /// Pool-independent flag wait (legacy control only): same shape as
+    /// `waitSeconds` (elapsed time from `t0`) but driven by `legacyPump`.
+    private func legacyPumpSeconds(_ flag: BEFlag, from t0: DispatchTime, limit: Double) -> Double {
+        _ = legacyPump(limit: limit) { flag.value }
+        return seconds(t0)
+    }
+
     /// Saturate blocking calls (fake core = calls parked on a gate, more
     /// than the pool is wide), then measure whether unrelated work finishes
     /// WHILE they are all still blocked. Progress, not wall clock: a starved
@@ -260,7 +286,11 @@ final class BlockingExecutorTests: XCTestCase {
         // Wait until the saturating calls are actually running (was a fixed
         // 150 ms sleep). The legacy pattern can only start a pool's worth, so
         // wait for min(2n, cores) with a short ceiling instead of all 2n.
-        let saturated = await TestWait.until { started.count >= min(2 * n, ProcessInfo.processInfo.activeProcessorCount) }
+        // Legacy path uses the pool-independent pump: every pool thread is
+        // about to park in the gate, so Task.sleep-based waits would deadlock.
+        let saturated = legacy
+            ? legacyPump(limit: TestWait.hangCeiling) { started.count >= min(2 * n, ProcessInfo.processInfo.activeProcessorCount) }
+            : await TestWait.until { started.count >= min(2 * n, ProcessInfo.processInfo.activeProcessorCount) }
         XCTAssertTrue(saturated, "saturating calls never started")
 
         // All three probes start together, right after saturation begins.
@@ -282,7 +312,11 @@ final class BlockingExecutorTests: XCTestCase {
             sc.set(done.count)
             fc.set()
         }
-        for f in [fa, fb, fc] { _ = await waitSeconds(f, from: t0, limit: probeLimit) }
+        if legacy {
+            for f in [fa, fb, fc] { _ = legacyPumpSeconds(f, from: t0, limit: probeLimit) }
+        } else {
+            for f in [fa, fb, fc] { _ = await waitSeconds(f, from: t0, limit: probeLimit) }
+        }
         let unrelated = fa.elapsed(since: t0), mainHop = fb.elapsed(since: t0), list = fc.elapsed(since: t0)
         let m = Measured(
             unrelated: unrelated, mainHop: mainHop, chatList: list, lateness: dog.worstLateness,
@@ -290,9 +324,19 @@ final class BlockingExecutorTests: XCTestCase {
             unrelatedFinished: fa.value, mainHopFinished: fb.value, chatListFinished: fc.value)
 
         // Open the gate so the saturating calls (and any starved probe) drain.
+        // Legacy: wait on pool-side signals only. Probe A is pool-bound and
+        // finishes as threads wake; B/C are MainActor tasks and MainActor
+        // work does not run while the harness pumps, so they finish during
+        // teardown instead (they touch only this call's locals — no shared
+        // state, no asserts — making them safe to leave).
         gate.openAll(2 * n)
-        for f in [fa, fb, fc] { _ = await waitSeconds(f, from: DispatchTime.now(), limit: TestWait.hangCeiling) }
-        await drain(done, 2 * n)
+        if legacy {
+            _ = legacyPumpSeconds(fa, from: DispatchTime.now(), limit: TestWait.hangCeiling)
+            _ = legacyPump(limit: TestWait.hangCeiling) { done.count >= 2 * n }
+        } else {
+            for f in [fa, fb, fc] { _ = await waitSeconds(f, from: DispatchTime.now(), limit: TestWait.hangCeiling) }
+            await drain(done, 2 * n)
+        }
         if !legacy { XCTAssertTrue(ok.value) }
         return m
     }
@@ -314,15 +358,10 @@ final class BlockingExecutorTests: XCTestCase {
     /// Negative control / mutation check: the old pattern (Task.detached on
     /// the cooperative pool) MUST starve under the identical load, or the
     /// test above proves nothing.
-    func testLegacyDetachedPatternStarvesUnderSameLoad() async throws {
-        // QUARANTINED 11-13 (see IN-FLIGHT QUEUE HARDEN-STARVE-HARNESS):
-        // harness deadlocks itself on the Swift 6.4 pool — all pool threads
-        // park in the test gate while the test's own Task.sleep waits need a
-        // pool thread to resume, so ceiling checks never run (forensics:
-        // tmp/hangdiag/sample.txt, 18 threads in SatGate.wait, 0 CPU).
-        // Control intent (old pattern starves) is intact; harness needs
-        // pool-independent waits. Re-enable after the hardening lane.
-        throw XCTSkip("harness self-deadlocks on Swift 6.4 pool; see HARDEN-STARVE-HARNESS")
+    func testLegacyDetachedPatternStarvesUnderSameLoad() async {
+        // HARDEN-STARVE: legacy waits pump the main run loop instead of
+        // Task.sleep, so ceilings run while all pool threads park in the
+        // gate. Control intent unchanged: the old pattern starves.
         let m = await measureUnderSaturation(legacy: true, probeLimit: 1.5)
         print("CHATPERF-STARVE legacy unrelated=\(m.unrelated) mainHop=\(m.mainHop) list=\(m.chatList) lateness=\(m.lateness) finished=\(m.unrelatedFinished)/\(m.mainHopFinished)/\(m.chatListFinished)")
         // Saturating calls never finish on their own (gate closed), so a
