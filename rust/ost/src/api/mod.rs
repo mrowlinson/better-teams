@@ -115,6 +115,11 @@ pub use chat::{
     conversation_property_url, hide_chat_properties, parse_conversation_folders, set_chat_hidden_with_client,
     set_chat_muted_with_client, ConversationFolder, CHATSVCAGG_SCOPE, SYSTEM_FOLDER_TYPES,
 };
+pub use chat::{
+    add_chat_members_with_client, chat_add_member_body, group_thread_id, member_user_ref,
+    remove_chat_member_with_client, rename_chat_with_client, thread_topic_body, thread_topic_url,
+    MemberAddResult, ShareHistory,
+};
 pub use calendar::{
     calendar_view_path, list_upcoming_meetings_data, lobby_next, normalize_join_meeting_id,
     online_meeting_by_join_id_path, parse_calendar_view, parse_join_id_lookup, parse_join_url,

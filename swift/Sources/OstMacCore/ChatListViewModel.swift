@@ -475,9 +475,27 @@ public final class ChatListViewModel: ObservableObject, ChatSelection {
         removeLocally(chatID: id)
     }
 
+    /// GAPL2: group chat rename / add / remove (ChatManage.swift).
+    public var manage: ChatManageService = .live
+    /// Last refused rename / add / remove (sidebar note).
+    @Published public var manageError: String?
+
+    /// Replace one row's name in place (rename). Unknown ids no-op.
+    public func renameLocally(chatID: String, name: String) {
+        guard let i = chats.firstIndex(where: { $0.id == chatID }) else { return }
+        let c = chats[i]
+        chats[i] = ChatItem(chatId: c.chatId, name: name, is_group: c.is_group,
+                            last_message_time: c.last_message_time,
+                            last_message_sender: c.last_message_sender,
+                            last_message_preview: c.last_message_preview,
+                            muted: c.muted, unread: c.unread, read_horizon: c.read_horizon,
+                            read_bookmark: c.read_bookmark, is_creator: c.is_creator)
+    }
+
     /// Dismiss the leave error (sidebar alert Cancel).
     public func clearLeaveError() {
         leaveError = nil
+        manageError = nil
         deleteError = nil
         readStateError = nil
     }

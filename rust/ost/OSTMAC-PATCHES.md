@@ -1675,6 +1675,23 @@ Notes:
     (real-shaped facet with bitrate/frame fields).
     UPSTREAM: PR https://github.com/eisbaw/ost/pull/86 (fix/recording-duration-field, stacks on #48)
 
+93. [feature] `src/api/chat.rs`, `src/api/mod.rs` -- **group chat rename,
+    add people (with history), remove people on the chat service**
+    (GAPL2 lane; comments tag §GAPL2). Rename:
+    `PUT /v1/threads/{id}/properties?name=topic` `{"topic": "<trimmed>"}`
+    (blank clears the name). Add: one
+    `PUT /v1/threads/{id}/members/8:orgid:{oid}`
+    `{"role":"Admin","shareHistoryTime":<ms>}` per user, per-user result;
+    `ShareHistory` None = now, Days(n) = now - n days, All = 0. Remove:
+    `DELETE /v1/threads/{id}/members/8:orgid:{oid}`, self refused (leave).
+    1:1 threads and empty ids refused before any network
+    (`group_thread_id`); UPN / AAD id / roster MRI resolve via
+    `aad_object_id`. `shareHistoryTime` is the member key a group thread
+    GET returns (live read 2026-09-30); the three writes are NOT
+    live-verified (lane rules: no live group writes). Tests:
+    `chat::gapl2_tests::*` (5).
+    UPSTREAM: pending
+
 94. [fix] `src/calling/signaling.rs` (+ `call_test.rs`, `recording.rs`
     struct-literal updates) -- **meeting joins land in the meeting's own
     call** (MEETFIX lane). Joining a scheduled / Meet now meeting posted
@@ -1696,6 +1713,21 @@ Notes:
     Test (host crate): `ostmac-core calls::tests::meeting_join_names_the_meetings_call`
     (negative control: messageId back to null => fails).
     UPSTREAM: PR https://github.com/eisbaw/ost/pull/108 (fix/meeting-call-coordinates, stacks on #73)
+
+95. [fix] `src/api/chat.rs` -- **live list names untitled group chats
+    after members, never the last sender** (GAPL2-FIN-2 R4).
+    `conversation_name` skips the last-message-sender fallback for
+    group-shaped ids (`is_group_id`: `thread`/`meeting`); untitled 1:1
+    chats keep the sender fallback. `list_chats_data` second pass
+    resolves member names per untitled group (roster MRIs minus self,
+    newest attributed message each, roster order, ", "-joined) through
+    the shared batched + cached resolver (`resolve_group_names_cached`;
+    same 14d `MateNames` file, one whoami for both passes). Failures
+    keep the `"[Group chat]"` system label, never fail the list. Not
+    live-verified (0 live sessions this lane). Tests:
+    `chat::tests::conversation_name_group_uses_members_never_last_sender`,
+    `chat::mate_batch_tests::untitled_group_resolves_member_names_in_roster_order`.
+    UPSTREAM: pending
 
 ## Upstream PRs, wave 9 (2026-09-25 R10 audit; base 0892144; origin/main still 0892144)
 

@@ -237,6 +237,13 @@ final class ChatSection: SectionProvider, InspectorCapable {
                                                                  contacts: NewChatSheet.directory(m.app, demo: m.options.demo),
                                                                  presence: m.app?.presence ?? noPresence))
         case ChatCommands.manageFoldersSheet: AnyView(ManageFoldersSheet(folders: m.graph.chats.folders, startOnRules: m.options.demo && r.arg == "rules"))
+        case ChatManageActions.renameSheet:
+            AnyView(RenameChatSheet(chatID: r.arg ?? "", chats: m.graph.chats,
+                                    roster: m.app?.chatRoster, ownUserID: m.app?.ownUserID))
+        case ChatManageActions.addPeopleSheet:
+            AnyView(AddPeopleSheet(chatID: r.arg ?? "", chats: m.graph.chats,
+                                   contacts: NewChatSheet.directory(m.app, demo: m.options.demo),
+                                   roster: m.app?.chatRoster, demo: m.options.demo))
         case ChatRowActions.newFolderSheet:
             AnyView(NewFolderSheet(chatID: r.arg ?? "", folders: m.graph.chats.folders))
         case ContactActions.sheetName:

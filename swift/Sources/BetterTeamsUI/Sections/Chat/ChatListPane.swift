@@ -240,6 +240,10 @@ struct ChatListPane: View {
         }
     }
 
+    /// GAPL2 rename / add / remove refusals, then read-state ones (split
+    /// out so the chain below type-checks in time).
+    private var manageOrReadError: String? { chats.manageError ?? chats.readStateError }
+
     /// Quiet note when Teams refused a chat action (the change was
     /// undone); dismissible, no alert.
     @ViewBuilder
@@ -248,7 +252,7 @@ struct ChatListPane: View {
             ?? chats.folders.serverSyncError.map({ "Couldn't move the chat: \($0)" })
             ?? chats.leaveError.map({ "Couldn't leave the chat: \($0)" })
             ?? chats.deleteError.map({ "Couldn't delete the chat: \($0)" })
-            ?? chats.readStateError
+            ?? manageOrReadError
         {
             HStack(spacing: 6) {
                 Image(systemName: "exclamationmark.circle").foregroundStyle(.secondary)

@@ -128,7 +128,9 @@ enum EvidenceHarness {
             print("EVIDENCE MENUS BEGIN\n\(MainMenu.dump(bar))EVIDENCE MENUS END")
         }
         print("EVIDENCE READY route=\(options.route ?? "-") appearance=\(options.appearance ?? "system") "
-            + "windowID=\(win) settled=\(settled)" + (main.map { " rect=\(captureRect($0))" } ?? ""))
+            + "windowID=\(win) settled=\(settled)" + (main.map { " rect=\(captureRect($0))" } ?? "")
+            + " active=\(NSApp.isActive) isKeyWindow=\(main?.isKeyWindow ?? false)"
+            + " sheetIsKeyWindow=\(main?.attachedSheet?.isKeyWindow ?? false)")
         fflush(stdout)
         if options.route.flatMap(Route.init(string:))?.query["recents"] == "1" { showRecents(wc) }
     }
