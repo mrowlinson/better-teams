@@ -304,19 +304,23 @@ final class CallHistoryTests: XCTestCase {
     }
 
     func testDisplayTimeTodayVsOlder() {
+        // Fixed instants and zone: the wall clock (near midnight, DST days)
+        // and the machine's zone must not decide which day "today" is.
+        let zone = TimeZone(identifier: "UTC")!
         var cal = Calendar(identifier: .gregorian)
-        cal.timeZone = TimeZone.current
-        let now = Date()
+        cal.timeZone = zone
+        let now = cal.date(from: DateComponents(year: 2026, month: 6, day: 15, hour: 18, minute: 0))!
         let today = cal.startOfDay(for: now).addingTimeInterval(12 * 3600 + 53 * 60)
-        let todayLabel = CallRecord.displayTime(for: today, now: now)
+        let todayLabel = CallRecord.displayTime(for: today, now: now, timeZone: zone)
         // Today = the system short clock, nothing else (12h locales
         // carry an AM/PM marker, so "no space" no longer holds).
         let short = DateFormatter()
+        short.timeZone = zone
         short.timeStyle = .short
         short.dateStyle = .none
         XCTAssertEqual(todayLabel, short.string(from: today))
         let older = today.addingTimeInterval(-3 * 86400)
-        let olderLabel = CallRecord.displayTime(for: older, now: now)
+        let olderLabel = CallRecord.displayTime(for: older, now: now, timeZone: zone)
         XCTAssertTrue(
             olderLabel.hasPrefix(short.string(from: older) + " "),
             "older shows clock + day: \(olderLabel)")

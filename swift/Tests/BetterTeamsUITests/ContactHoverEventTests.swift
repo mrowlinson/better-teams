@@ -243,13 +243,21 @@ final class ContactHoverEventTests: XCTestCase {
                     && cell.trackingAreas.contains { $0.owner === cell }
             }
         }
-        // Wait for the rows to exist, then keep the fixed layout passes:
-        // headerTargets drives hover state, so it must run once, after layout.
+        // Wait for the rows to exist and the layout to settle: headerTargets
+        // drives hover state, so it must run once, after layout, and the wait
+        // itself only reads geometry. Settled = the cells' frames and tracking
+        // rects are unchanged across 5 consecutive layout passes (a state
+        // condition; the old fixed 20 x 50 ms only waited out the scheduler).
+        var lastShape: [CGRect] = []
+        var stablePasses = 0
         TestWait.spinUntil(slice: 0.05) {
             window.layoutIfNeeded(); window.displayIfNeeded()
-            return !cells().isEmpty
+            let cs = cells()
+            let shape = cs.flatMap { c in [c.convert(c.bounds, to: nil)] + c.trackingAreas.map(\.rect) }
+            stablePasses = (!cs.isEmpty && shape == lastShape) ? stablePasses + 1 : 0
+            lastShape = shape
+            return stablePasses >= 5
         }
-        for _ in 0 ..< 20 { window.layoutIfNeeded(); window.displayIfNeeded(); spin(0.05) }
         let found = cells().lazy.map(headerTargets).first(where: { !$0.isEmpty })?.first
         XCTAssertFalse(cells().isEmpty, "control: chat list rows laid out")
         guard let target = found else {

@@ -120,23 +120,41 @@ final class FixPack3Tests: XCTestCase {
     /// (a) attempt 1 fails, retry succeeds: attempt 1's fade timer must not
     /// drop the retried tombstone early; the retry's own timer still does.
     func testRetriedOneToOneDeleteIsNotDroppedByTheFirstAttemptsFadeTimer() async {
-        let wire = HoldWire(failures: 1)
-        let s = store(wire)
-        s.tombstoneFadeNanos = 600_000_000 // 0.6 s
-        s.deleteMessage(id: "m1", isOneToOne: true)
-        await wait { s.deleteFailedIDs.contains("m1") }
-        XCTAssertTrue(s.deleteFailedIDs.contains("m1"), "control: first attempt failed")
-        try? await Task.sleep(nanoseconds: 350_000_000) // 0.35 s into attempt 1's clock
-        s.retryDelete(id: "m1", isOneToOne: true)
-        await wait { wire.count == 2 }
-        // ~0.7 s after attempt 1 (past its 0.6 s timer), ~0.35 s after the retry
-        // (its own timer fires ~0.25 s later).
-        try? await Task.sleep(nanoseconds: 350_000_000)
-        XCTAssertEqual(s.messages.count, 1, "first attempt's timer must not remove the retried tombstone")
-        XCTAssertTrue(s.messages[0].deleted)
-        // The retry's own timer (0.6 s after the retry) does fade it.
-        await wait { s.messages.isEmpty }
-        XCTAssertTrue(s.messages.isEmpty, "retry's own fade still drops the row")
+        // The claim is an ordering of two real product timers, so it needs a
+        // real-time window: the retry lands before attempt 1's timer would
+        // fire (tR - t0 < fade), and the check lands after that moment but
+        // before the retry's own timer (tC - tR < fade). Sleeps only ever
+        // overshoot, so under machine load a window can be lost. A lost window
+        // is measured on the uptime clock and the scenario is rerun on a fresh
+        // store; the assertion is only made on a run whose window held, so a
+        // loaded run neither fails for load nor passes vacuously.
+        func now() -> Double { Double(DispatchTime.now().uptimeNanoseconds) / 1e9 }
+        let fade = 1.0
+        var proven = false
+        for _ in 0 ..< 10 where !proven {
+            let wire = HoldWire(failures: 1)
+            let s = store(wire)
+            s.tombstoneFadeNanos = UInt64(fade * 1e9)
+            let t0 = now()
+            s.deleteMessage(id: "m1", isOneToOne: true)
+            await wait { s.deleteFailedIDs.contains("m1") }
+            XCTAssertTrue(s.deleteFailedIDs.contains("m1"), "control: first attempt failed")
+            try? await Task.sleep(nanoseconds: 400_000_000) // 0.4 s into attempt 1's clock
+            let tR = now()
+            s.retryDelete(id: "m1", isOneToOne: true)
+            await wait { wire.count == 2 }
+            try? await Task.sleep(nanoseconds: 700_000_000) // past attempt 1's timer (1.0 s), before the retry's (~1.4 s)
+            let atCheck = s.messages
+            let tC = now()
+            guard tR - t0 < fade, tC - tR < fade else { continue } // window lost to load: rerun
+            proven = true
+            XCTAssertEqual(atCheck.count, 1, "first attempt's timer must not remove the retried tombstone")
+            XCTAssertTrue(atCheck.first?.deleted == true)
+            // The retry's own timer (1.0 s after the retry) does fade it.
+            await wait { s.messages.isEmpty }
+            XCTAssertTrue(s.messages.isEmpty, "retry's own fade still drops the row")
+        }
+        XCTAssertTrue(proven, "no undisturbed timing window in 10 attempts")
     }
 
     /// (b) an edit that lands while the delete request is in flight survives
