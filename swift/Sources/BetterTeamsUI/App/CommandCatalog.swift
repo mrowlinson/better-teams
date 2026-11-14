@@ -170,6 +170,11 @@ public enum ShellCommand {
     public static let signOut: CommandID = "app.signOut"
     /// File ▸ New Quick Message… (⌃⌘M, the hotkey's default combo).
     public static let quickMessage: CommandID = "shell.quickMessage"
+    /// File ▸ Open Account in New Window ▸ (§5.7): one main window per
+    /// account; rows come from `ShellWindowController.submenuItems`.
+    public static let openAccountWindow: CommandID = "shell.openAccountWindow"
+    /// Top-level Add Account… (app menu, beside Sign Out…).
+    public static let addAccount: CommandID = "shell.addAccount"
     public static let settings: CommandID = "app.settings"
 
     static func go(_ s: SectionID) -> CommandID {
@@ -212,18 +217,22 @@ public enum CommandCatalog {
               toolbar: .trailing, isSubmenu: true),
             C(ShellCommand.connection, "Sign In Again…", symbol: "exclamationmark.triangle",
               key: "i", modifiers: [.command, .shift], menu: .init(.app, group: 1, order: 2), toolbar: .trailing),
-            C(ShellCommand.signOut, "Sign Out…", menu: .init(.app, group: 1, order: 3)),
+            C(ShellCommand.signOut, "Sign Out…", menu: .init(.app, group: 1, order: 4)),
             C("app.hide", "Hide Better Teams", key: "h", selector: #selector(NSApplication.hide(_:)),
               menu: .init(.app, group: 3, order: 0)),
             C("app.hideOthers", "Hide Others", key: "h", modifiers: [.command, .option],
               selector: #selector(NSApplication.hideOtherApplications(_:)), menu: .init(.app, group: 3, order: 1)),
             C("app.showAll", "Show All", selector: #selector(NSApplication.unhideAllApplications(_:)),
               menu: .init(.app, group: 3, order: 2)),
+            C(ShellCommand.addAccount, "Add Account…",
+              menu: .init(.app, group: 1, order: 3)),
             C("app.quit", "Quit Better Teams", key: "q", selector: #selector(NSApplication.terminate(_:)),
               menu: .init(.app, group: 4, order: 0)),
             // File
             C(ShellCommand.quickMessage, "New Quick Message\u{2026}", symbol: "square.and.pencil", key: "m",
               modifiers: [.command, .control], menu: .init(.file, group: 0, order: 8)),
+            C(ShellCommand.openAccountWindow, "Open Account in New Window",
+              menu: .init(.file, group: 1, order: 1), isSubmenu: true),
             C("file.close", "Close Window", key: "w", selector: #selector(NSWindow.performClose(_:)),
               menu: .init(.file, group: 9, order: 0)),
             // Edit

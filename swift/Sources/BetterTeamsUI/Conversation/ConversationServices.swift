@@ -176,6 +176,8 @@ final class ConversationServices {
     let attachments: ComposeAttachmentsStore
     let isDemo: Bool
     private var gifKey: String?
+    /// Key source (tests inject memory; live reads the keychain).
+    var keyStore: KlipyKeyStore = KlipySystemKeychain()
 
     init(demo: Bool) {
         isDemo = demo
@@ -187,10 +189,13 @@ final class ConversationServices {
     }
 
     /// GIF search needs a Klipy key (§6.2.2): demo uses canned GIFs and
-    /// never reads the keychain; live reads it once, lazily.
+    /// never reads the keychain; live reads it lazily and re-reads
+    /// while empty, so a later-saved key applies without relaunch
+    /// (SPECFIX-P2 #17). A set key stays cached (no keychain hit per
+    /// check).
     var hasGIFKey: Bool {
         if isDemo { return true }
-        if gifKey == nil { gifKey = KlipyClient.storedKey() }
+        if gifKey?.isEmpty ?? true { gifKey = KlipyClient.storedKey(store: keyStore) }
         return !(gifKey ?? "").isEmpty
     }
 

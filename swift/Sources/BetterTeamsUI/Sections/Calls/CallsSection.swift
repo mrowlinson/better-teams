@@ -6,6 +6,7 @@
 // Chat, and recent calls with them. No inspector (§5.3). Calls start
 // through the core call slot (`CallStore.placeLive` / `echoLive`) and show in
 // the chosen presentation (§8, DL1).
+import Combine
 import OstMacCore
 import SwiftUI
 
@@ -18,6 +19,19 @@ final class CallsSection: SectionProvider {
         guard m.forced(.calls) == nil else { return "" }
         let n = Self.rows(m).filter(\.isMissed).count
         return n == 0 ? "" : n == 1 ? "1 missed call" : "\(n) missed calls"
+    }
+
+    /// Rail badge: missed calls since last visit (same count as the
+    /// subtitle; nil when none so the rail shows no badge).
+    func badge(_ m: WindowModel) -> Int? {
+        let n = Self.rows(m).filter(\.isMissed).count
+        return n > 0 ? n : nil
+    }
+
+    func badgeChanges(_ m: WindowModel) -> [AnyPublisher<Void, Never>] {
+        guard let app = m.app else { return [] }
+        return [app.history.objectWillChange.map { _ in () }.eraseToAnyPublisher(),
+                app.activity.objectWillChange.map { _ in () }.eraseToAnyPublisher()]
     }
 
     func listPane(_ m: WindowModel) -> AnyView {

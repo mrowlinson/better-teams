@@ -134,6 +134,16 @@ struct TeamsListPane: View {
                                 unread: !state.isExpanded(team.teamId)
                                     && team.channels.contains { unread.isUnread(chatID: $0.channelId) })
                             .tag("team:\(team.teamId)")
+                            // VoiceOver: the team menu's primary items as actions.
+                            .accessibilityAction(named: "Mark Team as Read") {
+                                run(TeamsCommands.markTeamRead, team.teamId, m)
+                            }
+                            .accessibilityAction(named: prefs.isHidden(team.teamId) ? "Show" : "Hide") {
+                                run(TeamsCommands.hideTeam, team.teamId, m)
+                            }
+                            .accessibilityAction(named: "Manage Team…") {
+                                run(TeamsCommands.manageMembers, team.teamId, m)
+                            }
                     }
                 }
             }
@@ -144,6 +154,15 @@ struct TeamsListPane: View {
                         TeamRow(name: team.name, unread: false)
                             .foregroundStyle(.secondary)
                             .tag("team:\(team.teamId)")
+                            .accessibilityAction(named: "Mark Team as Read") {
+                                run(TeamsCommands.markTeamRead, team.teamId, m)
+                            }
+                            .accessibilityAction(named: "Show") {
+                                run(TeamsCommands.hideTeam, team.teamId, m)
+                            }
+                            .accessibilityAction(named: "Manage Team…") {
+                                run(TeamsCommands.manageMembers, team.teamId, m)
+                            }
                     }
                 }
             }
@@ -169,6 +188,28 @@ struct TeamsListPane: View {
                    hidden: prefs.isHidden(ch.channelId),
                    muted: prefs.level(ch.channelId) == .muted)
             .tag("chan:\(ch.channelId)")
+            // VoiceOver: the channel menu's primary items as actions.
+            .accessibilityAction(named: "Open in New Window") {
+                run(TeamsCommands.openChannelWindow, ch.channelId, m)
+            }
+            .accessibilityAction(named: "Mark Channel as Read") {
+                run(TeamsCommands.markChannelRead, ch.channelId, m)
+            }
+            .accessibilityAction(named: prefs.isHidden(ch.channelId) ? "Show" : "Hide") {
+                run(TeamsCommands.hideChannel, ch.channelId, m)
+            }
+    }
+
+    /// VoiceOver action names for a channel row (test seam: pins parity
+    /// with the channel menu's primary items).
+    static func channelRowActionNames(hidden: Bool) -> [String] {
+        ["Open in New Window", "Mark Channel as Read", hidden ? "Show" : "Hide"]
+    }
+
+    /// VoiceOver action names for a team row (test seam: pins parity
+    /// with the team menu's primary items).
+    static func teamRowActionNames(hidden: Bool) -> [String] {
+        ["Mark Team as Read", hidden ? "Show" : "Hide", "Manage Team…"]
     }
 
     // MARK: context menus (§6.3; ≤3 groups, one submenu level)

@@ -287,6 +287,9 @@ struct ChatListPane: View {
                     : presence.availabilityForChat(c.id).flatMap(PresenceStatus.from(availability:)),
                 conv: model?.graph.conv, now: now)
             .tag(c.id)
+            // VoiceOver: the row menu's top items as actions (lives in
+            // ChatRowMenu.swift, beside the menu it mirrors).
+            .modifier(ChatRowAccessibility(id: c.id, chats: chats, unread: unread, rules: rules, model: model))
             .onAppear { if state.filter == .all { state.visibleIDs.insert(c.id) } }
             .onDisappear { if state.filter == .all { state.visibleIDs.remove(c.id) } }
     }

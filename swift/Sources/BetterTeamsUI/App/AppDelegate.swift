@@ -75,6 +75,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         if options.demo {
             // Demo: every setting lives in memory (never `.standard`).
             AppSettings.useDemoStorage()
+            // Demo: card links copy instead of opening (P2#14).
+            CardLinks.demoStaysInApp = true
             if options.glassFree { AppSettings.shared.glassFree = true }
         }
         CallEvidence.prepare(options)
@@ -215,6 +217,43 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     public func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         if !flag { shell?.window?.makeKeyAndOrderFront(nil) }
         return true
+    }
+
+    /// `betterteams://` links (§5.1 deep links, SPECFIX-P2 #12): a
+    /// section route applies in the main window (brought forward); a
+    /// wrapped `betterteams://open?url=` link routes like a pasted link
+    /// (native/refused/system). Anything else under the scheme is ignored.
+    public func application(_ application: NSApplication, open urls: [URL]) {
+        for url in urls { Self.openDeepLink(url, shell: shell) }
+    }
+
+    static func openDeepLink(_ url: URL, shell: ShellWindowController?) {
+        if let route = deepLinkRoute(url) {
+            guard let shell else { return }
+            NSApp.activate()
+            shell.window?.makeKeyAndOrderFront(nil)
+            shell.navigator.apply(route)
+        } else if let wrapped = deepLinkWrappedURL(url) {
+            TeamsLinkRouter.open(wrapped)
+        }
+    }
+
+    /// The section route a `betterteams://` URL names (test seam, pure).
+    /// Nil for other schemes, section-less routes, and bare prefixes.
+    static func deepLinkRoute(_ url: URL) -> Route? {
+        guard url.scheme?.lowercased() == "betterteams",
+              let route = Route(string: url.absoluteString),
+              route.section != nil else { return nil }
+        return route
+    }
+
+    /// The link wrapped in `betterteams://open?url=` (test seam, pure).
+    static func deepLinkWrappedURL(_ url: URL) -> URL? {
+        guard url.scheme?.lowercased() == "betterteams",
+              let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems,
+              let inner = items.first(where: { $0.name == "url" })?.value,
+              let wrapped = URL(string: inner), wrapped.scheme != nil else { return nil }
+        return wrapped
     }
 
     public func applicationWillTerminate(_ notification: Notification) {

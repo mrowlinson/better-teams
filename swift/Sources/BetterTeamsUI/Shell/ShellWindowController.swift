@@ -295,6 +295,10 @@ public final class ShellWindowController: NSWindowController, NSWindowDelegate, 
         app.teams.objectWillChange
             .sink { [weak self] _ in self?.queueTitleRefresh() }
             .store(in: &cancellables)
+        // ">1 window" title suffix follows the open account windows.
+        app.accountWindows.objectWillChange
+            .sink { [weak self] _ in self?.queueTitleRefresh() }
+            .store(in: &cancellables)
         app.auth.$state
             .sink { [weak self] state in self?.authChanged(state) }
             .store(in: &cancellables)
@@ -464,6 +468,8 @@ public final class ShellWindowController: NSWindowController, NSWindowDelegate, 
         case ShellCommand.nextUnread, ShellCommand.previousUnread:
             (model.provider(.chat) as? ChatSection)?.stepUnread(forward: id == ShellCommand.nextUnread, model)
         case ShellCommand.account: accountAction(arg)
+        case ShellCommand.openAccountWindow: accountAction(arg)
+        case ShellCommand.addAccount: presentAddAccount()
         case ShellCommand.connection: if model.connection == .expired { presentSignInSheet() }
         case ShellCommand.signOut: confirmSignOut()
         case ShellCommand.quickMessage: NotificationCenter.default.post(name: .showQuickComposer, object: nil)
@@ -473,8 +479,15 @@ public final class ShellWindowController: NSWindowController, NSWindowDelegate, 
     }
 
     private var currentConversation: ConversationRef? {
-        guard model.nav.section == .chat, model.nav.search == nil else { return nil }
-        return model.nav.selection(in: .chat)?.id
+        Self.tabConversation(model)
+    }
+
+    /// The conversation ⌥⌘1–3 acts on (SPECFIX-P2 #18): the shown
+    /// conversation in Chat, Activity, or Search (Teams uses channel
+    /// tabs, so it stays nil there; a missed call shows a card, not a
+    /// conversation, so it stays nil too).
+    static func tabConversation(_ m: WindowModel) -> ConversationRef? {
+        ConversationToolbar.chatID(m)
     }
 
     /// The web app on screen (not searching).
@@ -541,6 +554,7 @@ public final class ShellWindowController: NSWindowController, NSWindowDelegate, 
         case ShellCommand.nextUnread, ShellCommand.previousUnread: return .enabled
         case ShellCommand.connection: return CommandValidation(enabled: model.connection == .expired)
         case ShellCommand.signOut: return CommandValidation(enabled: !model.options.demo && model.app != nil)
+        case ShellCommand.addAccount: return CommandValidation(enabled: !model.options.demo && model.app != nil)
         case ShellCommand.quickMessage: return CommandValidation(enabled: model.app != nil)
         case ShellCommand.settings: return .enabled // Calls pane (P3b); P4c adds the rest
         default: return .disabled // Help: not built yet
@@ -550,6 +564,12 @@ public final class ShellWindowController: NSWindowController, NSWindowDelegate, 
     func submenuItems(_ id: CommandID) -> [SubmenuItem] {
         if let owner = CommandCatalog.command(id)?.owner {
             return model.provider(owner).submenuItems(id, model)
+        }
+        // File ▸ Open Account in New Window ▸ (§5.7): same rows as the
+        // account menu's per-account window entries (REGFIX-C).
+        if id == ShellCommand.openAccountWindow {
+            return Self.openAccountWindowItems(accounts: model.app?.accounts.accounts ?? [],
+                                               demo: model.options.demo)
         }
         guard id == ShellCommand.account else { return [] }
         let live = !model.options.demo && model.app != nil
@@ -592,6 +612,9 @@ public final class ShellWindowController: NSWindowController, NSWindowDelegate, 
                 first = false
             }
         }
+        // Presence Schedule… (Settings ▸ Notifications): the schedule
+        // editor already lives there (SPECFIX-P2 #11).
+        out.append(Self.presenceScheduleItem(live: live))
         if let app = model.app {
             var first = true
             for acct in app.accounts.accounts {
@@ -602,17 +625,34 @@ public final class ShellWindowController: NSWindowController, NSWindowDelegate, 
             }
             // REGFIX-C R1: one window per signed-in account beside this one.
             if app.accounts.accounts.count > 1 {
-                var firstWindow = true
-                for acct in app.accounts.accounts {
-                    out.append(SubmenuItem("Open \u{201C}\(acct.displayName)\u{201D} in New Window",
-                                           arg: "window:\(acct.id)", enabled: live, separatorBefore: firstWindow))
-                    firstWindow = false
-                }
+                var items = Self.openAccountWindowItems(accounts: app.accounts.accounts,
+                                                        demo: model.options.demo)
+                if !items.isEmpty { items[0].separatorBefore = true }
+                out += items
             }
         }
         out.append(SubmenuItem("Add Account…", arg: "add", enabled: live, separatorBefore: true))
         out.append(SubmenuItem("Sign Out…", arg: "signOut", enabled: live))
         return out
+    }
+
+    /// "Presence Schedule…" row (test seam): opens Settings ▸
+    /// Notifications, where the schedule editor lives. Disabled when
+    /// there is no signed-in app (demo).
+    static func presenceScheduleItem(live: Bool) -> SubmenuItem {
+        SubmenuItem("Presence Schedule…", arg: "schedule", symbol: "calendar.badge.clock",
+                    enabled: live, separatorBefore: true)
+    }
+
+    /// "Open <name> in New Window" rows: one per signed-in account (test
+    /// seam — the account menu and File ▸ share it). Disabled in demo
+    /// (windows need signed-in accounts); the caller sets separators.
+    static func openAccountWindowItems(accounts: [AccountRecord], demo: Bool) -> [SubmenuItem] {
+        let live = !demo
+        return accounts.map {
+            SubmenuItem("Open \u{201C}\($0.displayName)\u{201D} in New Window",
+                        arg: "window:\($0.id)", enabled: live)
+        }
     }
 
     private func accountAction(_ arg: String?) {
@@ -626,6 +666,9 @@ public final class ShellWindowController: NSWindowController, NSWindowDelegate, 
             app.presenceTruth.undoLastAutoChange()
         } else if arg == "presenceUnlock" {
             app.presenceTruth.unlock()
+        } else if arg == "schedule" {
+            bringForward()
+            SettingsWindowController.shared.show(pane: "notifications")
         } else if arg.hasPrefix("account:") {
             app.switchAccount(to: String(arg.dropFirst(8)))
         } else if arg.hasPrefix("window:") {
@@ -746,6 +789,21 @@ public final class ShellWindowController: NSWindowController, NSWindowDelegate, 
 
     public func windowWillClose(_ notification: Notification) {
         sheets.dismiss()
+    }
+
+    /// Full screen keeps the toolbar visible (§5.4, SPECFIX-P2 #15):
+    /// AppKit would auto-hide it (the call window does the same).
+    public func window(_ window: NSWindow,
+                       willUseFullScreenPresentationOptions proposed: NSApplication.PresentationOptions)
+        -> NSApplication.PresentationOptions {
+        Self.fullScreenOptions(proposed)
+    }
+
+    /// Full-screen presentation without the auto-hide-toolbar flag
+    /// (test seam; shared with the call window).
+    static func fullScreenOptions(_ proposed: NSApplication.PresentationOptions)
+        -> NSApplication.PresentationOptions {
+        proposed.subtracting(.autoHideToolbar)
     }
 }
 
