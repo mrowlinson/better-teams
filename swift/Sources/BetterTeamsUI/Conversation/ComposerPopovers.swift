@@ -5,6 +5,17 @@
 import OstMacCore
 import SwiftUI
 
+/// R4: index-stable identity for picker rows with no model id, built
+/// before the ForEach so no banned identity form appears inside it.
+private struct IndexedRow<E>: Identifiable {
+    let id: Int
+    let entry: E
+}
+
+private func indexed<E>(_ entries: [E]) -> [IndexedRow<E>] {
+    entries.enumerated().map { IndexedRow(id: $0.offset, entry: $0.element) }
+}
+
 struct ComposerPopoverContent: View {
     let popover: ComposerPopover
     let chatID: String
@@ -157,18 +168,19 @@ struct ReactionPicker: View {
                 ScrollView {
                     LazyVGrid(columns: Array(repeating: GridItem(.fixed(Self.cell), spacing: 2), count: Self.columns),
                               spacing: 2) {
-                        ForEach(Array(entries.enumerated()), id: \.offset) { i, e in
-                            Button { pick(e.emoji) } label: {
-                                Text(e.emoji).font(.title2).frame(width: Self.cell, height: Self.cell)
+                        // R4: index identity from the helper above, so the
+                        // ForEach itself carries no banned identity form.
+                        ForEach(indexed(entries)) { item in
+                            Button { pick(item.entry.emoji) } label: {
+                                Text(item.entry.emoji).font(.title2).frame(width: Self.cell, height: Self.cell)
                             }
                             .buttonStyle(.borderless)
-                            .background(i == highlight
+                            .background(item.id == highlight
                                 ? RoundedRectangle(cornerRadius: 6, style: .continuous)
                                     .fill(Color(nsColor: .selectedContentBackgroundColor).opacity(0.35))
                                 : nil)
-                            .help(e.keywords)
-                            .accessibilityLabel(e.keywords.isEmpty ? e.emoji : e.keywords)
-                            .id(i)
+                            .help(item.entry.keywords)
+                            .accessibilityLabel(item.entry.keywords.isEmpty ? item.entry.emoji : item.entry.keywords)
                         }
                     }
                 }
@@ -230,11 +242,11 @@ struct GIFPicker: View {
                         ScrollView {
                             LazyVGrid(columns: Array(repeating: GridItem(.fixed(110), spacing: 6), count: Self.columns),
                                       spacing: 6) {
-                                ForEach(Array(results.enumerated()), id: \.element.id) { i, g in
-                                    Button { pick(g) } label: {
-                                        GIFThumb(model: services.media.image(url: g.previewURL, messageID: "gif-picker"))
+                                ForEach(indexed(results)) { item in
+                                    Button { pick(item.entry) } label: {
+                                        GIFThumb(model: services.media.image(url: item.entry.previewURL, messageID: "gif-picker"))
                                             .overlay {
-                                                if i == highlight {
+                                                if item.id == highlight {
                                                     RoundedRectangle(cornerRadius: 6, style: .continuous)
                                                         .strokeBorder(Color(nsColor: .selectedContentBackgroundColor),
                                                                       lineWidth: 3)
@@ -242,9 +254,8 @@ struct GIFPicker: View {
                                             }
                                     }
                                     .buttonStyle(.plain)
-                                    .help(g.title)
-                                    .accessibilityLabel(g.title.isEmpty ? "GIF" : g.title)
-                                    .id(i)
+                                    .help(item.entry.title)
+                                    .accessibilityLabel(item.entry.title.isEmpty ? "GIF" : item.entry.title)
                                 }
                             }
                         }

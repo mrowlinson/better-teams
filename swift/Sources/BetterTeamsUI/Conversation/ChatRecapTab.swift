@@ -18,8 +18,7 @@ struct ChatRecapTab: View {
     var body: some View {
         let files = ChatRecapMatch.recap(forChatNamed: chatName, in: RecapsSection.recaps(recordings, transcripts))
         let recap = store.model(threadID: chatID, title: chatName)
-        MeetingRecapView(recap: recap, recordings: recordings)
-            .id(chatID)
+        MeetingRecapView(recap: recap, recordings: recordings, identity: chatID)
             .task(id: (files?.recording?.id ?? "-") + "|" + (files?.transcript?.id ?? "-")) {
                 recap.updateFiles(recording: files?.recording, transcript: files?.transcript)
             }

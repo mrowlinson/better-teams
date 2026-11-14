@@ -33,6 +33,9 @@ enum MeetingRecapTab: String, CaseIterable, Identifiable {
 struct MeetingRecapView: View {
     @ObservedObject var recap: MeetingRecapViewModel
     @ObservedObject var recordings: RecordingsViewModel
+    /// The recap this viewer shows (thread or chat id). Tab + query reset
+    /// when it changes (R4: identity-driven reset via onChange, no modifier).
+    let identity: String
     @State private var tab: MeetingRecapTab = MeetingRecapTab.evidenceInitial ?? .transcript
     @State private var query = ""
     @Environment(\.windowModel) private var model
@@ -52,6 +55,10 @@ struct MeetingRecapView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .task { recap.load() }
+        .onChange(of: identity) { _, _ in
+            tab = MeetingRecapTab.evidenceInitial ?? .transcript
+            query = ""
+        }
     }
 
     // MARK: player

@@ -63,14 +63,18 @@ struct CallsSettingsPane: View {
                               text: "Calls an echo service so you can hear yourself and check your devices.")
                 }
             }
+            // R23: sheets go through SheetPresenter (R17), which Settings
+            // panes cannot reach; the device test expands inline instead.
+            if testing {
+                Section {
+                    CallDeviceTestSheet(devices: devices, callActive: model?.call?.ended == false) { testing = false }
+                }
+            }
         }
         .formStyle(.grouped)
         .scrollDisabled(true)
         .frame(width: SettingsWindowController.paneWidth)
         .fixedSize(horizontal: false, vertical: true)
-        .sheet(isPresented: $testing) {
-            CallDeviceTestSheet(devices: devices, callActive: model?.call?.ended == false) { testing = false }
-        }
         .onAppear { devices.setLevelWanted(true, by: .settings) }
         .onDisappear {
             devices.setLevelWanted(false, by: .settings)

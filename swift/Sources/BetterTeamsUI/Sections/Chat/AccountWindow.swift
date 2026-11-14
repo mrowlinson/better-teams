@@ -86,10 +86,11 @@ struct AccountWindowView: View {
     }
 
     var body: some View {
-        NavigationSplitView {
+        // R23: AppKit owns chrome — a plain adjustable split view here,
+        // never the scene-chrome split; the list pane uses `.inset`.
+        HSplitView {
             sidebar
-                .navigationSplitViewColumnWidth(min: 220, ideal: 280, max: 360)
-        } detail: {
+                .frame(minWidth: 220, idealWidth: 280, maxWidth: 360)
             detail
         }
         .task { if chats.chats.isEmpty { await chats.load() } }
@@ -112,7 +113,7 @@ struct AccountWindowView: View {
                         .tag(c.id)
                 }
             }
-            .listStyle(.sidebar)
+            .listStyle(.inset)
         }
     }
 

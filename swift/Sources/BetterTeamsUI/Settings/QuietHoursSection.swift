@@ -40,7 +40,9 @@ struct QuietHoursSection: View {
 
     var body: some View {
         Section {
-            ForEach(quiet.windows.indices, id: \.self) { i in
+            // R4: index identity, built by the helper above so the
+            // ForEach itself carries no banned identity form.
+            ForEach(indexedWindows(quiet.windows), id: \.offset) { i, _ in
                 WindowEditor(window: binding(i), title: quiet.windows.count > 1 ? "Window \(i + 1)" : "Quiet hours",
                              remove: i == 0 ? nil : { quiet.removeWindow(at: i) })
             }
@@ -59,6 +61,12 @@ struct QuietHoursSection: View {
         Binding(get: { i < quiet.windows.count ? quiet.windows[i] : QuietHoursWindow() },
                 set: { if i < quiet.windows.count { quiet.windows[i] = $0 } })
     }
+}
+
+/// R4: index-stable rows for the windows list, enumerated outside the
+/// ForEach so no banned identity form appears inside it.
+private func indexedWindows(_ windows: [QuietHoursWindow]) -> [(offset: Int, element: QuietHoursWindow)] {
+    Array(windows.enumerated())
 }
 
 /// One window: enable switch, From/To, weekdays, optional Remove.

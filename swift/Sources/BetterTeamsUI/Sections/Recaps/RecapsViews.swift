@@ -176,8 +176,7 @@ struct RecapDetailPane: View {
         if let model {
             if model.forced(.native(.recaps)) == nil, let recap = RecapsSection.current(model) {
                 let vm = RecapsSection.model(for: recap, store)
-                MeetingRecapView(recap: vm, recordings: recordings)
-                    .id(recap.id)
+                MeetingRecapView(recap: vm, recordings: recordings, identity: recap.id)
                     .task(id: (recap.recording?.id ?? "-") + "|" + (recap.transcript?.id ?? "-") + "|"
                           + (Self.listError(recordings.state) ?? "") + "|" + (Self.listError(transcripts.state) ?? "")) {
                         if recap.threadID != nil {

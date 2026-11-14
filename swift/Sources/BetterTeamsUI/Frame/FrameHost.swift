@@ -1393,8 +1393,13 @@ public final class FrameHost {
         web.evaluateJavaScript("0", in: nil, in: .defaultClient) { [weak self] _ in
             self?.retiring[id] = nil
         }
+        // The 5 s backstop for a page that never answers, re-checked per
+        // main-queue turn (R7: no sleeps); same cap as before.
         Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: 5_000_000_000)
+            let deadline = Date().addingTimeInterval(5)
+            while Date() < deadline, self?.retiring[id] != nil {
+                await withCheckedContinuation { c in DispatchQueue.main.async { c.resume() } }
+            }
             self?.retiring[id] = nil
         }
     }
@@ -1748,6 +1753,17 @@ public final class FrameHost {
     }
 
     func findAgain(backwards: Bool) { runFind(backwards: backwards, beep: true) }
+
+    /// Use Selection for Find (⌘E) while Find in Page is active: the page's
+    /// selection becomes the find string.
+    func usePageSelectionForFind() {
+        guard let key = findKey, let web = pages[key.raw]?.web else { return }
+        web.evaluateJavaScript("String(window.getSelection())") { [weak self] value, _ in
+            Task { @MainActor [weak self] in
+                if let s = value as? String, !s.isEmpty { self?.find(s) }
+            }
+        }
+    }
 
     private func runFind(backwards: Bool, beep: Bool) {
         guard let key = findKey, let web = pages[key.raw]?.web, !findQuery.isEmpty else { return }

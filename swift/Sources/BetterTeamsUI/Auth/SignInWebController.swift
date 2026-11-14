@@ -117,11 +117,13 @@ final class SignInWebController: NSViewController, WKNavigationDelegate {
 
     override func loadView() {
         let root = NSView(frame: NSRect(origin: .zero, size: Self.contentSize))
-        let footer = NSHostingView(rootView: SignInWebFooter(
+        // R22: the one hosting factory (focus-ring suppression, no scene
+        // bridging, intrinsic sizing); auth-time, so no window model.
+        let footer = Hosting.view(SignInWebFooter(
             chrome: chrome,
             useCode: { [weak self] in self?.useCode() },
             retry: { [weak self] in self?.retry() },
-            cancel: { [weak self] in self?.finish(nil) }))
+            cancel: { [weak self] in self?.finish(nil) }), role: .cell, model: nil)
         web.translatesAutoresizingMaskIntoConstraints = false
         footer.translatesAutoresizingMaskIntoConstraints = false
         root.addSubview(web)

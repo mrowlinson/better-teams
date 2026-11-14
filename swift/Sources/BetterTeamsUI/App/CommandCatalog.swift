@@ -163,6 +163,7 @@ public enum ShellCommand {
     public static let search: CommandID = "shell.search"
     public static let find: CommandID = "shell.find"
     public static let findNext: CommandID = "shell.findNext"
+    public static let useSelectionForFind: CommandID = "edit.useSelectionForFind"
     public static let findPrevious: CommandID = "shell.findPrevious"
     public static let account: CommandID = "shell.account"
     public static let connection: CommandID = "shell.connection"
@@ -243,6 +244,47 @@ public enum CommandCatalog {
             C(ShellCommand.findNext, "Find Next", key: "g", menu: .init(.edit, group: 2, order: 2, submenu: "Find")),
             C(ShellCommand.findPrevious, "Find Previous", key: "g", modifiers: [.command, .shift],
               menu: .init(.edit, group: 2, order: 3, submenu: "Find")),
+            C(ShellCommand.useSelectionForFind, "Use Selection for Find", key: "e",
+              menu: .init(.edit, group: 2, order: 4, submenu: "Find")),
+            // Spelling and Grammar ▸ + Substitutions ▸ (P1#7): Cocoa
+            // standard items with their standard selectors, so the first
+            // responder (the composer's text view) owns them.
+            C("edit.spelling.show", "Show Spelling and Grammar", key: ":",
+              selector: Selector(("showGuessPanel:")),
+              menu: .init(.edit, group: 2, order: 5, submenu: "Spelling and Grammar")),
+            C("edit.spelling.checkNow", "Check Document Now", key: ";",
+              selector: Selector(("checkSpelling:")),
+              menu: .init(.edit, group: 2, order: 6, submenu: "Spelling and Grammar")),
+            C("edit.spelling.whileTyping", "Check Spelling While Typing",
+              selector: Selector(("toggleContinuousSpellChecking:")),
+              menu: .init(.edit, group: 2, order: 7, submenu: "Spelling and Grammar")),
+            C("edit.spelling.grammar", "Check Grammar With Spelling",
+              selector: Selector(("toggleGrammarChecking:")),
+              menu: .init(.edit, group: 2, order: 8, submenu: "Spelling and Grammar")),
+            C("edit.spelling.autoCorrect", "Correct Spelling Automatically",
+              selector: Selector(("toggleAutomaticSpellingCorrection:")),
+              menu: .init(.edit, group: 2, order: 9, submenu: "Spelling and Grammar")),
+            C("edit.sub.show", "Show Substitutions",
+              selector: Selector(("orderFrontSubstitutionsPanel:")),
+              menu: .init(.edit, group: 2, order: 10, submenu: "Substitutions")),
+            C("edit.sub.smartCopyPaste", "Smart Copy/Paste",
+              selector: Selector(("toggleSmartInsertDelete:")),
+              menu: .init(.edit, group: 2, order: 11, submenu: "Substitutions")),
+            C("edit.sub.smartQuotes", "Smart Quotes",
+              selector: Selector(("toggleAutomaticQuoteSubstitution:")),
+              menu: .init(.edit, group: 2, order: 12, submenu: "Substitutions")),
+            C("edit.sub.smartDashes", "Smart Dashes",
+              selector: Selector(("toggleAutomaticDashSubstitution:")),
+              menu: .init(.edit, group: 2, order: 13, submenu: "Substitutions")),
+            C("edit.sub.smartLinks", "Smart Links",
+              selector: Selector(("toggleAutomaticLinkDetection:")),
+              menu: .init(.edit, group: 2, order: 14, submenu: "Substitutions")),
+            C("edit.sub.dataDetectors", "Data Detectors",
+              selector: Selector(("toggleAutomaticDataDetection:")),
+              menu: .init(.edit, group: 2, order: 15, submenu: "Substitutions")),
+            C("edit.sub.textReplacement", "Text Replacement",
+              selector: Selector(("toggleAutomaticTextReplacement:")),
+              menu: .init(.edit, group: 2, order: 16, submenu: "Substitutions")),
             // View
             C("view.toolbar", "Show Toolbar", alternateTitle: "Hide Toolbar", key: "t", modifiers: [.command, .option],
               selector: #selector(NSWindow.toggleToolbarShown(_:)), menu: .init(.view, group: 0, order: 0)),
