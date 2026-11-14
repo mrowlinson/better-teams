@@ -109,4 +109,20 @@ final class ChatRowsTests: XCTestCase {
         XCTAssertEqual(byID[DemoData.tomID]?.muted, true)
         XCTAssertEqual(byID[DemoData.tomID]?.unread, true)
     }
+
+    /// SPEC-AUDIT-2 P3-21: a mentioned row badges its unread count via
+    /// stock `.badge(n)` (§6.2), not just the `at` slot glyph; plain
+    /// unread rows badge nothing; a flagged row with no count keeps "@".
+    func testMentionedRowBadgesCount() {
+        XCTAssertNil(ChatRow.mentionBadge(mentioned: false, unreadCount: 3))
+        XCTAssertNil(ChatRow.mentionBadge(mentioned: false, unreadCount: 0))
+        XCTAssertEqual(ChatRow.mentionBadge(mentioned: true, unreadCount: 3), "3")
+        XCTAssertEqual(ChatRow.mentionBadge(mentioned: true, unreadCount: 1), "1")
+        XCTAssertEqual(ChatRow.mentionBadge(mentioned: true, unreadCount: 0), "@")
+        // Row wiring: mentioned rows carry the store's per-chat count.
+        let unread = UnreadStore(dock: FakeDockBadge())
+        unread.ingestBackground(["19:m@thread.v2": 4])
+        XCTAssertEqual(unread.count(for: "19:m@thread.v2"), 4)
+        XCTAssertEqual(ChatRow.mentionBadge(mentioned: true, unreadCount: unread.count(for: "19:m@thread.v2")), "4")
+    }
 }

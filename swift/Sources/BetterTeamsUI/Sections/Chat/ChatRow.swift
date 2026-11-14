@@ -13,6 +13,9 @@ struct ChatRow: View {
     let unread: Bool
     let pinned: Bool
     let mentioned: Bool
+    /// Unread count for the mention badge (§6.2: mention count via
+    /// stock `.badge(n)`); 0 (or unmentioned) shows no count badge.
+    var mentionCount = 0
     /// Notifications off / snoozed (§6.2 row indicators).
     var muted = false
     var snoozed = false
@@ -101,6 +104,15 @@ struct ChatRow: View {
         .padding(.vertical, density.metrics.chatRowVertical)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(accessibility)
+        .badge(Self.mentionBadge(mentioned: mentioned, unreadCount: mentionCount).map { Text($0) })
+    }
+
+    /// Stock List-row badge for a mentioned chat (§6.2): the unread
+    /// count, or "@" when flagged with nothing counted. Nil unless
+    /// mentioned, so plain unread rows badge nothing.
+    static func mentionBadge(mentioned: Bool, unreadCount: Int) -> String? {
+        guard mentioned else { return nil }
+        return unreadCount > 0 ? "\(unreadCount)" : "@"
     }
 
     /// Leading send-state slot on line 2 (R13), at text scale 1.
@@ -131,7 +143,9 @@ struct ChatRow: View {
         var parts = [chat.name]
         if let presence { parts.append(presence.availabilityTitle) }
         if unread { parts.append("unread") }
-        if mentioned { parts.append("mentions you") }
+        if mentioned {
+            parts.append(mentionCount > 0 ? "\(mentionCount) mentions" : "mentions you")
+        }
         if pinned { parts.append("pinned") }
         if muted { parts.append("muted") }
         if snoozed { parts.append("snoozed") }

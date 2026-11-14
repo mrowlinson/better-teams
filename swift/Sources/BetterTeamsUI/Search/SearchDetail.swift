@@ -63,7 +63,9 @@ private struct ObservedDetail: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .accessibilityHidden(true)
             } else {
-                NoSelectionPane("No Results")
+                // Spec §6 pane-states table: the finished-empty search
+                // pane is the stock search variant, echoing the query.
+                ContentUnavailableView.search(text: search.query)
             }
         } else {
             selected

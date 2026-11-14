@@ -279,8 +279,10 @@ struct ChatListPane: View {
     }
 
     private func row(_ c: ChatItem, pinned: Bool, now: Date) -> some View {
-        ChatRow(chat: c, unread: unread.isUnread(chatID: c.id), pinned: pinned,
-                mentioned: mentions.contains(chatID: c.id),
+        let isMentioned = mentions.contains(chatID: c.id)
+        return ChatRow(chat: c, unread: unread.isUnread(chatID: c.id), pinned: pinned,
+                mentioned: isMentioned,
+                mentionCount: isMentioned ? unread.count(for: c.id) : 0,
                 muted: rules.level(chatID: c.id) == .muted, snoozed: snooze.isSnoozed(chatID: c.id, now: now),
                 notSent: failures.chatIDs.contains(c.id),
                 presence: c.is_group ? nil
