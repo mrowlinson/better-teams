@@ -1413,6 +1413,47 @@ pub async fn delete_file_data(client: &TeamsClient, drive_id: &str, item_id: &st
     Ok(())
 }
 
+// -- New Folder (filetab-r1): create a subfolder via Graph --
+
+/// Graph path for creating a child of one driveItem.
+pub fn mkdir_path(drive_id: &str, parent_id: &str) -> String {
+    format!("/drives/{}/items/{}/children", drive_id, parent_id)
+}
+
+/// POST body creating a subfolder named `name` (Graph create-folder:
+/// `name` + the empty `folder` facet). No conflict behavior: a name
+/// clash fails (409) rather than forking a copy.
+pub fn mkdir_body(name: &str) -> serde_json::Value {
+    serde_json::json!({ "name": name, "folder": {} })
+}
+
+/// Create a subfolder named `name` under `parent_id` on `drive_id`
+/// (Graph `POST .../children`). Returns the new folder item
+/// (`is_folder` true). Blank names and blank parents are rejected
+/// before any network; a `"root"` parent resolves to the drive root's
+/// real id (same alias as move/copy).
+pub async fn create_folder_data(
+    client: &TeamsClient,
+    drive_id: &str,
+    parent_id: &str,
+    name: &str,
+) -> Result<SharedFile> {
+    if name.trim().is_empty() {
+        bail!("New folder name is empty");
+    }
+    if parent_id.trim().is_empty() {
+        bail!("Parent folder id is empty");
+    }
+    let parent = resolve_folder_id(client, drive_id, parent_id).await?;
+    let path = mkdir_path(drive_id, &parent);
+    let resp = client.graph_post(&path, &mkdir_body(name)).await?;
+    let item: DriveItem = resp
+        .json()
+        .await
+        .context("Failed to parse create folder response")?;
+    Ok(shared_from_item(item, None))
+}
+
 #[cfg(test)]
 mod chat_file_send_tests {
     use super::*;
@@ -1740,6 +1781,16 @@ mod tests {
     }
 
     #[test]
+    fn mkdir_path_and_body() {
+        // filetab-r1: New Folder posts name + folder facet to children.
+        assert_eq!(mkdir_path("D1", "F9"), "/drives/D1/items/F9/children");
+        assert_eq!(
+            mkdir_body("Plans"),
+            serde_json::json!({"name": "Plans", "folder": {}})
+        );
+    }
+
+    #[test]
     fn link_path_addresses_drive_item() {
         assert_eq!(
             create_link_path("D1", "I1"),
@@ -2021,5 +2072,54 @@ mod file_post_idem_fake_tests {
             run(&fake, id, false).await.expect("graph fallback ok");
             assert_eq!(count(&fake, "POST", path), 1, "{id}");
         }
+    }
+}
+
+/// filetab-r1 fake-transport tests: `create_folder_data` against a
+/// loopback fake (Graph only), no tenant contact.
+#[cfg(test)]
+mod mkdir_fake_tests {
+    use super::*;
+    use crate::api::fake_transport::Fake;
+    use serde_json::json;
+
+    fn folder_item() -> String {
+        json!({
+            "id": "newdir1",
+            "name": "Plans",
+            "folder": {"childCount": 0},
+            "parentReference": {"driveId": "D1"},
+        })
+        .to_string()
+    }
+
+    #[tokio::test]
+    async fn mkdir_posts_name_and_folder_facet_and_returns_folder() {
+        let fake = Fake::start(vec![(
+            "POST",
+            "/graph/drives/D1/items/F9/children",
+            201,
+            folder_item(),
+        )])
+        .await;
+        let f = create_folder_data(&fake.client(), "D1", "F9", "Plans")
+            .await
+            .expect("mkdir");
+        assert!(f.is_folder);
+        assert_eq!(f.name, "Plans");
+        assert_eq!(f.id, "newdir1");
+        assert_eq!(f.drive_id.as_deref(), Some("D1"));
+        let reqs = fake.requests();
+        assert_eq!(reqs.len(), 1, "one POST, nothing else");
+        assert_eq!(reqs[0].method, "POST");
+        assert_eq!(reqs[0].json(), json!({"name": "Plans", "folder": {}}));
+    }
+
+    #[tokio::test]
+    async fn mkdir_rejects_blank_name_and_parent_before_network() {
+        let fake = Fake::start(vec![]).await;
+        assert!(create_folder_data(&fake.client(), "D1", "F9", "  ").await.is_err());
+        assert!(create_folder_data(&fake.client(), "D1", "", "Plans").await.is_err());
+        assert!(fake.requests().is_empty(), "no request on arg reject");
     }
 }

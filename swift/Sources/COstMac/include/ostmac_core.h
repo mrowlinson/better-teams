@@ -362,6 +362,10 @@ char *ostmac_files_move(const char *drive_id, const char *item_id, const char *d
 // Caller frees.
 char *ostmac_files_copy(const char *drive_id, const char *item_id, const char *dest_folder_id, const char *new_name);
 
+// Create a subfolder under parent_id (POST .../children). Returns
+// {ok, file} (the folder). Caller frees.
+char *ostmac_files_mkdir(const char *drive_id, const char *parent_id, const char *name);
+
 // Delete one driveItem. Returns {ok, id}. Caller frees.
 char *ostmac_files_delete(const char *drive_id, const char *item_id);
 

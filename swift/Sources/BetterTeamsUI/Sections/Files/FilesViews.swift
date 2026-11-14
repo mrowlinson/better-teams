@@ -246,6 +246,14 @@ struct FileTableView: View {
                     Button(CommandCatalog.command(FilesCommands.upload)?.title ?? "Upload\u{2026}") {
                         _ = m.provider(.files).perform(FilesCommands.upload, arg: nil, m)
                     }
+                    // Sections only (a conversation tab drills into folders
+                    // instead): the same prompt as the toolbar item.
+                    if argPrefix.isEmpty,
+                       let folderTitle = CommandCatalog.command(FilesCommands.newFolder)?.title {
+                        Button(folderTitle) {
+                            _ = m.provider(.files).perform(FilesCommands.newFolder, arg: nil, m)
+                        }
+                    }
                 }
             }
         }

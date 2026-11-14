@@ -20,6 +20,7 @@ public enum FilesCommands {
     public static let moveTo: CommandID = "files.moveTo"
     public static let copyTo: CommandID = "files.copyTo"
     public static let delete: CommandID = "files.delete"
+    public static let newFolder: CommandID = "files.newFolder"
     /// The file in its own window (R1).
     public static let openWindow: CommandID = "files.openWindow"
 
@@ -27,12 +28,17 @@ public enum FilesCommands {
     public static let transfersPopover = "transfers"
     /// Rename… sheet (`arg` = the command arg).
     public static let renameSheet = "renameFile"
+    /// New Folder sheet (`arg` = the source key it creates under).
+    public static let newFolderSheet = "newFolder"
     /// Move To… / Copy To… destination sheet (`arg` = "move|<arg>" or
     /// "copy|<arg>").
     public static let destinationSheet = "fileDestination"
 
     /// Context menu (§6.6), in separator groups; unavailable items hide.
+    /// New Folder leads: it acts on the enclosing folder, not the
+    /// selection.
     static let contextGroups: [[CommandID]] = [
+        [newFolder],
         [open, openInBrowser, quickLook, showInFinder, openWindow],
         [download, saveAs, copyLink, share],
         [openConversation],
@@ -65,5 +71,8 @@ public enum FilesCommands {
         Command(copyTo, "Copy To\u{2026}", menu: .init(.file, group: 6, order: 2), owner: .files),
         // ⌘⌫, the Finder shortcut for removing an item.
         Command(delete, "Delete\u{2026}", key: "\u{8}", menu: .init(.file, group: 6, order: 3), owner: .files),
+        // Shift-Command-N, the Finder shortcut for a new folder (Command-N is New Chat).
+        Command(newFolder, "New Folder\u{2026}", symbol: "folder.badge.plus", key: "n", modifiers: [.command, .shift],
+                menu: .init(.file, group: 2, order: 1), toolbar: .detail, owner: .files),
     ]
 }

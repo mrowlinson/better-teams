@@ -35,6 +35,7 @@ rust/ost/src/api/calweek.rs::schedule_meeting_data | POST /me/calendar/events | 
 rust/ost/src/api/chat.rs::aad_object_id | GET /me?$select=id, /users/{upn}?$select=id | works | live probeA /me 200, /users/{upn} 200
 rust/ost/src/api/chat.rs::fill_member_names | GET /users/{oid}?$select=displayName,mail,userPrincipalName (chat-service roster names) | works | live probeA /users/{upn} 200; applog /users 200; scope User.ReadBasic.All
 rust/ost/src/api/files.rs::copy_file_data | POST /drives/{d}/items/{i}/copy | works | scope Files.ReadWrite.All granted
+rust/ost/src/api/files.rs::create_folder_data | POST /drives/{d}/items/{p}/children | works | scope Files.ReadWrite.All granted (same token as rename/move/copy); no live create yet (0 live writes this lane)
 rust/ost/src/api/files.rs::create_link_data | POST /drives/{d}/items/{i}/createLink | works | scope Files.ReadWrite.All granted
 rust/ost/src/api/files.rs::delete_file_data | DELETE /drives/{d}/items/{i} | works | scope Files.ReadWrite.All granted
 rust/ost/src/api/files.rs::download_file_data | GET /drives/{d}/items/{i}/content | works | scope Files.ReadWrite.All granted; applog drive item GETs 200

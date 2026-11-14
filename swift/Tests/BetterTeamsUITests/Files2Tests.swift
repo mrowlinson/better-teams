@@ -37,6 +37,52 @@ final class Files2Tests: XCTestCase {
         XCTAssertEqual(Navigator.initialScope(for: .chat), .all)
     }
 
+    /// New Folder: catalog presence (title, Finder shortcut, menu +
+    /// toolbar + context-menu placement) and the demo create flow
+    /// (appears in the listing, blank names no-op).
+    func testNewFolderCommandInCatalog() {
+        let cmd = CommandCatalog.command(FilesCommands.newFolder)
+        XCTAssertNotNil(cmd)
+        XCTAssertTrue(cmd?.title.hasPrefix("New Folder") == true)
+        XCTAssertEqual(cmd?.symbol, "folder.badge.plus")
+        // Shift-Command-N: no clash with New Chat (Command-N).
+        XCTAssertEqual(cmd?.key, "n")
+        XCTAssertTrue(cmd?.modifiers.contains(.shift) == true)
+        XCTAssertNotEqual(cmd?.shortcut, CommandCatalog.command("chat.new")?.shortcut)
+        XCTAssertEqual(cmd?.menu?.group, 2)
+        XCTAssertEqual(cmd?.toolbar, .detail)
+        XCTAssertTrue(FilesCommands.contextGroups.flatMap { $0 }.contains(FilesCommands.newFolder))
+        XCTAssertTrue(FilesSection().allToolbarItems.contains(FilesCommands.newFolder))
+        XCTAssertEqual(FilesCommands.newFolderSheet, "newFolder")
+    }
+
+    func testDemoMkdirAppearsInListings() {
+        let index = UnifiedFilesStore()
+        index.showDemo(specs: DemoData.unifiedDemoSpecs, rows: DemoData.unifiedDemoRows())
+        let before = index.rows.count
+        index.mkdir("Plans")
+        XCTAssertEqual(index.rows.count, before + 1)
+        let folder = index.rows.first { $0.file.name == "Plans" }
+        XCTAssertNotNil(folder)
+        XCTAssertTrue(folder?.file.isFolder == true)
+        XCTAssertEqual(folder?.source, .drive)
+        index.mkdir("   ")
+        XCTAssertEqual(index.rows.count, before + 1)
+        index.mkdir("Plans")
+        XCTAssertEqual(index.rows.filter { $0.file.name == "Plans" }.count, 2)
+
+        let library = SharedFilesStore()
+        library.showDemo(chatID: "demo-chan-general", files: DemoData.sharedFiles(for: "demo-chan-general"))
+        let filesBefore = library.files.count
+        library.mkdir("Sketches")
+        XCTAssertEqual(library.files.count, filesBefore + 1)
+        let created = library.files.first { $0.name == "Sketches" }
+        XCTAssertNotNil(created)
+        XCTAssertTrue(created?.isFolder == true)
+        library.mkdir("")
+        XCTAssertEqual(library.files.count, filesBefore + 1)
+    }
+
     /// Image saves: .png name from the alt text, Finder-style " 2"
     /// suffix instead of overwriting.
     func testImageSaveNamesNeverOverwrite() {

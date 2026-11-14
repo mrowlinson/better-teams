@@ -64,6 +64,7 @@ final class MenuShortcutCatalogGuardTests: XCTestCase {
         "File > Cancel Meeting…",
         "File > Open Account in New Window >",
         "File > Upload… [@U]",
+        "File > New Folder… [$@N]",
         "File > Open [@O]",
         "File > Open in Browser",
         "File > Quick Look [@Y]",
