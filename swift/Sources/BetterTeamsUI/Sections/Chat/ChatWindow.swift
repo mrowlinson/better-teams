@@ -254,7 +254,7 @@ struct PopoutContactView: View {
             let row = chats.chat(id: chatID)
             let name = row?.name ?? model.app?.popoutName(for: chatID) ?? "Chat"
             let isGroup = row?.is_group ?? false
-            RosterBound(chatID: chatID, roster: model.app?.chatRoster, loads: true) { count in
+            RosterBound(chatID: chatID, roster: model.app?.chatRoster) { count in
                 let subtitle = isGroup
                     ? ConversationDetail.subtitle(isGroup: true, messages: [], rosterCount: count)
                     : PresenceLine(presence: model.app?.presence, chatID: chatID).text

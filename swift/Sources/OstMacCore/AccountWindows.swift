@@ -82,6 +82,11 @@ public final class AccountWindowGraph: ObservableObject {
             .store(in: &cancellables)
     }
 
+    /// R24: side windows load the roster through the same store
+    /// schedule as the main window (presence follows through the
+    /// roster hook). AppState sets this at creation; nil in tests.
+    public var rosterLoader: ((String) -> Void)?
+
     /// Open a chat in this window: selection, read-mark, history load
     /// (flip-flop when the account is inactive). Re-open of the open
     /// chat is a no-op.
@@ -90,6 +95,7 @@ public final class AccountWindowGraph: ObservableObject {
         openChatID = id
         unread.markRead(chatID: id)
         conv.open(chatID: id, chatName: chatName)
+        if !ChannelTabsStore.isChannelID(id) { rosterLoader?(id) }
     }
 
     /// Routed event for THIS account (the registry routes by account;

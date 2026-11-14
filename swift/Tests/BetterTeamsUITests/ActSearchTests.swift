@@ -116,4 +116,14 @@ final class ActSearchTests: XCTestCase {
         XCTAssertFalse(a.hasInspector(for: SectionSelection(id: "missedCall:-:call-1")))
         XCTAssertTrue(a.hasInspector(for: SectionSelection(id: "mention:19:c@thread.v2:m1")))
     }
+
+    /// SPEC-AUDIT-2 P3-22: the finished-empty search pane words
+    /// "No results" (the stock `ContentUnavailableView.search(text:)`
+    /// beside it echoes the query); still blank-while-loading.
+    func testEmptySearchWordsNoResults() {
+        let search = SearchModel()
+        XCTAssertTrue(search.orderedResults().isEmpty)
+        XCTAssertFalse(search.isSearching)
+        XCTAssertEqual(search.subtitle(), "No results")
+    }
 }

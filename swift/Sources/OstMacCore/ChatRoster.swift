@@ -116,6 +116,16 @@ public final class ChatRosterStore: ObservableObject {
     /// `graph` / `chatsvc` / `demo` for the loaded roster.
     public private(set) var source: String = ""
 
+    /// R24: views never fetch. AppState sets this once; the store
+    /// calls it after every member-settling mutation (load success,
+    /// Add/Remove People) so presence follows the roster through a
+    /// store schedule, not a view `.task`.
+    public var onMembersUpdated: (() -> Void)?
+
+    /// Inspector presence cap (RosterPeople parity): one Graph call per
+    /// member for small groups; big groups refresh the first 20.
+    public static let presenceCap = 20
+
     private let fetcher: Fetcher
     private let demo: Bool
     private var generation = 0
@@ -149,6 +159,7 @@ public final class ChatRosterStore: ObservableObject {
             members = DemoChatRoster.members(for: chat)
             source = "demo"
             state = .loaded
+            onMembersUpdated?()
             return
         }
         state = .loading
@@ -159,6 +170,7 @@ public final class ChatRosterStore: ObservableObject {
             members = Self.sorted(resp.members)
             source = resp.source
             state = .loaded
+            onMembersUpdated?()
         } catch {
             guard gen == generation else { return }
             state = .error(String(describing: error))
@@ -169,11 +181,13 @@ public final class ChatRosterStore: ObservableObject {
     public func applyAdded(_ added: [ChatMember]) {
         let known = Set(members.map { $0.mri.lowercased() })
         members = Self.sorted(members + added.filter { !known.contains($0.mri.lowercased()) })
+        onMembersUpdated?()
     }
 
     /// GAPL2 demo: one person removed in memory.
     public func applyRemoved(mri: String) {
         members.removeAll { $0.mri.caseInsensitiveCompare(mri) == .orderedSame }
+        onMembersUpdated?()
     }
 
     /// Owners first, then by name (blank names last, MRI tiebreak).
@@ -219,6 +233,17 @@ public final class ChatRosterStore: ObservableObject {
             return
         }
         await presence.refreshPeers(ids: presenceIDs)
+    }
+
+    /// Inspector presence follow-up (was RosterPeople `.task`, R24):
+    /// one Graph call per member for small groups; big groups refresh
+    /// the first `presenceCap` ids.
+    public func refreshMemberPresence(into presence: PresenceStore) async {
+        if members.count <= Self.presenceCap {
+            await refreshPresence(into: presence)
+        } else {
+            await presence.refreshPeers(ids: Array(presenceIDs.prefix(Self.presenceCap)))
+        }
     }
 }
 

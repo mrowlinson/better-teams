@@ -116,6 +116,66 @@ final class CoreAChatGapsTests: XCTestCase {
         XCTAssertThrowsError(try RustCore.chatMembers(chatID: "  "))
     }
 
+    /// SPEC-AUDIT-2 P3-23 (R24): member-settling roster mutations fire
+    /// the store hook (presence follows via AppState's schedule);
+    /// failures settle nothing, so they fire nothing.
+    func testRosterMutationsFireMembersHook() async {
+        struct Boom: Error {}
+        var fires = 0
+        let store = ChatRosterStore(fetcher: { id in
+            ChatMembersResponse(ok: true, chatId: id, source: "graph", members: [
+                ChatMember(mri: "8:orgid:a", userId: "a", displayName: "Ava"),
+            ])
+        })
+        store.onMembersUpdated = { fires += 1 }
+        await store.load(chatID: "19:g@thread.v2")
+        XCTAssertEqual(fires, 1)
+        store.applyAdded([ChatMember(mri: "8:orgid:b", userId: "b", displayName: "Bea")])
+        XCTAssertEqual(fires, 2)
+        store.applyRemoved(mri: "8:orgid:b")
+        XCTAssertEqual(fires, 3)
+        let failing = ChatRosterStore(fetcher: { _ in throw Boom() })
+        failing.onMembersUpdated = { fires += 1 }
+        await failing.load(chatID: "19:g@thread.v2")
+        XCTAssertEqual(fires, 3)
+    }
+
+    /// SPEC-AUDIT-2 P3-23 (R24): the inspector presence follow-up —
+    /// small groups fetch every member, big groups the first 20.
+    func testRefreshMemberPresenceCapsBigGroups() async {
+        // Nonisolated: runs inside the store's nonisolated fetcher.
+        nonisolated func members(_ n: Int) -> [ChatMember] {
+            // Zero-padded: the store sorts by name, so member order ==
+            // creation order and presence ids stay predictable.
+            (0..<n).map {
+                ChatMember(mri: String(format: "8:orgid:u%02d", $0), userId: String(format: "u%02d", $0),
+                           displayName: String(format: "M%02d", $0))
+            }
+        }
+        func probing(_ store: ChatRosterStore) async -> [String] {
+            var asked: [String] = []
+            let presence = PresenceStore(
+                ownFetcher: { throw CoreCallError.failed("x") },
+                setFetcher: { _ in throw CoreCallError.failed("x") },
+                userFetcher: { id in
+                    asked.append(id)
+                    return UserPresenceResponse(ok: true, id: id, availability: "Available", activity: "Available")
+                },
+                resolveFetcher: { _ in throw CoreCallError.failed("x") })
+            await store.load(chatID: "19:g@thread.v2")
+            await store.refreshMemberPresence(into: presence)
+            return asked
+        }
+        let small = ChatRosterStore(fetcher: { id in
+            ChatMembersResponse(ok: true, chatId: id, source: "graph", members: members(3)) })
+        let smallAsked = await probing(small)
+        XCTAssertEqual(smallAsked, ["u00", "u01", "u02"])
+        let big = ChatRosterStore(fetcher: { id in
+            ChatMembersResponse(ok: true, chatId: id, source: "graph", members: members(25)) })
+        let bigAsked = await probing(big)
+        XCTAssertEqual(bigAsked, (0..<20).map { String(format: "u%02d", $0) })
+    }
+
     // MARK: - 3. Group chat create
 
     func testGroupRefsTopicAndName() {

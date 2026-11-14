@@ -41,10 +41,13 @@ public enum AppsCommands {
         Command(customizeTabBar, "Customize Tab Bar…", menu: .init(.view, group: 3, order: 1), owner: .apps),
         Command(addWebLink, "Add Web Link…", symbol: "link.badge.plus",
                 menu: .init(.file, group: 0, order: 9), toolbar: .list, owner: .apps),
+        // SPEC-AUDIT-2 P3-24: web history navigates from Go (Finder),
+        // not View (Reload/Stop stay in View, Safari). Own group after
+        // the chat-jump items; validated off outside web content.
         Command(back, "Back", symbol: "chevron.backward", key: "[",
-                menu: .init(.view, group: 5, order: 0), toolbar: .detail, owner: .apps),
+                menu: .init(.go, group: 2, order: 0), toolbar: .detail, owner: .apps),
         Command(forward, "Forward", symbol: "chevron.forward", key: "]",
-                menu: .init(.view, group: 5, order: 1), toolbar: .detail, owner: .apps),
+                menu: .init(.go, group: 2, order: 1), toolbar: .detail, owner: .apps),
         Command(reload, "Reload Page", symbol: "arrow.clockwise", key: "r",
                 menu: .init(.view, group: 5, order: 2), toolbar: .detail, owner: .apps),
         Command(stop, "Stop Loading", key: ".", menu: .init(.view, group: 5, order: 3), owner: .apps),

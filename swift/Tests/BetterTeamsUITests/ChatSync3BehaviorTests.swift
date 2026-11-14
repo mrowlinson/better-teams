@@ -266,6 +266,15 @@ final class ChatSync3BehaviorTests: XCTestCase {
         }
         app.chats.deletePolicy = .allowed
         let allowed = rowMenu()
+        // SPEC-AUDIT-2 P3-25: unavailable Teams items hide (§6) —
+        // no disabled "(not available yet)" placeholders, group and 1:1.
+        XCTAssertFalse(allowed.contains { $0.contains("not available yet") }, "\(allowed)")
+        for probe in [app.chats.chats.first(where: { $0.is_group })?.id,
+                      app.chats.chats.first(where: { !$0.is_group })?.id].compactMap({ $0 }) {
+            let menu = ChatSyncEvidence.menuText(ChatRowMenu(id: probe, chats: app.chats, unread: app.unread,
+                rules: app.rules, snooze: app.snooze, folders: app.chats.folders, model: wc.model))
+            XCTAssertFalse(menu.contains("not available yet"), "\(probe): \(menu)")
+        }
         XCTAssertTrue(allowed.contains("Pop Out Chat"), "\(allowed)")
         XCTAssertFalse(allowed.contains { $0.hasPrefix("Pop Out Chat") && $0 != "Pop Out Chat" }, "enabled, not a placeholder")
         XCTAssertTrue(allowed.contains { $0.hasPrefix("Delete") }, "Teams policy allows Delete")

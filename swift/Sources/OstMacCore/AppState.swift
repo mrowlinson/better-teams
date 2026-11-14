@@ -138,8 +138,12 @@ public final class AppState: ObservableObject {
     /// e1-activity: notification history + mentions-center data.
     public let activity: ActivityStore
     /// Open chat's roster + owner roles (core-a). Demo serves in-memory
-    /// members. UI loads it per chat (`chatRoster.load(chatID:)`).
+    /// members. The selection funnel loads it per chat (R24: never
+    /// from a view `.task`).
     public let chatRoster: ChatRosterStore
+    /// Open chat's pinned tabs (cached per chat, read-only). Loaded
+    /// from the same selection funnel as the roster (R24).
+    public let chatTabs = ChatTabsStore()
     public let receipts = ReceiptStore()
     /// CHATSYNC: the owner's Teams read state (view → read position,
     /// Mark as read/unread, Delete chat).
@@ -767,6 +771,14 @@ public final class AppState: ObservableObject {
     /// Chat-list satellite wiring (local-remove fan-out + selection
     /// sink). Re-run after every `chats` rebuild (account switch).
     private func wireChats() {
+        // SPEC-AUDIT-2 P3-23 (R24): presence follows the roster through
+        // a store schedule — the hook fires after every member-settling
+        // roster mutation (load success, Add/Remove People), never from
+        // a view `.task`.
+        chatRoster.onMembersUpdated = { [weak self] in
+            guard let self else { return }
+            Task { await self.chatRoster.refreshMemberPresence(into: self.presence) }
+        }
         chatsCancellables = Set<AnyCancellable>()
         chatHorizons = [:] // per-account seed inputs
         mentionActivity = []
@@ -1782,6 +1794,13 @@ public final class AppState: ObservableObject {
     public func openPopout(chatID: String) {
         let s = popouts.store(for: chatID)
         guard s.chatID != chatID else { return }
+        // SPEC-AUDIT-2 P3-23 (R24): pop-outs skip `open(chatID:)`, so
+        // the roster loads here too (same store schedule as the main
+        // window; the pop-out shows no pinned tabs).
+        if !ChannelTabsStore.isChannelID(chatID) {
+            let roster = chatRoster
+            Task { await roster.load(chatID: chatID) }
+        }
         if isDemo {
             s.showDemo(
                 chatID: chatID, chatName: popoutName(for: chatID),
@@ -1959,8 +1978,16 @@ public final class AppState: ObservableObject {
             },
             blocked: blocked,
             folders: FolderStore(accountID: record.id))
-        return AccountWindowGraph(
+        let graph = AccountWindowGraph(
             account: record, chats: chats, runner: runner)
+        // SPEC-AUDIT-2 P3-23 (R24): side windows share the main
+        // roster store (as their views always did); the load starts
+        // from the side selection funnel, never from a view `.task`.
+        graph.rosterLoader = { [weak self] id in
+            guard let self else { return }
+            Task { await self.chatRoster.load(chatID: id) }
+        }
+        return graph
     }
 
     /// Side-by-side entry (switcher "Open in New Window"): register
@@ -2256,6 +2283,19 @@ public final class AppState: ObservableObject {
             // only when they change the thread's pins).
             let pins = pinnedMessages
             Task { await pins.refreshFromServer(chatID: id) }
+        }
+        // SPEC-AUDIT-2 P3-23 (R24): conversation support stores load
+        // from the selection funnel, never from a view `.task`.
+        // Channels skip (their members/tabs ride the team selection).
+        // Presence follows through the roster's store hook.
+        if !ChannelTabsStore.isChannelID(id) {
+            let tabs = chatTabs
+            let roster = chatRoster
+            let demo = isDemo
+            // Separate tasks: tabs and roster fetch concurrently, as
+            // the two view `.task`s they replace did.
+            Task { await tabs.load(chatID: id, demo: demo) }
+            Task { await roster.load(chatID: id) }
         }
         // d2-send: opening a chat delivers its past-due queue items into
         // it (own-bubbles); claim-then-send keeps this idempotent with

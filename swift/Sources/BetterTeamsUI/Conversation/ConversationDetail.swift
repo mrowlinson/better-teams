@@ -13,19 +13,18 @@ struct ConversationDetail: View {
     @ObservedObject var conv: ConversationStore
     @ObservedObject var chats: ChatListViewModel
     @Environment(\.windowModel) private var model
-    /// CHATTABS: the chat's pinned tabs (cached per chat, read-only).
-    @StateObject private var chatTabs = ChatTabsStore()
-
     var body: some View {
         if let model {
             let row = chats.chat(id: ref)
             let name = row?.name ?? (conv.chatID == ref ? conv.headerTitle : DemoFixture.name(for: ref, demo: model.options.demo) ?? "Conversation")
             let isGroup = row?.is_group ?? false
-            let pinned = chatTabs.tabs(for: ref)
+            // Pinned tabs ride the app-owned store, loaded from the
+            // selection funnel (R24) — the view only reads.
+            let pinned = model.app?.chatTabs.tabs(for: ref) ?? []
             let layout = ChatTabLayout(kind: ChatKind.of(chatID: ref, isGroup: isGroup), tabs: pinned)
             let selected = layout.resolve(builtin: model.nav.tab(for: ref), pinned: model.nav.detailAppTab[ref])
             VStack(spacing: 0) {
-                RosterBound(chatID: ref, roster: model.app?.chatRoster, loads: !ChannelTabsStore.isChannelID(ref)) { count in
+                RosterBound(chatID: ref, roster: model.app?.chatRoster) { count in
                     ConversationHeader(
                         name: name, isGroup: isGroup,
                         subtitle: isGroup ? Self.subtitle(isGroup: true, messages: conv.chatID == ref ? conv.messages : [],
@@ -51,7 +50,6 @@ struct ConversationDetail: View {
                     chatTab(name: name, services: ConversationServices.of(model))
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .task(id: ref) { await chatTabs.load(chatID: ref, demo: model.app?.isDemo ?? false) }
             }
         }
     }
@@ -143,15 +141,17 @@ struct PresenceLine {
 /// until that chat's roster loads), re-rendering when the roster
 /// changes. `loads` = this view loads the roster when the chat changes
 /// (the conversation header does; the inspector only observes).
+/// R24: the roster loads from the selection funnel
+/// (`AppState.open(chatID:)` / `openPopout`), never here — this view
+/// only reads the store's current state for its chat.
 struct RosterBound<Content: View>: View {
     let chatID: String
     let roster: ChatRosterStore?
-    var loads = false
     @ViewBuilder let content: (Int?) -> Content
 
     var body: some View {
         if let roster {
-            Observed(chatID: chatID, roster: roster, loads: loads, content: content)
+            Observed(chatID: chatID, roster: roster, content: content)
         } else {
             content(nil)
         }
@@ -160,14 +160,10 @@ struct RosterBound<Content: View>: View {
     private struct Observed: View {
         let chatID: String
         @ObservedObject var roster: ChatRosterStore
-        let loads: Bool
         let content: (Int?) -> Content
 
         var body: some View {
             content(roster.chatID == chatID ? roster.peopleCount : nil)
-                .task(id: chatID) {
-                    if loads { await roster.load(chatID: chatID) }
-                }
         }
     }
 }

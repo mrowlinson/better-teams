@@ -2,9 +2,10 @@
 // chat actions it shares with the Conversation menu: Mute, Snooze ▸,
 // Notifications ▸, Move to Folder ▸, Hide, Copy Link, Leave Chat…,
 // Block…, Delete…. Parity with the Teams chat menu: tmp/chatsync/
-// menu-parity.md (CHATSYNC); Teams-only items show disabled with why.
-// Every change applies at once; mute and hide roll back with a quiet
-// note under the list if Teams refuses them (RulesStore).
+// menu-parity.md (CHATSYNC); unavailable Teams items stay hidden (§6,
+// never disabled placeholders). Every change applies at once; mute
+// and hide roll back with a quiet note under the list if Teams refuses
+// them (RulesStore).
 import AppKit
 import OstMacCore
 import SwiftUI
@@ -82,20 +83,6 @@ struct ChatRowMenu: View {
         // CHATSYNC2b R4: the chat in its own window (Teams "Pop out chat").
         Button("Pop Out Chat") { if let model { ChatWindowController.show(model, chatID: id) } }
             .disabled(model?.app == nil)
-        // Teams items this app does not offer yet: shown, disabled, why.
-        if let row = chats.chat(id: id) {
-            if row.is_group {
-                Button("Invite via Link (not available yet)") {}.disabled(true)
-                    .help("Teams group-invite links are not in this app yet.")
-                Button("Workflows (not available yet)") {}.disabled(true)
-                    .help("Chat workflows (Power Automate) are not in this app yet.")
-                Button("Manage Apps (not available yet)") {}.disabled(true)
-                    .help("Teams apps in a chat are not in this app yet.")
-            } else if !ChatListFilter.isSelfChat(id) {
-                Button("Notify When Available (not available yet)") {}.disabled(true)
-                    .help("Presence alerts are not in this app yet.")
-            }
-        }
         Divider()
         if let row = chats.chat(id: id) {
             if row.is_group {

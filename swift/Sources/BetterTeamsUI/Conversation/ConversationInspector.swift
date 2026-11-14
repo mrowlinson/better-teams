@@ -248,20 +248,12 @@ private struct RosterPeople<Fallback: View>: View {
                     }
                 }
             }
-            .task(id: roster.members.map(\.mri)) {
-                // One Graph call per member: big groups fetch the first 20.
-                if roster.members.count <= Self.presenceCap {
-                    await roster.refreshPresence(into: presence)
-                } else {
-                    await presence.refreshPeers(ids: Array(roster.presenceIDs.prefix(Self.presenceCap)))
-                }
-            }
+            // R24: presence follows the roster through its store hook
+            // (`ChatRosterStore.onMembersUpdated`), never from here.
         } else {
             fallback()
         }
     }
-
-    private static var presenceCap: Int { 20 }
 
     /// Chat-service rosters may carry no name: email, else "Unknown".
     private static func name(_ m: ChatMember) -> String {
