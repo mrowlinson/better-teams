@@ -158,7 +158,7 @@ final class SignInWebController: NSViewController, WKNavigationDelegate {
         onUseCode()
     }
 
-    private func retry() {
+    func retry() {
         chrome.problem = nil
         chrome.pageChecked = false
         web.load(URLRequest(url: start))
@@ -217,6 +217,7 @@ final class SignInWebController: NSViewController, WKNavigationDelegate {
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
         guard !finished else { return }
         chrome.problem = .loadFailed
+        chrome.pageChecked = true
     }
 
     func webView(_ webView: WKWebView, didReceive challenge: URLAuthenticationChallenge,

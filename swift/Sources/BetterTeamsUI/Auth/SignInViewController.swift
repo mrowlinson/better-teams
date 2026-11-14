@@ -44,6 +44,9 @@ final class SignInViewController: NSViewController {
     /// Start Microsoft sign-in by itself once, as soon as the auth is
     /// signed out (SIGNIN R1). Cancel returns to the start screen.
     private var autoStartPending: Bool
+    /// Another account of this app is signed in (an expired session is a
+    /// prompt, not a page that opens by itself, while one still works).
+    private let otherAccountUsable: () -> Bool
 
     /// Production default: auto-start. Off under XCTest, so no test ever
     /// loads the live Microsoft page; tests opt in with a fake server.
@@ -60,6 +63,7 @@ final class SignInViewController: NSViewController {
     init(model: WindowModel, evidence: SignInPresentation?, asSheet: Bool = false,
          adding: AuthViewModel? = nil, auth: AuthViewModel? = nil,
          autoStart: Bool = SignInViewController.defaultAutoStart,
+         otherAccountUsable: (() -> Bool)? = nil,
          onAdded: ((AuthViewModel) -> Void)? = nil) {
         self.model = model
         self.evidence = evidence
@@ -67,6 +71,10 @@ final class SignInViewController: NSViewController {
         self.adding = adding
         injectedAuth = auth
         autoStartPending = autoStart && evidence == nil && !model.options.demo
+        self.otherAccountUsable = otherAccountUsable ?? { [weak model] in
+            let mine = adding ?? auth
+            return model?.app?.accounts.vms.values.contains { $0 !== mine && $0.state == .signedIn } ?? false
+        }
         added = onAdded.map(AddOnce.init)
         super.init(nibName: nil, bundle: nil)
     }
@@ -160,7 +168,13 @@ final class SignInViewController: NSViewController {
         }
         if autoStartPending {
             switch state {
-            case .signedOut, .expired:
+            case .signedOut:
+                autoStartPending = false
+                Task { await auth.startBrowserSignIn() }
+            case .expired where !asSheet || !otherAccountUsable():
+                // Expired with nothing else usable: nothing to prompt
+                // for but the sign-in itself. With another working
+                // account (Sign In Again sheet) it prompts instead.
                 autoStartPending = false
                 Task { await auth.startBrowserSignIn() }
             case .unknown where adding != nil:
@@ -169,9 +183,10 @@ final class SignInViewController: NSViewController {
             case .unknown, .starting, .browser:
                 break
             default:
-                // Anything else (error, code): the start screen, sized to it.
+                // Anything else (error, code, expired with another account
+                // usable): the start screen, sized to it.
                 autoStartPending = false
-                if !asSheet { resizeWindow(to: fittingContentSize) }
+                if asSheet { preferredContentSize = Self.sheetSize } else { resizeWindow(to: fittingContentSize) }
             }
         }
         if case .browser(let info) = state, webSignIn == nil, let url = URL(string: info.authorizeURL) {
