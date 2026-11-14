@@ -40,6 +40,8 @@ final class CallSection: SectionProvider, InspectorCapable {
         case CallCommands.camera: s.toggleCamera()
         case CallCommands.share: s.toggleShare()
         case CallCommands.devices: s.showDevices()
+        case CallCommands.showPeople: Self.toggleInspector(segment: "people", m)
+        case CallCommands.showChat: Self.toggleInspector(segment: "chat", m)
         default: return false
         }
         return true
@@ -50,11 +52,33 @@ final class CallSection: SectionProvider, InspectorCapable {
         switch c {
         case CallCommands.show, CallCommands.leave, CallCommands.devices:
             return .enabled
+        case CallCommands.showPeople, CallCommands.showChat:
+            let segment = c == CallCommands.showPeople ? "people" : "chat"
+            let shown = m.nav.section == .call && m.nav.isInspectorVisible(.call)
+                && (m.inspectorSegment ?? "people") == segment
+            let verb = shown ? "Hide" : "Show"
+            let what = segment == "people" ? "People" : "Chat"
+            return CommandValidation(enabled: true, title: "\(verb) \(what)")
         case CallCommands.mute, CallCommands.camera, CallCommands.share:
             guard let ctl = s.controls.control(c) else { return .disabled }
             return CommandValidation(enabled: ctl.enabled, title: ctl.menuTitle)
         default:
             return .disabled
+        }
+    }
+
+    /// Show/Hide People/Chat (Call menu, SPECFIX-P2 #13): the call
+    /// section's inspector on the segment, landing on the call section
+    /// first when another section is showing. Showing the visible
+    /// segment hides the inspector.
+    static func toggleInspector(segment: String, _ m: WindowModel) {
+        guard let nav = m.navigator, let s = m.call, !s.ended else { return }
+        if m.nav.section != .call { nav.select(section: .call) }
+        if m.nav.isInspectorVisible(.call), (m.inspectorSegment ?? "people") == segment {
+            nav.setInspector(false, explicit: true)
+        } else {
+            m.setInspectorSegment(segment)
+            nav.setInspector(true, explicit: true)
         }
     }
 }

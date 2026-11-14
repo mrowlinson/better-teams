@@ -386,18 +386,28 @@ public final class Navigator {
                         inspectorAvailable: available,
                         inspectorVisible: available && nav.isInspectorVisible(s), searching: searching)
         host.applyToolbar(visibleToolbar())
-        host.applyTitle(searching ? "Search" : p.title, subtitle: searching ? model.search.subtitle() : p.subtitle(model))
+        host.applyTitle(windowTitle(searching ? "Search" : p.title),
+                        subtitle: searching ? model.search.subtitle() : p.subtitle(model))
     }
 
     /// Title/subtitle only (store-driven subtitle changes; in search
     /// mode, the result count).
     func refreshTitle() {
         guard nav.search == nil else {
-            host?.applyTitle("Search", subtitle: model.search.subtitle())
+            host?.applyTitle(windowTitle("Search"), subtitle: model.search.subtitle())
             return
         }
         let p = model.provider(nav.section)
-        host?.applyTitle(p.title, subtitle: p.subtitle(model))
+        host?.applyTitle(windowTitle(p.title), subtitle: p.subtitle(model))
+    }
+
+    /// ">1 window" suffix (§5.1): the main window keeps "Chat" alone
+    /// until a second account window opens, then reads
+    /// "Chat — <Account>" (test seam: pure over the inputs).
+    func windowTitle(_ title: String) -> String {
+        guard let app = model.app, !app.accountWindows.openIDs.isEmpty else { return title }
+        let name = app.accounts.accounts.first { $0.id == model.accountKey }?.displayName
+        return "\(title) — \(name ?? model.accountKey)"
     }
 
     func refreshToolbar() { host?.applyToolbar(visibleToolbar()) }

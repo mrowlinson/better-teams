@@ -170,6 +170,12 @@ final class ActivitySection: SectionProvider, InspectorCapable {
         if item.reviewed { activity.markUnreviewed(id: item.id) } else { activity.markReviewed(id: item.id) }
     }
 
+    /// VoiceOver action names for an activity row (test seam: pins
+    /// parity with the row menu).
+    static func rowActionNames(reviewed: Bool) -> [String] {
+        ["Open", reviewed ? "Mark as Unread" : "Mark as Read"]
+    }
+
     func validate(_ c: CommandID, arg: String?, _ m: WindowModel) -> CommandValidation {
         let here = m.nav.section == .activity && m.nav.search == nil && m.app != nil
         switch c {
@@ -273,7 +279,17 @@ struct ActivityListPane: View {
             set: { id in m.navigator?.select(id.map { SectionSelection(id: $0) }, in: .activity) })
         return List(selection: selection) {
             ForEach(rows) { r in
+                let reviewed = activity.item(id: r.id)?.reviewed ?? false
                 ActivityRow(row: r, now: now).tag(r.id)
+                    // VoiceOver: the row menu's items as actions.
+                    .accessibilityAction(named: "Open") {
+                        m.navigator?.select(SectionSelection(id: r.id), in: .activity)
+                    }
+                    .accessibilityAction(named: reviewed ? "Mark as Unread" : "Mark as Read") {
+                        if let item = activity.item(id: r.id) {
+                            ActivitySection.toggleRead(item, activity)
+                        }
+                    }
             }
         }
         .listStyle(.inset)

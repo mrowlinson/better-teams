@@ -32,5 +32,18 @@
     <array>
         <string>INSendMessageIntent</string>
     </array>
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key>
+            <string>dev.ostmac.OstMac.deep-link</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>betterteams</string>
+            </array>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+        </dict>
+    </array>
 </dict>
 </plist>

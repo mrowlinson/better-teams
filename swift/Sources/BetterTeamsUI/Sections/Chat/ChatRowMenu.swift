@@ -173,6 +173,51 @@ enum ChatRowActions {
                    message: "Their messages won't notify you, and the chat leaves your list. Unblock them in Settings.",
                    action: "Block", perform: { chats.block(chatID: id) })
     }
+
+    /// Read-state toggle behind the row and its VoiceOver action (the
+    /// same Teams-synced path as the row menu).
+    static func toggleRead(_ id: String, chats: ChatListViewModel, unread: UnreadStore, model: WindowModel?) {
+        let isUnread = unread.isUnread(chatID: id)
+        if let app = model?.app {
+            app.setChatUnread(id, unread: !isUnread)
+        } else if isUnread { unread.markRead(chatID: id) } else { unread.markUnread(chatID: id) }
+    }
+
+    static func togglePin(_ id: String, _ chats: ChatListViewModel) {
+        if chats.isPinned(id) { chats.unpin(id) } else { chats.pin(id) }
+    }
+
+    /// VoiceOver action names for a chat row (test seam: pins parity
+    /// with the row menu's top items).
+    static func rowActionNames(unread: Bool, pinned: Bool, muted: Bool) -> [String] {
+        [(unread ? "Mark as Read" : "Mark as Unread"), (pinned ? "Unpin" : "Pin"),
+         (muted ? "Unmute" : "Mute")]
+    }
+}
+
+/// The row menu's top items as VoiceOver actions on the list row
+/// (SPECFIX-P2 #10, message rows mirror this in MessageRowView). Lives
+/// beside the menu (not the list pane) so the read-state source scan
+/// keeps passing (ChatSync R5: read-state strings only in menu files).
+struct ChatRowAccessibility: ViewModifier {
+    let id: String
+    let chats: ChatListViewModel
+    let unread: UnreadStore
+    let rules: RulesStore
+    let model: WindowModel?
+
+    func body(content: Content) -> some View {
+        content
+            .accessibilityAction(named: unread.isUnread(chatID: id) ? "Mark as Read" : "Mark as Unread") {
+                ChatRowActions.toggleRead(id, chats: chats, unread: unread, model: model)
+            }
+            .accessibilityAction(named: chats.isPinned(id) ? "Unpin" : "Pin") {
+                ChatRowActions.togglePin(id, chats)
+            }
+            .accessibilityAction(named: rules.level(chatID: id) == .muted ? "Unmute" : "Mute") {
+                ChatRowActions.toggleMute(id, rules)
+            }
+    }
 }
 
 /// New Folder… from Move to Folder: names a folder of this app and

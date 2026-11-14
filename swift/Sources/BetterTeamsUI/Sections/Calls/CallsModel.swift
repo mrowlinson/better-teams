@@ -62,10 +62,13 @@ struct CallsRowModel: Identifiable, Equatable {
         return t.isEmpty ? "name:" + name : t.lowercased()
     }
 
-    /// "Missed", "Incoming · 4:17", "Outgoing" (row + detail line).
+    /// "Missed", "Outgoing" (never connected), "Call ended · 12:34" (a
+    /// connected call that ended — §8 End; the direction arrow keeps
+    /// the direction). Row + detail line.
     var detailLine: String {
-        guard !isMissed, durationSecs > 0 else { return direction.label }
-        return "\(direction.label) \u{00B7} \(CallRecord.durationLabel(durationSecs))"
+        guard !isMissed else { return direction.label }
+        guard durationSecs > 0 else { return direction.label }
+        return "Call ended \u{00B7} \(CallRecord.durationLabel(durationSecs))"
     }
 
     /// Row symbol (§6.5): outgoing up-right, incoming/missed down-left.

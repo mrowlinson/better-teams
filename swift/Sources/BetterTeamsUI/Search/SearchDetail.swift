@@ -100,7 +100,12 @@ private struct ObservedDetail: View {
                         Button("Chat") { SearchPersonActions.chat(p, model) }
                     }
                     if let email = p.email, !email.isEmpty, let url = URL(string: "mailto:\(email)") {
-                        Button("Email") { TeamsLinkRouter.open(url) }
+                        // Demo copy-only (§9.4): Mail never opens in demo.
+                        if model?.options.demo == true {
+                            Button("Copy Email Address") { CardLinks.copy(email) }
+                        } else {
+                            Button("Email") { TeamsLinkRouter.open(url) }
+                        }
                     }
                 }
             } else {
@@ -235,7 +240,12 @@ struct FileCard: View {
                     Button("Show in Chat", action: showInChat)
                         .disabled(file.source_id?.isEmpty ?? true)
                     if let url = file.web_url.flatMap(URL.init(string:)) {
-                        Button("Open in Browser") { TeamsLinkRouter.openInBrowser(url) }
+                        // Demo copy-only (§9.4): the browser never opens in demo.
+                        if model?.options.demo == true {
+                            Button("Copy Link") { CardLinks.copy(url.absoluteString) }
+                        } else {
+                            Button("Open in Browser") { TeamsLinkRouter.openInBrowser(url) }
+                        }
                     }
                 }
                 .controlSize(.large)

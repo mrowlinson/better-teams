@@ -86,6 +86,7 @@ struct CallsListPane: View {
                         }
                         .padding(.vertical, 2)
                         .tag(CallsSection.speedDialPrefix + c.id)
+                        .modifier(CallsRowAccessibility(id: CallsSection.speedDialPrefix + c.id, m: m))
                     }
                     // Drag to reorder (Finder sidebar favorites).
                     .onMove { contacts.movePins(fromOffsets: $0, toOffset: $1) }
@@ -94,6 +95,7 @@ struct CallsListPane: View {
             Section("Recent") {
                 ForEach(rows) { r in
                     CallsRow(row: r, now: now).tag(r.id)
+                        .modifier(CallsRowAccessibility(id: r.id, m: m))
                 }
             }
         }
@@ -124,6 +126,52 @@ struct CallsListPane: View {
     }
 
     static let currentCallID = "current-call"
+
+    /// VoiceOver action names for a Calls row (test seam: pins parity
+    /// with the row menu — only the enabled items appear).
+    static func rowActionNames(canCall: Bool, canMessage: Bool, speedDialTitle: String?,
+                               isRecent: Bool) -> [String] {
+        var out: [String] = []
+        if canCall { out.append("Call Back") }
+        if canMessage { out.append("Message") }
+        if let speedDialTitle { out.append(speedDialTitle) }
+        if isRecent { out.append("Remove from Recents") }
+        return out
+    }
+}
+
+/// VoiceOver actions for a Calls row (Recent and Speed Dial): the row
+/// menu's enabled items, resolved the same way.
+private struct CallsRowAccessibility: ViewModifier {
+    let id: String
+    let m: WindowModel
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if id == CallsListPane.currentCallID {
+            content
+        } else if let p = CallsSection.person(id, m) {
+            let idle = m.call.map(\.ended) ?? true
+            content.accessibilityActions {
+                if !p.thread.isEmpty, idle {
+                    Button("Call Back") { CallsSection.call(p, m) }
+                }
+                if CallsSection.chatID(p, m) != nil {
+                    Button("Message") { CallsSection.message(p, m) }
+                }
+                if CallsSection.isPinned(p, m) {
+                    Button("Remove from Speed Dial") { CallsSection.removeFromSpeedDial(p, m) }
+                } else if CallsSection.member(p) != nil {
+                    Button("Add to Speed Dial") { CallsSection.addToSpeedDial(p, m) }
+                }
+                if CallsSection.isRecent(id) {
+                    Button("Remove from Recents") { CallsSection.removeFromRecents([id], m) }
+                }
+            }
+        } else {
+            content
+        }
+    }
 }
 
 struct CallsEmptyPane: View {

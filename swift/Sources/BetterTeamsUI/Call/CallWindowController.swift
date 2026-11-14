@@ -77,11 +77,11 @@ public final class CallWindowController: NSWindowController, NSWindowDelegate, N
         close()
     }
 
-    /// Full screen keeps the call toolbar visible (§8).
+    /// Full screen keeps the call toolbar visible (§8; shared rule).
     public func window(_ window: NSWindow,
                        willUseFullScreenPresentationOptions proposed: NSApplication.PresentationOptions = [])
         -> NSApplication.PresentationOptions {
-        proposed.subtracting(.autoHideToolbar)
+        ShellWindowController.fullScreenOptions(proposed)
     }
 
     // MARK: close asks to leave (§8)

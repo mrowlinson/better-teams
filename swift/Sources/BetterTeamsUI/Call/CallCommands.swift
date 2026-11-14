@@ -15,6 +15,8 @@ public enum CallCommands {
     public static let camera: CommandID = "call.camera"
     public static let share: CommandID = "call.share"
     public static let devices: CommandID = "call.devices"
+    public static let showPeople: CommandID = "call.showPeople"
+    public static let showChat: CommandID = "call.showChat"
 
     /// Popover name (evidence `popover=devices`).
     public static let devicesPopover = "devices"
@@ -33,5 +35,11 @@ public enum CallCommands {
                 menu: .init(.call, group: 2, order: 3), toolbar: .detail, owner: .call),
         Command(leave, "Leave Call", symbol: "phone.down.fill", key: "h", modifiers: [.command, .shift],
                 menu: .init(.call, group: 0, order: 9), toolbar: .trailing, owner: .call),
+        // The call's People | Chat inspector (SPECFIX-P2 #13): titles
+        // flip Show/Hide via validation, like the shell inspector item.
+        Command(showPeople, "Show People", symbol: "person.2",
+                menu: .init(.call, group: 0, order: 5), owner: .call),
+        Command(showChat, "Show Chat", symbol: "bubble.left.and.bubble.right",
+                menu: .init(.call, group: 0, order: 6), owner: .call),
     ]
 }

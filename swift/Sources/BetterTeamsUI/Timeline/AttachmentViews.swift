@@ -464,10 +464,31 @@ struct ReactionChips: View {
 }
 
 /// Opens card/link targets: https only, in the default browser.
+/// Demo (§9.4, SPECFIX-P2 #14): Microsoft links still route natively
+/// (never the browser); anything else copies instead of opening, so
+/// demo never leaves the app. `demoStaysInApp` is set at launch.
 enum CardLinks {
+    static var demoStaysInApp = false
+    /// Last demo-copied link (tests).
+    static var lastDemoCopy: String?
+
     static func open(_ raw: String) {
         guard let url = URL(string: raw), url.scheme?.lowercased() == "https" else { return }
+        if demoStaysInApp, TeamsLinkRouter.family(url) == .other {
+            copy(raw)
+            return
+        }
         TeamsLinkRouter.open(url)
+    }
+
+    /// Copy-only fallback (demo link buttons, calendar parity).
+    static func copy(_ string: String) {
+        lastDemoCopy = string
+        let work = {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(string, forType: .string)
+        }
+        if Thread.isMainThread { work() } else { DispatchQueue.main.async(execute: work) }
     }
 }
 
