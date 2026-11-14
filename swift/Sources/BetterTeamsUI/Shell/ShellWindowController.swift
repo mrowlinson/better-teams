@@ -690,6 +690,17 @@ public final class ShellWindowController: NSWindowController, NSWindowDelegate, 
         sheets.present(vc, request: SheetRequest("signIn", in: model.nav.section))
     }
 
+    /// Demo evidence only: the Sign In Again sheet over a working shell
+    /// (`--route "signin?state=expired-sheet"`). The same controller the
+    /// product presents, driven by a canned expired auth so the prompt
+    /// shows; never touches the core.
+    func presentExpiredSheetForEvidence() {
+        guard model.options.demo else { return }
+        let vc = SignInViewController(model: model, evidence: nil, asSheet: true,
+                                      auth: AuthViewModel.demo(.expired))
+        sheets.present(vc, request: SheetRequest("signIn", in: model.nav.section))
+    }
+
     public func validateMenuItem(_ item: NSMenuItem) -> Bool {
         guard let (id, arg) = Self.invocation(item) else {
             // Standard-selector items (Undo, Cut, Spelling…): Cocoa

@@ -92,7 +92,16 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             EvidenceHarness.showControl(in: wc)
         } else if route?.head == "signin", options.demo {
             let port = route?.query["port"].flatMap { Int($0) }
-            if route?.query["state"] == "web", let port, let url = URL(string: "http://127.0.0.1:\(port)/authorize") {
+            if route?.query["state"] == "expired-sheet" {
+                // Evidence: the Sign In Again sheet (expired prompt) over
+                // a working shell (demo scaffolding only; the product
+                // presents this sheet from the connection item).
+                wc.showShell()
+                if Navigator.loadPersisted(wc.model.accountKey) == nil {
+                    wc.navigator.apply(Route(path: ["chat", DemoData.demoID]))
+                }
+                wc.presentExpiredSheetForEvidence()
+            } else if route?.query["state"] == "web", let port, let url = URL(string: "http://127.0.0.1:\(port)/authorize") {
                 wc.showSignIn(evidence: .web(url))
             } else {
                 wc.showSignIn(evidence: route?.query["state"] == "code" ? .code("K7QP2M4XD") : .start)

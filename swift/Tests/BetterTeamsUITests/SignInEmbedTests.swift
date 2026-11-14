@@ -107,6 +107,9 @@ final class FakeAuthServer: @unchecked Sendable {
 /// Everything the fake core saw.
 final class FakeCoreLog: @unchecked Sendable {
     var signedIn = false
+    /// Status reports a present but expired AAD token (`.expired`).
+    var expired = false
+    var browserStarts = 0
     var callbacks: [String] = []
     var cancels = 0
     var deviceStarts = 0
@@ -126,9 +129,10 @@ final class SignInEmbedTests: XCTestCase {
         server.stop()
     }
 
-    nonisolated static func status(signedIn: Bool) -> StatusResponse {
+    nonisolated static func status(signedIn: Bool, expired: Bool = false) -> StatusResponse {
         let slot = #"{"present":false,"expired":false}"#
-        let json = #"{"ok":true,"signed_in":\#(signedIn),"tokens":{"aad":\#(slot),"refresh_present":false,"# +
+        let aad = expired ? #"{"present":true,"expired":true}"# : slot
+        let json = #"{"ok":true,"signed_in":\#(signedIn),"tokens":{"aad":\#(aad),"refresh_present":false,"# +
             #""graph":\#(slot),"ic3":\#(slot),"recorder":\#(slot),"skype":\#(slot),"region_gtms_present":false}}"#
         return try! JSONDecoder().decode(StatusResponse.self, from: Data(json.utf8))
     }
@@ -137,7 +141,7 @@ final class SignInEmbedTests: XCTestCase {
     static func fakeVM(authorize: String, redirect: String, log: FakeCoreLog) -> AuthViewModel {
         AuthViewModel(
             profile: "signin-lane-test",
-            status: { status(signedIn: log.signedIn) },
+            status: { status(signedIn: log.signedIn, expired: log.expired && !log.signedIn) },
             start: {
                 log.deviceStarts += 1
                 let json = #"{"ok":true,"session":"dc-1","verification_uri":"https://microsoft.com/devicelogin","# +
@@ -147,6 +151,7 @@ final class SignInEmbedTests: XCTestCase {
             openURL: { url in log.opened.append(url); return false },
             copy: { _ in },
             browserStart: {
+                log.browserStarts += 1
                 let json = #"{"ok":true,"session":"ba-test","authorize_url":"\#(authorize)","# +
                     #""redirect_uri":"\#(redirect)","expires_in":600}"#
                 return try JSONDecoder().decode(AuthCodeStart.self, from: Data(json.utf8))
@@ -171,6 +176,26 @@ final class SignInEmbedTests: XCTestCase {
         let model = WindowModel(graph: graph, accountKey: "demo", options: LaunchOptions(args: []))
         let vc = SignInViewController(model: model, evidence: nil, auth: vm, autoStart: true)
         let window = OffscreenWindow(contentRect: NSRect(x: -30000, y: -30000, width: 540, height: 400),
+                                     styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentViewController = vc
+        addTeardownBlock { @MainActor in
+            window.close()
+            XCTAssertTrue(TestDisplayGuard.windowsOnDisplay().isEmpty, "test window reached a display")
+        }
+        return (vc, window)
+    }
+
+    /// The sheet variants (Sign In Again: `adding` nil, the window's own
+    /// auth; Add Account: a fresh `adding` profile), hosted offscreen.
+    private func sheetHost(_ vm: AuthViewModel, adding: Bool, otherUsable: Bool, autoStart: Bool = true) -> (SignInViewController, NSWindow) {
+        let chats = ChatListViewModel(fetcher: { _ in ChatsResponse(ok: true, chats: []) })
+        let graph = AccountWindowGraph(account: AccountRecord(id: "demo", displayName: "Test"), chats: chats)
+        let model = WindowModel(graph: graph, accountKey: "demo", options: LaunchOptions(args: []))
+        let vc = SignInViewController(model: model, evidence: nil, asSheet: true,
+                                      adding: adding ? vm : nil, auth: adding ? nil : vm, autoStart: autoStart,
+                                      otherAccountUsable: { otherUsable })
+        let window = OffscreenWindow(contentRect: NSRect(x: -30000, y: -30000, width: 480, height: 420),
                                      styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.contentViewController = vc
@@ -267,6 +292,142 @@ final class SignInEmbedTests: XCTestCase {
         try await until(10, "embedded web") { vc.webSignIn != nil }
         let chrome = try XCTUnwrap(vc.webSignIn?.chrome)
         try await until(10, "load problem") { chrome.problem == .loadFailed }
+    }
+
+    // MARK: expired / sheet variants (SIGNIN verifier notes)
+
+    /// Expired with nothing else usable (the window's own sign-in screen):
+    /// the sign-in itself is the only thing to show, so it starts.
+    func testExpiredWindowWithNoUsableAccountAutoStartsEmbedded() async throws {
+        let log = FakeCoreLog()
+        log.expired = true
+        let vm = Self.fakeVM(authorize: "\(server.base)/authorize", redirect: "\(server.base)/nativeclient", log: log)
+        let (vc, _) = mainWindow(vm)
+        try await until(10, "embedded web") { vc.webSignIn != nil }
+        XCTAssertEqual(log.browserStarts, 1)
+        XCTAssertTrue(log.opened.isEmpty)
+    }
+
+    /// Sign In Again sheet, the expired account is the only one: it starts.
+    func testSignInAgainSheetWithNoOtherUsableAccountStartsEmbedded() async throws {
+        let log = FakeCoreLog()
+        log.expired = true
+        let vm = Self.fakeVM(authorize: "\(server.base)/authorize", redirect: "\(server.base)/nativeclient", log: log)
+        let (vc, _) = sheetHost(vm, adding: false, otherUsable: false)
+        try await until(10, "embedded web") { vc.webSignIn != nil }
+        XCTAssertEqual(vc.preferredContentSize, SignInWebController.contentSize)
+    }
+
+    /// Sign In Again sheet while another account works: an expired session
+    /// PROMPTS (start screen + "Your session expired"), it does not open a
+    /// web page by itself. Nothing is started until the person asks.
+    func testExpiredSheetWithAnotherUsableAccountPromptsInsteadOfOpeningPage() async throws {
+        let log = FakeCoreLog()
+        log.expired = true
+        let vm = Self.fakeVM(authorize: "\(server.base)/authorize", redirect: "\(server.base)/nativeclient", log: log)
+        let (vc, _) = sheetHost(vm, adding: false, otherUsable: true)
+        try await until(10, "expired state read") { vm.state == .expired }
+        try await Task.sleep(nanoseconds: 400_000_000)
+        XCTAssertNil(vc.webSignIn, "no web page opens on its own")
+        XCTAssertEqual(log.browserStarts, 0)
+        XCTAssertTrue(log.opened.isEmpty)
+        XCTAssertEqual(vm.state, .expired, "still prompting")
+        XCTAssertEqual(vc.preferredContentSize, SignInViewController.sheetSize, "start-screen sheet, not the web size")
+        // The prompt's button starts the sign-in (embedded).
+        await vm.startBrowserSignIn()
+        try await until(10, "embedded web after the click") { vc.webSignIn != nil }
+        XCTAssertEqual(log.browserStarts, 1)
+    }
+
+    /// Demo scaffolding (`signin?state=expired-sheet`): the canned
+    /// expired auth prompts at the start-screen sheet size, with no
+    /// page opening on its own. Same controller shape the product's
+    /// Sign In Again sheet uses (evidence nil, asSheet, expired auth).
+    func testExpiredDemoAuthSheetPromptsAtSheetSize() async throws {
+        let vm = AuthViewModel.demo(.expired)
+        // autoStart false: the demo route never auto-starts (demo mode),
+        // like the app under XCTest (defaultAutoStart off).
+        let (vc, _) = sheetHost(vm, adding: false, otherUsable: false, autoStart: false)
+        try await until(10, "expired state read") { vm.state == .expired }
+        try await Task.sleep(nanoseconds: 400_000_000)
+        XCTAssertNil(vc.webSignIn, "no web page opens on its own")
+        XCTAssertEqual(vm.state, .expired, "still prompting")
+        XCTAssertEqual(vc.preferredContentSize, SignInViewController.sheetSize, "start-screen sheet, not the web size")
+    }
+
+    /// Add Account sheet (fresh profile, state unknown): starts embedded.
+    func testAddAccountSheetStartsEmbedded() async throws {
+        let log = FakeCoreLog()
+        let vm = Self.fakeVM(authorize: "\(server.base)/authorize", redirect: "\(server.base)/nativeclient", log: log)
+        let (vc, window) = sheetHost(vm, adding: true, otherUsable: true)
+        try await until(10, "embedded web") { vc.webSignIn != nil }
+        XCTAssertEqual(log.browserStarts, 1)
+        XCTAssertNil(window.attachedSheet)
+        XCTAssertEqual(vc.preferredContentSize, SignInWebController.contentSize)
+    }
+
+    // MARK: client certificate + web process crash
+
+    private final class ChallengeSender: NSObject, URLAuthenticationChallengeSender {
+        func use(_ credential: URLCredential, for challenge: URLAuthenticationChallenge) {}
+        func continueWithoutCredential(for challenge: URLAuthenticationChallenge) {}
+        func cancel(_ challenge: URLAuthenticationChallenge) {}
+    }
+
+    /// A client-certificate challenge can't be answered in an embedded
+    /// view: the footer offers the code flow (needsBrowser) and the
+    /// challenge still completes (default handling), never hangs.
+    func testClientCertificateChallengeOffersCodeFlow() async throws {
+        let log = FakeCoreLog()
+        let vm = Self.fakeVM(authorize: "\(server.base)/authorize", redirect: "\(server.base)/nativeclient", log: log)
+        let (vc, _) = mainWindow(vm)
+        try await until(10, "embedded web") { vc.webSignIn != nil }
+        let web = try XCTUnwrap(vc.webSignIn)
+        let space = URLProtectionSpace(host: "certauth.login.microsoftonline.com", port: 443, protocol: "https",
+                                       realm: nil, authenticationMethod: NSURLAuthenticationMethodClientCertificate)
+        let challenge = URLAuthenticationChallenge(protectionSpace: space, proposedCredential: nil,
+                                                   previousFailureCount: 0, failureResponse: nil, error: nil,
+                                                   sender: ChallengeSender())
+        var disposition: URLSession.AuthChallengeDisposition?
+        web.webView(web.web, didReceive: challenge) { d, _ in disposition = d }
+        XCTAssertEqual(web.chrome.problem, .needsBrowser)
+        XCTAssertEqual(disposition, .performDefaultHandling)
+
+        // A server-trust challenge (ordinary TLS) is not a needs-browser step.
+        let plain = URLProtectionSpace(host: "127.0.0.1", port: 80, protocol: "http", realm: nil,
+                                       authenticationMethod: NSURLAuthenticationMethodHTTPBasic)
+        web.chrome.problem = nil
+        web.webView(web.web, didReceive: URLAuthenticationChallenge(
+            protectionSpace: plain, proposedCredential: nil, previousFailureCount: 0, failureResponse: nil,
+            error: nil, sender: ChallengeSender())) { _, _ in }
+        XCTAssertNil(web.chrome.problem)
+    }
+
+    /// The web content process dying shows the native load problem (not a
+    /// blank page); Try Again reloads the sign-in page and clears it.
+    func testWebProcessCrashShowsNativeErrorAndRetryRecovers() async throws {
+        let log = FakeCoreLog()
+        let vm = Self.fakeVM(authorize: "\(server.base)/authorize", redirect: "\(server.base)/nativeclient", log: log)
+        let (vc, _) = mainWindow(vm)
+        try await until(10, "embedded web") { vc.webSignIn != nil }
+        let web = try XCTUnwrap(vc.webSignIn)
+        try await until(10, "login form") {
+            (try? await web.web.evaluateJavaScript("document.getElementById('f') ? 'y' : 'n'") as? String) == "y"
+        }
+        let before = server.requests.filter { $0.hasPrefix("GET /authorize") }.count
+        web.webViewWebContentProcessDidTerminate(web.web)
+        XCTAssertEqual(web.chrome.problem, .loadFailed)
+        XCTAssertEqual(SignInWebProblem.loadFailed.title, "Can't connect")
+        XCTAssertNotNil(vc.webSignIn, "the sign-in stays up so Try Again / Use a Code are reachable")
+        web.retry()
+        XCTAssertNil(web.chrome.problem, "Try Again clears the error at once")
+        try await until(10, "second page load") {
+            self.server.requests.filter { $0.hasPrefix("GET /authorize") }.count > before
+        }
+        try await until(10, "login form again") {
+            (try? await web.web.evaluateJavaScript("document.getElementById('f') ? 'y' : 'n'") as? String) == "y"
+        }
+        XCTAssertNil(web.chrome.problem)
     }
 
     // MARK: units
