@@ -14,7 +14,8 @@ final class RecapGuardTests: XCTestCase {
     func testRecapPartSwitcherIsANativeSegmentedControl() throws {
         let (app, _, _) = GuardSupport.demoModel()
         let vm = app.meetingRecaps.model(threadID: DemoData.standupID, title: "Standup")
-        let host = NSHostingView(rootView: MeetingRecapView(recap: vm, recordings: app.recordings)
+        let host = NSHostingView(rootView: MeetingRecapView(recap: vm, recordings: app.recordings,
+                                                             identity: DemoData.standupID)
             .frame(width: 900, height: 600))
         host.frame = CGRect(x: 0, y: 0, width: 900, height: 600)
         host.layoutSubtreeIfNeeded()

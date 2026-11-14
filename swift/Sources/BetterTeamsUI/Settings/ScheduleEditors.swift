@@ -29,7 +29,8 @@ struct WeekdayPicker: View {
     var body: some View {
         LabeledContent("Days") {
             HStack(spacing: 4) {
-                ForEach(order, id: \.self) { day in
+                ForEach(0..<order.count) { k in
+                    let day = order[k]
                     Toggle(isOn: binding(day)) {
                         Text(calendar.veryShortWeekdaySymbols[day - 1])
                             .frame(minWidth: 14)

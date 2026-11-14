@@ -52,25 +52,25 @@ enum ChatSyncEvidence {
             let w = ChatWindowController.window(for: id)
             CallEvidence.focus(w, over: wc)
             // Timeline geometry of the pop-out (stale row heights = clip
-            // or gaps), once it has settled.
+            // or gaps), once the pop-out's conversation has loaded (R7:
+            // re-check per main-queue turn, no fixed sleeps).
             Task {
-                for delay in [2_500_000_000, 5_000_000_000] as [UInt64] {
-                    try? await Task.sleep(nanoseconds: delay)
-                    guard let w, let root = w.contentView else { return }
-                    func r(_ v: NSView) -> String {
-                        let f = v.convert(v.bounds, to: nil)
-                        return "\(Int(f.minX)),\(Int(f.minY)),\(Int(f.width))x\(Int(f.height))"
-                    }
-                    let tls = timelines(in: root)
-                    let scrolls = tls.compactMap { $0.view.subviews.first { $0 is NSScrollView } }.map(r)
-                    let texts = textViews(in: root).filter { tv in !scrollsContain(tls, tv) }.map(r)
-                    let safe = root.safeAreaInsets
-                    print("EVIDENCE POPOUT GEOMETRY window=\(Int(w.frame.width))x\(Int(w.frame.height)) "
-                          + "layout=\(Int(w.contentLayoutRect.height)) content=\(r(root)) "
-                          + "safe=\(Int(safe.top)),\(Int(safe.bottom)) timelineScroll=\(scrolls) composerText=\(texts) "
-                          + "timelines[\(tls.map { $0.geometryAudit() }.joined(separator: "; "))]")
-                    fflush(stdout)
+                guard let w, await waitFor({
+                    w.contentView.map { !timelines(in: $0).isEmpty } ?? false
+                }), let root = w.contentView else { return }
+                func r(_ v: NSView) -> String {
+                    let f = v.convert(v.bounds, to: nil)
+                    return "\(Int(f.minX)),\(Int(f.minY)),\(Int(f.width))x\(Int(f.height))"
                 }
+                let tls = timelines(in: root)
+                let scrolls = tls.compactMap { $0.view.subviews.first { $0 is NSScrollView } }.map(r)
+                let texts = textViews(in: root).filter { tv in !scrollsContain(tls, tv) }.map(r)
+                let safe = root.safeAreaInsets
+                print("EVIDENCE POPOUT GEOMETRY window=\(Int(w.frame.width))x\(Int(w.frame.height)) "
+                      + "layout=\(Int(w.contentLayoutRect.height)) content=\(r(root)) "
+                      + "safe=\(Int(safe.top)),\(Int(safe.bottom)) timelineScroll=\(scrolls) composerText=\(texts) "
+                      + "timelines[\(tls.map { $0.geometryAudit() }.joined(separator: "; "))]")
+                fflush(stdout)
             }
         }
     }
@@ -122,13 +122,13 @@ enum ChatSyncEvidence {
         return out
     }
 
-    /// Re-checks `ok` once per main-queue turn until it holds or 3 s pass.
+    /// Re-checks `ok` once per main-queue turn (the harness's settle idiom,
+    /// no sleeps, R7) until it holds or 3 s pass.
     private static func waitFor(_ ok: @MainActor () -> Bool) async -> Bool {
         let deadline = Date().addingTimeInterval(3)
         while Date() < deadline {
             if ok() { return true }
-            await Task.yield()
-            try? await Task.sleep(nanoseconds: 20_000_000)
+            await withCheckedContinuation { c in DispatchQueue.main.async { c.resume() } }
         }
         return ok()
     }

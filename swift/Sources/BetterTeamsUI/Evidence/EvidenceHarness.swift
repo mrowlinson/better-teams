@@ -116,13 +116,13 @@ enum EvidenceHarness {
             }
         }
         hideBadge()
-        let until = Date().addingTimeInterval(8)
-        Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { t in
-            MainActor.assumeIsolated {
-                hideBadge()
-                if Date() > until { t.invalidate() }
+        // R7: no polling timer. A newly exposed input-method badge window
+        // is ordered out when it appears; the evidence process is one-shot
+        // (killed after the capture), so the observer needs no removal.
+        _ = NotificationCenter.default.addObserver(
+            forName: NSWindow.didExposeNotification, object: nil, queue: .main) { _ in
+                MainActor.assumeIsolated { hideBadge() }
             }
-        }
         EvidenceGeometry.append(wc, route: options.route, appearance: options.appearance)
         if options.dumpMenus, let bar = NSApp.mainMenu {
             print("EVIDENCE MENUS BEGIN\n\(MainMenu.dump(bar))EVIDENCE MENUS END")

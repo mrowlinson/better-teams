@@ -181,7 +181,6 @@ struct CallChatList: View {
                                     .textSelection(.enabled)
                             }
                             .padding(.vertical, 2)
-                            .id(m.id)
                         }
                         .onScrollGeometryChange(for: Bool.self) { g in
                             Self.isAtNewest(offsetY: g.contentOffset.y, containerHeight: g.containerSize.height, contentHeight: g.contentSize.height)

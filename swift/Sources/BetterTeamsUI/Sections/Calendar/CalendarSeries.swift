@@ -50,7 +50,7 @@ struct EventInstancesSheet: View {
                 if let rows, !rows.isEmpty {
                     ScrollViewReader { proxy in
                         List(rows, selection: $selection) { row in
-                            instanceRow(row).tag(row.id).id(row.id)
+                            instanceRow(row).tag(row.id)
                         }
                         .contextMenu(forSelectionType: String.self) { _ in } primaryAction: { ids in
                             if let id = ids.first { open(id) }

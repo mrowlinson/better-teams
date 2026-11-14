@@ -439,6 +439,13 @@ public final class ShellWindowController: NSWindowController, NSWindowDelegate, 
             } else {
                 model.search.step(id == ShellCommand.findNext ? 1 : -1)
             }
+        case ShellCommand.useSelectionForFind:
+            if model.frameHost.findKey != nil {
+                model.frameHost.usePageSelectionForFind()
+            } else if let text = Self.selectedText, !text.isEmpty {
+                navigator.focusSearch(.conversation)
+                model.search.setQuery(text, scope: model.search.scope)
+            }
         case ShellCommand.inspector: navigator.toggleInspector()
         case ShellCommand.tabChat, ShellCommand.tabFiles, ShellCommand.tabNotes:
             if let ref = currentConversation {
@@ -504,6 +511,9 @@ public final class ShellWindowController: NSWindowController, NSWindowDelegate, 
         case ShellCommand.findNext, ShellCommand.findPrevious:
             if model.frameHost.findKey != nil { return CommandValidation(enabled: !model.frameHost.findQuery.isEmpty) }
             return CommandValidation(enabled: nav.search != nil && model.search.canStep)
+        case ShellCommand.useSelectionForFind:
+            if model.frameHost.findKey != nil { return .enabled }
+            return CommandValidation(enabled: !(Self.selectedText ?? "").isEmpty)
         case ShellCommand.inspector:
             let has = nav.search == nil && navigator.hasInspector(nav.section)
             let on = nav.isInspectorVisible(nav.section)
@@ -681,11 +691,40 @@ public final class ShellWindowController: NSWindowController, NSWindowDelegate, 
     }
 
     public func validateMenuItem(_ item: NSMenuItem) -> Bool {
-        guard let (id, arg) = Self.invocation(item) else { return false }
+        guard let (id, arg) = Self.invocation(item) else {
+            // Standard-selector items (Undo, Cut, Spelling…): Cocoa
+            // convention — enabled when the responder chain handles them.
+            // (Previously these fell through to `false`: every standard
+            // Edit item was dead.)
+            if let action = item.action {
+                return NSApp.target(forAction: action, to: nil, from: item) != nil
+            }
+            return false
+        }
         let v = validate(id, arg: arg)
         if let t = v.title, item.title != t { item.title = t }
         item.state = v.checked ? .on : .off
         return v.enabled
+    }
+
+    /// Cocoa Use Selection for Find: the focused text's selected string
+    /// (a field editor is an NSTextView, so the composer is covered).
+    static var selectedText: String? {
+        guard let r = NSApp.keyWindow?.firstResponder else { return nil }
+        if let tv = r as? NSTextView {
+            let s = tv.string as NSString
+            guard let range = tv.selectedRanges.first?.rangeValue,
+                  range.location != NSNotFound, range.location + range.length <= s.length else { return nil }
+            return s.substring(with: range)
+        }
+        if let t = r as? NSText {
+            let s = t.string as NSString
+            let range = t.selectedRange
+            guard s.length > 0, range.location != NSNotFound,
+                  range.location + range.length <= s.length else { return nil }
+            return s.substring(with: range)
+        }
+        return nil
     }
 
     public func validateToolbarItem(_ item: NSToolbarItem) -> Bool {

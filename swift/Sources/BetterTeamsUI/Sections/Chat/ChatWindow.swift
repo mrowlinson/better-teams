@@ -65,9 +65,9 @@ final class ChatWindowController: NSWindowController, NSWindowDelegate {
         // segmented control and the call buttons; the chat's identity
         // (avatar, name, status) sits at the leading edge as plain title
         // content (a titlebar accessory, no glass: it is not a control),
-        // like Mail's title. The window title stays set for the Window menu.
+        // like Mail's title. R1: the window title stays visible (no
+        // custom window chrome); the accessory repeats it for the tabs.
         window.toolbarStyle = .unified
-        window.titleVisibility = .hidden
         window.toolbar = toolbarController.makeToolbar()
         window.addTitlebarAccessoryViewController(toolbarController.makeIdentityAccessory())
         // Wide enough for the content-fitted identity, a meeting chat's four
@@ -273,7 +273,10 @@ struct PopoutContactView: View {
                 .padding(.horizontal, 6)
                 .fixedSize(horizontal: true, vertical: false)
                 .frame(height: Self.size.height, alignment: .leading)
-                .onGeometryChange(for: CGFloat.self, of: { $0.size.width }) { _ in onWidth() }
+                // R8: re-fit when the content changes (name, roster count),
+                // never from a geometry read: width only ever moves with
+                // those two strings.
+                .onChange(of: name + "\0" + subtitle) { _, _ in onWidth() }
                 .accessibilityElement(children: .combine)
             }
         }

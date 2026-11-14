@@ -220,4 +220,54 @@ final class P1ShellTests: XCTestCase {
         XCTAssertTrue(tight.showsMore)
         XCTAssertLessThan(tight.visiblePinned, 8)
     }
+
+    // MARK: Edit menu standard items (P1#7)
+
+    func testUseSelectionForFindInFindSubmenu() {
+        guard let c = CommandCatalog.command(ShellCommand.useSelectionForFind) else {
+            return XCTFail("edit.useSelectionForFind missing from the catalog")
+        }
+        XCTAssertEqual(c.title, "Use Selection for Find")
+        XCTAssertEqual(c.menu?.menu, .edit)
+        XCTAssertEqual(c.menu?.submenu, "Find")
+        XCTAssertEqual(c.key, "e")
+        XCTAssertEqual(c.modifiers, [.command])
+    }
+
+    func testSpellingAndSubstitutionsSubmenusInCatalog() {
+        let spelling = CommandCatalog.all.filter { $0.menu?.submenu == "Spelling and Grammar" }
+        XCTAssertEqual(spelling.map(\.title),
+                       ["Show Spelling and Grammar", "Check Document Now", "Check Spelling While Typing",
+                        "Check Grammar With Spelling", "Correct Spelling Automatically"])
+        XCTAssertTrue(spelling.allSatisfy { $0.menu?.menu == .edit })
+        let subs = CommandCatalog.all.filter { $0.menu?.submenu == "Substitutions" }
+        XCTAssertEqual(subs.map(\.title),
+                       ["Show Substitutions", "Smart Copy/Paste", "Smart Quotes", "Smart Dashes",
+                        "Smart Links", "Data Detectors", "Text Replacement"])
+        XCTAssertTrue(subs.allSatisfy { $0.menu?.menu == .edit })
+        for c in spelling + subs {
+            XCTAssertNotNil(c.selector, "\(c.id) routes through its standard selector")
+        }
+        XCTAssertEqual(CommandCatalog.command("edit.spelling.show")?.key, ":")
+    }
+
+    func testStandardEditSelectorsExist() {
+        // Every standard selector the catalog names resolves on a
+        // responder-chain class: real Cocoa actions, not strings. ("Show
+        // Spelling and Grammar" uses showGuessPanel:, exactly as Apple's
+        // MainMenu template wires it; showSpellingPanel: exists nowhere
+        // in AppKit — verified by probe + SDK headers.)
+        let chain: [AnyClass] = [NSTextView.self, NSText.self, NSWindow.self, NSApplication.self,
+                                 NSDocument.self, NSResponder.self]
+        for name in ["showGuessPanel:", "checkSpelling:", "toggleContinuousSpellChecking:",
+                     "toggleGrammarChecking:", "toggleAutomaticSpellingCorrection:",
+                     "orderFrontSubstitutionsPanel:", "toggleSmartInsertDelete:",
+                     "toggleAutomaticQuoteSubstitution:", "toggleAutomaticDashSubstitution:",
+                     "toggleAutomaticLinkDetection:", "toggleAutomaticDataDetection:",
+                     "toggleAutomaticTextReplacement:"] {
+            let sel = Selector((name))
+            XCTAssertTrue(chain.contains { $0.instancesRespond(to: sel) },
+                          "\(name) is a standard Cocoa action")
+        }
+    }
 }

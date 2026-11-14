@@ -38,7 +38,7 @@ struct ManageFoldersSheet: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Manage Folders").font(.headline)
             Picker("Section", selection: $tab) {
-                ForEach(Tab.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                ForEach(Tab.allCases, id: \.rawValue) { Text($0.rawValue).tag($0) }
             }
             .pickerStyle(.segmented)
             .labelsHidden()

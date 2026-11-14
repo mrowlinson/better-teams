@@ -50,8 +50,12 @@ enum CallEvidence {
         let m = wc.model
         guard m.options.demo else { return }
         if route.head == "calls", route.query["confirm"] == "clear" {
-            // Evidence: the Clear Call History confirmation alert.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { CallsSection.clearHistory(m) }
+            // Evidence: the Clear Call History confirmation alert, once the
+            // main window is up (R7: re-check per main-queue turn, no sleep).
+            Task { @MainActor in
+                guard await waitFor({ wc.window?.isVisible == true }) else { return }
+                CallsSection.clearHistory(m)
+            }
         }
         switch route.head {
         case "settings":
@@ -70,7 +74,10 @@ enum CallEvidence {
             }
             // ?scroll=0…1 scrolls the pane (tall panes; Notifications is ~2.5 screens).
             if let f = route.query["scroll"].flatMap(Double.init), let w = SettingsWindowController.shared.window {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { scrollPane(in: w.contentView, to: f) }
+                Task { @MainActor in
+                    guard await waitFor({ w.isVisible }) else { return }
+                    scrollPane(in: w.contentView, to: f)
+                }
             }
         case "call" where route.query["state"] == "incoming":
             if let p = presentation(route.query["presentation"]) { CallSettings.shared.presentation = p }
@@ -206,6 +213,17 @@ enum CallEvidence {
         }
         walk(v)
         return found.sorted { $0.1.minX < $1.1.minX }.map { "\($0.0)@\(Int($0.1.minX))+\(Int($0.1.width))" }
+    }
+
+    /// Re-checks `ok` once per main-queue turn (the harness's settle idiom,
+    /// no sleeps, R7) until it holds or 3 s pass.
+    private static func waitFor(_ ok: @MainActor () -> Bool) async -> Bool {
+        let deadline = Date().addingTimeInterval(3)
+        while Date() < deadline {
+            if ok() { return true }
+            await withCheckedContinuation { c in DispatchQueue.main.async { c.resume() } }
+        }
+        return ok()
     }
 
     static func focus(_ w: NSWindow?, over wc: ShellWindowController) {
