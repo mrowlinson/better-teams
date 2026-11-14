@@ -1758,7 +1758,7 @@ Notes:
     `files::tests::mkdir_path_and_body`,
     `files::mkdir_fake_tests::*` (fake-transport POST shape + folder
     return, blank-arg pre-network reject, 0 requests).
-    UPSTREAM: pending
+    UPSTREAM: PR https://github.com/eisbaw/ost/pull/112 (fix/create-folder, stacks on #66 after #28; fake-transport round-trip tests not ported, no harness on base)
 
 ## Upstream PRs, wave 9 (2026-09-25 R10 audit; base 0892144; origin/main still 0892144)
 
