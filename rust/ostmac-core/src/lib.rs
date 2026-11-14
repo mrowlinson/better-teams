@@ -2313,6 +2313,37 @@ pub fn files_copy_json(
     }
 }
 
+/// Create a subfolder under `parent_id` (Graph `POST .../children`).
+/// Empty args are rejected before any network.
+/// Returns `{ok:true, file:{...}}` (the folder, `is_folder` true).
+pub fn files_mkdir_json(drive_id: &str, parent_id: &str, name: &str) -> String {
+    if drive_id.trim().is_empty() {
+        return err_json("arg", "empty drive_id");
+    }
+    if parent_id.trim().is_empty() {
+        return err_json("arg", "empty parent_id");
+    }
+    if name.trim().is_empty() {
+        return err_json("arg", "empty name");
+    }
+    let run = || -> Result<String, String> {
+        let rt = rt()?;
+        rt.block_on(async {
+            let client = ost::api::client::TeamsClient::new()
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            let file = ost::api::create_folder_data(&client, drive_id, parent_id, name)
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            Ok(json!({"ok": true, "file": shared_file_to_json(&file)}).to_string())
+        })
+    };
+    match run() {
+        Ok(s) => s,
+        Err(e) => err_json("files_mkdir", e),
+    }
+}
+
 /// Delete one driveItem (DELETE). Returns `{ok:true, id}`.
 pub fn files_delete_json(drive_id: &str, item_id: &str) -> String {
     if drive_id.trim().is_empty() {
@@ -4093,6 +4124,27 @@ pub extern "C" fn ostmac_files_copy(
     };
     match opt_cstr_to_string(new_name) {
         Ok(n) => string_to_c(files_copy_json(&drive, &item, &folder, n.as_deref())),
+        Err(e) => string_to_c(err_json("arg", e)),
+    }
+}
+
+/// Create a subfolder under `parent_id`. See [`files_mkdir_json`].
+#[no_mangle]
+pub extern "C" fn ostmac_files_mkdir(
+    drive_id: *const c_char,
+    parent_id: *const c_char,
+    name: *const c_char,
+) -> *mut c_char {
+    let drive = match cstr_to_string(drive_id) {
+        Ok(s) => s,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    let parent = match cstr_to_string(parent_id) {
+        Ok(s) => s,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    match cstr_to_string(name) {
+        Ok(n) => string_to_c(files_mkdir_json(&drive, &parent, &n)),
         Err(e) => string_to_c(err_json("arg", e)),
     }
 }

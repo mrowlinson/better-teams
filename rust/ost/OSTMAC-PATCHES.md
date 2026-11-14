@@ -1746,6 +1746,20 @@ Notes:
     `lobby_links_come_from_the_join_response`.
     UPSTREAM: PR https://github.com/eisbaw/ost/pull/111 (fix/lobby-signaling, directly on main)
 
+97. [feature] `src/api/files.rs` — **create-folder endpoint (FILETAB-R1
+    New Folder)**. `mkdir_path` (`POST /drives/{d}/items/{p}/children`),
+    `mkdir_body` (`{"name", "folder": {}}`, no conflict behavior: a name
+    clash fails 409 rather than forking a copy), `create_folder_data`
+    (blank name/parent rejected pre-network; `"root"` parent resolves to
+    the drive root's real id via the move/copy `resolve_folder_id` alias;
+    returns the new item with `is_folder`). Same shape as the om-i3-manage
+    endpoints (rename/move/copy/delete). Not live-verified (0 live writes
+    this lane: a mkdir lands in the owner's real drive). Tests:
+    `files::tests::mkdir_path_and_body`,
+    `files::mkdir_fake_tests::*` (fake-transport POST shape + folder
+    return, blank-arg pre-network reject, 0 requests).
+    UPSTREAM: pending
+
 ## Upstream PRs, wave 9 (2026-09-25 R10 audit; base 0892144; origin/main still 0892144)
 
 No-file wave. `git diff 307d221..db62ed7 -- rust/ost` is empty (wave-8

@@ -13,6 +13,7 @@ public final class UnifiedFilesStore: ObservableObject {
     public typealias MoveFetcher = SharedFilesStore.MoveFetcher
     public typealias CopyFetcher = SharedFilesStore.CopyFetcher
     public typealias DeleteFetcher = SharedFilesStore.DeleteFetcher
+    public typealias MkdirFetcher = SharedFilesStore.MkdirFetcher
     public typealias OpenURLFn = SharedFilesStore.OpenURLFn
     public typealias CopyLinkFn = SharedFilesStore.CopyLinkFn
     public typealias SizeProbe = ComposeAttachmentsStore.SizeProbe
@@ -57,6 +58,7 @@ public final class UnifiedFilesStore: ObservableObject {
     private let moveFetcher: MoveFetcher
     private let copyFetcher: CopyFetcher
     private let deleteFetcher: DeleteFetcher
+    private let mkdirFetcher: MkdirFetcher
     private let openURLFn: OpenURLFn
     private let copyLinkFn: CopyLinkFn
     private let sizeProbe: SizeProbe
@@ -105,6 +107,9 @@ public final class UnifiedFilesStore: ObservableObject {
         delete: @escaping DeleteFetcher = {
             try RustCore.sharedDelete(driveID: $0, itemID: $1)
         },
+        mkdir: @escaping MkdirFetcher = {
+            try RustCore.sharedMkdir(driveID: $0, parentID: $1, name: $2)
+        },
         openURL: @escaping OpenURLFn = SharedFilesStore.defaultOpenURL,
         copyLink: @escaping CopyLinkFn = SharedFilesStore.defaultCopyLink,
         sizeProbe: @escaping SizeProbe = ComposeAttachmentsStore.defaultSizeProbe,
@@ -120,6 +125,7 @@ public final class UnifiedFilesStore: ObservableObject {
         self.moveFetcher = move
         self.copyFetcher = copy
         self.deleteFetcher = delete
+        self.mkdirFetcher = mkdir
         self.openURLFn = openURL
         self.copyLinkFn = copyLink
         self.sizeProbe = sizeProbe
@@ -744,6 +750,42 @@ public final class UnifiedFilesStore: ObservableObject {
         manage(row) { [copyFetcher] in
             _ = try copyFetcher(drive, row.file.id, folder, nil)
             return nil
+        }
+    }
+
+    /// New Folder via core POST at the drive root; the folder row joins
+    /// the index on the drive leg. Demo appends the folder in memory.
+    /// Live without any drive row no-ops (no anchor drive).
+    public func mkdir(_ name: String, folderName: String? = nil) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        if isDemo {
+            let taken = Set(rows.map(\.file.id))
+            var n = rows.count + 1
+            var id = "demo-u-mkdir-\(n)"
+            while taken.contains(id) { n += 1; id = "demo-u-mkdir-\(n)" }
+            let file = SharedFile(
+                id: id, name: trimmed, drive_id: "demo-drive-1",
+                modified: SharedFilesStore.nowStamp(), is_folder: true)
+            rows = Self.upsert(
+                UnifiedFileRow(file: file, source: .drive, sourceName: folderName ?? "OneDrive"),
+                into: rows)
+            state = .loaded
+            return
+        }
+        guard let drive = rows.first(where: { $0.file.drive_id != nil })?.file.drive_id else { return }
+        let fetcher = mkdirFetcher
+        let place = folderName ?? "OneDrive"
+        Task {
+            do {
+                let resp = try await Task.blocking { try fetcher(drive, "root", trimmed) }.value
+                rows = Self.upsert(
+                    UnifiedFileRow(file: resp.file, source: .drive, sourceName: place),
+                    into: rows)
+                state = .loaded
+            } catch {
+                state = .error(Self.message(for: error))
+            }
         }
     }
 

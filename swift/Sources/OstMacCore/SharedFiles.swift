@@ -128,6 +128,7 @@ public final class SharedFilesStore: ObservableObject {
     public typealias MoveFetcher = @Sendable (String, String, String) throws -> SharedFileManageResponse
     public typealias CopyFetcher = @Sendable (String, String, String, String?) throws -> SharedFileCopyResponse
     public typealias DeleteFetcher = @Sendable (String, String) throws -> SharedFileDeleteResponse
+    public typealias MkdirFetcher = @Sendable (String, String, String) throws -> SharedFileManageResponse
     public typealias ProgressFetcher = @Sendable () throws -> UploadProgressResponse
     /// (conversation id, message id) → the files that message shares.
     public typealias MessageFilesFetcher = @Sendable (String, String) throws -> SharedFilesResponse
@@ -176,6 +177,7 @@ public final class SharedFilesStore: ObservableObject {
     private let moveFetcher: MoveFetcher
     private let copyFetcher: CopyFetcher
     private let deleteFetcher: DeleteFetcher
+    private let mkdirFetcher: MkdirFetcher
     private let progressFetcher: ProgressFetcher
     private let messageFilesFetcher: MessageFilesFetcher
     private let openURLFn: OpenURLFn
@@ -234,6 +236,9 @@ public final class SharedFilesStore: ObservableObject {
         delete: @escaping DeleteFetcher = {
             try RustCore.sharedDelete(driveID: $0, itemID: $1)
         },
+        mkdir: @escaping MkdirFetcher = {
+            try RustCore.sharedMkdir(driveID: $0, parentID: $1, name: $2)
+        },
         progress: @escaping ProgressFetcher = { try RustCore.sharedUploadProgress() },
         messageFiles: @escaping MessageFilesFetcher = {
             try RustCore.messageFiles(chatID: $0, messageID: $1)
@@ -251,6 +256,7 @@ public final class SharedFilesStore: ObservableObject {
         self.moveFetcher = move
         self.copyFetcher = copy
         self.deleteFetcher = delete
+        self.mkdirFetcher = mkdir
         self.progressFetcher = progress
         self.messageFilesFetcher = messageFiles
         self.openURLFn = openURL
@@ -748,6 +754,43 @@ public final class SharedFilesStore: ObservableObject {
                 _ = try await Task.blocking {
                     try fetcher(drive, itemID, folder, name)
                 }.value
+            } catch {
+                state = .error(Self.message(for: error))
+            }
+        }
+    }
+
+    /// New Folder via core POST (Graph `.../children`); the folder lands
+    /// in the open listing. Demo mode appends the folder row in memory.
+    /// Live without a drive (offline rows) no-ops, as does a channel
+    /// root: the drive root is the site root there, not the channel
+    /// folder — drill in first.
+    public func mkdir(_ name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        if isDemo {
+            let taken = Set(files.map(\.id))
+            var n = files.count + 1
+            var id = "demo-mkdir-\(n)"
+            while taken.contains(id) { n += 1; id = "demo-mkdir-\(n)" }
+            let folder = SharedFile(
+                id: id, name: trimmed,
+                drive_id: files.first?.drive_id ?? "demo-drive-1",
+                modified: Self.nowStamp(), is_folder: true)
+            files = Self.upsert(folder, into: files)
+            state = .loaded
+            return
+        }
+        let drive = crumbs.last?.driveID ?? files.first?.drive_id
+        let parent = crumbs.last?.itemID ?? "root"
+        guard let drive else { return }
+        if crumbs.isEmpty, ChannelTabsStore.isChannelID(chatID ?? "") { return }
+        let fetcher = mkdirFetcher
+        Task {
+            do {
+                let resp = try await Task.blocking { try fetcher(drive, parent, trimmed) }.value
+                files = Self.upsert(resp.file, into: files)
+                state = .loaded
             } catch {
                 state = .error(Self.message(for: error))
             }

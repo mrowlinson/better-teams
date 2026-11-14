@@ -153,6 +153,11 @@ extension FilesSection {
                 case .listing(let store, let file): store.rename(file, to: name)
                 }
             })
+        case FilesCommands.newFolderSheet:
+            guard let key = r.arg, let source = FilesSource(key: key) else { return nil }
+            return AnyView(FileNewFolderSheet { [weak self] name in
+                self?.mkdir(name, in: source, m)
+            })
         case FilesCommands.destinationSheet:
             guard let raw = r.arg, let bar = raw.firstIndex(of: "|") else { return nil }
             let copy = raw[..<bar] == "copy"
@@ -166,6 +171,19 @@ extension FilesSection {
             })
         default:
             return nil
+        }
+    }
+
+    /// New Folder in the store behind `source` (channel library vs the
+    /// Files index). The sheet re-resolves its key at commit time.
+    private func mkdir(_ name: String, in source: FilesSource, _ m: WindowModel) {
+        guard let app = m.app else { return }
+        switch source {
+        case .channel(let id):
+            guard library.chatID == id else { return }
+            library.mkdir(name)
+        default:
+            app.unifiedFiles.mkdir(name)
         }
     }
 
@@ -220,6 +238,38 @@ struct RenameFileSheet: View {
                 }
                 .keyboardShortcut(.defaultAction)
                 .disabled(trimmed.isEmpty || trimmed == name)
+            }
+        }
+        .padding(20)
+        .frame(width: 400)
+    }
+}
+
+/// New Folder sheet: one name field; Create is the default button and
+/// stays off while the name is blank (mirrors Rename…).
+struct FileNewFolderSheet: View {
+    let commit: (String) -> Void
+    @State private var text = ""
+    @Environment(\.windowModel) private var model
+
+    private var trimmed: String { text.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("New Folder").font(.headline).lineLimit(1).truncationMode(.middle)
+            Form {
+                TextField("Name", text: $text)
+            }
+            HStack(spacing: 8) {
+                Spacer(minLength: 0)
+                Button("Cancel", role: .cancel) { model?.dismissSheet() }
+                    .keyboardShortcut(.cancelAction)
+                Button("Create") {
+                    commit(trimmed)
+                    model?.dismissSheet()
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(trimmed.isEmpty)
             }
         }
         .padding(20)

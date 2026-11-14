@@ -60,7 +60,7 @@ final class FilesSection: SectionProvider, InspectorCapable {
     }
 
     var allToolbarItems: [CommandID] {
-        [FilesCommands.upload, FilesCommands.quickLook, FilesCommands.share, FilesCommands.transfers]
+        [FilesCommands.upload, FilesCommands.newFolder, FilesCommands.quickLook, FilesCommands.share, FilesCommands.transfers]
     }
 
     /// `files/<source>[/<file id>…]`, `files?select=<id>` (in Recent),
@@ -205,6 +205,11 @@ final class FilesSection: SectionProvider, InspectorCapable {
             chooseUpload(m)
             return true
         }
+        if c == FilesCommands.newFolder {
+            guard canMkdir(m) else { return false }
+            m.presentSheet(SheetRequest(FilesCommands.newFolderSheet, in: .files, arg: Self.source(m).key))
+            return true
+        }
         if Self.manageCommands.contains(c) { return performManage(c, arg: arg, m) }
         if Self.multiCommands.contains(c) {
             let all = items(forArg: arg, m)
@@ -307,6 +312,8 @@ final class FilesSection: SectionProvider, InspectorCapable {
             return .enabled
         case FilesCommands.upload:
             return CommandValidation(enabled: m.nav.section != .files || Self.source(m).acceptsUpload)
+        case FilesCommands.newFolder:
+            return CommandValidation(enabled: canMkdir(m))
         default:
             break
         }
@@ -411,6 +418,22 @@ final class FilesSection: SectionProvider, InspectorCapable {
         panel.beginSheetModal(for: window) { [weak self] r in
             guard r == .OK, let url = panel.url else { return }
             self?.download(row, it, app, to: url.path)
+        }
+    }
+
+    /// New Folder targets the enclosing folder: a channel's open folder
+    /// (drive root excluded live: the site root, not the channel folder —
+    /// drill in first), else the drive root behind the index. Demo always
+    /// allows it (in-memory rows).
+    func canMkdir(_ m: WindowModel) -> Bool {
+        guard m.nav.section == .files, let app = m.app else { return false }
+        guard Self.source(m).acceptsUpload else { return false }
+        if m.options.demo { return true }
+        switch Self.source(m) {
+        case .channel:
+            return library.crumbs.last?.driveID != nil
+        default:
+            return app.unifiedFiles.rows.contains { $0.file.drive_id != nil }
         }
     }
 

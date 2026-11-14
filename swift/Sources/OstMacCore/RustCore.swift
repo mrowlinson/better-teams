@@ -765,6 +765,18 @@ public enum RustCore {
         }
     }
 
+    /// Create a subfolder under `parentID` ("root" = drive root, resolved
+    /// server-side). Blocking FFI (network): call off the main thread.
+    public static func sharedMkdir(driveID: String, parentID: String, name: String) throws -> SharedFileManageResponse {
+        try driveID.withCString { dPtr in
+            try parentID.withCString { pPtr in
+                try name.withCString { nPtr in
+                    try call(ostmac_files_mkdir(dPtr, pPtr, nPtr), as: SharedFileManageResponse.self)
+                }
+            }
+        }
+    }
+
     /// Swift-native (R14 om-later-b4 B4; was `ostmac_presence`).
     public static func presence() throws -> PresenceResponse {
         try CoreReads.presence()
