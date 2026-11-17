@@ -37,6 +37,8 @@ public final class MeetingRosterStore: ObservableObject {
             for i in participants.indices where participants[i].id == event.id {
                 if !event.name.isEmpty { participants[i].name = event.name }
                 if let m = event.muted { participants[i].muted = m }
+                if let h = event.handRaised { participants[i].handRaised = h }
+                if let r = event.isPresenter { participants[i].isPresenter = r }
                 participants[i].present = true
             }
             if let s = event.speaking { applySpeaking(id: event.id, speaking: s) }

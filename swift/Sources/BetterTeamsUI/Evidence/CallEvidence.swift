@@ -157,6 +157,8 @@ enum CallEvidence {
             s?.seedDemoCaptions()
         }
         if query["blur"] == "1" { s?.setSelfBlur(true) }
+        // C2b roster signals (raised hand, presenter, reactions).
+        if query["signals"] == "1" { s?.seedDemoSignals() }
         switch state {
         case "presenting":
             s?.meetingVideo?.startDemoPresentation()

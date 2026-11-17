@@ -92,6 +92,15 @@ public final class CallSession {
     public private(set) var captionsEnabled = false
     public private(set) var captions = LiveCaptionsLog()
     @ObservationIgnored private var captionsEngine: LiveCaptionsEngine?
+    // MARK: C2b roster signaling (local state only — no wire yet, see MeetingSignals.swift)
+    /// Your raised hand (meetings). Demo/evidence only: live has no
+    /// signaling endpoint, so the control stays disabled there.
+    public private(set) var handRaised = false
+    /// Recent meeting reactions (demo/evidence only in live-unproven state).
+    public private(set) var reactions = MeetingReactionLog()
+    /// Mute-others / remove / make-presenter (demo applies to the
+    /// in-memory roster; live throws liveUnproven and stays disabled).
+    public let participantActions: MeetingParticipantActions
 
     @ObservationIgnored private let live: Bool
     @ObservationIgnored private let evidence: Bool
@@ -114,6 +123,7 @@ public final class CallSession {
         self.store = store ?? model?.app?.call
         let live = model?.app != nil && model?.options.demo == false
         self.live = live
+        participantActions = live ? .live() : .demo()
         evidence = model?.options.evidence ?? false
         if case .meeting = kind { joined = false } else { joined = true }
         camera = live ? CameraCapture() : nil
@@ -314,6 +324,23 @@ public final class CallSession {
 
     public func toggleCaptions() { setCaptions(!captionsEnabled) }
 
+    /// C2b: your raised hand (demo/evidence only — live has no
+    /// signaling endpoint yet, so live calls never reach this).
+    public func setHandRaised(_ up: Bool) {
+        guard !live, !ended, handRaised != up else { return }
+        handRaised = up
+    }
+
+    public func toggleHandRaised() { setHandRaised(!handRaised) }
+
+    /// C2b: send one meeting reaction (demo/evidence only — no wire
+    /// yet, so live calls never reach this).
+    public func sendMeetingReaction(_ emoji: String, sender: String? = nil) {
+        guard !live, !ended else { return }
+        let own = sender ?? model?.ownDisplayName ?? "You"
+        reactions.append(emoji: emoji, sender: own)
+    }
+
     /// Demo/evidence only: deterministic caption lines (Western names).
     func seedDemoCaptions() {
         guard !live else { return }
@@ -322,6 +349,21 @@ public final class CallSession {
             LiveCaptionLine(text: "Marco Chen: Thursday works if QA signs off."),
             LiveCaptionLine(text: "Priya Nair: I'll post the checklist after this call."),
         ])
+    }
+
+    /// Demo/evidence only: deterministic C2b signals (a raised hand,
+    /// a presenter, two reactions). The evidence roster is shared, so
+    /// this seeds through the app's meeting store.
+    func seedDemoSignals() {
+        guard !live else { return }
+        setHandRaised(true)
+        reactions = MeetingReactionLog(lines: [
+            MeetingReaction(emoji: "👍", sender: "Ava Lindqvist"),
+            MeetingReaction(emoji: "👏", sender: "Tom Becker"),
+        ])
+        guard let roster = model?.app?.meeting else { return }
+        roster.ingest(MeetingRosterEvent(id: "8:orgid:ava", name: "", handRaised: true))
+        roster.ingest(MeetingRosterEvent(id: "8:orgid:tom", name: "", isPresenter: true))
     }
 
     @MainActor

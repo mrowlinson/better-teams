@@ -1872,7 +1872,7 @@ Notes:
     `unpin_thread_message_with_client` (read-modify-PUT, bad ids
     rejected before any network). Tests: `thread_pins_from_pinned_items_shape`,
     `pinned_items_add_remove_round_trip`, `pin_paths` URL case.
-    UPSTREAM: pending
+    UPSTREAM: PR https://github.com/eisbaw/ost/pull/117 (fix/pin-for-everyone, stacks on #91)
 
 ## Upstream PRs, wave 9 (2026-09-25 R10 audit; base 0892144; origin/main still 0892144)
 

@@ -10,6 +10,8 @@ public enum MeetingRosterFormat {
         var parts = [p.name]
         parts.append(p.muted ? "muted" : "unmuted")
         if p.speaking { parts.append("speaking") }
+        if p.handRaised { parts.append("hand raised") }
+        if p.isPresenter { parts.append("presenter") }
         return parts.joined(separator: ", ")
     }
 }

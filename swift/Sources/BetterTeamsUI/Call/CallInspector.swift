@@ -56,26 +56,109 @@ private struct CallPeopleList: View {
             }
             Section("In This Call (\(people.count))") {
                 ForEach(people) { p in
-                    HStack(spacing: 8) {
-                        Avatar(name: p.name)
-                            .contactHover(name: p.name, arrowEdge: .leading)
-                        Text(p.kind == .selfView ? "\(p.name) (You)" : p.name)
-                            .font(AppFont.body(scale))
-                            .lineLimit(1)
-                        Spacer(minLength: 4)
-                        if p.speaking {
-                            Image(systemName: "waveform")
-                                .foregroundStyle(.tint)
-                                .accessibilityLabel("Speaking")
-                        }
-                        if p.muted {
-                            Image(systemName: "mic.slash.fill")
-                                .foregroundStyle(.secondary)
-                                .accessibilityLabel("Muted")
-                        }
-                    }
-                    .padding(.vertical, 2)
+                    PeopleRow(session: session, roster: roster, tile: p)
                 }
+            }
+        }
+    }
+}
+
+/// C2b roster row: name + speaking/muted glyphs (as before) plus the
+/// raised-hand and presenter badges, a Pin/Unpin button for the stage,
+/// and the participant-action menu (mute others, remove, make
+/// presenter). Actions run only where the protocol supports them:
+/// live calls have no signaling endpoint yet, so the menu stays
+/// disabled there (owner live test pending); demo applies in memory.
+private struct PeopleRow: View {
+    let session: CallSession
+    @ObservedObject var roster: MeetingRosterStore
+    let tile: CallTile
+    @Environment(\.contentTextScale) private var scale
+
+    private var entry: MeetingParticipant? {
+        roster.participants.first { $0.id == tile.id }
+    }
+
+    private var handUp: Bool {
+        if tile.kind == .selfView { return session.handRaised }
+        return entry?.handRaised ?? false
+    }
+
+    private var isPresenter: Bool { entry?.isPresenter ?? false }
+    private var pinned: Bool { session.meetingVideo?.pinnedID == tile.id }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Avatar(name: tile.name)
+                .contactHover(name: tile.name, arrowEdge: .leading)
+            Text(tile.kind == .selfView ? "\(tile.name) (You)" : tile.name)
+                .font(AppFont.body(scale))
+                .lineLimit(1)
+            Spacer(minLength: 4)
+            if handUp {
+                Image(systemName: "hand.raised.fill")
+                    .foregroundStyle(.tint)
+                    .accessibilityLabel("Hand raised")
+                    .help("Hand raised")
+            }
+            if isPresenter {
+                Text("Presenter")
+                    .font(AppFont.caption(scale))
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel("Presenter")
+            }
+            if tile.speaking {
+                Image(systemName: "waveform")
+                    .foregroundStyle(.tint)
+                    .accessibilityLabel("Speaking")
+            }
+            if tile.muted {
+                Image(systemName: "mic.slash.fill")
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel("Muted")
+            }
+            if session.meetingVideo != nil, tile.kind == .person {
+                Button(pinned ? "Unpin" : "Pin") {
+                    session.meetingVideo?.pin(pinned ? nil : tile.id)
+                }
+                .buttonStyle(.borderless)
+                .controlSize(.small)
+                .accessibilityLabel(pinned ? "Unpin \(tile.name)" : "Pin \(tile.name)")
+            }
+        }
+        .padding(.vertical, 2)
+        .contextMenu { rowMenu }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(MeetingRosterFormat.accessibilityLabel(for: MeetingParticipant(
+            id: tile.id, name: tile.name, speaking: tile.speaking, muted: tile.muted,
+            handRaised: handUp, isPresenter: isPresenter)))
+    }
+
+    @ViewBuilder
+    private var rowMenu: some View {
+        if session.meetingVideo != nil, tile.kind == .person {
+            Button(pinned ? "Unpin" : "Pin") {
+                session.meetingVideo?.pin(pinned ? nil : tile.id)
+            }
+            Divider()
+            Button("Mute \(tile.name)") {
+                Task { await session.participantActions.muteOthers(id: tile.id, in: roster) }
+            }
+            .disabled(!session.participantActions.enabled
+                      || session.participantActions.pending.contains(tile.id))
+            Button("Remove from Call") {
+                Task { await session.participantActions.remove(id: tile.id, in: roster) }
+            }
+            .disabled(!session.participantActions.enabled
+                      || session.participantActions.pending.contains(tile.id))
+            Button("Make Presenter") {
+                Task { await session.participantActions.makePresenter(id: tile.id, in: roster) }
+            }
+            .disabled(!session.participantActions.enabled
+                      || session.participantActions.pending.contains(tile.id)
+                      || isPresenter)
+            if !session.participantActions.enabled {
+                Text("Actions need live signaling (owner live test pending)")
             }
         }
     }

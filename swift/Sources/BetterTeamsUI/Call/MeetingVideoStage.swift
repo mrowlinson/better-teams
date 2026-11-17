@@ -74,18 +74,54 @@ struct MeetingVideoStage: View {
     }
 
     /// C2a local controls: the layout picker (native segmented control,
-    /// never web-look tabs) and the live-captions toggle.
+    /// never web-look tabs) and the live-captions toggle. C2b adds the
+    /// hand control and the reactions menu (both demo/evidence only —
+    /// no live signaling yet, so they stay disabled in live calls).
     private var meetLocalBar: some View {
-        HStack(spacing: 12) {
-            Picker("Layout", selection: Binding(get: { session.layout }, set: { session.setLayout($0) })) {
-                ForEach(MeetingLayoutMode.allCases) { m in Text(m.title).tag(m) }
+        VStack(spacing: 8) {
+            HStack(spacing: 12) {
+                Picker("Layout", selection: Binding(get: { session.layout }, set: { session.setLayout($0) })) {
+                    ForEach(MeetingLayoutMode.allCases) { m in Text(m.title).tag(m) }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .fixedSize()
+                Spacer(minLength: 4)
+                Toggle("Live Captions", isOn: Binding(get: { session.captionsEnabled },
+                                                     set: { session.setCaptions($0) }))
+                Button(session.handRaised ? "Lower Hand" : "Raise Hand",
+                       systemImage: session.handRaised ? "hand.raised.fill" : "hand.raised") {
+                    session.toggleHandRaised()
+                }
+                .disabled(!session.participantActions.enabled)
+                .help(session.participantActions.enabled
+                      ? "Raise your hand (demo only — no live signaling yet)"
+                      : "Raise Hand needs live signaling (owner live test pending)")
+                .accessibilityLabel(session.handRaised ? "Lower Hand" : "Raise Hand")
+                Menu("Reactions", systemImage: "face.smiling") {
+                    ForEach(MeetingReactionSet.emojis, id: \.self) { e in
+                        Button(e) { session.sendMeetingReaction(e) }
+                    }
+                }
+                .disabled(!session.participantActions.enabled)
+                .help(session.participantActions.enabled
+                      ? "Send a meeting reaction (demo only — no live signaling yet)"
+                      : "Reactions need live signaling (owner live test pending)")
+                .accessibilityLabel("Meeting reactions")
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .fixedSize()
-            Spacer(minLength: 4)
-            Toggle("Live Captions", isOn: Binding(get: { session.captionsEnabled },
-                                                 set: { session.setCaptions($0) }))
+            if !session.reactions.recent.isEmpty {
+                HStack(spacing: 8) {
+                    ForEach(session.reactions.recent) { r in
+                        Text("\(r.emoji) \(r.sender)")
+                            .font(AppFont.subheadline(scale))
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 3)
+                            .background(.fill.tertiary, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                            .accessibilityLabel("\(r.sender) reacted \(r.emoji)")
+                    }
+                }
+            }
         }
     }
 
