@@ -95,7 +95,8 @@ final class MCPTests: XCTestCase {
         let tools = result(resp)["tools"] as! [[String: Any]]
         let names = tools.compactMap { $0["name"] as? String }.sorted()
         XCTAssertEqual(names, [
-            "list-channels", "list-chats", "list-messages", "list-teams", "react-message", "send-message",
+            "catch-up", "get-presence", "list-activity", "list-agenda", "list-channels", "list-chats",
+            "list-files", "list-messages", "list-teams", "react-message", "search-messages", "send-message",
         ])
         for t in tools {
             let schema = t["inputSchema"] as! [String: Any]
@@ -322,6 +323,223 @@ final class MCPTests: XCTestCase {
             client: MockTeamsClient())!
         XCTAssertTrue(isError(resp))
         XCTAssertTrue(toolText(resp).contains("nope"))
+    }
+
+    // MARK: - search-messages
+
+    func testSearchMessages() {
+        let client = MockTeamsClient()
+        let text = toolText(MCPServer.handle(
+            line: toolCall("search-messages", args: ["query": "empty"]),
+            client: client)!)
+        let payload = json(text)
+        XCTAssertEqual(payload["query"] as? String, "empty")
+        let hits = payload["hits"] as! [[String: Any]]
+        XCTAssertFalse(hits.isEmpty)
+        XCTAssertNotNil(hits[0]["preview"])
+        XCTAssertNotNil(hits[0]["sender"])
+        XCTAssertEqual(client.seenSearchQueries, ["empty"])
+    }
+
+    func testSearchMessagesDefaultAndClamp() {
+        let client = MockTeamsClient()
+        _ = MCPServer.handle(line: toolCall("search-messages", args: ["query": "a"]), client: client)!
+        _ = MCPServer.handle(
+            line: toolCall("search-messages", args: ["query": "a", "limit": 500], id: 2),
+            client: client)!
+        XCTAssertEqual(client.seenLimits, [25, 100])
+    }
+
+    func testSearchMessagesRejectsBadQuery() {
+        for args in ([
+            [:], ["query": ""], ["query": "  "], ["query": 42],
+        ] as [[String: Any]]) {
+            let resp = MCPServer.handle(
+                line: toolCall("search-messages", args: args),
+                client: MockTeamsClient())!
+            XCTAssertEqual(
+                (rpcError(resp)["code"] as? NSNumber)?.intValue, -32602,
+                "args: \(args)")
+        }
+    }
+
+    func testSearchMessagesFailureIsErrorResult() {
+        struct Boom: Error {}
+        let client = MockTeamsClient()
+        client.failure = Boom()
+        let resp = MCPServer.handle(
+            line: toolCall("search-messages", args: ["query": "a"]),
+            client: client)!
+        XCTAssertTrue(isError(resp))
+    }
+
+    // MARK: - list-activity
+
+    func testListActivity() {
+        let client = MockTeamsClient()
+        let text = toolText(MCPServer.handle(
+            line: toolCall("list-activity"), client: client)!)
+        let rows = json(text)["activity"] as! [[String: Any]]
+        XCTAssertEqual(rows.count, 3)
+        XCTAssertEqual(rows[0]["kind"] as? String, "mention")
+        XCTAssertEqual(client.seenMentionsOnly, [false])
+    }
+
+    func testListActivityMentionsOnly() {
+        let client = MockTeamsClient()
+        let text = toolText(MCPServer.handle(
+            line: toolCall("list-activity", args: ["mentions_only": true]),
+            client: client)!)
+        let rows = json(text)["activity"] as! [[String: Any]]
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows[0]["kind"] as? String, "mention")
+        XCTAssertEqual(client.seenMentionsOnly, [true])
+    }
+
+    func testListActivityDefaultAndClamp() {
+        let client = MockTeamsClient()
+        _ = MCPServer.handle(line: toolCall("list-activity"), client: client)!
+        _ = MCPServer.handle(
+            line: toolCall("list-activity", args: ["limit": 500], id: 2),
+            client: client)!
+        XCTAssertEqual(client.seenLimits, [20, 100])
+    }
+
+    func testListActivityBadLimit() {
+        let resp = MCPServer.handle(
+            line: toolCall("list-activity", args: ["limit": "many"]),
+            client: MockTeamsClient())!
+        XCTAssertEqual((rpcError(resp)["code"] as? NSNumber)?.intValue, -32602)
+    }
+
+    // MARK: - list-agenda
+
+    func testListAgenda() {
+        let text = toolText(MCPServer.handle(
+            line: toolCall("list-agenda"), client: MockTeamsClient())!)
+        let meetings = json(text)["meetings"] as! [[String: Any]]
+        XCTAssertEqual(meetings.count, 2)
+        XCTAssertEqual(meetings[0]["subject"] as? String, "Engineering standup")
+        XCTAssertNotNil(meetings[0]["start"])
+    }
+
+    func testListAgendaDefaultAndClamp() {
+        let client = MockTeamsClient()
+        _ = MCPServer.handle(line: toolCall("list-agenda"), client: client)!
+        _ = MCPServer.handle(
+            line: toolCall("list-agenda", args: ["limit": 500], id: 2),
+            client: client)!
+        XCTAssertEqual(client.seenLimits, [20, 100])
+    }
+
+    // MARK: - list-files
+
+    func testListFilesSearch() {
+        let client = MockTeamsClient()
+        let text = toolText(MCPServer.handle(
+            line: toolCall("list-files", args: ["query": "onboarding"]),
+            client: client)!)
+        let files = json(text)["files"] as! [[String: Any]]
+        XCTAssertEqual(files.count, 1)
+        XCTAssertEqual(files[0]["name"] as? String, "onboarding-mocks.pdf")
+        XCTAssertEqual(client.seenFileQueries.map { $0.query }, ["onboarding"])
+    }
+
+    func testListFilesChat() {
+        let text = toolText(MCPServer.handle(
+            line: toolCall("list-files", args: ["chat_id": "demo"]),
+            client: MockTeamsClient())!)
+        XCTAssertEqual((json(text)["files"] as! [Any]).count, 3)
+    }
+
+    func testListFilesRecents() {
+        let text = toolText(MCPServer.handle(
+            line: toolCall("list-files"), client: MockTeamsClient())!)
+        let files = json(text)["files"] as! [[String: Any]]
+        XCTAssertEqual(files.count, 6) // search index, unfiltered
+        XCTAssertNotNil(files[0]["source_name"])
+    }
+
+    func testListFilesBadLimit() {
+        let resp = MCPServer.handle(
+            line: toolCall("list-files", args: ["limit": "many"]),
+            client: MockTeamsClient())!
+        XCTAssertEqual((rpcError(resp)["code"] as? NSNumber)?.intValue, -32602)
+    }
+
+    // MARK: - get-presence
+
+    func testGetPresenceOwn() {
+        let text = toolText(MCPServer.handle(
+            line: toolCall("get-presence"), client: MockTeamsClient())!)
+        let payload = json(text)
+        XCTAssertEqual(payload["availability"] as? String, "Available")
+        XCTAssertNil(payload["id"] as? String)
+    }
+
+    func testGetPresenceUser() {
+        let client = MockTeamsClient()
+        let text = toolText(MCPServer.handle(
+            line: toolCall("get-presence", args: ["user_id": "demo-2"]),
+            client: client)!)
+        let payload = json(text)
+        XCTAssertEqual(payload["availability"] as? String, "Busy")
+        XCTAssertEqual(payload["id"] as? String, "ava-demo")
+        XCTAssertEqual(client.seenPresenceIDs.count, 1)
+    }
+
+    func testGetPresenceUnknownUserIsErrorResult() {
+        let resp = MCPServer.handle(
+            line: toolCall("get-presence", args: ["user_id": "nope"]),
+            client: MockTeamsClient())!
+        XCTAssertTrue(isError(resp))
+        XCTAssertTrue(toolText(resp).contains("nope"))
+    }
+
+    func testGetPresenceRejectsBlankUserID() {
+        for args in ([
+            ["user_id": ""], ["user_id": "  "], ["user_id": 42],
+        ] as [[String: Any]]) {
+            let resp = MCPServer.handle(
+                line: toolCall("get-presence", args: args),
+                client: MockTeamsClient())!
+            XCTAssertEqual(
+                (rpcError(resp)["code"] as? NSNumber)?.intValue, -32602,
+                "args: \(args)")
+        }
+    }
+
+    // MARK: - catch-up
+
+    func testCatchUp() {
+        let client = MockTeamsClient()
+        let text = toolText(MCPServer.handle(
+            line: toolCall("catch-up"), client: client)!)
+        let payload = json(text)
+        let chats = payload["chats"] as! [[String: Any]]
+        XCTAssertFalse(chats.isEmpty)
+        let total = chats.reduce(0) { $0 + (($1["recent_count"] as? NSNumber)?.intValue ?? -1) }
+        XCTAssertEqual((payload["total_recent"] as? NSNumber)?.intValue, total)
+        XCTAssertNotNil(chats[0]["chat_id"])
+        XCTAssertNotNil(chats[0]["name"])
+    }
+
+    func testCatchUpDefaultAndClamp() {
+        let client = MockTeamsClient()
+        _ = MCPServer.handle(line: toolCall("catch-up"), client: client)!
+        _ = MCPServer.handle(
+            line: toolCall("catch-up", args: ["limit": 500], id: 2),
+            client: client)!
+        XCTAssertEqual(client.seenLimits, [10, 100])
+    }
+
+    func testCatchUpFailureIsErrorResult() {
+        struct Boom: Error {}
+        let client = MockTeamsClient()
+        client.failure = Boom()
+        let resp = MCPServer.handle(
+            line: toolCall("catch-up"), client: client)!
+        XCTAssertTrue(isError(resp))
     }
 
     // MARK: - Protocol errors

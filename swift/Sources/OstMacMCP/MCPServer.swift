@@ -56,6 +56,7 @@ public struct MCPServer {
     public static let defaultProtocolVersion = "2025-06-18"
     public static let toolNames = [
         "list-chats", "list-messages", "send-message", "react-message", "list-teams", "list-channels",
+        "search-messages", "list-activity", "list-agenda", "list-files", "get-presence", "catch-up",
     ]
 
     public init() {}
@@ -145,6 +146,18 @@ public struct MCPServer {
                 text = try listTeams(client: client)
             case "list-channels":
                 text = try listChannels(args: args, client: client)
+            case "search-messages":
+                text = try searchMessages(args: args, client: client)
+            case "list-activity":
+                text = try listActivity(args: args, client: client)
+            case "list-agenda":
+                text = try listAgenda(args: args, client: client)
+            case "list-files":
+                text = try listFiles(args: args, client: client)
+            case "get-presence":
+                text = try getPresence(args: args, client: client)
+            case "catch-up":
+                text = try catchUp(args: args, client: client)
             default:
                 return error(code: -32602, message: "unknown tool: \(name)", id: id)
             }
@@ -252,6 +265,129 @@ public struct MCPServer {
         return encode(["channels": out])
     }
 
+    private static func searchMessages(args: [String: Any], client: TeamsClient) throws -> String {
+        let query = try stringArg(args, "query")
+        let limit = try intArg(args, "limit", default: 25)
+        let resp = try client.searchMessages(query: query, limit: limit)
+        var o: [String: Any] = [
+            "query": resp.query ?? query,
+            "hits": resp.hits.map { h -> [String: Any] in
+                var o: [String: Any] = [
+                    "message_id": h.messageID, "chat_id": h.chatID,
+                    "sender": h.sender, "timestamp": h.timestamp, "preview": h.preview,
+                ]
+                if let t = h.teamID { o["team_id"] = t }
+                if let c = h.channelID { o["channel_id"] = c }
+                if let s = h.subject { o["subject"] = s }
+                return o
+            },
+        ]
+        if let t = resp.total { o["total"] = t }
+        o["more"] = resp.more
+        if let n = resp.next_from { o["next_from"] = n }
+        return encode(o)
+    }
+
+    private static func listActivity(args: [String: Any], client: TeamsClient) throws -> String {
+        let limit = try intArg(args, "limit", default: 20)
+        let mentionsOnly = (args["mentions_only"] as? NSNumber)?.boolValue ?? false
+        let rows = try client.activity(limit: limit, mentionsOnly: mentionsOnly)
+        return encode(["activity": rows.map { a -> [String: Any] in
+            var o: [String: Any] = [
+                "id": a.id, "kind": a.kind.rawValue, "chat_id": a.chatID,
+                "actor": a.actor, "chat_name": a.chatName, "snippet": a.snippet,
+                "at": a.at, "reviewed": a.reviewed,
+            ]
+            if let m = a.messageID { o["message_id"] = m }
+            return o
+        }])
+    }
+
+    private static func listAgenda(args: [String: Any], client: TeamsClient) throws -> String {
+        let limit = try intArg(args, "limit", default: 20)
+        let resp = try client.agenda(limit: limit)
+        return encode(["meetings": resp.meetings.map { m -> [String: Any] in
+            var o: [String: Any] = [
+                "id": m.meetingId, "subject": m.subject, "is_online": m.isOnline,
+            ]
+            if let s = m.start { o["start"] = s }
+            if let e = m.end { o["end"] = e }
+            if let j = m.joinURL { o["join_url"] = j }
+            if let g = m.organizer { o["organizer"] = g }
+            return o
+        }])
+    }
+
+    private static func listFiles(args: [String: Any], client: TeamsClient) throws -> String {
+        let limit = try intArg(args, "limit", default: 25)
+        let query = blankToNil(args["query"] as? String)
+        let chatID = blankToNil(args["chat_id"] as? String)
+        let rows = try client.files(query: query, chatID: chatID, limit: limit)
+        return encode(["files": rows.map { f -> [String: Any] in
+            var o: [String: Any] = ["id": f.id, "name": f.name, "size": f.size]
+            if let m = f.mime { o["mime"] = m }
+            if let w = f.web_url { o["web_url"] = w }
+            if let d = f.download_url { o["download_url"] = d }
+            if let v = f.drive_id { o["drive_id"] = v }
+            if let s = f.sender { o["sender"] = s }
+            if let c = f.created { o["created"] = c }
+            if let t = f.modified { o["modified"] = t }
+            if let n = f.source_name { o["source_name"] = n }
+            if let i = f.source_id { o["source_id"] = i }
+            return o
+        }])
+    }
+
+    private static func getPresence(args: [String: Any], client: TeamsClient) throws -> String {
+        guard let raw = args["user_id"] else {
+            let p = try client.presence()
+            return encode(presenceDict(
+                availability: p.availability, activity: p.activity,
+                statusMessage: p.statusMessage, outOfOffice: p.outOfOffice))
+        }
+        guard let id = raw as? String, !id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw ToolError.invalidParams("user_id must be a non-empty string")
+        }
+        let p = try client.userPresence(id: id)
+        var o = presenceDict(
+            availability: p.availability, activity: p.activity,
+            statusMessage: p.statusMessage, outOfOffice: p.outOfOffice)
+        o["id"] = p.id
+        return encode(o)
+    }
+
+    private static func presenceDict(
+        availability: String, activity: String, statusMessage: String?, outOfOffice: Bool?
+    ) -> [String: Any] {
+        var o: [String: Any] = ["availability": availability, "activity": activity]
+        if let s = statusMessage { o["status_message"] = s }
+        if let b = outOfOffice { o["out_of_office"] = b }
+        return o
+    }
+
+    private static func catchUp(args: [String: Any], client: TeamsClient) throws -> String {
+        let limit = try intArg(args, "limit", default: 10)
+        let summary = try client.catchUp(limit: limit)
+        return encode([
+            "total_recent": summary.totalRecent,
+            "chats": summary.chats.map { e -> [String: Any] in
+                var o: [String: Any] = [
+                    "chat_id": e.chatID, "name": e.name, "recent_count": e.recentCount,
+                ]
+                if let s = e.latestSender { o["latest_sender"] = s }
+                if let p = e.latestPreview { o["latest_preview"] = p }
+                if let t = e.latestTime { o["latest_time"] = t }
+                return o
+            },
+        ])
+    }
+
+    /// Blank or missing optional string filter: absent (recents/unfiltered).
+    private static func blankToNil(_ s: String?) -> String? {
+        guard let s, !s.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        return s
+    }
+
     // MARK: - Args
 
     private enum ToolError: Error {
@@ -340,6 +476,65 @@ public struct MCPServer {
             "inputSchema": [
                 "type": "object",
                 "properties": ["team_id": ["type": "string"]],
+            ],
+        ],
+        [
+            "name": "search-messages",
+            "description": "Search message text across chats and channels. Returns sender, timestamp, and preview per hit.",
+            "inputSchema": [
+                "type": "object",
+                "properties": [
+                    "query": ["type": "string", "description": "Substring over sender and preview"],
+                    "limit": ["type": "integer", "minimum": 1, "maximum": 100, "default": 25],
+                ],
+                "required": ["query"],
+            ],
+        ],
+        [
+            "name": "list-activity",
+            "description": "Recent activity feed (mentions, replies, reactions). Pass mentions_only:true for @-mentions of you.",
+            "inputSchema": [
+                "type": "object",
+                "properties": [
+                    "limit": ["type": "integer", "minimum": 1, "maximum": 100, "default": 20],
+                    "mentions_only": ["type": "boolean", "description": "Only @-mention rows", "default": false],
+                ],
+            ],
+        ],
+        [
+            "name": "list-agenda",
+            "description": "Upcoming meetings (calendar agenda) with start, organizer, and join link when present.",
+            "inputSchema": [
+                "type": "object",
+                "properties": ["limit": ["type": "integer", "minimum": 1, "maximum": 100, "default": 20]],
+            ],
+        ],
+        [
+            "name": "list-files",
+            "description": "Files: pass query to search OneDrive, chat_id for one conversation's shared files, neither for recent files.",
+            "inputSchema": [
+                "type": "object",
+                "properties": [
+                    "query": ["type": "string", "description": "Substring over file names"],
+                    "chat_id": ["type": "string", "description": "Chat or channel id"],
+                    "limit": ["type": "integer", "minimum": 1, "maximum": 100, "default": 25],
+                ],
+            ],
+        ],
+        [
+            "name": "get-presence",
+            "description": "Presence: yours by default, or pass user_id for one other user.",
+            "inputSchema": [
+                "type": "object",
+                "properties": ["user_id": ["type": "string"]],
+            ],
+        ],
+        [
+            "name": "catch-up",
+            "description": "Catch Up summary: per-chat recent-message counts with the newest sender, preview, and time.",
+            "inputSchema": [
+                "type": "object",
+                "properties": ["limit": ["type": "integer", "minimum": 1, "maximum": 100, "default": 10]],
             ],
         ],
     ]

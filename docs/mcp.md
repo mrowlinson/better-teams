@@ -46,6 +46,12 @@ environment are needed.
 | `react-message` | `chat_id`, `message_id`, `emoji` (👍❤️😂😮😢😠), `remove?` | Add/remove one emoji reaction |
 | `list-teams` | — | Joined teams with channels |
 | `list-channels` | `team_id?` | Channels (all, or one team); ids work in `list-messages` / `send-message` |
+| `search-messages` | `query`, `limit?` (default 25) | Search message text; sender, timestamp, preview per hit |
+| `list-activity` | `limit?` (default 20), `mentions_only?` | Activity feed; `mentions_only:true` keeps @-mentions |
+| `list-agenda` | `limit?` (default 20) | Upcoming meetings with start, organizer, join link |
+| `list-files` | `query?`, `chat_id?`, `limit?` (default 25) | `query` searches OneDrive, `chat_id` lists shared files, neither = recents |
+| `get-presence` | `user_id?` | Own presence by default, or one other user's |
+| `catch-up` | `limit?` (default 10) | Per-chat recent counts with newest sender/preview/time |
 
 Tool results carry the payload as a JSON text block. Core failures
 (unsigned, network) return `isError: true` with the message; malformed

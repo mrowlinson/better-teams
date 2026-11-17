@@ -11,7 +11,8 @@ private func usage() -> String {
 
     Runs a Model Context Protocol server on stdin/stdout:
       initialize, tools/list, tools/call, ping.
-    Tools: list-chats, list-messages, send-message, list-teams, list-channels.
+    Tools: list-chats, list-messages, send-message, react-message, list-teams, list-channels,
+      search-messages, list-activity, list-agenda, list-files, get-presence, catch-up.
     Sign in once in the Better Teams app; this server reuses that session.
     See docs/mcp.md for the Claude Desktop config.
     """
