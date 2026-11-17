@@ -16,6 +16,15 @@ final class AccountMenuTests: XCTestCase {
         XCTAssertFalse(ShellWindowController.presenceScheduleItem(live: false).enabled)
     }
 
+    func testOutOfOfficeItem() {
+        let on = ShellWindowController.outOfOfficeItem(live: true)
+        XCTAssertEqual(on.title, "Out of Office…")
+        XCTAssertEqual(on.arg, "ooo")
+        XCTAssertTrue(on.enabled)
+        // No signed-in app (demo): never hidden, disabled instead.
+        XCTAssertFalse(ShellWindowController.outOfOfficeItem(live: false).enabled)
+    }
+
     func testTopLevelAddAccount() {
         let app = CommandCatalog.all.filter { $0.menu?.menu == .app }
             .sorted { ($0.menu!.group, $0.menu!.order) < ($1.menu!.group, $1.menu!.order) }

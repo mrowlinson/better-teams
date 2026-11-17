@@ -400,7 +400,7 @@ Incomplete or not started yet ("in progress" = being worked on now):
 - **Meetings:** raise hand, reactions, recording/transcription controls, muting/removing participants, presenter roles, background replace, background blur on the live camera preview (follow-up); lobby admit UI in final verification
 - **Calling:** Teams Phone (dial pad, voicemail, forwarding, delegates) — parked: no Teams Phone licence on this tenant
 - **Calendar:** channel meetings, meeting options (lobby/presenter knobs), overlaying multiple calendars (in progress)
-- **Status:** scheduled out-of-office (in progress)
+- **Status:** scheduled out-of-office: shipped, one live check pending
 - **Chats and teams:** pins for everyone, Teams saved-messages sync, thread mute, full notification-rules matrix; private/shared channels, archiving, moderation, team privacy switch
 - **External (federated) chat:** written, awaiting live proof — blocked: tenant has external access disabled
 - **Shortcuts and accessibility:** full shortcuts window, remaining Teams key bindings, message-level menus, read-aloud

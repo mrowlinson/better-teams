@@ -95,6 +95,7 @@ struct NotificationsPane: View {
             QuietHoursSection(quiet: quiet, focus: focus)
             PresenceStatusSection(truth: truth, presence: presence, live: live)
             PresenceScheduleSection(schedule: schedule)
+            OutOfOfficeSection(presence: presence, live: live)
             }
             .formStyle(.grouped)
         }

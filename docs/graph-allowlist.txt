@@ -123,6 +123,8 @@ swift/Sources/OstMacCore/ContactCard.swift::managerChain | GET /users/{id}/manag
 swift/Sources/OstMacCore/ContactCardExtras.swift::about | GET /users/{id}?$select=aboutMe,birthday,hireDate,skills,… | works | live CARD3 probe 09-28 (answered; fields unset); scope User.ReadBasic.All (profile-detail fields may stay empty without User.Read.All)
 swift/Sources/OstMacCore/ContactCardExtras.swift::files | GET /me/insights/shared?$filter | works | live probeA insights 200
 swift/Sources/OstMacCore/ContactCardExtras.swift::schedule | POST /me/calendar/getSchedule | works | scope Calendars.Read.Shared granted
+swift/Sources/OstMacCore/OutOfOffice.swift::fetch | GET /me/mailboxSettings | works | live OOO R0 probe 200, automaticRepliesSetting keys recorded; scope MailboxSettings.ReadWrite granted
+swift/Sources/OstMacCore/OutOfOffice.swift::save | PATCH /me/mailboxSettings (automaticRepliesSetting only) | unproven | no live write in lane (HARD BAN on OOO set) — needs owner OK for set+revert proof
 swift/Sources/OstMacCore/ProfilePhotoStore.swift::fetch | GET /users/{id}/photo/$value | works | scope User.ReadBasic.All granted
 swift/Sources/OstMacCore/ReadCore.swift::meetings | GET /me/calendarView | works | live probeA 200
 swift/Sources/OstMacCore/ReadCore.swift::teams | GET /me/joinedTeams, /teams/{id}/channels | works | live probeA 200; applog 200

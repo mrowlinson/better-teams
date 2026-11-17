@@ -615,6 +615,7 @@ public final class ShellWindowController: NSWindowController, NSWindowDelegate, 
         // Presence Schedule… (Settings ▸ Notifications): the schedule
         // editor already lives there (SPECFIX-P2 #11).
         out.append(Self.presenceScheduleItem(live: live))
+        out.append(Self.outOfOfficeItem(live: live))
         if let app = model.app {
             var first = true
             for acct in app.accounts.accounts {
@@ -644,6 +645,13 @@ public final class ShellWindowController: NSWindowController, NSWindowDelegate, 
                     enabled: live, separatorBefore: true)
     }
 
+    /// "Out of Office…" row (test seam): the OOO editor lives in
+    /// Settings ▸ Notifications next to the schedule. Disabled in demo.
+    static func outOfOfficeItem(live: Bool) -> SubmenuItem {
+        SubmenuItem("Out of Office…", arg: "ooo", symbol: "airplane",
+                    enabled: live, separatorBefore: false)
+    }
+
     /// "Open <name> in New Window" rows: one per signed-in account (test
     /// seam — the account menu and File ▸ share it). Disabled in demo
     /// (windows need signed-in accounts); the caller sets separators.
@@ -666,7 +674,7 @@ public final class ShellWindowController: NSWindowController, NSWindowDelegate, 
             app.presenceTruth.undoLastAutoChange()
         } else if arg == "presenceUnlock" {
             app.presenceTruth.unlock()
-        } else if arg == "schedule" {
+        } else if arg == "schedule" || arg == "ooo" {
             bringForward()
             SettingsWindowController.shared.show(pane: "notifications")
         } else if arg.hasPrefix("account:") {

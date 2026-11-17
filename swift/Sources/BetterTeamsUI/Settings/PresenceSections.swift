@@ -47,6 +47,71 @@ struct PresenceStatusSection: View {
     }
 }
 
+/// Out of office (OOO-SET): current overlay as read from the unified
+/// presence service, plus an editor (message + start + duration) that
+/// saves via PATCH /me/mailboxSettings. The duration reuses the status
+/// "Reset after" picker: Never = always on, anything else schedules
+/// start → start+duration. Saves are explicit (Set / Turn off) and
+/// live-only; demo binds an inert store.
+struct OutOfOfficeSection: View {
+    @ObservedObject var presence: PresenceStore
+    @StateObject private var ooo = OutOfOfficeStore()
+    let live: Bool
+    @State private var message = ""
+    @State private var start = Date()
+    @State private var duration: PresenceLockDuration = .untilOff
+
+    /// Current overlay (server echo when signed in, adopted otherwise).
+    private var overlay: (title: String, note: String?) {
+        if let mine = presence.own, mine.outOfOffice == true {
+            return ("Out of Office", mine.outOfOfficeNote)
+        }
+        return (ooo.setting.summary(), nil)
+    }
+
+    var body: some View {
+        Section {
+            LabeledContent("Status", value: overlay.title)
+            if let note = overlay.note, !note.isEmpty {
+                LabeledContent("Reply", value: note.count > 60 ? String(note.prefix(59)) + "…" : note)
+            }
+            TextField("Reply message", text: $message, prompt: Text("Out of office reply"))
+                .disabled(!live || ooo.loading)
+            DatePicker("Starts", selection: $start, displayedComponents: [.date, .hourAndMinute])
+                .disabled(!live || ooo.loading || duration == .untilOff)
+            Picker("Duration", selection: $duration) {
+                ForEach(PresenceLockDuration.allCases, id: \.rawValue) {
+                    Text($0 == .untilOff ? "Never (always on)" : $0.label).tag($0)
+                }
+            }
+            .disabled(!live || ooo.loading)
+            HStack {
+                Button("Set Out of Office") {
+                    ooo.save(.scheduled(message: message, start: start, duration: duration))
+                }
+                .disabled(!live || ooo.loading || message.trimmingCharacters(in: .whitespaces).isEmpty)
+                Button("Turn Off", role: .destructive) { ooo.save(.off) }
+                    .disabled(!live || ooo.loading)
+            }
+            if let error = ooo.error {
+                Text(error).font(.caption).foregroundStyle(.secondary)
+            }
+        } header: {
+            InfoHeader(title: "Out of Office", subject: "out of office",
+                       text: "Replies come from your mailbox, not your status. Never means always on until turned off.")
+        }
+        .onAppear {
+            if live {
+                ooo.refresh()
+                if let s = oooStart() { start = s }
+            }
+        }
+    }
+
+    /// Prefill the start picker from the current schedule (nil = leave now).
+    private func oooStart() -> Date? { ooo.setting.start }
+}
+
 struct PresenceScheduleSection: View {
     @ObservedObject var schedule: PresenceScheduleStore
     @State private var atLimit = false
