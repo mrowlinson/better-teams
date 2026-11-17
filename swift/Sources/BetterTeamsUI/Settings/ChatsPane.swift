@@ -61,6 +61,12 @@ struct ChatsPane: View {
                     }
                 }
             }
+            Section("Chat List") {
+                Toggle(isOn: $settings.combinedChatsChannels) {
+                    InfoLabel(title: "Show channels in the chat list", subject: "the combined chat list",
+                              text: "The chat list adds a Channels section below the chats. A channel opens in Teams.")
+                }
+            }
             Section {
                 List(canned.templates, selection: $template) { t in
                     Text(t.title).tag(t.id)

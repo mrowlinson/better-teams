@@ -1,3 +1,7 @@
+<p align="center">
+  <strong>⚠️ Work in progress:</strong> Better Teams is under active development and not ready for everyday use yet. See <a href="#still-to-come">Still to come</a> for what's missing.
+</p>
+
 <h1 align="center">Better Teams</h1>
 
 <p align="center">
@@ -387,3 +391,18 @@ it depends on, keep their own licenses; see [NOTICE](NOTICE).
 
 For commercial licensing, contact [@mrowlinson](https://github.com/mrowlinson)
 on GitHub by opening an issue.
+
+## Still to come
+
+Incomplete or not started yet ("in progress" = being worked on now):
+
+- **Compose:** importance/urgent flags, announcement posts with subjects, addressing @team/@channel/@everyone, stickers; drafts show markers, not WYSIWYG
+- **Meetings:** raise hand, reactions, live captions, recording/transcription controls, muting/removing participants, presenter roles, backgrounds and blur (in progress); lobby admit UI in final verification
+- **Calling:** Teams Phone (dial pad, voicemail, forwarding, delegates) — licence being probed
+- **Calendar:** channel meetings, meeting options (lobby/presenter knobs), overlaying multiple calendars
+- **Status:** scheduled out-of-office (in progress)
+- **Chats and teams:** pins for everyone, Teams saved-messages sync, thread mute, full notification-rules matrix; private/shared channels, archiving, moderation, team privacy switch
+- **External (federated) chat:** written, in final live verification
+- **Shortcuts and accessibility:** full shortcuts window, remaining Teams key bindings, message-level menus, read-aloud
+- **On hold:** Praise, Polls, Loop components, webinars, breakout rooms, whiteboard, Copilot, Share-to-Outlook
+- **Live proof:** multi-person meetings not yet verified end to end (solo and organizer paths only so far)

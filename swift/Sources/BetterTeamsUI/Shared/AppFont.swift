@@ -17,6 +17,10 @@ public enum AppFont {
     public static func code(_ s: Double) -> Font { .system(size: 12 * s, design: .monospaced) }
     /// AppKit twins for attributed message runs.
     public static func nsBodyEmphasized(_ s: Double) -> NSFont { .systemFont(ofSize: 13 * s, weight: .semibold) }
+    public static func bodyItalic(_ s: Double) -> Font { .system(size: 13 * s).italic() }
+    public static func nsBodyItalic(_ s: Double) -> NSFont {
+        NSFontManager.shared.convert(.systemFont(ofSize: 13 * s), toHaveTrait: .italicFontMask)
+    }
     public static func nsBody(_ s: Double) -> NSFont { .systemFont(ofSize: 13 * s) }
     public static func nsCode(_ s: Double) -> NSFont { .monospacedSystemFont(ofSize: 12 * s, weight: .regular) }
     /// Device code (sign-in): large monospaced.

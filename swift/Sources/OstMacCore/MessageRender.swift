@@ -316,6 +316,135 @@ public enum MessageRender {
         return (clean, spans)
     }
 
+    // MARK: - Emphasis spans (COMPOSER-A)
+
+    /// Marker table, parse priority first: `**` beats `*`, so `***x***`
+    /// reads as bold (same priority as the composer toggle + wire).
+    static let emphMarkerKinds: [(marker: String, kind: EmphKind)] = [
+        ("**", .bold), ("~~", .strike), ("__", .underline), ("*", .italic),
+    ]
+
+    /// Non-overlapping emphasis matches in `text`: marker pairs with
+    /// non-space edges and no newlines inside. Any match touching
+    /// `excluding` (code spans) is skipped, as is any match overlapping
+    /// an earlier (higher-priority) match — no nesting, one attribute
+    /// per run.
+    static func emphMatches(in text: String, excluding: [Range<String.Index>])
+        -> [(kind: EmphKind, content: Range<String.Index>,
+             opener: Range<String.Index>, closer: Range<String.Index>)]
+    {
+        var claimed: [Range<String.Index>] = []
+        var out: [(kind: EmphKind, content: Range<String.Index>,
+                   opener: Range<String.Index>, closer: Range<String.Index>)] = []
+        for (m, kind) in emphMarkerKinds {
+            var i = text.startIndex
+            while i < text.endIndex {
+                guard let o = text.range(of: m, range: i ..< text.endIndex) else { break }
+                let afterOpen = o.upperBound
+                guard afterOpen < text.endIndex, !text[afterOpen].isWhitespace else {
+                    i = text.index(after: o.lowerBound)
+                    continue
+                }
+                var found: Range<String.Index>? = nil
+                var c = afterOpen
+                while let cc = text.range(of: m, range: c ..< text.endIndex) {
+                    let content = afterOpen ..< cc.lowerBound
+                    let whole = o.lowerBound ..< cc.upperBound
+                    // A single marker never spans a doubled edge
+                    // ("** not bold **" is not italic with "*" trims).
+                    let doubledEdge = m.count == 1 && text[content].hasPrefix(m) && text[content].hasSuffix(m)
+                    if !content.isEmpty, !doubledEdge,
+                       !text[text.index(before: cc.lowerBound)].isWhitespace,
+                       !text[content].contains(where: \.isNewline),
+                       !excluding.contains(where: { whole.overlaps($0) }),
+                       !claimed.contains(where: { whole.overlaps($0) })
+                    {
+                        found = cc
+                        break
+                    }
+                    c = text.index(after: cc.lowerBound)
+                }
+                guard let cc = found else {
+                    i = text.index(after: o.lowerBound)
+                    continue
+                }
+                let whole = o.lowerBound ..< cc.upperBound
+                claimed.append(whole)
+                out.append((kind: kind, content: afterOpen ..< cc.lowerBound, opener: o, closer: cc))
+                i = cc.upperBound
+            }
+        }
+        return out
+    }
+
+    /// Strips backtick ticks (valid spans only) and emphasis markers in
+    /// ONE pass, so the returned `code` and `emph` ranges share the
+    /// `clean` coordinates. `<pre>` content (`preRanges`, mined on the
+    /// same input) is excluded from emphasis like backtick spans are.
+    /// Markers vanish from display text exactly like ticks do; plain-text
+    /// paths (copy, quote previews) keep the source untouched.
+    static func stripInlineMarkup(_ text: String, preRanges: [Range<String.Index>] = [])
+        -> (clean: String, code: [Range<String.Index>], emph: [(range: Range<String.Index>, kind: EmphKind)])
+    {
+        let ticks = backtickSpans(in: text)
+        var tickWholes: [Range<String.Index>] = []
+        var removed: [Range<String.Index>] = []
+        for inner in ticks {
+            let open = text.index(before: inner.lowerBound) ..< inner.lowerBound
+            let shut = inner.upperBound ..< text.index(after: inner.upperBound)
+            tickWholes.append(open.lowerBound ..< shut.upperBound)
+            removed.append(open)
+            removed.append(shut)
+        }
+        let matches = emphMatches(in: text, excluding: tickWholes + preRanges)
+        for m in matches {
+            removed.append(m.opener)
+            removed.append(m.closer)
+        }
+        removed.sort { $0.lowerBound < $1.lowerBound }
+        // Tagged content (disjoint from every removed range by construction).
+        var tags: [(range: Range<String.Index>, kind: EmphKind?)] =
+            ticks.map { ($0, nil) } + matches.map { ($0.content, $0.kind) }
+        tags.sort { $0.range.lowerBound < $1.range.lowerBound }
+        var clean = ""
+        clean.reserveCapacity(text.count)
+        var cleanCount = 0
+        var tagged: [(start: Int, end: Int, kind: EmphKind?)] = []
+        var openStart: Int? = nil
+        var openKind: EmphKind? = nil
+        var i = text.startIndex
+        var ri = 0
+        var ti = 0
+        while i < text.endIndex {
+            if ri < removed.count, i >= removed[ri].lowerBound {
+                if i < removed[ri].upperBound { i = removed[ri].upperBound }
+                ri += 1
+                continue
+            }
+            if ti < tags.count, i == tags[ti].range.lowerBound {
+                openStart = cleanCount
+                openKind = tags[ti].kind
+            }
+            clean.append(text[i])
+            cleanCount += 1
+            i = text.index(after: i)
+            if let s = openStart, ti < tags.count, i == tags[ti].range.upperBound {
+                tagged.append((start: s, end: cleanCount, kind: openKind))
+                openStart = nil
+                openKind = nil
+                ti += 1
+            }
+        }
+        func at(_ off: Int) -> String.Index { clean.index(clean.startIndex, offsetBy: off) }
+        var code: [Range<String.Index>] = []
+        var emph: [(range: Range<String.Index>, kind: EmphKind)] = []
+        for t in tagged {
+            let r = at(t.start) ..< at(t.end)
+            if let k = t.kind { emph.append((range: r, kind: k)) } else { code.append(r) }
+        }
+        return (clean: clean, code: code, emph: emph)
+    }
+
     // MARK: - AttributedString builder
 
     /// Semantic body: mention spans tagged `mention` (`.own` for the
@@ -374,9 +503,13 @@ public enum MessageRender {
         if CodeBlocks.containsFence(in: text) {
             return attributedBodyFenced(text: text, raw: raw, highlighting: ownName)
         }
-        // Backticks are markup, not content: every miner below runs on
-        // the tick-stripped text, so `code` renders mono without ticks.
-        let stripped = stripBackticks(text)
+        // Backticks and emphasis markers are markup, not content: every
+        // miner below runs on the stripped text, so `code` renders mono
+        // and **bold** renders bold, both without markers (COMPOSER-A).
+        // Server `<pre>` content is excluded from emphasis like ticks are.
+        var preRanges: [Range<String.Index>] = []
+        if let raw { for b in codeBlocks(fromRaw: raw) { preRanges += ranges(of: b, in: text) } }
+        let stripped = stripInlineMarkup(text, preRanges: preRanges)
         let clean = stripped.clean
         var a = AttributedString(clean)
         func convert(_ r: Range<String.Index>) -> Range<AttributedString.Index>? {
@@ -392,6 +525,11 @@ public enum MessageRender {
             guard let ar = convert(r) else { continue }
             a[ar].mention = role
         }
+        // Composer emphasis (markers stripped above).
+        for (r, kind) in stripped.emph {
+            guard let ar = convert(r) else { continue }
+            a[ar].emph = kind
+        }
         // Code blocks from <pre> + backtick spans. Server snippets get
         // auto-detected token colors too (top10-code; foreground only,
         // so font/wash pins never shift).
@@ -402,7 +540,7 @@ public enum MessageRender {
                 applyHighlight(code: String(clean[r]), language: nil, to: &a, base: r, clean: clean)
             }
         }
-        for r in stripped.spans {
+        for r in stripped.code {
             guard let ar = convert(r) else { continue }
             a[ar].codeRole = .inline
         }
@@ -444,7 +582,9 @@ public enum MessageRender {
     /// Legacy styling over one prose segment (same miners as the
     /// fence-less path, scoped to the segment).
     static func attributedProseSegment(_ text: String, raw: String?, highlighting ownName: String?) -> AttributedString {
-        let stripped = stripBackticks(text)
+        var preRanges: [Range<String.Index>] = []
+        if let raw { for b in codeBlocks(fromRaw: raw) { preRanges += ranges(of: b, in: text) } }
+        let stripped = stripInlineMarkup(text, preRanges: preRanges)
         let clean = stripped.clean
         var a = AttributedString(clean)
         func convert(_ r: Range<String.Index>) -> Range<AttributedString.Index>? {
@@ -459,6 +599,10 @@ public enum MessageRender {
             guard let ar = convert(r) else { continue }
             a[ar].mention = role
         }
+        for (r, kind) in stripped.emph {
+            guard let ar = convert(r) else { continue }
+            a[ar].emph = kind
+        }
         // Server `<pre>` snippets: same mono as the fence-less path,
         // plus auto-detected token colors (foreground only).
         for b in codeBlocks(fromRaw: raw) {
@@ -468,7 +612,7 @@ public enum MessageRender {
                 applyHighlight(code: String(clean[r]), language: nil, to: &a, base: r, clean: clean)
             }
         }
-        for r in stripped.spans {
+        for r in stripped.code {
             guard let ar = convert(r) else { continue }
             a[ar].codeRole = .inline
         }

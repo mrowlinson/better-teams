@@ -246,8 +246,8 @@ needing maintainer buy-in. Minor PRs stand alone; majors are separate PRs.
     10 s poll timeout on every path (mic test, meter, probe, tone).
     Unit tests: converter scale/clamp/mono/stereo/6ch, error display
     prefixes, detailed-unknown determinism. Live-verified 2026-09-24
-    (MacBook mic + BoomAudio resolve AND open; mic_test dB numbers,
-    tone_play exit 0).
+    (built-in mic + virtual-driver output resolve AND open; mic_test
+    dB numbers, tone_play exit 0).
 
 27. [minor] `src/api/chat.rs` + `src/api/mod.rs` + `src/main.rs` —
     **leave chat (om-leave-block lane)**. `leave_chat_with_client`
@@ -1759,6 +1759,50 @@ Notes:
     `files::mkdir_fake_tests::*` (fake-transport POST shape + folder
     return, blank-arg pre-network reject, 0 requests).
     UPSTREAM: PR https://github.com/eisbaw/ost/pull/112 (fix/create-folder, stacks on #66 after #28; fake-transport round-trip tests not ported, no harness on base)
+
+98. [fix] `src/auth/oauth.rs` (+ `src/config/mod.rs`, `src/api/client.rs`,
+    `Cargo.toml`) — **concurrent refresh burns the single-use refresh
+    token**. `refresh_for` had no cross-process protection and callers
+    auto-retried it: N parallel lane processes all redeemed the same stored
+    refresh token, the first won, the rest got `invalid_grant` on the burned
+    token, and last-writer-wins `save_to` persisted the burned state.
+    Fix: (a) per-profile in-process single-flight (`tokio::Mutex` slot);
+    (b) cross-process `flock` on a sibling lockfile (`config.lock` /
+    `config-<id>.lock`) held across read-exchange-write (blocking `flock`
+    via `spawn_blocking`; `libc` now a direct dep, already pinned);
+    (c) re-read from disk under the locks, skip the exchange when another
+    process already refreshed (rotated RT or fresh access token), adopt via
+    cache invalidation; (d) NEVER persist on failure (store stays
+    byte-identical); (e) `invalid_grant` (typed
+    `BasicErrorResponseType::InvalidGrant` + message fallback) becomes
+    distinct `ReauthRequired`, and `login` / `TeamsClient::new_for_profile`
+    fail fast with a re-auth message instead of retrying (each path makes
+    exactly one attempt; `is_reauth_required` predicate covers typed,
+    wrapped, and pre-formatted grant errors). `OST_CONFIG_DIR` env override
+    added for temp-dir stores (tests only). Not live-verified (0 live
+    refresh attempts this lane: the stored token is already burned). Tests
+    (stub IdP, single-use rotating RT, zero traffic): R0 failing-first
+    `concurrent_refresh_costs_one_exchange` (8 exchanges before, 1 after;
+    losers adopt winner's tokens), `failed_refresh_persists_nothing`
+    (4× `ReauthRequired`, byte-identical store, 4 exchanges = one attempt
+    each, no retry), `reauth_required_predicate`,
+    `profile_lock_serializes_across_processes` (4 real child processes,
+    counter 4/4, no lost updates) + `lock_child_entry` no-op.
+    UPSTREAM: PR https://github.com/eisbaw/ost/pull/113 (fix/refresh-single-flight, stacks on #50)
+
+99. [feature] `src/api/chat.rs` — **composer markdown → Teams HTML
+    (COMPOSER-A)**. `build_message_html` renders the toolbar's markdown
+    (`**bold**`→`<strong>`, `*italic*`→`<em>`, `__underline__`→`<u>`,
+    `~~strike~~`→`<s>`, `- `/`1. ` lists→`<ul>`/`<ol>`, `> `→
+    `<blockquote>`, `|` tables→`<table>`; strict: non-space edges, no
+    newlines, `**` beats `*`, backtick spans stay literal, no nesting).
+    Marker-free bodies keep the legacy single-`<p>` shape bit-identical
+    (fast path); multi-paragraph prose with blocks splits into `<p>`s
+    (was one `<p>` with `\n`s). Fences/`<pre>`/escaping unchanged;
+    flows through `send_message_body`, `build_reply_html`,
+    `edit_message_body`. Tests: `wire_inline_emphasis_to_teams_html`,
+    `wire_block_markdown_to_teams_html`, `wire_rich_mixed_with_code`.
+    UPSTREAM: PR https://github.com/eisbaw/ost/pull/114 (fix/composer-wire-html, stacks on #54)
 
 ## Upstream PRs, wave 9 (2026-09-25 R10 audit; base 0892144; origin/main still 0892144)
 

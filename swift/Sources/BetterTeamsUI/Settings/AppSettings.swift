@@ -1,6 +1,7 @@
 // AppSettings.swift — app-level preferences with no core store behind
 // them (UI-SPEC §9.4 General and Chats): menu bar extra, Dock badge,
-// banners while active, default section, Return-to-send, quick composer.
+// banners while active, default section, Return-to-send, combined
+// chats+channels (default off), quick composer.
 // Core settings bind to their core stores (AppState); this holds only
 // the rest. Persisted in the given defaults; demo installs in-memory
 // defaults (`MemoryDefaults`) before the first read, like CallSettings,
@@ -37,6 +38,7 @@ final class AppSettings {
         static let bannersActive = "bt.settings.bannersWhileActive"
         static let defaultSection = "bt.settings.defaultSection"
         static let returnSends = "bt.settings.returnSends"
+        static let combinedChatsChannels = "bt.settings.combinedChatsChannels"
         static let quickComposer = "bt.settings.quickComposer"
         static let glassFree = "bt.settings.glassFree"
     }
@@ -58,6 +60,10 @@ final class AppSettings {
     var defaultSection: String { didSet { save(defaultSection, Key.defaultSection, oldValue) } }
     /// Chats ▸ Return sends (⇧Return inserts a newline); off swaps them.
     var returnSends: Bool { didSet { save(returnSends, Key.returnSends, oldValue) } }
+    /// Chats ▸ Combined chats+channels (default off): the chat list
+    /// shows a Channels section below the chats; tapping a channel
+    /// selects it in the Teams section.
+    var combinedChatsChannels: Bool { didSet { save(combinedChatsChannels, Key.combinedChatsChannels, oldValue) } }
     /// Chats ▸ Quick composer (on by default): the global hotkey panel.
     var quickComposer: Bool { didSet { save(quickComposer, Key.quickComposer, oldValue) } }
     /// Appearance ▸ Glass-free (off by default): the control layer drops
@@ -75,6 +81,7 @@ final class AppSettings {
         bannersWhileActive = bool(Key.bannersActive, false)
         defaultSection = defaults.string(forKey: Key.defaultSection) ?? SectionID.chat.key
         returnSends = bool(Key.returnSends, true)
+        combinedChatsChannels = bool(Key.combinedChatsChannels, false)
         quickComposer = bool(Key.quickComposer, Self.quickComposerDefault)
         glassFree = bool(Key.glassFree, false)
     }

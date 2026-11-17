@@ -15,6 +15,12 @@ struct ChatListPane: View {
     /// Filter look-back (inline indicator + its terminal state).
     @ObservedObject var pager: ChatFilterPager
     let state: ChatSectionState
+    /// Combined chats+channels switch (Settings ▸ Chats, default off).
+    let settings: AppSettings
+    /// Teams data for the combined Channels section (nil = chat-only).
+    let teams: TeamsViewModel?
+    /// Channel prefs for the combined section (hidden teams/channels).
+    let chanPrefs: ChannelPrefs?
     @Environment(\.windowModel) private var model
 
     var body: some View {
@@ -191,6 +197,7 @@ struct ChatListPane: View {
             if !pinned.isEmpty {
                 Section("Pinned") {
                     ForEach(pinned) { c in row(c, pinned: true, now: now) }
+                        .onMove(perform: chats.movePinned)
                 }
             }
             if !favorites.isEmpty {
@@ -210,6 +217,7 @@ struct ChatListPane: View {
                     }
                 }
             }
+            combinedChannels(m)
             if state.filter == .all {
                 if chats.hasMore { pageFooter }
             } else if !rows.isEmpty, pager.phase == .searching || chats.hasMore {
@@ -278,6 +286,35 @@ struct ChatListPane: View {
         m.connection == .offline || msg == nil ? "You're offline." : msg ?? ""
     }
 
+    /// Combined chats+channels (Settings ▸ Chats, default off): one
+    /// Channels section below the chats, reusing the Teams channel row.
+    /// Tapping a channel selects it in the Teams section. Hidden only
+    /// under a filter (a filter narrows to chats) or when the switch,
+    /// the teams, or the prefs are missing.
+    @ViewBuilder
+    private func combinedChannels(_ m: WindowModel) -> some View {
+        if state.filter == .all, settings.combinedChatsChannels,
+           let teams, let prefs = chanPrefs
+        {
+            CombinedChannelsSection(teams: teams, prefs: prefs, unread: unread,
+                                    mentions: mentions, model: m)
+        }
+    }
+
+    /// Visible channel rows in team-then-channel order (pure, tested).
+    static func channelRows(teams: TeamsViewModel, prefs: ChannelPrefs) -> [CombinedChatList.ChannelRow] {
+        var hiddenTeams = Set<String>()
+        var hiddenChannels = Set<String>()
+        for t in teams.teams {
+            if prefs.isHidden(t.teamId) { hiddenTeams.insert(t.teamId) }
+            for c in t.channels where prefs.isHidden(c.channelId) {
+                hiddenChannels.insert(c.channelId)
+            }
+        }
+        return CombinedChatList.channelRows(teams: teams.teams, hiddenTeams: hiddenTeams,
+                                            hiddenChannels: hiddenChannels, combined: true)
+    }
+
     private func row(_ c: ChatItem, pinned: Bool, now: Date) -> some View {
         let isMentioned = mentions.contains(chatID: c.id)
         return ChatRow(chat: c, unread: unread.isUnread(chatID: c.id), pinned: pinned,
@@ -294,5 +331,40 @@ struct ChatListPane: View {
             .modifier(ChatRowAccessibility(id: c.id, chats: chats, unread: unread, rules: rules, model: model))
             .onAppear { if state.filter == .all { state.visibleIDs.insert(c.id) } }
             .onDisappear { if state.filter == .all { state.visibleIDs.remove(c.id) } }
+    }
+}
+
+/// Channels section for the combined chat list (R2): observes the
+/// teams itself, so a late team load renders without a chat refresh.
+/// Rows reuse the Teams channel row; tapping one selects the channel
+/// in the Teams section.
+struct CombinedChannelsSection: View {
+    @ObservedObject var teams: TeamsViewModel
+    @ObservedObject var prefs: ChannelPrefs
+    @ObservedObject var unread: UnreadStore
+    @ObservedObject var mentions: MentionStore
+    let model: WindowModel
+
+    var body: some View {
+        let rows = ChatListPane.channelRows(teams: teams, prefs: prefs)
+        if !rows.isEmpty {
+            Section("Channels") {
+                ForEach(rows, id: \.channelID) { r in
+                    Button {
+                        model.navigator?.select(section: .teams)
+                        model.navigator?.select(
+                            TeamsSelection(teamID: r.teamID, channelID: r.channelID).selection,
+                            in: .teams)
+                    } label: {
+                        ChannelRow(name: r.channelName, teamName: r.teamName,
+                                   unread: unread.isUnread(chatID: r.channelID),
+                                   mentioned: mentions.contains(chatID: r.channelID),
+                                   hidden: false,
+                                   muted: prefs.level(r.channelID) == .muted)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
     }
 }

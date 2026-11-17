@@ -81,6 +81,39 @@ public final class UserPinStore: ObservableObject {
         save()
     }
 
+    /// Move one pin to `destination` (index in the list after removal,
+    /// clamped). Out-of-range sources are a no-op. (PinnedChannelStore
+    /// precedent; the Pinned section's drag reorder drives this.)
+    public func move(from source: Int, to destination: Int) {
+        guard orderedIDs.indices.contains(source) else { return }
+        var next = orderedIDs
+        let id = next.remove(at: source)
+        next.insert(id, at: min(max(0, destination), next.count))
+        guard next != orderedIDs else { return }
+        orderedIDs = next
+        save()
+    }
+
+    /// Move one pin by id (drag and drop by identity). Unknown ids are
+    /// a no-op.
+    public func move(_ id: String, to destination: Int) {
+        guard let i = orderedIDs.firstIndex(of: id) else { return }
+        move(from: i, to: destination)
+    }
+
+    /// Replace the order with `ids` first (drag reorder of the visible
+    /// section). Ids not in `ids` keep their relative order after the
+    /// given ones, so pins outside the current fetch window survive.
+    public func reorder(_ ids: [String]) {
+        let sanitized = ids.filter { !$0.isEmpty && orderedIDs.contains($0) }
+        var seen = Set<String>()
+        let head = sanitized.filter { seen.insert($0).inserted }
+        let next = head + orderedIDs.filter { !head.contains($0) }
+        guard next != orderedIDs else { return }
+        orderedIDs = next
+        save()
+    }
+
     private func save() {
         defaults.set(orderedIDs, forKey: key)
     }

@@ -410,4 +410,67 @@ final class PinnedChatsTests: XCTestCase {
         store.pin("8:b")
         XCTAssertEqual(store.orderedIDs, ["8:b", "8:a"])
     }
+
+    // MARK: chatlist-org R1 — Pinned drag reorder
+
+    func testPinMoveReordersAndPersists() {
+        let defaults = isolatedDefaults()
+        let store = UserPinStore(defaults: defaults)
+        store.pin("8:a")
+        store.pin("8:b")
+        store.pin("8:c")
+        store.move(from: 2, to: 0)
+        XCTAssertEqual(store.orderedIDs, ["8:c", "8:a", "8:b"])
+        store.move("8:a", to: 2)
+        XCTAssertEqual(store.orderedIDs, ["8:c", "8:b", "8:a"])
+        let again = UserPinStore(defaults: defaults)
+        XCTAssertEqual(again.orderedIDs, ["8:c", "8:b", "8:a"], "drag order survives a relaunch")
+    }
+
+    func testPinMoveRejectsGarbage() {
+        let store = UserPinStore(defaults: isolatedDefaults())
+        store.pin("8:a")
+        store.pin("8:b")
+        store.move(from: 9, to: 0)
+        store.move("8:unknown", to: 0)
+        store.move(from: 0, to: 0)
+        XCTAssertEqual(store.orderedIDs, ["8:a", "8:b"])
+        store.move(from: 0, to: 99)
+        XCTAssertEqual(store.orderedIDs, ["8:b", "8:a"], "destination clamps to the end")
+    }
+
+    func testPinReorderKeepsUnseenPinsBehind() {
+        let defaults = isolatedDefaults()
+        let store = UserPinStore(defaults: defaults)
+        store.pin("8:a")
+        store.pin("8:gone")
+        store.pin("8:b")
+        // The visible section's new order goes first; the pin beyond
+        // the fetch window keeps its relative place behind it.
+        store.reorder(["8:b", "8:a"])
+        XCTAssertEqual(store.orderedIDs, ["8:b", "8:a", "8:gone"])
+        XCTAssertEqual(UserPinStore(defaults: defaults).orderedIDs, ["8:b", "8:a", "8:gone"])
+    }
+
+    func testMovePinnedViaModel() async {
+        let model = ChatListViewModel(
+            fetcher: { _ in
+                Self.response([
+                    Self.chat(id: "8:a", name: "A"),
+                    Self.chat(id: "8:b", name: "B"),
+                    Self.chat(id: "8:c", name: "C"),
+                ])
+            },
+            pins: UserPinStore(defaults: isolatedDefaults()))
+        await model.load()
+        model.pin("8:a")
+        model.pin("8:b")
+        model.pin("8:c")
+        XCTAssertEqual(model.displayChats.map(\.id), ["8:a", "8:b", "8:c"])
+        // The Pinned section's .onMove drives this: first row to last.
+        model.movePinned(from: IndexSet(integer: 0), to: 3)
+        XCTAssertEqual(model.displayChats.map(\.id), ["8:b", "8:c", "8:a"])
+        // Stored rows stay recency-ordered (existing contract).
+        XCTAssertEqual(model.chats.map(\.id), ["8:a", "8:b", "8:c"])
+    }
 }

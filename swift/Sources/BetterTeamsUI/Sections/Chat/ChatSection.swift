@@ -175,7 +175,10 @@ final class ChatSection: SectionProvider, InspectorCapable {
                                     rules: services.rules(m), snooze: services.snooze(m),
                                     failures: services.sendFailures,
                                     presence: m.app?.presence ?? noPresence,
-                                    pager: state.pager, state: state))
+                                    pager: state.pager, state: state,
+                                    settings: .shared,
+                                    teams: m.app?.teams,
+                                    chanPrefs: (m.provider(.teams) as? TeamsSection)?.prefs(m)))
     }
 
     func filterRules(_ m: WindowModel) -> ChatFilterRules {
@@ -207,6 +210,13 @@ final class ChatSection: SectionProvider, InspectorCapable {
         // `chat?filter=unread`: open Chat with that filter on (the
         // loaded rows only; no look-back from a link).
         if let f = route.query["filter"] { state.show(ChatFilter(arg: f)) }
+        // Evidence only: `chat?combined=1` renders the combined
+        // chats+channels view for captures. Memory defaults are the
+        // demo's (AppSettings.useDemoStorage), so a real profile's
+        // switch is never touched.
+        if route.query["combined"] == "1", AppSettings.shared.isMemory {
+            AppSettings.shared.combinedChatsChannels = true
+        }
         guard let id = route.tail.first else { return nil }
         if let mid = route.query["message"], !mid.isEmpty { return SectionSelection([id, mid]) }
         return SectionSelection(id: id)

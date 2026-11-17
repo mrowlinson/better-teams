@@ -34,6 +34,17 @@ public enum CodeRole: String, Hashable, Sendable, Codable {
     case block
 }
 
+/// Inline emphasis from composer markdown (COMPOSER-A): bold, italic,
+/// underline, strikethrough. Semantic only; the UI maps to fonts and
+/// underline/strikethrough styles. Markers are stripped from display
+/// text (like backticks), so copy/quote previews keep the source.
+public enum EmphKind: String, Hashable, Sendable, Codable {
+    case bold
+    case italic
+    case underline
+    case strike
+}
+
 public enum MessageTextAttributes {
     public enum MentionAttribute: CodableAttributedStringKey {
         public typealias Value = MentionRole
@@ -49,6 +60,11 @@ public enum MessageTextAttributes {
         public typealias Value = CodeHighlight.Token
         public static let name = "BetterTeams.codeToken"
     }
+
+    public enum EmphAttribute: CodableAttributedStringKey {
+        public typealias Value = EmphKind
+        public static let name = "BetterTeams.emph"
+    }
 }
 
 extension AttributeScopes {
@@ -57,6 +73,7 @@ extension AttributeScopes {
         public let mention: MessageTextAttributes.MentionAttribute
         public let codeRole: MessageTextAttributes.CodeRoleAttribute
         public let codeToken: MessageTextAttributes.CodeTokenAttribute
+        public let emph: MessageTextAttributes.EmphAttribute
         public let foundation: FoundationAttributes
     }
 

@@ -2,7 +2,7 @@
 // conversation (UI-SPEC §11.3 `state=`-style modifiers, P2a):
 //
 //   chat/<id>?conv=error|loading
-//   chat/<id>?seed=reply,edit,attach,typing,pending,scheduled,delete,pins
+//   chat/<id>?seed=reply,edit,attach,typing,pending,scheduled,delete,pins,rich
 //   chat/<id>?jump=pinned            (after seed=pins: jump to the first pin)
 //
 // A route chat the demo list doesn't have (e.g. `demo-new`) joins the
@@ -69,6 +69,15 @@ enum ConversationEvidence {
         if seeds.contains("pending") {
             conv.ingest(ChatMessage(id: "pending-evidence", sender: "Me", timestamp: Date().ISO8601Format(),
                                     content: "Uploading the review deck now…", isOwn: true),
+                        keepOwnership: true)
+        }
+        if seeds.contains("rich") {
+            // COMPOSER-A: a received message holding the toolbar's
+            // markdown, so captures show the emphasis render.
+            conv.ingest(ChatMessage(id: "rich-evidence", sender: "Megan Harper",
+                                    timestamp: Date().ISO8601Format(),
+                                    content: "**Budget** approved, *see notes*\n__Sign here__ and ~~old total~~\n`deploy.sh` at 10",
+                                    isOwn: false),
                         keepOwnership: true)
         }
         if seeds.contains("reply"), let target = others.last { conv.beginReply(to: target) }

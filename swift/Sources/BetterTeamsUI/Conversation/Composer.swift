@@ -67,6 +67,11 @@ struct Composer: View {
     @Environment(\.contentTextScale) private var scale
     @State private var fieldHeight: CGFloat = ComposerTextView.minFieldHeight(1)
     @State private var mentionIndex = 0
+    /// Format bar visibility (Mail-style `textformat` toggle) + the last
+    /// requested action (bar button or ⌘B/I/U).
+    @State private var showFormat = false
+    @State private var formatSeq = 0
+    @State private var formatAction: ComposerFormatAction = .bold
 
     private var draft: Binding<String> {
         Binding(get: { composer.draft(chatID) }, set: { composer.setDraft($0, for: chatID); draftChanged($0) })
@@ -102,6 +107,7 @@ struct Composer: View {
             if !attachments.attachments.isEmpty {
                 AttachmentChips(store: attachments)
             }
+            if showFormat { formatBar }
             // Reaction More… opens at its message (the timeline owns it).
             // Both accessory groups center on the field's last text line
             // (its center while single-line), whatever their heights.
@@ -126,6 +132,7 @@ struct Composer: View {
             // field draws the system input-source bubble at its caret,
             // over the accessory buttons.
             if !(model?.options.evidence ?? false) { composer.focusRequest += 1 }
+            if evidenceFormatBar { showFormat = true }
             applyEvidencePopover()
         }
         .onChange(of: chatID) {
@@ -162,6 +169,14 @@ struct Composer: View {
     /// Toolbar-like icon row: 24 pt targets, 6 pt apart (HIG spacing).
     private var leadingButtons: some View {
         HStack(spacing: 6) {
+            Button(action: { showFormat.toggle() }) {
+                Image(systemName: "textformat.size").frame(width: 24, height: 24)
+            }
+            .buttonStyle(.borderless)
+            .controlSize(.large)
+            .foregroundStyle(showFormat ? AnyShapeStyle(.tint) : AnyShapeStyle(.primary))
+            .help(showFormat ? "Hide Formatting" : "Show Formatting")
+            .accessibilityLabel(showFormat ? "Hide Formatting" : "Show Formatting")
             iconButton("paperclip", "Attach Files") { attach() }
             iconButton("face.smiling", "Emoji & Symbols") {
                 composer.focusRequest += 1
@@ -181,6 +196,45 @@ struct Composer: View {
         }
     }
 
+    /// Format bar (COMPOSER-A): markdown markers behind native icon
+    /// buttons, same 24 pt targets as the row below. Bold/italic/
+    /// underline match ⌘B/I/U; the rest are bar-only.
+    private var formatBar: some View {
+        HStack(spacing: 6) {
+            formatButton(.bold, "bold", "Bold", "⌘B")
+            formatButton(.italic, "italic", "Italic", "⌘I")
+            formatButton(.underline, "underline", "Underline", "⌘U")
+            formatButton(.strike, "strikethrough", "Strikethrough", nil)
+            Divider().frame(height: 18)
+            formatButton(.bulletList, "list.bullet", "Bulleted List", nil)
+            formatButton(.numberedList, "list.number", "Numbered List", nil)
+            formatButton(.quote, "text.quote", "Quote", nil)
+            formatButton(.inlineCode, "chevron.left.forwardslash.chevron.right", "Inline Code", nil)
+            formatButton(.table, "tablecells", "Table", nil)
+            Spacer(minLength: 0)
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Formatting")
+    }
+
+    private func formatButton(_ action: ComposerFormatAction, _ symbol: String,
+                              _ label: String, _ shortcut: String?) -> some View {
+        Button(action: { requestFormat(action) }) {
+            Image(systemName: symbol).frame(width: 24, height: 24)
+        }
+        .buttonStyle(.borderless)
+        .controlSize(.large)
+        .help(shortcut == nil ? label : "\(label) (\(shortcut!))")
+        .accessibilityLabel(shortcut == nil ? label : "\(label), \(shortcut!)")
+    }
+
+    /// Routes a bar tap or shortcut through the text view (single path,
+    /// so both see the same selection + IME guard).
+    private func requestFormat(_ action: ComposerFormatAction) {
+        formatAction = action
+        formatSeq += 1
+    }
+
     private func iconButton(_ symbol: String, _ label: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: symbol).frame(width: 24, height: 24)
@@ -194,7 +248,9 @@ struct Composer: View {
     private var field: some View {
         ComposerTextView(
             text: draft, height: $fieldHeight, focusRequest: composer.focusRequest, scale: scale,
+            formatSeq: formatSeq, formatAction: formatAction,
             onSubmit: submit, onCommand: handleCommand,
+            onFormat: requestFormat,
             onPasteFiles: { attachments.stage(urls: $0) })
             .frame(height: fieldHeight)
             .overlay(alignment: .topLeading) {
@@ -396,14 +452,25 @@ struct Composer: View {
         }
     }
 
+    /// Evidence `formatbar=1` (demo only): forces the format bar on.
+    private var evidenceFormatBar: Bool {
+        guard let model, model.options.demo,
+              let raw = model.options.route, let route = Route(string: raw) else { return false }
+        return route.query["formatbar"] == "1"
+    }
+
     /// Evidence (`popover=<name>`, demo only): opens that popover once.
-    /// `draft=multi` prefills three lines (accessory alignment check).
+    /// `draft=multi` prefills three lines (accessory alignment check);
+    /// `draft=rich` prefills formatted markdown (format-bar evidence).
     private func applyEvidencePopover() {
         guard let model, model.options.demo, !composer.evidenceApplied,
               let raw = model.options.route, let route = Route(string: raw) else { return }
         composer.evidenceApplied = true
         if route.query["draft"] == "multi" {
             composer.setDraft("Draft line one\nDraft line two\nDraft line three", for: chatID)
+        }
+        if route.query["draft"] == "rich" {
+            composer.setDraft("**Budget** approved, *see notes*\n__Sign here__ and ~~old total~~\n`deploy.sh` at 10", for: chatID)
         }
         guard let name = route.query["popover"],
               let p = ComposerPopover(evidenceName: name, lastMessageID: conv.messages.last?.id) else { return }
@@ -593,6 +660,7 @@ enum ComposerPaste {
 final class ComposerNSTextView: NSTextView {
     var onSubmit: (() -> Void)?
     var onCommand: ((Selector) -> Bool)?
+    var onFormat: ((ComposerFormatAction) -> Void)?
     var onPasteFiles: (([URL]) -> Void)?
     /// Focus asked for before the view had a window, or while its window
     /// was not key.
@@ -656,6 +724,15 @@ final class ComposerNSTextView: NSTextView {
     /// Return and ⇧Return). AppKit has no default binding for it.
     override func keyDown(with event: NSEvent) {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        // ⌘B/I/U (COMPOSER-A): same path as the format bar buttons.
+        // Only where the composer wired a handler; elsewhere AppKit
+        // keeps the keys.
+        if let onFormat, !hasMarkedText(),
+           let action = ComposerFormat.shortcutAction(keyCode: event.keyCode, modifiers: event.modifierFlags)
+        {
+            onFormat(action)
+            return
+        }
         if flags.contains(.command), event.keyCode == 36 || event.keyCode == 76,
            ComposerKeyPolicy.action(shift: flags.contains(.shift), command: true, markedText: hasMarkedText()) == .send
         {
@@ -663,6 +740,23 @@ final class ComposerNSTextView: NSTextView {
             return
         }
         super.keyDown(with: event)
+    }
+
+    /// Applies one format action at the current selection (bar + shortcut
+    /// share this path). No-op under marked text (IME guard).
+    func applyFormat(_ action: ComposerFormatAction) {
+        guard !hasMarkedText() else { return }
+        let sel = selectedRange()
+        let (newText, newSel) = ComposerFormat.apply(action, to: string, selection: sel)
+        guard newText != string else { return }
+        // AppKit path (not `string =`): the change flows through
+        // `didChangeText`, so the coordinator remeasures and the draft
+        // binding updates exactly like a typed edit.
+        let full = NSRange(location: 0, length: (string as NSString).length)
+        guard shouldChangeText(in: full, replacementString: newText) else { return }
+        textStorage?.replaceCharacters(in: full, with: newText)
+        didChangeText()
+        setSelectedRange(newSel)
     }
 
     override func insertNewline(_ sender: Any?) {
@@ -688,9 +782,35 @@ struct ComposerTextView: NSViewRepresentable {
     @Binding var height: CGFloat
     let focusRequest: Int
     let scale: Double
+    /// Format request (COMPOSER-A): the conversation composer drives
+    /// these; other islands (channel reply) leave the defaults, which
+    /// disable formatting there.
+    let formatSeq: Int
+    let formatAction: ComposerFormatAction
     let onSubmit: () -> Void
     let onCommand: (Selector) -> Bool
+    /// Nil outside the conversation composer (channel reply island):
+    /// without it ⌘B/I/U fall through to AppKit untouched.
+    let onFormat: ((ComposerFormatAction) -> Void)?
     let onPasteFiles: ([URL]) -> Void
+
+    init(text: Binding<String>, height: Binding<CGFloat>, focusRequest: Int, scale: Double,
+         formatSeq: Int = 0, formatAction: ComposerFormatAction = .bold,
+         onSubmit: @escaping () -> Void, onCommand: @escaping (Selector) -> Bool,
+         onFormat: ((ComposerFormatAction) -> Void)? = nil,
+         onPasteFiles: @escaping ([URL]) -> Void)
+    {
+        _text = text
+        _height = height
+        self.focusRequest = focusRequest
+        self.scale = scale
+        self.formatSeq = formatSeq
+        self.formatAction = formatAction
+        self.onSubmit = onSubmit
+        self.onCommand = onCommand
+        self.onFormat = onFormat
+        self.onPasteFiles = onPasteFiles
+    }
 
     static let maxLines: CGFloat = 8
     /// The field is always at least this many lines tall (owner: "2 lines
@@ -743,7 +863,15 @@ struct ComposerTextView: NSViewRepresentable {
         guard let tv = c.textView else { return }
         tv.onSubmit = onSubmit
         tv.onCommand = onCommand
+        tv.onFormat = onFormat
         tv.onPasteFiles = onPasteFiles
+        if formatSeq != c.lastFormatSeq {
+            c.lastFormatSeq = formatSeq
+            let action = formatAction
+            // Outside the update cycle: applying mutates the draft
+            // binding (same as a typed edit).
+            DispatchQueue.main.async { tv.applyFormat(action) }
+        }
         tv.refusesFocus = context.environment.windowModel?.options.evidence == true
         var changed = false
         let f = Self.font(scale)
@@ -787,6 +915,7 @@ struct ComposerTextView: NSViewRepresentable {
         weak var textView: ComposerNSTextView?
         weak var scroll: NSScrollView?
         var lastFocus = -1
+        var lastFormatSeq = 0
         private var observer: NSObjectProtocol?
 
         init(_ parent: ComposerTextView) { self.parent = parent }

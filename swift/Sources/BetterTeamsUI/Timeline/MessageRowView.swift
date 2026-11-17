@@ -530,6 +530,27 @@ struct MessageRowView: View {
                 piece.appKit.foregroundColor = color
                 piece.swiftUI.foregroundColor = Color(nsColor: color)
             }
+            // Composer emphasis (COMPOSER-A): style only, never color —
+            // mentions keep their own font (brand color + wash intact).
+            if let e = run[MessageTextAttributes.EmphAttribute.self] {
+                let hasMention = run[MessageTextAttributes.MentionAttribute.self] != nil
+                switch e {
+                case .bold:
+                    if !hasMention {
+                        piece.swiftUI.font = AppFont.bodyEmphasized(scale)
+                        Self.setAppKitFont(AppFont.nsBodyEmphasized(scale), on: &piece)
+                    }
+                case .italic:
+                    if !hasMention {
+                        piece.swiftUI.font = AppFont.bodyItalic(scale)
+                        Self.setAppKitFont(AppFont.nsBodyItalic(scale), on: &piece)
+                    }
+                case .underline:
+                    piece.appKit.underlineStyle = NSUnderlineStyle.single
+                case .strike:
+                    piece.appKit.strikethroughStyle = NSUnderlineStyle.single
+                }
+            }
             current.append(piece)
         }
         flush()

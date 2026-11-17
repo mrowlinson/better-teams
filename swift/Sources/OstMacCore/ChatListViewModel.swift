@@ -180,6 +180,17 @@ public final class ChatListViewModel: ObservableObject, ChatSelection {
         pins.unpin(id)
     }
 
+    /// Drag-reorder the Pinned section (List `.onMove` source). The
+    /// visible pinned rows in their new order replace the pin order's
+    /// head; pins outside the current fetch window keep their relative
+    /// order behind them (never pruned by a reorder).
+    public func movePinned(from source: IndexSet, to destination: Int) {
+        var visible = PinnedChats.sorted(chats, pins: pins.orderedIDs)
+            .filter { pins.isPinned($0.id) }.map(\.id)
+        visible.move(fromOffsets: source, toOffset: destination)
+        pins.reorder(visible)
+    }
+
     /// BUILDFIX: last-good chat list snapshot (nil = memory only / demo).
     /// Rows only (ids, titles, last-message preview/time/sender) — no
     /// message bodies; timelines live in MessageHistoryCache.
