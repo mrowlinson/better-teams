@@ -396,13 +396,13 @@ on GitHub by opening an issue.
 
 Incomplete or not started yet ("in progress" = being worked on now):
 
-- **Compose:** importance/urgent flags, announcement posts with subjects, addressing @team/@channel/@everyone, stickers; drafts show markers, not WYSIWYG
-- **Meetings:** raise hand, reactions, live captions, recording/transcription controls, muting/removing participants, presenter roles, backgrounds and blur (in progress); lobby admit UI in final verification
-- **Calling:** Teams Phone (dial pad, voicemail, forwarding, delegates) — licence being probed
-- **Calendar:** channel meetings, meeting options (lobby/presenter knobs), overlaying multiple calendars
+- **Compose:** importance/urgent flags, announcement posts with subjects, addressing @team/@channel/@everyone, stickers (in progress); drafts show markers, not WYSIWYG
+- **Meetings:** raise hand, reactions, recording/transcription controls, muting/removing participants, presenter roles, background replace, background blur on the live camera preview (follow-up); lobby admit UI in final verification
+- **Calling:** Teams Phone (dial pad, voicemail, forwarding, delegates) — parked: no Teams Phone licence on this tenant
+- **Calendar:** channel meetings, meeting options (lobby/presenter knobs), overlaying multiple calendars (in progress)
 - **Status:** scheduled out-of-office (in progress)
 - **Chats and teams:** pins for everyone, Teams saved-messages sync, thread mute, full notification-rules matrix; private/shared channels, archiving, moderation, team privacy switch
-- **External (federated) chat:** written, in final live verification
+- **External (federated) chat:** written, awaiting live proof — blocked: tenant has external access disabled
 - **Shortcuts and accessibility:** full shortcuts window, remaining Teams key bindings, message-level menus, read-aloud
 - **On hold:** Praise, Polls, Loop components, webinars, breakout rooms, whiteboard, Copilot, Share-to-Outlook
 - **Live proof:** multi-person meetings not yet verified end to end (solo and organizer paths only so far)
