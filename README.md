@@ -396,7 +396,7 @@ on GitHub by opening an issue.
 
 Incomplete or not started yet ("in progress" = being worked on now):
 
-- **Compose:** stickers (deferred — no clean native path); importance/urgent, announcements, @team/@channel/@everyone shipped, live-send check pending; drafts show markers, not WYSIWYG
+- **Compose:** stickers (deferred — no clean native path); emphasis wire proven live, importance/subject/mentions live proof needs a test channel; drafts show markers, not WYSIWYG
 - **Meetings:** recording/transcription controls, background replace, background blur on the live camera preview (follow-up); hand/reactions/pin/participant UI shipped local-only, wire pending owner live test; lobby admit UI on hold pending owner pick
 - **Calling:** Teams Phone (dial pad, voicemail, forwarding, delegates) — parked: no Teams Phone licence on this tenant
 - **Calendar:** lobby/presenter meeting options (blocked: needs OnlineMeetings scope), month-view overlay (open); channel meetings, event-level options and week/day/list overlay shipped
