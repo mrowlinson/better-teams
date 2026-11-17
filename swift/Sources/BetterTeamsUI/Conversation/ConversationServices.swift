@@ -201,6 +201,10 @@ enum LinkPreviewRules {
 @MainActor
 final class ConversationServices {
     let composer = ComposerModel()
+    /// The focused timeline's actions (C8c): the window's timelines
+    /// register on load and re-register on focus; the Conversation
+    /// menu's message commands work through these.
+    weak var messageActions: TimelineActions?
     /// Demo translates with in-memory defaults, so a demo session never
     /// reads or writes the real target language.
     let translation: TranslationStore

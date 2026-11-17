@@ -12,6 +12,7 @@ public enum ActivityCommands {
         Command(filter, "Filter Activity", symbol: "line.3.horizontal.decrease",
                 menu: .init(.view, group: 2, order: 1), toolbar: .list, isSubmenu: true, owner: .activity),
         Command(markAllRead, "Mark All Activity as Read", symbol: "checkmark.circle",
+                key: "\u{1b}", modifiers: [.shift],
                 menu: .init(.conversation, group: 3, order: 0), toolbar: .list, owner: .activity),
         Command(markRead, "Mark Item as Read", alternateTitle: "Mark Item as Unread",
                 menu: .init(.conversation, group: 3, order: 1), owner: .activity),

@@ -82,6 +82,72 @@ public final class CallSession {
     /// Pre-join toggles (§8 pre-join): applied at Join Now.
     public private(set) var preMicOn = true
     public private(set) var preCameraOn = false
+    // MARK: C8b push-to-talk (local only; server sync pending)
+    // The hand itself lives in main's C2b block above (demo/evidence
+    // state + roster display); the Call menu's Raise Hand is its first
+    // toggle UI. Live has no signaling endpoint yet, so the menu item
+    // validates off outside demo (same posture as the roster display).
+    /// Teams ⌥Space (opt-in, Settings ▸ Calls). While held the mic opens;
+    /// release restores the mute from before the hold. A menu click (no
+    /// key-up follows) talks for at most `pushToTalkCap` seconds.
+    public private(set) var pushToTalkHeld = false
+    private var pushToTalkWasMuted = false
+    private var pushToTalkGen = 0
+    static let pushToTalkCap = 5.0
+    @ObservationIgnored private var pushToTalkMonitor: Any?
+
+    /// The ⌥Space press (or a menu click): open the mic for the hold.
+    public func talkBurst() {
+        guard joined, !ended, AppSettings.shared.pushToTalk else { return }
+        installPushToTalkMonitor()
+        setPushToTalkHeld(true)
+        pushToTalkGen += 1
+        let gen = pushToTalkGen
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.pushToTalkCap) { [weak self] in
+            guard let self, gen == self.pushToTalkGen else { return }
+            self.setPushToTalkHeld(false)
+        }
+    }
+
+    public func setPushToTalkHeld(_ held: Bool) {
+        guard joined, !ended, AppSettings.shared.pushToTalk else {
+            if pushToTalkHeld { releasePushToTalk() }
+            return
+        }
+        if held {
+            guard !pushToTalkHeld else { return }
+            installPushToTalkMonitor()
+            pushToTalkHeld = true
+            pushToTalkWasMuted = muted
+            if muted { store?.setMuted(false) }
+        } else if pushToTalkHeld {
+            releasePushToTalk()
+        }
+    }
+
+    private func releasePushToTalk() {
+        pushToTalkHeld = false
+        pushToTalkGen += 1
+        if pushToTalkWasMuted { store?.setMuted(true) }
+    }
+
+    /// ⌥Space key-up ends the hold (the key-down comes through the menu
+    /// key equivalent; repeats extend the cap through `talkBurst`).
+    private func installPushToTalkMonitor() {
+        guard pushToTalkMonitor == nil else { return }
+        pushToTalkMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyUp]) { [weak self] event in
+            guard let self, self.pushToTalkHeld, event.keyCode == 49,
+                  event.modifierFlags.contains(.option) else { return event }
+            self.setPushToTalkHeld(false)
+            return event
+        }
+    }
+
+    private func removePushToTalkMonitor() {
+        if let m = pushToTalkMonitor { NSEvent.removeMonitor(m) }
+        pushToTalkMonitor = nil
+    }
+
     // MARK: C2a local-only meeting controls (no signaling, no server writes)
     /// The stage layout choice (meetings; 1:1 ignores it).
     public private(set) var layout: MeetingLayoutMode = .automatic
@@ -441,6 +507,9 @@ public final class CallSession {
         ticker?.invalidate()
         ticker = nil
         shareSub = nil
+        pushToTalkHeld = false
+        pushToTalkGen += 1
+        removePushToTalkMonitor()
         if live {
             store?.cameraHook = nil
             if store?.cameraOn == true { store?.setCameraOn(false) }

@@ -17,6 +17,13 @@ public enum CallCommands {
     public static let devices: CommandID = "call.devices"
     public static let showPeople: CommandID = "call.showPeople"
     public static let showChat: CommandID = "call.showChat"
+    /// Teams parity (C8b): a ringing call's answer/decline, the
+    /// in-call hand, and opt-in push-to-talk (all confined to the Call
+    /// menu, like the D2 call keys).
+    public static let accept: CommandID = "call.accept"
+    public static let decline: CommandID = "call.decline"
+    public static let hand: CommandID = "call.hand"
+    public static let pushToTalk: CommandID = "call.pushToTalk"
 
     /// Popover name (evidence `popover=devices`).
     public static let devicesPopover = "devices"
@@ -40,6 +47,19 @@ public enum CallCommands {
         Command(showPeople, "Show People", symbol: "person.2",
                 menu: .init(.call, group: 0, order: 5), owner: .call),
         Command(showChat, "Show Chat", symbol: "bubble.left.and.bubble.right",
+                key: "r", modifiers: [.command, .shift],
                 menu: .init(.call, group: 0, order: 6), owner: .call),
+        Command(accept, "Accept Call", symbol: "phone.fill",
+                key: "a", modifiers: [.command, .shift],
+                menu: .init(.call, group: 0, order: 7), owner: .call),
+        Command(decline, "Decline Call", symbol: "phone.down",
+                key: "d", modifiers: [.command, .shift],
+                menu: .init(.call, group: 0, order: 8), owner: .call),
+        Command(hand, "Raise Hand", symbol: "hand.raised",
+                key: "k", modifiers: [.command, .shift],
+                menu: .init(.call, group: 2, order: 4), owner: .call),
+        Command(pushToTalk, "Push to Talk", symbol: "mic",
+                key: " ", modifiers: [.option],
+                menu: .init(.call, group: 2, order: 5), owner: .call),
     ]
 }

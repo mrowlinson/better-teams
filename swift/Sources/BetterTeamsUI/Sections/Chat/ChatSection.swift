@@ -299,6 +299,19 @@ final class ChatSection: SectionProvider, InspectorCapable {
         case ChatCommands.catchUpWindow:
             guard m.app?.catchUp.mode ?? .off != .off else { return false }
             CatchUpWindowController.show(m)
+        case ChatCommands.reply, ChatCommands.forward, ChatCommands.react,
+             ChatCommands.save, ChatCommands.pinMessage, ChatCommands.translate:
+            return performMessageAction(c, arg: arg, m)
+        case ChatCommands.speakStart:
+            guard let text = speechText(m) else { return false }
+            SpeechReader.speak(text)
+        case ChatCommands.speakStop:
+            guard SpeechReader.speaking else { return false }
+            SpeechReader.stop()
+        case ChatCommands.compose:
+            // Teams ⇧⌘X: the open conversation's composer takes focus.
+            guard ConversationToolbar.chatID(m) != nil else { return false }
+            ConversationServices.of(m).composer.focusRequest += 1
         case ChatCommands.markUnread:
             // Same semantics as the message menu's Mark as Unread: Teams
             // bookmarks just behind the NEWEST loaded message.
@@ -383,6 +396,16 @@ final class ChatSection: SectionProvider, InspectorCapable {
             return CommandValidation(enabled: m.app?.catchUp.mode ?? .off != .off)
         case ChatCommands.markUnread:
             return CommandValidation(enabled: inChat && selected(m) != nil)
+        case ChatCommands.compose:
+            // Any host showing a conversation (Chat, Activity, Search).
+            return CommandValidation(enabled: ConversationToolbar.chatID(m) != nil)
+        case ChatCommands.reply, ChatCommands.forward, ChatCommands.react,
+             ChatCommands.save, ChatCommands.pinMessage, ChatCommands.translate:
+            return validateMessageAction(c, m)
+        case ChatCommands.speakStart:
+            return CommandValidation(enabled: speechText(m) != nil)
+        case ChatCommands.speakStop:
+            return CommandValidation(enabled: SpeechReader.speaking)
         case ChatCommands.pin:
             guard inChat, let id = selected(m) else { return .disabled }
             return CommandValidation(enabled: true, title: m.graph.chats.isPinned(id) ? "Unpin Chat" : "Pin Chat")
@@ -437,6 +460,7 @@ final class ChatSection: SectionProvider, InspectorCapable {
 
     /// Snooze ▸, Notifications ▸ and Move to Folder ▸ for the selection.
     private func chatActionItems(_ c: CommandID, _ m: WindowModel) -> [SubmenuItem] {
+        if c == ChatCommands.react { return reactItems(m) }
         guard m.nav.section == .chat, let id = selected(m) else { return [] }
         let services = ConversationServices.of(m)
         switch c {
@@ -466,6 +490,79 @@ final class ChatSection: SectionProvider, InspectorCapable {
         default:
             return []
         }
+    }
+
+    /// The conversation whose message menu is on screen (C8c): Chat,
+    /// Activity, and Search resolve through the toolbar helper; Teams
+    /// channel posts read the open channel's conversation.
+    static func messageChatID(_ m: WindowModel) -> String? {
+        if let id = ConversationToolbar.chatID(m) { return id }
+        if m.nav.section == .teams, m.nav.search == nil { return m.graph.conv.chatID }
+        return nil
+    }
+
+    /// The keyboard-selected message's live row, if it is a normal
+    /// message in the open conversation (failed sends and tombstones
+    /// keep the context menu's own Retry/Delete items only).
+    private func messageTarget(_ m: WindowModel) -> (TimelineActions, ChatMessage)? {
+        guard let id = Self.messageChatID(m),
+              let actions = ConversationServices.of(m).messageActions,
+              let sel = actions.keyboard.selected, sel.chatID == id,
+              let msg = actions.message(id: sel.messageID),
+              !msg.deleted, !m.graph.conv.failedIDs.contains(msg.id),
+              !m.graph.conv.deleteFailedIDs.contains(msg.id) else { return nil }
+        return (actions, msg)
+    }
+
+    private func performMessageAction(_ c: CommandID, arg: String?, _ m: WindowModel) -> Bool {
+        guard let (actions, msg) = messageTarget(m) else { return false }
+        switch c {
+        case ChatCommands.reply: actions.reply(msg)
+        case ChatCommands.forward: actions.forward(msg)
+        case ChatCommands.react:
+            let emoji = arg ?? ""
+            if emoji == "more" { actions.moreReactions(msg) } else { actions.react(msg, emoji) }
+        case ChatCommands.save: actions.toggleSave(msg)
+        case ChatCommands.pinMessage: actions.togglePin(msg)
+        case ChatCommands.translate: actions.translate(msg)
+        default: return false
+        }
+        return true
+    }
+
+    private func validateMessageAction(_ c: CommandID, _ m: WindowModel) -> CommandValidation {
+        guard let (actions, msg) = messageTarget(m) else { return .disabled }
+        switch c {
+        case ChatCommands.save:
+            let saved = m.graph.savedMessages.isSaved(chatID: Self.messageChatID(m), messageID: msg.id)
+            return CommandValidation(enabled: true, title: SavedMessages.menuTitle(isSaved: saved))
+        case ChatCommands.pinMessage:
+            let pinned = m.graph.pinnedMessages.isPinned(chatID: Self.messageChatID(m), messageID: msg.id)
+            return CommandValidation(enabled: true, title: PinnedMessages.menuTitle(isPinned: pinned))
+        case ChatCommands.translate:
+            return CommandValidation(enabled: MessageTranslation.isEligible(msg),
+                                     title: actions.translateTitle(msg))
+        default:
+            return .enabled
+        }
+    }
+
+    /// The selected message's plain text for Read Aloud (bubble text, as
+    /// the row's VoiceOver label reads it).
+    private func speechText(_ m: WindowModel) -> String? {
+        guard let (_, msg) = messageTarget(m) else { return nil }
+        let t = MessageRender.bubbleText(for: msg).trimmingCharacters(in: .whitespacesAndNewlines)
+        return t.isEmpty ? nil : t
+    }
+
+    /// React ▸ for the selection: the six quick reactions, then More….
+    private func reactItems(_ m: WindowModel) -> [SubmenuItem] {
+        guard messageTarget(m) != nil else { return [] }
+        var out = HoverToolbarRules.quickReactions.map {
+            SubmenuItem("\($0.emoji) \($0.name)", arg: $0.emoji)
+        }
+        out.append(SubmenuItem("More…", arg: "more", separatorBefore: true))
+        return out
     }
 
     /// Go ▸ Next/Previous Unread Chat (⌥⌘↓/↑).

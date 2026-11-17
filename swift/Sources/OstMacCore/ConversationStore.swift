@@ -1317,12 +1317,27 @@ public final class ConversationStore: ObservableObject {
         }
     }
 
+    /// The last deleted own message (C8d Undo Delete): its chat and text,
+    /// so Edit ▸ Undo Delete restores the text as a draft. The server
+    /// delete stands — this recovers the words, not the bubble.
+    public private(set) var deletedDraft: (chatID: String, text: String)?
+
+    /// Takes the undo-delete draft (consumed: one undo per delete).
+    public func takeUndoDelete() -> (chatID: String, text: String)? {
+        let d = deletedDraft
+        deletedDraft = nil
+        return d
+    }
+
     /// Delete an own bubble via core; optimistic tombstone, unmarked on
     /// failure. Demo mode tombstones locally. Unknown id is a no-op.
     /// 1:1 tombstones fade after `tombstoneFadeSeconds` (Teams parity).
     public func deleteMessage(id: String, isOneToOne: Bool = false) {
         guard messages.contains(where: { $0.id == id }) else { return }
         if isDemo {
+            if let chat = chatID, let before = messages.first(where: { $0.id == id }) {
+                deletedDraft = (chat, before.content)
+            }
             messages = Self.applyingDelete(id: id, to: messages)
             if let chat = chatID { onDelete?(chat, id) }
             if isOneToOne { scheduleTombstoneFade(id: id) }
@@ -1331,6 +1346,7 @@ public final class ConversationStore: ObservableObject {
         guard let chat = chatID,
               let before = messages.first(where: { $0.id == id })
         else { return }
+        deletedDraft = (chat, before.content)
         messages = Self.applyingDelete(id: id, to: messages)
         failedIDs.remove(id)
         deleteFailedIDs.remove(id)
@@ -1345,7 +1361,9 @@ public final class ConversationStore: ObservableObject {
                 self.onDelete?(chat, id)
             } catch {
                 // Not confirmed: the original bubble comes back (same
-                // row, text intact) and the row offers Retry.
+                // row, text intact) and the row offers Retry. Nothing was
+                // deleted, so there is nothing to undo.
+                self.deletedDraft = nil
                 self.fadeTasks.removeValue(forKey: id)?.cancel()
                 if let j = self.messages.firstIndex(where: { $0.id == id }) {
                     self.messages[j] = Self.restoringAfterFailedDelete(before: before, current: self.messages[j])

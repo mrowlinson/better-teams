@@ -154,6 +154,18 @@ struct ActivityRowModel: Identifiable, Equatable {
         return "\(emoji) · \(n) \(n == 1 ? "reaction" : "reactions")"
     }
 
+    /// Feed text search (ACT-04): person, headline, snippet, and kind
+    /// match, case- and diacritic-insensitive. Blank matches everything.
+    static func matching(_ rows: [ActivityRowModel], query: String) -> [ActivityRowModel] {
+        let q = query.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+        guard !q.isEmpty else { return rows }
+        return rows.filter { r in
+            [r.person, r.headline, r.snippet, r.kindLabel].contains {
+                $0.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil).contains(q)
+            }
+        }
+    }
+
     /// Rows for a filter, newest first (feed order is already newest
     /// first; saved rows sort by save time).
     static func rows(_ items: [ActivityItem], saved: [SavedMessage], filter: ActivityFilter,

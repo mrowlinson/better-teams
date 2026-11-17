@@ -163,9 +163,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             wc.navigator.focusSearch(.conversation)
         }
         if options.demo, let route, wc.isShowingShell {
-            // Evidence: `settings/<pane>`, `call?state=…&presentation=…`.
+            // Evidence: `settings/<pane>`, `call?state=…&presentation=…`,
+            // `help[?topic=…]`, `shortcuts`, calendar routes.
             CatchUpEvidence.apply(route, wc)
             CallEvidence.apply(route, wc)
+            HelpEvidence.apply(route, wc)
             CalendarEvidence.apply(route, wc)
         }
         if options.demo, let route, let t = route.query["recapTab"] {

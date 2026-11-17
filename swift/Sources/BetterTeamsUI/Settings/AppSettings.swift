@@ -41,6 +41,7 @@ final class AppSettings {
         static let combinedChatsChannels = "bt.settings.combinedChatsChannels"
         static let quickComposer = "bt.settings.quickComposer"
         static let glassFree = "bt.settings.glassFree"
+        static let pushToTalk = "bt.settings.pushToTalk"
     }
 
     @ObservationIgnored let defaults: UserDefaults
@@ -69,6 +70,9 @@ final class AppSettings {
     /// Appearance ▸ Glass-free (off by default): the control layer drops
     /// Liquid Glass for the plain standard look (`Chrome`), live.
     var glassFree: Bool { didSet { save(glassFree, Key.glassFree, oldValue) } }
+    /// Calls ▸ Push to Talk (off by default, Teams opt-in parity): hold
+    /// ⌥Space in a call to talk.
+    var pushToTalk: Bool { didSet { save(pushToTalk, Key.pushToTalk, oldValue) } }
     /// Demo only: General ▸ Open at login, never the real login item.
     var demoLaunchAtLogin = false
 
@@ -84,6 +88,7 @@ final class AppSettings {
         combinedChatsChannels = bool(Key.combinedChatsChannels, false)
         quickComposer = bool(Key.quickComposer, Self.quickComposerDefault)
         glassFree = bool(Key.glassFree, false)
+        pushToTalk = bool(Key.pushToTalk, false)
     }
 
     /// The quick-composer shortcut changed (stored with the core prefs).

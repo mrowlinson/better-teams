@@ -38,6 +38,7 @@ public enum CalendarCommands {
         Command(meetNow, "Meet Now…", symbol: "video",
                 menu: .init(.file, group: 0, order: 6), toolbar: .detail, owner: .calendar),
         Command(newMeeting, "New Meeting…", symbol: "calendar.badge.plus",
+                key: "n", modifiers: [.command, .option, .shift],
                 menu: .init(.file, group: 0, order: 4), toolbar: .detail, owner: .calendar),
         Command(joinWithLink, "Join with ID or Link…", symbol: "link",
                 menu: .init(.file, group: 0, order: 5), toolbar: .detail, owner: .calendar),

@@ -403,6 +403,6 @@ Incomplete or not started yet ("in progress" = being worked on now):
 - **Status:** scheduled out-of-office: shipped, one live check pending
 - **Chats and teams:** Teams saved-messages sync, thread mute, full notification-rules matrix (all three parked — no server surface found); private/shared channels, archiving, moderation, team privacy switch
 - **External (federated) chat:** written, awaiting live proof — blocked: tenant has external access disabled
-- **Shortcuts and accessibility:** full shortcuts window, remaining Teams key bindings, message-level menus, read-aloud
+- **Shortcuts and accessibility:** search operators and slash commands (needs core query parsing), Mark as Important key (wiring to compose path); shortcuts window, bindings, message menus, undo, feed/settings search, read-aloud and row actions shipped
 - **On hold:** Praise, Polls, Loop components, webinars, breakout rooms, whiteboard, Copilot, Share-to-Outlook
 - **Live proof:** multi-person meetings not yet verified end to end (solo and organizer paths only so far)

@@ -69,6 +69,9 @@ final class TimelineActions {
     var jumpHandler: ((String) -> Void)?
     /// Which row shows the hover toolbar (shared by all rows).
     let hover = MessageHover()
+    /// This timeline's keyboard-selected message (C8c): Up/Down move it,
+    /// the Conversation menu's message actions work on it.
+    let keyboard = KeyboardMessageSelection()
 
     init(conv: ConversationStore, model: WindowModel?, services: ConversationServices) {
         self.conv = conv
@@ -81,6 +84,11 @@ final class TimelineActions {
     private var graph: (any AccountGraph)? { model?.graph }
 
     func jump(to id: String) { jumpHandler?(id) }
+
+    /// The selected message's row, if it is still in this conversation.
+    func message(id: String) -> ChatMessage? {
+        conv.messages.first { $0.id == id }
+    }
 
     func react(_ m: ChatMessage, _ emoji: String) { conv.react(messageID: m.id, emoji: emoji) }
     func toggleReaction(_ m: ChatMessage, _ emoji: String) { conv.toggleReaction(messageID: m.id, emoji: emoji) }

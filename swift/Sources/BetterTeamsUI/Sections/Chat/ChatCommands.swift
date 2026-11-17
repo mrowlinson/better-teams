@@ -15,6 +15,23 @@ public enum ChatCommands {
     public static let catchUpWindow: CommandID = "chat.catchUpWindow"
     /// ⇧⌘U (Mail-style). Mark as Unread only: no Mark as Read here (owner).
     public static let markUnread: CommandID = "chat.markUnread"
+    /// Teams ⇧⌘X (the compose box): focuses the open conversation's
+    /// composer. Group 0 order 8 reserves 2–7 for the message-half menu.
+    public static let compose: CommandID = "chat.compose"
+    /// Read Aloud (C8d, MSG-13/ACC-01): Edit ▸ Speech ▸, on the
+    /// keyboard-selected message.
+    public static let speakStart: CommandID = "message.speakStart"
+    public static let speakStop: CommandID = "message.speakStop"
+    /// The message-half menu (C8c, UI-SPEC §9.1): the context menu's
+    /// normal-message actions, acting on the keyboard-selected message
+    /// in the open conversation. Orders 2–7, after Mark as Unread (0)
+    /// and Pin Chat (1), which stay pinned.
+    public static let reply: CommandID = "message.reply"
+    public static let forward: CommandID = "message.forward"
+    public static let react: CommandID = "message.react"
+    public static let save: CommandID = "message.save"
+    public static let pinMessage: CommandID = "message.pin"
+    public static let translate: CommandID = "message.translate"
     public static let pin: CommandID = "chat.pin"
     /// Chat-level actions on the selected chat (same as the row menu).
     public static let mute: CommandID = "chat.mute"
@@ -40,6 +57,10 @@ public enum ChatCommands {
 
     @MainActor
     public static let all: [Command] = [
+        Command(speakStart, "Start Speaking",
+                menu: .init(.edit, group: 3, order: 0, submenu: "Speech"), owner: .chat),
+        Command(speakStop, "Stop Speaking",
+                menu: .init(.edit, group: 3, order: 1, submenu: "Speech"), owner: .chat),
         Command(filter, "Filter", symbol: "line.3.horizontal.decrease",
                 menu: .init(.view, group: 2, order: 0), toolbar: .list, isSubmenu: true, owner: .chat),
         Command(newChat, "New Chat", symbol: "square.and.pencil", key: "n",
@@ -60,6 +81,21 @@ public enum ChatCommands {
                 menu: .init(.conversation, group: 0, order: 0), owner: .chat),
         Command(pin, "Pin Chat", alternateTitle: "Unpin Chat",
                 menu: .init(.conversation, group: 0, order: 1), owner: .chat),
+        Command(compose, "Go to Compose Box", symbol: "square.and.pencil",
+                key: "x", modifiers: [.command, .shift],
+                menu: .init(.conversation, group: 0, order: 8), owner: .chat),
+        Command(reply, "Reply", key: "r", modifiers: [.command, .option],
+                menu: .init(.conversation, group: 0, order: 2), owner: .chat),
+        Command(forward, "Forward…",
+                menu: .init(.conversation, group: 0, order: 3), owner: .chat),
+        Command(react, "React", symbol: "face.smiling",
+                menu: .init(.conversation, group: 0, order: 4), isSubmenu: true, owner: .chat),
+        Command(save, "Save this message", alternateTitle: "Unsave",
+                menu: .init(.conversation, group: 0, order: 5), owner: .chat),
+        Command(pinMessage, "Pin", alternateTitle: "Unpin",
+                menu: .init(.conversation, group: 0, order: 6), owner: .chat),
+        Command(translate, "Translate…",
+                menu: .init(.conversation, group: 0, order: 7), owner: .chat),
         Command(mute, "Mute", alternateTitle: "Unmute",
                 menu: .init(.conversation, group: 1, order: 0), owner: .chat),
         Command(snooze, "Snooze", menu: .init(.conversation, group: 1, order: 1), isSubmenu: true, owner: .chat),

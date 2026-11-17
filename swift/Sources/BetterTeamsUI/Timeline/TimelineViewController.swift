@@ -125,11 +125,12 @@ final class TimelineViewController: NSViewController, NSTableViewDataSource, NST
     static let cellID = NSUserInterfaceItemIdentifier("TimelineCell")
 
     private let conv: ConversationStore
-    /// Chats, channel Posts, or one channel thread (P2c, §6.3).
+    /// Chats, channel Posts, or one channel thread (P2c, §6.3). Table
+    /// subclass: plain Up/Down/Esc drive the keyboard selection (C8c).
     private var scope: TimelineScope
     private weak var model: WindowModel?
     private let scroll = NSScrollView()
-    private let table = NSTableView()
+    private let table = TimelineTableView()
     private var items: [TimelineItem] = []
     private var messagesByID: [String: ChatMessage] = [:]
     private var rowData: [String: MessageRowData] = [:]
@@ -158,6 +159,9 @@ final class TimelineViewController: NSViewController, NSTableViewDataSource, NST
     private var reactionPopover: NSPopover?
     private var pendingReactionID: String?
     private var pendingJump: String?
+    /// Evidence `?select=<messageID>`: pins the keyboard selection for
+    /// captures (C8c). Applied once the row exists, like a jump.
+    private var pendingKeyboardID: String?
     private var cancellables = Set<AnyCancellable>()
     private let staticHighlight: Bool
 
@@ -335,6 +339,19 @@ final class TimelineViewController: NSViewController, NSTableViewDataSource, NST
         NotificationCenter.default.publisher(for: NSWindow.didEndLiveResizeNotification)
             .sink { [weak self] note in self?.liveResizeEnded(note) }
             .store(in: &cancellables)
+        // C8c: the window's message commands work through the focused
+        // timeline's actions; the keyboard selection re-renders through
+        // the marked-row pass below.
+        services?.messageActions = actions
+        actions?.keyboard.onChange = { [weak self] in self?.updateMarked() }
+        table.onArrow = { [weak self] dir in self?.moveKeyboard(dir) ?? false }
+        table.onEscape = { [weak self] in self?.clearKeyboard() ?? false }
+        table.onFocus = { [weak self] in self?.claimMessageActions() }
+        if model?.options.demo == true,
+           let select = model?.options.route.flatMap({ Route(string: $0) })?.query["select"],
+           !select.isEmpty {
+            pendingKeyboardID = select
+        }
         // Reaction More… opens at its message; Delete… marks its message
         // while the alert is up. Delivered values (willSet publishers).
         if let composer = services?.composer {
@@ -461,8 +478,43 @@ final class TimelineViewController: NSViewController, NSTableViewDataSource, NST
         if case .reaction? = services?.composer.popover { services?.composer.popover = nil }
     }
 
+    /// This timeline's keyboard-selected message, when it names a row in
+    /// the open conversation (a stale record from another chat shows
+    /// nothing here; the menu validates the same way).
+    private var keyboardCurrent: String? {
+        guard let k = actions?.keyboard, k.chatID == conv.chatID else { return nil }
+        return k.messageID
+    }
+
+    /// C8c: Up/Down step the keyboard selection through the messages.
+    func moveKeyboard(_ direction: Int) -> Bool {
+        guard let chat = conv.chatID else { return false }
+        let ids = items.compactMap(\.messageID)
+        guard !ids.isEmpty else { return false }
+        let before = keyboardCurrent
+        actions?.keyboard.move(chatID: chat, in: ids, direction: direction)
+        guard keyboardCurrent != before else { return false }
+        if let id = keyboardCurrent,
+           let i = items.firstIndex(where: { $0.messageID == id }) {
+            table.scrollRowToVisible(i)
+        }
+        return true
+    }
+
+    /// C8c: Esc drops the keyboard selection (only when there is one, so
+    /// every other Esc behavior keeps its key).
+    func clearKeyboard() -> Bool {
+        guard keyboardCurrent != nil else { return false }
+        actions?.keyboard.clear()
+        return true
+    }
+
+    private func claimMessageActions() {
+        services?.messageActions = actions
+    }
+
     private func updateMarked() {
-        let next = alertTargetID ?? reactionTargetID ?? editTargetID
+        let next = alertTargetID ?? reactionTargetID ?? editTargetID ?? keyboardCurrent
         guard next != markedID else { return }
         var rows = IndexSet()
         for m in [markedID, next].compactMap({ $0 }) {
@@ -496,6 +548,7 @@ final class TimelineViewController: NSViewController, NSTableViewDataSource, NST
             scrollToBottom()
             retryPendingJump()
             retryPendingReaction()
+            retryPendingKeyboard()
             reportViewingLatest(messages)
             return
         }
@@ -532,6 +585,7 @@ final class TimelineViewController: NSViewController, NSTableViewDataSource, NST
         restore(anchor)
         retryPendingJump()
         retryPendingReaction()
+        retryPendingKeyboard()
         reportViewingLatest(messages)
     }
 
@@ -886,6 +940,18 @@ final class TimelineViewController: NSViewController, NSTableViewDataSource, NST
 
     private func retryPendingJump() {
         if let p = pendingJump { jump(to: p) }
+    }
+
+    /// Evidence selection: select + scroll the row into view, without
+    /// the jump's highlight and pin side effects.
+    private func retryPendingKeyboard() {
+        guard let p = pendingKeyboardID, let chat = conv.chatID, isViewLoaded,
+              items.contains(where: { $0.messageID == p }) else { return }
+        pendingKeyboardID = nil
+        actions?.keyboard.select(chatID: chat, messageID: p)
+        if let i = items.firstIndex(where: { $0.messageID == p }) {
+            table.scrollRowToVisible(i)
+        }
     }
 
     /// History paging near the top (user scroll, not a view-appearance

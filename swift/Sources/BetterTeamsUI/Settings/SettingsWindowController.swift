@@ -59,6 +59,10 @@ public final class SettingsWindowController: NSWindowController, NSWindowDelegat
         Pane(id: "advanced", label: "Advanced", symbol: "wrench.and.screwdriver") {
             host(AdvancedPane.make(model))
         },
+        // C8d: search lives last, so the spec'd pane order is untouched.
+        Pane(id: "search", label: "Search", symbol: "magnifyingglass") {
+            host(SettingsSearchPane(open: { SettingsWindowController.shared.show(pane: $0) }))
+        },
     ]
 
     private static func host<V: View>(_ v: V) -> NSViewController {

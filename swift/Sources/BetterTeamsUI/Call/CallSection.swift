@@ -32,38 +32,67 @@ final class CallSection: SectionProvider, InspectorCapable {
     func toolbarItems(_ sel: SectionSelection?) -> [CommandID] { allToolbarItems }
 
     func perform(_ c: CommandID, arg: String?, _ m: WindowModel) -> Bool {
-        guard let s = m.call, !s.ended else { return false }
         switch c {
-        case CallCommands.show: s.show()
-        case CallCommands.leave: s.leave()
-        case CallCommands.mute: s.toggleMute()
-        case CallCommands.camera: s.toggleCamera()
-        case CallCommands.share: s.toggleShare()
-        case CallCommands.devices: s.showDevices()
-        case CallCommands.showPeople: Self.toggleInspector(segment: "people", m)
-        case CallCommands.showChat: Self.toggleInspector(segment: "chat", m)
-        default: return false
+        case CallCommands.accept:
+            guard Self.isRinging(m) else { return false }
+            m.app?.call.accept()
+        case CallCommands.decline:
+            guard Self.isRinging(m) else { return false }
+            m.app?.call.end()
+        default:
+            guard let s = m.call, !s.ended else { return false }
+            switch c {
+            case CallCommands.show: s.show()
+            case CallCommands.leave: s.leave()
+            case CallCommands.mute: s.toggleMute()
+            case CallCommands.camera: s.toggleCamera()
+            case CallCommands.share: s.toggleShare()
+            case CallCommands.devices: s.showDevices()
+            case CallCommands.showPeople: Self.toggleInspector(segment: "people", m)
+            case CallCommands.showChat: Self.toggleInspector(segment: "chat", m)
+            case CallCommands.hand: s.toggleHandRaised()
+            case CallCommands.pushToTalk: s.talkBurst()
+            default: return false
+            }
         }
         return true
     }
 
+    /// An incoming ring on the core slot (answerable/declinable).
+    static func isRinging(_ m: WindowModel) -> Bool {
+        guard let info = m.app?.call.call else { return false }
+        return info.dir == "in" && info.state == "ringing"
+    }
+
     func validate(_ c: CommandID, arg: String?, _ m: WindowModel) -> CommandValidation {
-        guard let s = m.call, !s.ended else { return .disabled }
         switch c {
-        case CallCommands.show, CallCommands.leave, CallCommands.devices:
-            return .enabled
-        case CallCommands.showPeople, CallCommands.showChat:
-            let segment = c == CallCommands.showPeople ? "people" : "chat"
-            let shown = m.nav.section == .call && m.nav.isInspectorVisible(.call)
-                && (m.inspectorSegment ?? "people") == segment
-            let verb = shown ? "Hide" : "Show"
-            let what = segment == "people" ? "People" : "Chat"
-            return CommandValidation(enabled: true, title: "\(verb) \(what)")
-        case CallCommands.mute, CallCommands.camera, CallCommands.share:
-            guard let ctl = s.controls.control(c) else { return .disabled }
-            return CommandValidation(enabled: ctl.enabled, title: ctl.menuTitle)
+        case CallCommands.accept, CallCommands.decline:
+            return CommandValidation(enabled: Self.isRinging(m))
         default:
-            return .disabled
+            guard let s = m.call, !s.ended else { return .disabled }
+            switch c {
+            case CallCommands.show, CallCommands.leave, CallCommands.devices:
+                return .enabled
+            case CallCommands.showPeople, CallCommands.showChat:
+                let segment = c == CallCommands.showPeople ? "people" : "chat"
+                let shown = m.nav.section == .call && m.nav.isInspectorVisible(.call)
+                    && (m.inspectorSegment ?? "people") == segment
+                let verb = shown ? "Hide" : "Show"
+                let what = segment == "people" ? "People" : "Chat"
+                return CommandValidation(enabled: true, title: "\(verb) \(what)")
+            case CallCommands.mute, CallCommands.camera, CallCommands.share:
+                guard let ctl = s.controls.control(c) else { return .disabled }
+                return CommandValidation(enabled: ctl.enabled, title: ctl.menuTitle)
+            case CallCommands.hand:
+                // Main's C2b state is demo/evidence-only (live has no
+                // signaling endpoint): the menu follows the same gate.
+                return CommandValidation(enabled: s.joined && m.options.demo,
+                                         title: s.handRaised ? "Lower Hand" : "Raise Hand")
+            case CallCommands.pushToTalk:
+                return CommandValidation(enabled: s.joined && AppSettings.shared.pushToTalk)
+            default:
+                return .disabled
+            }
         }
     }
 

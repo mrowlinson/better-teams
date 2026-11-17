@@ -473,6 +473,13 @@ public final class ShellWindowController: NSWindowController, NSWindowDelegate, 
         case ShellCommand.connection: if model.connection == .expired { presentSignInSheet() }
         case ShellCommand.signOut: confirmSignOut()
         case ShellCommand.quickMessage: NotificationCenter.default.post(name: .showQuickComposer, object: nil)
+        case ShellCommand.undoDelete:
+            guard let d = model.graph.conv.takeUndoDelete() else { return }
+            let services = ConversationServices.of(model)
+            services.composer.setDraft(d.text, for: d.chatID)
+            services.composer.focusRequest += 1
+        case ShellCommand.help: HelpWindowController.shared.show()
+        case ShellCommand.shortcuts: HelpWindowController.shared.showShortcuts()
         case ShellCommand.settings: SettingsWindowController.shared.show()
         default: break
         }
@@ -556,8 +563,10 @@ public final class ShellWindowController: NSWindowController, NSWindowDelegate, 
         case ShellCommand.signOut: return CommandValidation(enabled: !model.options.demo && model.app != nil)
         case ShellCommand.addAccount: return CommandValidation(enabled: !model.options.demo && model.app != nil)
         case ShellCommand.quickMessage: return CommandValidation(enabled: model.app != nil)
+        case ShellCommand.undoDelete: return CommandValidation(enabled: model.graph.conv.deletedDraft != nil)
         case ShellCommand.settings: return .enabled // Calls pane (P3b); P4c adds the rest
-        default: return .disabled // Help: not built yet
+        case ShellCommand.help, ShellCommand.shortcuts: return .enabled
+        default: return .disabled
         }
     }
 

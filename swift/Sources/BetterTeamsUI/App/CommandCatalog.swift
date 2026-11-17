@@ -165,10 +165,14 @@ public enum ShellCommand {
     public static let findNext: CommandID = "shell.findNext"
     public static let useSelectionForFind: CommandID = "edit.useSelectionForFind"
     public static let findPrevious: CommandID = "shell.findPrevious"
+    /// C8d: restores the last deleted message's text as a draft.
+    public static let undoDelete: CommandID = "edit.undoDelete"
     public static let account: CommandID = "shell.account"
     public static let connection: CommandID = "shell.connection"
     public static let signOut: CommandID = "app.signOut"
     /// File ▸ New Quick Message… (⌃⌘M, the hotkey's default combo).
+    public static let help: CommandID = "help.help"
+    public static let shortcuts: CommandID = "help.shortcuts"
     public static let quickMessage: CommandID = "shell.quickMessage"
     /// File ▸ Open Account in New Window ▸ (§5.7): one main window per
     /// account; rows come from `ShellWindowController.submenuItems`.
@@ -239,6 +243,8 @@ public enum CommandCatalog {
             C("edit.undo", "Undo", key: "z", selector: Selector(("undo:")), menu: .init(.edit, group: 0, order: 0)),
             C("edit.redo", "Redo", key: "z", modifiers: [.command, .shift], selector: Selector(("redo:")),
               menu: .init(.edit, group: 0, order: 1)),
+            C(ShellCommand.undoDelete, "Undo Delete",
+              menu: .init(.edit, group: 0, order: 2), help: "Restores the last deleted message's text as a draft."),
             C("edit.cut", "Cut", key: "x", selector: #selector(NSText.cut(_:)), menu: .init(.edit, group: 1, order: 0)),
             C("edit.copy", "Copy", key: "c", selector: #selector(NSText.copy(_:)), menu: .init(.edit, group: 1, order: 1)),
             C("edit.paste", "Paste", key: "v", selector: #selector(NSText.paste(_:)), menu: .init(.edit, group: 1, order: 2)),
@@ -327,7 +333,9 @@ public enum CommandCatalog {
             C("window.front", "Bring All to Front", selector: #selector(NSApplication.arrangeInFront(_:)),
               menu: .init(.window, group: 1, order: 0)),
             // Help
-            C("help.help", "Better Teams Help", key: "?", menu: .init(.help, group: 0, order: 0)),
+            C(ShellCommand.help, "Better Teams Help", key: "?", menu: .init(.help, group: 0, order: 0)),
+            C(ShellCommand.shortcuts, "Keyboard Shortcuts", key: "?", modifiers: [.command, .shift],
+              menu: .init(.help, group: 0, order: 1)),
         ]
         for (i, id) in ShellCommand.goPinned.enumerated() {
             list.append(C(id, "Pinned App \(i + 1)", key: "\(7 + i)", menu: .init(.go, group: 0, order: 6 + i)))

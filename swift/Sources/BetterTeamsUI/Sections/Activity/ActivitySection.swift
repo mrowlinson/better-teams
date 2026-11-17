@@ -16,6 +16,8 @@ import SwiftUI
 @MainActor
 final class ActivitySectionState {
     var filter: ActivityFilter = .all
+    /// Feed text search (ACT-04): narrows the listed rows in place.
+    var query = ""
     /// Evidence only (`activity?state=error&cached=0`): the load failed
     /// with nothing cached, so the error pane replaces the list.
     var evidenceNoCache = false
@@ -206,7 +208,7 @@ final class ActivitySection: SectionProvider, InspectorCapable {
 struct ActivityListPane: View {
     @ObservedObject var activity: ActivityStore
     @ObservedObject var saved: SavedMessageStore
-    let state: ActivitySectionState
+    @Bindable var state: ActivitySectionState
     let showsFeed: (WindowModel) -> Bool
     @Environment(\.windowModel) private var model
 
@@ -222,12 +224,12 @@ struct ActivityListPane: View {
     private func content(_ m: WindowModel) -> some View {
         let forced = m.forced(.activity)
         let feed = showsFeed(m)
-        let rows = !feed ? [] : ActivityRowModel.rows(
+        let rows = !feed ? [] : ActivityRowModel.matching(ActivityRowModel.rows(
             activity.items, saved: saved.saves, filter: state.filter,
             place: { m.app?.chatNameOrNil(for: $0) ?? DemoFixture.name(for: $0, demo: m.options.demo) ?? "Conversation" },
             isGroup: { id in
                 m.graph.chats.chat(id: id)?.is_group ?? DemoFixture.isGroup(id, demo: m.options.demo) ?? false
-            })
+            }), query: state.query)
         if forced == .loading {
             LoadingPane("Loading Activity\u{2026}")
         } else if forced == .error, !feed {
@@ -260,7 +262,10 @@ struct ActivityListPane: View {
                 }
             }
         } else if rows.isEmpty {
-            if state.filter == .all || forced == .empty {
+            if !state.query.isEmpty {
+                EmptyPane("No Matches", systemImage: "magnifyingglass",
+                          message: "Nothing in the feed matches this search.")
+            } else if state.filter == .all || forced == .empty {
                 EmptyPane("No Activity", systemImage: "bell", message: "Mentions, replies and reactions appear here.")
             } else {
                 EmptyPane(state.filter.emptyTitle, systemImage: "line.3.horizontal.decrease") {
@@ -277,7 +282,14 @@ struct ActivityListPane: View {
         let selection = Binding<String?>(
             get: { m.nav.selection(in: .activity)?.id },
             set: { id in m.navigator?.select(id.map { SectionSelection(id: $0) }, in: .activity) })
-        return List(selection: selection) {
+        return VStack(spacing: 0) {
+            HStack(spacing: 6) {
+                SearchField(text: $state.query, placeholder: "Search Activity")
+                    .accessibilityLabel("Search Activity")
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            List(selection: selection) {
             ForEach(rows) { r in
                 let reviewed = activity.item(id: r.id)?.reviewed ?? false
                 ActivityRow(row: r, now: now).tag(r.id)
@@ -307,6 +319,7 @@ struct ActivityListPane: View {
             }
         } primaryAction: { ids in
             if let id = ids.first { m.navigator?.select(SectionSelection(id: id), in: .activity) }
+        }
         }
     }
 }

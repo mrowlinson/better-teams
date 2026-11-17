@@ -45,6 +45,16 @@ struct CallsSettingsPane: View {
                         .disabled(!devices.loaded)
                 }
             }
+            Section {
+                LabeledContent {
+                    Toggle("Push to Talk (hold ⌥Space)", isOn: Binding(
+                        get: { AppSettings.shared.pushToTalk },
+                        set: { AppSettings.shared.pushToTalk = $0 }))
+                } label: {
+                    InfoLabel(title: "Push to Talk", subject: "push to talk",
+                              text: "Hold ⌥Space in a call to talk, release to mute again. Off unless you turn it on, like Teams.")
+                }
+            }
             Section("Camera") {
                 Toggle("Preview camera", isOn: $previewOn)
                 CallTileView(tile: CallTile(id: "self", name: model?.ownDisplayName ?? "You", kind: .selfView,
