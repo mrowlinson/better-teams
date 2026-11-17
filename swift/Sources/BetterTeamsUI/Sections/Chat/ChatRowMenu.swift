@@ -51,6 +51,11 @@ struct ChatRowMenu: View {
                 Toggle(item.title, isOn: Binding(get: { rules.level(chatID: id) == item.level },
                                                  set: { if $0 { rules.setLevel(chatID: id, level: item.level) } }))
             }
+            Divider()
+            // C6 priority access: this chat banners through DND and
+            // quiet hours. Local-only (Teams keeps no such surface).
+            Toggle("Priority access", isOn: Binding(get: { rules.isPriority(chatID: id) },
+                                                    set: { rules.setPriority(chatID: id, priority: $0) }))
         }
         Menu("Move to Folder") {
             // Teams folders (Favorites, folders made in Teams): the move

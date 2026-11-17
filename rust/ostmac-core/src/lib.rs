@@ -2090,6 +2090,58 @@ pub fn chat_unpin_message_json(chat_id: &str, pin_id: &str) -> String {
     }
 }
 
+/// OstMac C6 SERVER-STATE: pin one message for everyone in the chat
+/// (PUTs the thread `pinnedItems` property with the message appended;
+/// R0 shape 11-17). `{ok:true, chat_id, message_id}`. Bad ids rejected
+/// before any network.
+pub fn pin_chat_message_json(chat_id: &str, message_id: &str) -> String {
+    let bad = |s: &str| s.trim().is_empty() || s.trim().contains(['/', '?', '#', ' ']);
+    if bad(chat_id) || bad(message_id) {
+        return err_json("arg", "bad chat_id or message_id");
+    }
+    let run = || -> Result<String, String> {
+        let rt = rt()?;
+        rt.block_on(async {
+            let client = ost::api::client::TeamsClient::new()
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            ost::api::pin_message_with_client(&client, chat_id, message_id)
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            Ok(json!({"ok": true, "chat_id": chat_id.trim(), "message_id": message_id.trim()}).to_string())
+        })
+    };
+    match run() {
+        Ok(s) => s,
+        Err(e) => err_json("pin_message", e),
+    }
+}
+
+/// OstMac C6 SERVER-STATE: unpin one message for everyone (PUTs the thread
+/// `pinnedItems` property minus the message). Same id rules as pinning.
+pub fn unpin_thread_message_json(chat_id: &str, message_id: &str) -> String {
+    let bad = |s: &str| s.trim().is_empty() || s.trim().contains(['/', '?', '#', ' ']);
+    if bad(chat_id) || bad(message_id) {
+        return err_json("arg", "bad chat_id or message_id");
+    }
+    let run = || -> Result<String, String> {
+        let rt = rt()?;
+        rt.block_on(async {
+            let client = ost::api::client::TeamsClient::new()
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            ost::api::unpin_thread_message_with_client(&client, chat_id, message_id)
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            Ok(json!({"ok": true, "chat_id": chat_id.trim(), "message_id": message_id.trim()}).to_string())
+        })
+    };
+    match run() {
+        Ok(s) => s,
+        Err(e) => err_json("unpin_thread_message", e),
+    }
+}
+
 /// One folder's children by drive+item id (om-i5-folders). Files AND
 /// subfolders, unfiltered; folders carry `is_folder:true` and drill in
 /// via this same call. Empty ids are rejected before any network.
@@ -4041,6 +4093,40 @@ pub extern "C" fn ostmac_message_files(
 pub extern "C" fn ostmac_chat_pinned_messages(chat_id: *const c_char) -> *mut c_char {
     match cstr_to_string(chat_id) {
         Ok(id) => string_to_c(chat_pinned_messages_json(&id)),
+        Err(e) => string_to_c(err_json("arg", e)),
+    }
+}
+
+/// Pin one message for everyone in the chat (thread `pinnedItems`
+/// property). See [`pin_chat_message_json`]. Caller frees.
+#[no_mangle]
+pub extern "C" fn ostmac_chat_pin_message(
+    chat_id: *const c_char,
+    message_id: *const c_char,
+) -> *mut c_char {
+    let chat = match cstr_to_string(chat_id) {
+        Ok(s) => s,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    match cstr_to_string(message_id) {
+        Ok(m) => string_to_c(pin_chat_message_json(&chat, &m)),
+        Err(e) => string_to_c(err_json("arg", e)),
+    }
+}
+
+/// Unpin one message for everyone (thread `pinnedItems` property). See
+/// [`unpin_thread_message_json`]. Caller frees.
+#[no_mangle]
+pub extern "C" fn ostmac_chat_unpin_thread_message(
+    chat_id: *const c_char,
+    message_id: *const c_char,
+) -> *mut c_char {
+    let chat = match cstr_to_string(chat_id) {
+        Ok(s) => s,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    match cstr_to_string(message_id) {
+        Ok(m) => string_to_c(unpin_thread_message_json(&chat, &m)),
         Err(e) => string_to_c(err_json("arg", e)),
     }
 }
@@ -7082,6 +7168,11 @@ mod pinned_ffi_tests {
         is_arg(&chat_unpin_message_json("19:a@thread.v2", " "));
         is_arg(&chat_unpin_message_json("", "pin-1"));
         is_arg(&chat_unpin_message_json("19:a@thread.v2", "pin?x"));
+        is_arg(&pin_chat_message_json("  ", "1727000000100"));
+        is_arg(&pin_chat_message_json("19:a@thread.v2", " "));
+        is_arg(&pin_chat_message_json("19:a@thread.v2", "1/2"));
+        is_arg(&unpin_thread_message_json("", "1727000000100"));
+        is_arg(&unpin_thread_message_json("19:a@thread.v2", "mid#1"));
         let c = CString::new("19:a@thread.v2").unwrap();
         unsafe {
             for p in [

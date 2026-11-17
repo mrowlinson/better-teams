@@ -114,7 +114,9 @@ pub use chat::{
 pub use chat::{
     chat_pinned_messages_data, chat_unpin_message_with_client, fill_pin_from_message,
     graph_pins_path, graph_unpin_path, parse_graph_pins, parse_thread_pins, pick_pins,
-    thread_pins_url, PinSource, PinnedRef,
+    pin_message_with_client, pinned_items_add, pinned_items_body, pinned_items_from_raw,
+    pinned_items_remove, pinned_items_url, thread_pins_url,
+    unpin_thread_message_with_client, PinSource, PinnedRef,
 };
 pub use chat::{
     alerts_body, alerts_muted, alerts_url, conversation_folder_move_with_client,

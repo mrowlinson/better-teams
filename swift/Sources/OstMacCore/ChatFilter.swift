@@ -182,11 +182,14 @@ public enum ChatFilter {
         noteMeetingActivity: (String) -> Void
     ) -> Decision {
         // DND + quiet hours first: suppress everything, mentions
-        // included (no breakthrough — stronger than mute).
-        if dndActive {
+        // included (no breakthrough — stronger than mute). C6 priority
+        // access: priority chats skip only these two gates (mutes,
+        // snooze and blocks below still hold).
+        let priority = eff.priorityChatIDs.contains(message.chatID)
+        if dndActive, !priority {
             return .skip(reason: MentionAlert.dndReason)
         }
-        if quietActive {
+        if quietActive, !priority {
             return .skip(reason: MentionAlert.quietReason)
         }
         // Classified once up front: the mute gates read it for the

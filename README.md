@@ -401,7 +401,7 @@ Incomplete or not started yet ("in progress" = being worked on now):
 - **Calling:** Teams Phone (dial pad, voicemail, forwarding, delegates) — parked: no Teams Phone licence on this tenant
 - **Calendar:** channel meetings, meeting options (lobby/presenter knobs), overlaying multiple calendars (in progress)
 - **Status:** scheduled out-of-office: shipped, one live check pending
-- **Chats and teams:** pins for everyone, Teams saved-messages sync, thread mute, full notification-rules matrix; private/shared channels, archiving, moderation, team privacy switch
+- **Chats and teams:** Teams saved-messages sync, thread mute, full notification-rules matrix (all three parked — no server surface found); private/shared channels, archiving, moderation, team privacy switch
 - **External (federated) chat:** written, awaiting live proof — blocked: tenant has external access disabled
 - **Shortcuts and accessibility:** full shortcuts window, remaining Teams key bindings, message-level menus, read-aloud
 - **On hold:** Praise, Polls, Loop components, webinars, breakout rooms, whiteboard, Copilot, Share-to-Outlook

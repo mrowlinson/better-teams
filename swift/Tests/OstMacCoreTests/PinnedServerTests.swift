@@ -6,12 +6,15 @@ import XCTest
 
 @testable import OstMacCore
 
-/// Fake transport: canned fetch result, records unpin calls.
+/// Fake transport: canned fetch result, records pin/unpin calls.
 final class FakePinServer: PinnedServerTransport, @unchecked Sendable {
     private let lock = NSLock()
     private var _pins: [PinnedMessage]
     private var _fail = false
     private var _unpins: [String] = []
+    private var _pinsForAll: [String] = []
+    private var _unpinsThread: [String] = []
+    private var _failPin = false
     private var _fetches = 0
 
     init(_ pins: [PinnedMessage]) { _pins = pins }
@@ -19,7 +22,12 @@ final class FakePinServer: PinnedServerTransport, @unchecked Sendable {
     func set(_ pins: [PinnedMessage], fail: Bool = false) {
         lock.lock(); _pins = pins; _fail = fail; lock.unlock()
     }
+    func setPinFail(_ fail: Bool = true) {
+        lock.lock(); _failPin = fail; lock.unlock()
+    }
     var unpins: [String] { lock.lock(); defer { lock.unlock() }; return _unpins }
+    var pinsForAll: [String] { lock.lock(); defer { lock.unlock() }; return _pinsForAll }
+    var unpinsThread: [String] { lock.lock(); defer { lock.unlock() }; return _unpinsThread }
     var fetches: Int { lock.lock(); defer { lock.unlock() }; return _fetches }
 
     func fetchPins(chatID: String) throws -> [PinnedMessage] {
@@ -31,6 +39,16 @@ final class FakePinServer: PinnedServerTransport, @unchecked Sendable {
 
     func unpin(chatID: String, pinID: String) throws {
         lock.lock(); _unpins.append("\(chatID)|\(pinID)"); lock.unlock()
+    }
+
+    func pin(chatID: String, messageID: String) throws {
+        lock.lock(); defer { lock.unlock() }
+        if _failPin { throw CoreCallError.failed("HTTP 403") }
+        _pinsForAll.append("\(chatID)|\(messageID)")
+    }
+
+    func unpinThread(chatID: String, messageID: String) throws {
+        lock.lock(); _unpinsThread.append("\(chatID)|\(messageID)"); lock.unlock()
     }
 }
 
@@ -105,9 +123,10 @@ final class PinnedServerTests: XCTestCase {
         // Graph-sourced: DELETE through the transport.
         await store.unpin(chatID: chat, messageID: "1727000000100")?.value
         XCTAssertEqual(fake.unpins, ["\(chat)|pin-1"])
-        // Chat-service-sourced: local dismiss only, no DELETE.
-        XCTAssertNil(store.unpin(chatID: chat, messageID: "1727000000200"))
+        // Chat-service-sourced (C6): thread-property PUT-minus, not DELETE.
+        await store.unpin(chatID: chat, messageID: "1727000000200")?.value
         XCTAssertEqual(fake.unpins.count, 1)
+        XCTAssertEqual(fake.unpinsThread, ["\(chat)|1727000000200"])
         // Refetch (server still lists both) never re-adds; survives restart.
         await store.refreshFromServer(chatID: chat)
         XCTAssertTrue(store.pins(for: chat).isEmpty)
@@ -123,6 +142,42 @@ final class PinnedServerTests: XCTestCase {
         fake.set([serverPin("1727000000100", graph: "pin-9")])
         await reborn.refreshFromServer(chatID: chat)
         XCTAssertEqual(reborn.pins(for: chat).map(\.graphPinID), ["pin-9"])
+    }
+
+    private func bubble(_ id: String) -> ChatMessage {
+        ChatMessage(id: id, sender: "Me", timestamp: "", content: "hello")
+    }
+
+    func testPinForAllPutsAndMarksServerSourced() async {
+        let fake = FakePinServer([])
+        let store = PinnedMessageStore(defaults: defaults(), key: "k", server: fake)
+        await store.pinForAll(chatID: chat, message: bubble("m1"))?.value
+        XCTAssertEqual(fake.pinsForAll, ["\(chat)|m1"])
+        XCTAssertEqual(store.pins(for: chat).map(\.messageID), ["m1"])
+        XCTAssertTrue(store.pins(for: chat)[0].isServer)
+        XCTAssertNil(store.loadFailure(for: chat))
+    }
+
+    func testPinForAllRefusalKeepsLocalPinAndSaysSo() async {
+        let fake = FakePinServer([])
+        fake.setPinFail()
+        let store = PinnedMessageStore(defaults: defaults(), key: "k", server: fake)
+        await store.pinForAll(chatID: chat, message: bubble("m1"))?.value
+        XCTAssertEqual(store.pins(for: chat).map(\.messageID), ["m1"])
+        XCTAssertFalse(store.pins(for: chat)[0].isServer)
+        let why = store.loadFailure(for: chat)
+        XCTAssertTrue(why?.contains("on this Mac only") == true, why ?? "")
+        // A good PUT clears the write failure.
+        fake.setPinFail(false)
+        await store.pinForAll(chatID: chat, message: bubble("m2"))?.value
+        XCTAssertTrue(store.pins(for: chat).first(where: { $0.messageID == "m2" })?.isServer == true)
+    }
+
+    func testPinForAllWithoutTransportPinsLocally() async {
+        let store = PinnedMessageStore(defaults: defaults(), key: "k")
+        XCTAssertNil(store.pinForAll(chatID: chat, message: bubble("m1")))
+        XCTAssertEqual(store.pins(for: chat).map(\.messageID), ["m1"])
+        XCTAssertNil(store.loadFailure(for: chat))
     }
 
     func testLocalOnlyStoreNeverFetchesAndLegacyPinsDecode() async {

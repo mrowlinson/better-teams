@@ -16,6 +16,7 @@ struct ChatsPane: View {
     @ObservedObject var canned: CannedResponsesStore
     @ObservedObject var scheduled: ScheduledSendStore
     @ObservedObject var ghost: GhostStore
+    @ObservedObject var privacy: PrivacyStore
     @ObservedObject var blocked: BlockedStore
     let model: WindowModel
     @State private var template: UUID?
@@ -31,7 +32,7 @@ struct ChatsPane: View {
         guard let m, let app = m.app else { return AnyView(SettingsUnavailable(text: "Sign in to set chat options.")) }
         return AnyView(ChatsPane(settings: .shared, density: app.density,
                                  translation: ConversationServices.of(m).translation, canned: app.canned,
-                                 scheduled: app.scheduled, ghost: app.ghost, blocked: app.blocked, model: m))
+                                 scheduled: app.scheduled, ghost: app.ghost, privacy: app.privacy, blocked: app.blocked, model: m))
     }
 
     /// Translation targets offered (plus the current one if elsewhere).
@@ -41,7 +42,11 @@ struct ChatsPane: View {
     private var demo: Bool { model.options.demo }
 
     var body: some View {
-        Form {
+        // C6: the pane outgrew its 560 slot (Privacy + Ghost Mode sit
+        // below Templates with no way to reach them). The Form scrolls
+        // inside the fixed slot — NotificationsPane M1 precedent.
+        ScrollView(.vertical) {
+            Form {
             Section("Messages") {
                 Toggle(isOn: $settings.returnSends) {
                     InfoLabel(title: "Return sends the message", subject: "the Return key",
@@ -108,13 +113,21 @@ struct ChatsPane: View {
                 }
             }
             Section {
+                // C6 privacy remainder (SET-10): standalone toggles —
+                // no ghost master needed.
+                Toggle("Send read receipts", isOn: $privacy.sendReadReceipts)
+                Toggle("Broadcast my presence", isOn: $privacy.broadcastPresence)
+            } header: {
+                Text("Privacy")
+            }
+            Section {
                 Toggle("Ghost mode", isOn: $ghost.master)
                 Toggle("Don\u{2019}t send read receipts", isOn: $ghost.suppressReceipts)
                     .disabled(!ghost.master)
                 Toggle("Hold my presence and typing", isOn: $ghost.suppressPresence)
                     .disabled(!ghost.master)
             } header: {
-                Text("Privacy")
+                Text("Ghost Mode")
             }
             Section("Blocked People") {
                 if blocked.users.isEmpty {
@@ -165,8 +178,9 @@ struct ChatsPane: View {
             } footer: {
                 if gifSaved { Text("Key saved.").font(.caption).foregroundStyle(.secondary) }
             }
+            }
+            .formStyle(.grouped)
         }
-        .formStyle(.grouped)
         .frame(width: SettingsWindowController.paneWidth, height: 560)
     }
 

@@ -1857,6 +1857,20 @@ Notes:
     and_wire`, `composer_b_parse_wire_mentions_tolerant`,
     `composer_b_apply_mentions_bounds`, `composer_b_body_opts_keys`,
     `composer_b_reply_body_opts` (ost chat module 68/68 green).
+
+102. [feature] `src/api/chat.rs` (+ `src/api/mod.rs` re-export) —
+    **pin for everyone (SERVER-STATE)**. Thread `pinnedItems` property
+    is read as `{itemId, itemType}` entries (`collect_thread_pins`
+    Object branch now also takes `itemId` when `itemType` is absent or
+    "Message"; other item types never become pins). New write path:
+    `pinned_items_url` (PUT `/v1/threads/{id}/properties?name=
+    pinnedItems`, the thread-property endpoint — the per-user
+    conversation endpoint only shadows for self), pure
+    `pinned_items_from_raw`/`pinned_items_add`/`pinned_items_remove`/
+    `pinned_items_body` helpers, `pin_message_with_client`/
+    `unpin_thread_message_with_client` (read-modify-PUT, bad ids
+    rejected before any network). Tests: `thread_pins_from_pinned_items_shape`,
+    `pinned_items_add_remove_round_trip`, `pin_paths` URL case.
     UPSTREAM: pending
 
 ## Upstream PRs, wave 9 (2026-09-25 R10 audit; base 0892144; origin/main still 0892144)

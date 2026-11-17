@@ -47,6 +47,10 @@ public struct EffectiveRules: Sendable, Equatable {
     /// mention (noisy-rule semantics, scoped per chat).
 
     public var mentionOnlyChatIDs: Set<String>
+    /// C6 priority-access chats (chat ids). Pass-through like the mute
+    /// sets: priority chats break through DND and quiet hours.
+
+    public var priorityChatIDs: Set<String>
 
     public init(
         ownerDisplayName: String = "",
@@ -60,7 +64,8 @@ public struct EffectiveRules: Sendable, Equatable {
         blockKeywords: [String] = [],
         muted: Bool = false,
         mutedChatIDs: Set<String> = [],
-        mentionOnlyChatIDs: Set<String> = []
+        mentionOnlyChatIDs: Set<String> = [],
+        priorityChatIDs: Set<String> = []
     ) {
         self.ownerDisplayName = ownerDisplayName
         self.loudSubstring = loudSubstring
@@ -74,6 +79,7 @@ public struct EffectiveRules: Sendable, Equatable {
         self.muted = muted
         self.mutedChatIDs = mutedChatIDs
         self.mentionOnlyChatIDs = mentionOnlyChatIDs
+        self.priorityChatIDs = priorityChatIDs
     }
 }
 
@@ -140,6 +146,14 @@ public struct RulesConfig: Codable, Sendable, Equatable {
     /// EffectiveRules, never read by ChatFilter — hidden threads keep
     /// their banners and unread until restored via Show hidden.
     public var hiddenChatIDs: Set<String>
+    /// C6 SERVER-STATE priority-access chats (chat ids), edited in the
+    /// chat Notifications menu + Settings. NOT rule-owned (like
+    /// `muted`): persisted as-is, resolved into every EffectiveRules.
+    /// Priority chats break through DND and quiet hours (Teams
+    /// "Priority access" parity) but never through mutes, snooze or
+    /// keyword blocks. Server keeps no such surface (Graph /me/settings
+    /// 403s on this token, R0 11-17), so this stays in this app only.
+    public var priorityChatIDs: Set<String>
     /// Notify/skip rules (the extensible store behind the gates above).
     /// Blank = notify everything. Edited in the GUI and persisted here.
     public var notifyRules: [NotifyRule]
@@ -158,6 +172,7 @@ public struct RulesConfig: Codable, Sendable, Equatable {
         mutedChatIDs: Set<String> = [],
         mentionOnlyChatIDs: Set<String> = [],
         hiddenChatIDs: Set<String> = [],
+        priorityChatIDs: Set<String> = [],
         notifyRules: [NotifyRule] = []
     ) {
         self.owner = owner
@@ -173,6 +188,7 @@ public struct RulesConfig: Codable, Sendable, Equatable {
         self.mutedChatIDs = mutedChatIDs
         self.mentionOnlyChatIDs = mentionOnlyChatIDs
         self.hiddenChatIDs = hiddenChatIDs
+        self.priorityChatIDs = priorityChatIDs
         self.notifyRules = notifyRules
     }
 
@@ -190,6 +206,7 @@ public struct RulesConfig: Codable, Sendable, Equatable {
         case mutedChatIDs
         case mentionOnlyChatIDs
         case hiddenChatIDs
+        case priorityChatIDs
         case notifyRules
     }
 
@@ -212,6 +229,7 @@ public struct RulesConfig: Codable, Sendable, Equatable {
         mutedChatIDs = (try? c.decodeIfPresent(Set<String>.self, forKey: .mutedChatIDs)) ?? d.mutedChatIDs
         mentionOnlyChatIDs = (try? c.decodeIfPresent(Set<String>.self, forKey: .mentionOnlyChatIDs)) ?? d.mentionOnlyChatIDs
         hiddenChatIDs = (try? c.decodeIfPresent(Set<String>.self, forKey: .hiddenChatIDs)) ?? d.hiddenChatIDs
+        priorityChatIDs = (try? c.decodeIfPresent(Set<String>.self, forKey: .priorityChatIDs)) ?? d.priorityChatIDs
         notifyRules = (try? c.decodeIfPresent([NotifyRule].self, forKey: .notifyRules)) ?? []
         applyRules()
     }
@@ -229,7 +247,8 @@ public struct RulesConfig: Codable, Sendable, Equatable {
         let eff = Self.resolve(
             notifyRules, ownerDisplayName: owner.displayName, muted: muted,
             mutedChatIDs: mutedChatIDs,
-            mentionOnlyChatIDs: mentionOnlyChatIDs)
+            mentionOnlyChatIDs: mentionOnlyChatIDs,
+            priorityChatIDs: priorityChatIDs)
         loudSubstring = eff.loudSubstring
         notifyOnEdit = eff.notifyOnEdit
         skipOwnMessages = eff.skipOwnMessages
@@ -249,14 +268,16 @@ public struct RulesConfig: Codable, Sendable, Equatable {
         return Self.resolve(
             scoped, ownerDisplayName: owner.displayName, muted: muted,
             mutedChatIDs: mutedChatIDs,
-            mentionOnlyChatIDs: mentionOnlyChatIDs)
+            mentionOnlyChatIDs: mentionOnlyChatIDs,
+            priorityChatIDs: priorityChatIDs)
     }
 
     /// Shared resolver over an ordered rule slice (global = whole list,
     /// per-chat = in-scope subset). Pure.
     static func resolve(
         _ rules: [NotifyRule], ownerDisplayName: String, muted: Bool,
-        mutedChatIDs: Set<String>, mentionOnlyChatIDs: Set<String> = []
+        mutedChatIDs: Set<String>, mentionOnlyChatIDs: Set<String> = [],
+        priorityChatIDs: Set<String> = []
     ) -> EffectiveRules {
         func first(_ kind: String) -> NotifyRule? {
             rules.first(where: { NotifyRule.canonicalKind($0.kind) == kind })
@@ -264,7 +285,8 @@ public struct RulesConfig: Codable, Sendable, Equatable {
         var eff = EffectiveRules(
             ownerDisplayName: ownerDisplayName, muted: muted,
             mutedChatIDs: mutedChatIDs,
-            mentionOnlyChatIDs: mentionOnlyChatIDs)
+            mentionOnlyChatIDs: mentionOnlyChatIDs,
+            priorityChatIDs: priorityChatIDs)
         if let r = first(NotifyRule.skipMyMessages) {
             eff.skipOwnMessages = r.enabled
         } else {

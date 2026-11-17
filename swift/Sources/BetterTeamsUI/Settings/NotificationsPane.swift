@@ -91,6 +91,31 @@ struct NotificationsPane: View {
                 InfoHeader(title: "Chats", subject: "chat notifications",
                            text: "Change a chat\u{2019}s alerts from its Notifications menu.")
             }
+            Section {
+                // C6 priority access (SET-04): these chats banner through
+                // Do Not Disturb and quiet hours. Local-only.
+                let ids = rules.config.priorityChatIDs.sorted()
+                if ids.isEmpty {
+                    Text("No priority chats.").foregroundStyle(.secondary)
+                } else {
+                    ForEach(ids, id: \.description) { id in
+                        HStack {
+                            Text(chatName(id))
+                            Spacer()
+                            Button {
+                                rules.setPriority(chatID: id, priority: false)
+                            } label: {
+                                Image(systemName: "minus.circle")
+                            }
+                            .buttonStyle(.borderless)
+                            .accessibilityLabel("Remove priority access")
+                        }
+                    }
+                }
+            } header: {
+                InfoHeader(title: "Priority Access", subject: "priority access",
+                           text: "Priority chats always alert, even during Do Not Disturb or quiet hours. Add one from a chat\u{2019}s Notifications menu.")
+            }
             DoNotDisturbSection(quiet: quiet)
             QuietHoursSection(quiet: quiet, focus: focus)
             PresenceStatusSection(truth: truth, presence: presence, live: live)

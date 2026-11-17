@@ -164,6 +164,10 @@ public final class AppState: ObservableObject {
     /// presence writes while on (injected into receipts/presence/
     /// presenceSchedule below; toggles persist, counters clear out).
     public let ghost: GhostStore
+    /// C6 standalone privacy toggles (SET-10 remainder): receipt
+    /// sending + presence broadcast without ghost master (injected
+    /// into receipts/presence below; both default on).
+    public let privacy: PrivacyStore
     /// teams-frame FULL lifecycle (registry + pool + keep-alive + kill).
     public let teamsFrame: TeamsFrameStore
     /// Message density (f2-density): Comfortable/Compact preference.
@@ -303,6 +307,8 @@ public final class AppState: ObservableObject {
         canned = CannedResponsesStore(defaults: store)
         activity = demoGate.map { ActivityStore.demo($0) } ?? ActivityStore(defaults: store)
         ghost = GhostStore(defaults: store)
+        // C6 privacy (SET-10): standalone toggles, same suite store.
+        privacy = PrivacyStore(defaults: store)
         teamsFrame = TeamsFrameStore(defaults: store)
         density = DensityStore(defaults: store)
         history = CallHistoryStore(defaults: store)
@@ -333,6 +339,8 @@ public final class AppState: ObservableObject {
         presenceTruth = PresenceTruthStore(defaults: store, presence: presence)
         // Ghost (f1-ghost): one store gates all three outbound paths
         // (receipt sends, manual presence sets, scheduled sets).
+        receipts.privacy = privacy
+        presence.privacy = privacy
         receipts.ghost = ghost
         readSync.ghost = ghost
         presence.ghost = ghost
@@ -2549,7 +2557,12 @@ public final class AppState: ObservableObject {
                 chatID: msg.chatID, messageID: targetID, reactions: r,
                 chatName: chatName, isOwnMessage: own)
         }
-        if quiet {
+        // C6 priority access: priority chats banner THROUGH the local
+        // quiet snapshot (the rules decision above already broke them
+        // through DND/quiet in the filter; this keeps the banner path
+        // from re-suppressing them).
+        let priority = rules.config.priorityChatIDs.contains(msg.chatID)
+        if quiet, !priority {
             noteSuppressedIfWarranted(msg, chatName: chatName, decision: decision)
         } else {
             maybeNotify(

@@ -9,19 +9,19 @@
 // holding [threadID: [PinnedMessage]]. Pins survive restart and new
 // messages; the store never touches the chat list (no refresh ever).
 //
-// Server pins (OstMac §84): until §84 this store was LOCAL-ONLY — no
-// core call read Teams' own pins, so pins made in Teams never showed.
-// Now opening a real chat reads its server pins off-main
-// (`RustCore.chatPinnedMessages`: chat-service thread properties first
-// — shape undocumented, parsed tolerantly — Graph `pinnedMessages`
-// fallback, which 403s without Chat.Read) and merges them in
-// (`PinnedMessages.mergeServer`): local pins stay, server pins are
-// marked `fromServer`, and the map is only republished when the merge
-// changes it (no flash). Unpinning a server pin records its id as
+// Server pins (OstMac §84, C6 SERVER-STATE): opening a real chat reads
+// its server pins off-main (`RustCore.chatPinnedMessages`: chat-service
+// thread properties first — shape undocumented, parsed tolerantly —
+// Graph `pinnedMessages` fallback, which 403s without Chat.Read) and
+// merges them in (`PinnedMessages.mergeServer`): local pins stay, server
+// pins are marked `fromServer`, and the map is only republished when the
+// merge changes it (no flash). Unpinning a server pin records its id as
 // dismissed (a refetch never re-adds it) and, for Graph-sourced pins
 // (`graphPinID`), sends Graph DELETE through the injectable
-// `PinnedServerTransport`. Pinning from this app stays local (no
-// chat-service pin write is known). Demo mode has no transport.
+// `PinnedServerTransport`. Pinning from this app pins for everyone when
+// signed in (C6: PUTs the thread `pinnedItems` property through the same
+// transport); a refused pin stays local-only and the pane says so. Demo
+// mode has no transport.
 import Foundation
 import Combine
 
@@ -240,14 +240,20 @@ public struct ServerUnpinResponse: Decodable, Sendable {
     public let ok: Bool
 }
 
-/// Server pin I/O (§84). Blocking calls: the store runs them off-main.
-/// Tests inject fakes; the app injects `LivePinnedServer` (real mode).
+/// Server pin I/O (§84, C6 SERVER-STATE). Blocking calls: the store runs
+/// them off-main. Tests inject fakes; the app injects
+/// `LivePinnedServer` (real mode).
 public protocol PinnedServerTransport: Sendable {
     func fetchPins(chatID: String) throws -> [PinnedMessage]
     func unpin(chatID: String, pinID: String) throws
+    /// Pin one message for everyone (thread `pinnedItems` PUT).
+    func pin(chatID: String, messageID: String) throws
+    /// Unpin one thread pin for everyone (`pinnedItems` PUT minus it).
+    func unpinThread(chatID: String, messageID: String) throws
 }
 
-/// Core-backed transport (chat-service read, Graph fallback/DELETE).
+/// Core-backed transport (chat-service read, Graph fallback/DELETE,
+/// C6 thread-property pin/unpin for everyone).
 public struct LivePinnedServer: PinnedServerTransport {
     public init() {}
     public func fetchPins(chatID: String) throws -> [PinnedMessage] {
@@ -255,6 +261,12 @@ public struct LivePinnedServer: PinnedServerTransport {
     }
     public func unpin(chatID: String, pinID: String) throws {
         try RustCore.chatUnpinMessage(chatID: chatID, pinID: pinID)
+    }
+    public func pin(chatID: String, messageID: String) throws {
+        try RustCore.pinChatMessage(chatID: chatID, messageID: messageID)
+    }
+    public func unpinThread(chatID: String, messageID: String) throws {
+        try RustCore.unpinThreadMessage(chatID: chatID, messageID: messageID)
     }
 }
 
@@ -303,6 +315,12 @@ extension PinnedMessages {
     /// The pane's sentence for a failure reason.
     public static func failureMessage(_ reason: String) -> String {
         "Teams didn\u{2019}t answer the pinned messages request (\(reason)). Pins already here are kept."
+    }
+
+    /// The pane's sentence for a refused for-all pin: the pin stays
+    /// local-only (today's snapshot), shared with nobody.
+    public static func pinForAllFailureMessage(reason: String) -> String {
+        "Teams didn\u{2019}t take the pin for everyone (\(reason)). It stays on this Mac only."
     }
 
     /// One thread's pins after a server read: local-only pins stay;
@@ -483,8 +501,9 @@ public final class PinnedMessageStore: ObservableObject {
     }
 
     /// Unpin one bubble. Unknown ids are a no-op (no write). Server
-    /// pins (§84) are recorded as dismissed; Graph-sourced ones also
-    /// send Graph DELETE off-main (returned task: tests await it).
+    /// pins (§84) are recorded as dismissed; Graph-sourced ones send
+    /// Graph DELETE off-main, thread-sourced ones the `pinnedItems`
+    /// PUT-minus off-main (C6; returned task: tests await it).
     @discardableResult
     public func unpin(chatID: String?, messageID: String) -> Task<Void, Never>? {
         guard let id = chatID?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -504,16 +523,69 @@ public final class PinnedMessageStore: ObservableObject {
         guard pin.isServer else { return nil }
         dismissed[id, default: []].insert(mid)
         persistDismissed()
-        guard let server, let pinID = pin.graphPinID, !pinID.isEmpty else { return nil }
-        return Task.blocking { try? server.unpin(chatID: id, pinID: pinID) }
+        guard let server else { return nil }
+        if let pinID = pin.graphPinID, !pinID.isEmpty {
+            return Task.blocking { try? server.unpin(chatID: id, pinID: pinID) }
+        }
+        return Task.blocking { try? server.unpinThread(chatID: id, messageID: mid) }
     }
 
-    /// Toggle one bubble's pin (the context-menu action).
+    /// Pin one bubble for everyone (C6 SERVER-STATE). The pin lands
+    /// locally first (today's snapshot), then the thread `pinnedItems`
+    /// PUT goes off-main (returned task: tests await it). A refused PUT
+    /// keeps the local pin and records why in `loadFailures` (the pane
+    /// says the pin is only on this Mac); a good PUT marks the pin
+    /// server-sourced. No transport (demo) pins locally, like `pin`.
+    @discardableResult
+    public func pinForAll(chatID: String?, message: ChatMessage, at: Date = Date()) -> Task<Void, Never>? {
+        guard let id = chatID?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !id.isEmpty
+        else { return nil }
+        let mid = message.id.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !mid.isEmpty else { return nil }
+        pin(chatID: id, message: message, at: at)
+        guard let server else { return nil }
+        return Task { @MainActor [weak self] in
+            let result = await Task.blocking(operation: {
+                Result { try server.pin(chatID: id, messageID: mid) }
+            }).value
+            guard let self else { return }
+            switch result {
+            case .success:
+                self.markServer(chatID: id, messageID: mid)
+                if self.loadFailures[id] != nil { self.loadFailures[id] = nil }
+            case .failure(let error):
+                let text = PinnedMessages.pinForAllFailureMessage(
+                    reason: PinnedMessages.failureReason(error))
+                if self.loadFailures[id] != text { self.loadFailures[id] = text }
+            }
+        }
+    }
+
+    /// Mark one held pin server-sourced (a good for-all PUT proved it
+    /// landed; the next refresh merges it anyway). No-op when absent.
+    private func markServer(chatID: String, messageID: String) {
+        guard var cur = map[chatID],
+              let idx = cur.firstIndex(where: { $0.messageID == messageID }),
+              !cur[idx].isServer
+        else { return }
+        let old = cur[idx]
+        cur[idx] = PinnedMessage(
+            messageID: old.messageID, sender: old.sender, preview: old.preview,
+            timestamp: old.timestamp, pinnedAt: old.pinnedAt,
+            fromServer: true, graphPinID: old.graphPinID)
+        map[chatID] = cur
+        persist()
+    }
+
+    /// Toggle one bubble's pin (the context-menu action). Pinning pins
+    /// for everyone when signed in (C6; local-only in demo); unpinning
+    /// already unwound the server side.
     public func toggle(chatID: String?, message: ChatMessage, at: Date = Date()) {
         if isPinned(chatID: chatID, messageID: message.id) {
             unpin(chatID: chatID, messageID: message.id)
         } else {
-            pin(chatID: chatID, message: message, at: at)
+            pinForAll(chatID: chatID, message: message, at: at)
         }
     }
 

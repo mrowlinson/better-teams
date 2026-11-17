@@ -39,6 +39,22 @@ final class NotifSettingsTests: XCTestCase {
         return c
     }
 
+    func priorityCfg(_ ids: Set<String> = ["19:chat@thread.v2"]) -> RulesConfig {
+        var c = RulesConfig(owner: RulesOwner(displayName: "Me", mri: "8:orgid:me"))
+        c.priorityChatIDs = ids
+        c.applyRules()
+        return c
+    }
+
+    func decideFull(
+        _ m: RealtimeMessage, rules: RulesConfig,
+        dndActive: Bool = false, quietActive: Bool = false
+    ) -> ChatFilter.Decision {
+        ChatFilter.decide(
+            message: m, chatDisplayName: "Team Chat", ownerMRI: "8:orgid:me",
+            rules: rules, dndActive: dndActive, quietActive: quietActive)
+    }
+
     func decide(
         _ m: RealtimeMessage, chat: String = "Team Chat",
         ownerMRI: String? = "8:orgid:me", rules: RulesConfig,
@@ -272,5 +288,76 @@ final class NotifSettingsTests: XCTestCase {
         XCTAssertEqual(posted.count, 2)
         XCTAssertTrue(posted[0].sound)
         XCTAssertFalse(posted[1].sound)
+    }
+
+    // MARK: priority access (C6 SET-04)
+
+    func testPriorityBreaksThroughQuiet() {
+        let c = priorityCfg()
+        if case .notify = decideFull(msg(), rules: c, quietActive: true) {} else {
+            XCTFail("priority chat notifies through quiet hours")
+        }
+        let plain = cfg()
+        if case .skip = decideFull(msg(), rules: plain, quietActive: true) {} else {
+            XCTFail("non-priority chat stays quiet")
+        }
+    }
+
+    func testPriorityBreaksThroughDND() {
+        let c = priorityCfg()
+        if case .notify = decideFull(msg(), rules: c, dndActive: true) {} else {
+            XCTFail("priority chat notifies through DND")
+        }
+        let plain = cfg()
+        if case .skip = decideFull(msg(), rules: plain, dndActive: true) {} else {
+            XCTFail("non-priority chat stays DND-skipped")
+        }
+    }
+
+    func testPriorityYieldsToMuteSnoozeAndBlocks() {
+        // Muted priority chat stays muted (no breakthrough).
+        var c = priorityCfg()
+        c.mutedChatIDs = ["19:chat@thread.v2"]
+        c.applyRules()
+        if case .skip = decideFull(msg(), rules: c, quietActive: true) {} else {
+            XCTFail("mute beats priority")
+        }
+        // Block-keyword beats priority (rule-owned scalar, built via rules).
+        var b = priorityCfg()
+        b.notifyRules = [NotifyRule(kind: NotifyRule.keywordBlock, value: "hello")]
+        b.applyRules()
+        if case .skip(let reason) = decideFull(msg(), rules: b) {
+            XCTAssertEqual(reason, "keyword-block")
+        } else {
+            XCTFail("keyword block beats priority")
+        }
+    }
+
+    func testPriorityPersistsAcrossInstances() async {
+        let path = tempRulesPath()
+        defer { cleanup(path) }
+        let store = await RulesStore(path: path)
+        let initial = await MainActor.run { store.isPriority(chatID: "19:a@thread.v2") }
+        XCTAssertFalse(initial)
+        await MainActor.run { store.setPriority(chatID: "19:a@thread.v2", priority: true) }
+        let reopened = await RulesStore(path: path)
+        let seen = await MainActor.run { reopened.isPriority(chatID: "19:a@thread.v2") }
+        XCTAssertTrue(seen)
+        await MainActor.run { reopened.setPriority(chatID: "19:a@thread.v2", priority: false) }
+        let cleared = await MainActor.run { RulesStore(path: path).isPriority(chatID: "19:a@thread.v2") }
+        XCTAssertFalse(cleared)
+    }
+
+    func testPriorityOrthogonalToLevel() async {
+        let store = await RulesStore(path: tempRulesPath())
+        await MainActor.run {
+            store.setLevel(chatID: "19:a@thread.v2", level: .muted)
+            store.setPriority(chatID: "19:a@thread.v2", priority: true)
+            // Levels never clear priority and priority never clears levels.
+            XCTAssertTrue(store.isPriority(chatID: "19:a@thread.v2"))
+            XCTAssertEqual(store.level(chatID: "19:a@thread.v2"), .muted)
+            store.setLevel(chatID: "19:a@thread.v2", level: .all)
+            XCTAssertTrue(store.isPriority(chatID: "19:a@thread.v2"))
+        }
     }
 }

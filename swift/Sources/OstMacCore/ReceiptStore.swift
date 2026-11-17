@@ -33,6 +33,10 @@ public final class ReceiptStore: ObservableObject {
     /// (`sent[]` stays unmoved — retryable on lift, same rule as
     /// failure). Nil = live (pre-ghost behavior, byte-identical).
     public var ghost: GhostStore?
+    /// C6 privacy gate (SET-10): when set and receipts are off,
+    /// `sendReadPosition` sends nothing (`sent[]` unmoved — retryable
+    /// on re-enable, same rule as ghost). Nil = live.
+    public var privacy: PrivacyStore?
 
     /// Nonisolated so views can take a default `ReceiptStore()` in their
     /// (nonisolated) inits; all members stay main-actor-isolated.
@@ -97,6 +101,12 @@ public final class ReceiptStore: ObservableObject {
         // lift), `lastError` untouched (not a failure).
         if let ghost, ghost.shouldSuppressReceipts {
             ghost.noteSuppressedReceipt()
+            return
+        }
+        // C6 privacy (SET-10): the standalone toggle gates the same
+        // send, independently of ghost (a privacy-off send never
+        // happened — same retryable rule, no counter, no error).
+        if let privacy, !privacy.sendReadReceipts {
             return
         }
         let send = sender

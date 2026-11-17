@@ -165,6 +165,10 @@ public final class PresenceStore: ObservableObject {
     /// `set(status:)` counts a hold and writes nothing (held sets are
     /// dropped — never replayed, never pause the schedule). Nil = live.
     public var ghost: GhostStore?
+    /// C6 privacy gate (SET-10): when set and broadcast is off,
+    /// `set(status:)` writes nothing (dropped like a ghost hold).
+    /// Nil = live.
+    public var privacy: PrivacyStore?
 
     private let ownFetcher: OwnFetcher
     private let setFetcher: SetFetcher
@@ -236,6 +240,11 @@ public final class PresenceStore: ObservableObject {
         // happened (no write, no echo, no schedule pause, no spinner).
         if let ghost, ghost.shouldSuppressPresence {
             ghost.noteHeldPresence()
+            return
+        }
+        // C6 privacy (SET-10): a broadcast-off set never happened
+        // (same drop rule, before the hook).
+        if let privacy, !privacy.broadcastPresence {
             return
         }
         guard !setting else { return }

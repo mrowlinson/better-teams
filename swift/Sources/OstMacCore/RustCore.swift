@@ -690,6 +690,26 @@ public enum RustCore {
         }
     }
 
+    /// Pin one message for everyone (C6: thread `pinnedItems` PUT).
+    /// Blocking FFI (network): call off main.
+    public static func pinChatMessage(chatID: String, messageID: String) throws {
+        try chatID.withCString { c in
+            try messageID.withCString { m in
+                _ = try call(ostmac_chat_pin_message(c, m), as: ServerUnpinResponse.self)
+            }
+        }
+    }
+
+    /// Unpin one message for everyone (C6: thread `pinnedItems` PUT
+    /// minus the message). Blocking FFI (network): call off main.
+    public static func unpinThreadMessage(chatID: String, messageID: String) throws {
+        try chatID.withCString { c in
+            try messageID.withCString { m in
+                _ = try call(ostmac_chat_unpin_thread_message(c, m), as: ServerUnpinResponse.self)
+            }
+        }
+    }
+
     /// One folder's children by drive+item id (om-i5-folders): files AND
     /// subfolders, unfiltered. Blocking FFI (network): call off main.
     public static func sharedChildren(driveID: String, itemID: String, limit: Int32 = 50) throws -> SharedFileChildrenResponse {

@@ -50,6 +50,26 @@ public final class RulesStore: ObservableObject {
         return pushMute(chatID: chatID, muted: muted, rollbackTo: before)
     }
 
+    /// True when the chat has priority access (breaks through DND
+    /// and quiet hours, C6 SET-04).
+    public func isPriority(chatID: String) -> Bool {
+        config.priorityChatIDs.contains(chatID)
+    }
+
+    /// Grant or revoke priority access for one chat, persisting
+    /// immediately. No-ops (same value) skip the write. Local-only:
+    /// Teams keeps no priority surface (Graph /me/settings 403s, R0),
+    /// so nothing is pushed and nothing rolls back.
+    public func setPriority(chatID: String, priority: Bool) {
+        guard !chatID.isEmpty, config.priorityChatIDs.contains(chatID) != priority else { return }
+        if priority {
+            config.priorityChatIDs.insert(chatID)
+        } else {
+            config.priorityChatIDs.remove(chatID)
+        }
+        try? config.save(to: path)
+    }
+
     /// True when the chat is hidden from the sidebar list.
     public func isHidden(chatID: String) -> Bool {
         config.hiddenChatIDs.contains(chatID)

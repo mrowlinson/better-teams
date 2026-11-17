@@ -273,6 +273,14 @@ char *ostmac_chat_pinned_messages(const char *chat_id);
 // /chats/{id}/pinnedMessages/{pin_id}): {ok, chat_id, pin_id}. Caller frees.
 char *ostmac_chat_unpin_message(const char *chat_id, const char *pin_id);
 
+// C6 SERVER-STATE: pin one message for everyone (thread `pinnedItems`
+// PUT): {ok, chat_id, message_id}. Caller frees.
+char *ostmac_chat_pin_message(const char *chat_id, const char *message_id);
+
+// C6 SERVER-STATE: unpin one message for everyone (thread `pinnedItems`
+// PUT minus the message): {ok, chat_id, message_id}. Caller frees.
+char *ostmac_chat_unpin_thread_message(const char *chat_id, const char *message_id);
+
 // One folder's children by drive+item id (requires sign-in): files AND
 // subfolders, unfiltered. Returns {ok, drive_id, item_id, files}.
 // Caller frees.
