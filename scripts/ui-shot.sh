@@ -59,6 +59,10 @@
 #   calendar?state=error                       Couldn't Load Calendar (offline)
 #   calendar?sheet=newMeeting                  New Meeting sheet
 #   calendar?sheet=joinMeeting                 Join with ID or Link sheet
+#   calendar?sheet=editEvent&contact=demo-cal-focus   Edit sheet (organizer: Meeting options)
+#   calendar/demo-meeting?sheet=schedulingAssistant   Scheduling assistant
+#   calendar?sheet=seriesInstances&contact=demo-cal-standup-series   Series instances
+#   calendar?view=week&overlay=all             Week grid with the overlay calendar on
 #   calls                                      history (Recent), no selection
 #   calls/demo-person                          missed call (realtime row, caller id)
 #   calls?state=empty                          No Recent Calls + New Call

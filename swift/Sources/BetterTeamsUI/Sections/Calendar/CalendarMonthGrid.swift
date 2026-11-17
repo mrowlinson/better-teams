@@ -127,6 +127,8 @@ struct CalendarChip: View {
     let meeting: MeetingItem
     let selected: Bool
     let showTime: Bool
+    /// Overlaid-calendar row: secondary style, details stay read-only.
+    var isOverlay = false
     let action: () -> Void
     @Environment(\.contentTextScale) private var scale
 
@@ -157,7 +159,8 @@ struct CalendarChip: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("\(meeting.subject), \(CalendarFormat.range(meeting))")
+        .opacity(isOverlay ? 0.72 : 1)
+        .accessibilityLabel("\(meeting.subject), \(CalendarFormat.range(meeting))" + (isOverlay ? ", other calendar" : ""))
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
 }

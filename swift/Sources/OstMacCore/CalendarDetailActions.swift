@@ -15,6 +15,10 @@ extension CalendarWeekStore {
     @discardableResult
     public func setPersonal(_ row: MeetingItem, _ patch: CalendarEventPatch) async -> Bool {
         guard patch.isPersonal, !patch.isEmpty else { return false }
+        guard overlayCalendarID(for: row.id) == nil else {
+            personalError = Self.readOnlyOverlayMessage
+            return false
+        }
         let saved = (meetings, monthMeetings, weekCache, details, state)
         mutateRows({ $0.id == row.id }) { patch.applied(to: $0) }
         personalError = nil
@@ -77,6 +81,10 @@ extension CalendarWeekStore {
             return false
         }
         guard !forwarding else { return false }
+        guard overlayCalendarID(for: row.id) == nil else {
+            forwardError = Self.readOnlyOverlayMessage
+            return false
+        }
         forwardError = nil
         if localEdits { return true }
         forwarding = true
@@ -112,6 +120,10 @@ extension CalendarWeekStore {
     /// response sent. Organizers cancel instead (`cancel(eventID:)`).
     public func removeFromCalendar(_ row: MeetingItem, decline: Bool, series: Bool = false) {
         guard !row.isOrganizer else { return }
+        guard overlayCalendarID(for: row.id) == nil else {
+            removeError = Self.readOnlyOverlayMessage
+            return
+        }
         if decline {
             respond(to: row, .decline, series: series)
             return
@@ -318,4 +330,83 @@ extension CalendarWeekStore {
     }
 
     public func clearCreateError() { createError = nil }
+
+    // MARK: overlay (read-only extra calendars)
+
+    /// Read the mailbox's calendar list once (the default calendar is
+    /// dropped: its events come from the week read).
+    public func loadCalendars(force: Bool = false) {
+        guard overlayCalendars.isEmpty || force else { return }
+        guard !overlayLoading else { return }
+        if localEdits {
+            overlayCalendars = CalendarDemo.overlayCalendars()
+            overlayError = nil
+            return
+        }
+        overlayLoading = true
+        let runner = runners.calendars
+        Task {
+            do {
+                overlayCalendars = try await Task.blocking { try runner() }.value
+                    .filter { !$0.isDefault }
+                overlayError = nil
+                overlayIDs = overlayIDs.intersection(overlayCalendars.map(\.id))
+            } catch {
+                overlayError = Self.message(for: error)
+            }
+            overlayLoading = false
+        }
+    }
+
+    /// Overlay `id` on/off, then reload the shown week for it.
+    public func setOverlay(id: String, on: Bool) {
+        if on { overlayIDs.insert(id) } else {
+            overlayIDs.remove(id)
+            overlayMeetings[id] = nil
+        }
+        refreshOverlay()
+    }
+
+    /// (Re)read every overlaid calendar for the shown week. No-op when
+    /// nothing is overlaid. Read-only: overlay rows are never written.
+    public func refreshOverlay() {
+        let ids = overlayIDs.intersection(overlayCalendars.map(\.id))
+        guard !ids.isEmpty else {
+            overlayMeetings = [:]
+            return
+        }
+        let from = weekStart
+        let to = calendar.date(byAdding: .day, value: 7, to: from) ?? from.addingTimeInterval(7 * 86_400)
+        if localEdits {
+            overlayError = nil
+            overlayMeetings = Dictionary(uniqueKeysWithValues: ids.map {
+                ($0, CalendarDemo.overlayMeetings(weekStart: key(from), calendar: calendar))
+            })
+            return
+        }
+        overlayLoading = true
+        overlayError = nil
+        let runner = runners.calendarRange
+        Task {
+            var rows: [String: [MeetingItem]] = [:]
+            var firstError: String?
+            for id in ids.sorted() {
+                do {
+                    rows[id] = try await Task.blocking { try runner(id, from, to) }.value
+                } catch {
+                    firstError = firstError ?? Self.message(for: error)
+                }
+            }
+            overlayMeetings = rows
+            overlayError = firstError
+            overlayLoading = false
+        }
+    }
+
+    /// Overlay rows merged for the shown week (source-marked by calendar
+    /// id order; the grid styles them secondary).
+    public var overlayRows: [MeetingItem] {
+        overlayIDs.sorted().compactMap { overlayMeetings[$0] }.flatMap { $0 }
+            .sorted { ($0.start ?? "~") < ($1.start ?? "~") }
+    }
 }

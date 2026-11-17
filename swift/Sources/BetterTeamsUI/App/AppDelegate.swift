@@ -166,6 +166,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             // Evidence: `settings/<pane>`, `call?state=…&presentation=…`.
             CatchUpEvidence.apply(route, wc)
             CallEvidence.apply(route, wc)
+            CalendarEvidence.apply(route, wc)
         }
         if options.demo, let route, let t = route.query["recapTab"] {
             // Evidence: `?recapTab=notes|recap` opens the recap viewer on that tab.

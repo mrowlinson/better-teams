@@ -347,4 +347,83 @@ public struct CalendarGraph: Sendable {
     public func delete(id: String) throws {
         try request("DELETE", "/me/events/\(Self.encode(id))")
     }
+
+    /// Extra calendars on the signed-in mailbox (`GET /me/calendars`,
+    /// read-only). The default calendar is marked, not duplicated by
+    /// callers (its events come from the week read).
+    public func calendars() throws -> [CalendarFeed] {
+        struct L: Decodable {
+            struct C: Decodable {
+                let id: String?
+                let name: String?
+                let color: String?
+                let canEdit: Bool?
+                let isDefaultCalendar: Bool?
+            }
+            let value: [C]
+        }
+        let path = "/me/calendars?$select=id,name,color,canEdit,isDefaultCalendar"
+        let list = try JSONDecoder().decode(L.self, from: try request("GET", path))
+        return list.value.compactMap { c in
+            guard let id = CalendarEvents.nonEmpty(c.id) else { return nil }
+            return CalendarFeed(id: id, name: CalendarEvents.nonEmpty(c.name) ?? id,
+                                color: c.color, canEdit: c.canEdit ?? false,
+                                isDefault: c.isDefaultCalendar ?? false)
+        }
+    }
+
+    /// Events of one extra calendar in `[from, to)` (read-only; the
+    /// overlay never writes to these calendars).
+    public func calendarRange(id: String, from: Date, to: Date) throws -> [MeetingItem] {
+        let query = "startDateTime=\(Self.iso(from))&endDateTime=\(Self.iso(to))"
+            + "&$select=\(CalendarEvents.listSelect)&$orderby=start/dateTime&$top=100"
+        var next: String? = "/me/calendars/\(Self.encode(id))/calendarView?" + query
+        var rows: [MeetingItem] = []
+        var pages = 0
+        let tz = timeZone()
+        while let path = next, pages < Self.maxPages {
+            let page = try CalendarEvents.page(try request("GET", path), tz: tz)
+            rows += page.rows
+            next = page.next
+            pages += 1
+        }
+        return rows
+    }
+
+    /// Post a scheduled meeting into a channel (`POST
+    /// /teams/{id}/channels/{id}/messages`). The event itself is created
+    /// on the organizer calendar; this is the channel leg of "schedule
+    /// in a channel".
+    public func announceChannelMeeting(teamID: String, channelID: String, subject: String,
+                                       start: Date, end: Date, joinURL: String?) throws {
+        var lines = ["Scheduled **\(subject)**", "", Self.announceWhen(start: start, end: end)]
+        if let join = CalendarEvents.nonEmpty(joinURL) { lines += ["", "[Join the meeting](\(join))"] }
+        try request("POST", "/teams/\(Self.encode(teamID))/channels/\(Self.encode(channelID))/messages", json: [
+            "body": ["contentType": "text", "content": lines.joined(separator: "\n")],
+        ])
+    }
+
+    static func announceWhen(start: Date, end: Date) -> String {
+        let f = DateFormatter()
+        f.dateStyle = .medium
+        f.timeStyle = .short
+        return "\(f.string(from: start)) – \(f.string(from: end))"
+    }
+}
+
+/// One extra calendar on the signed-in mailbox (overlay source).
+public struct CalendarFeed: Sendable, Equatable, Identifiable {
+    public var id: String
+    public var name: String
+    public var color: String?
+    public var canEdit: Bool
+    public var isDefault: Bool
+
+    public init(id: String, name: String, color: String? = nil, canEdit: Bool = false, isDefault: Bool = false) {
+        self.id = id
+        self.name = name
+        self.color = color
+        self.canEdit = canEdit
+        self.isDefault = isDefault
+    }
 }

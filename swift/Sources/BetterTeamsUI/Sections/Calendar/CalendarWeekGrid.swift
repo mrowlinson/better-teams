@@ -27,6 +27,8 @@ struct WeekGrid: View {
         let meetings: [MeetingItem]
         /// All-day events covering this day (the strip).
         var allDay: [MeetingItem] = []
+        /// Row ids from overlaid calendars (read-only, secondary style).
+        var overlay: Set<String> = []
     }
 
     struct Hour: Identifiable {
@@ -36,8 +38,15 @@ struct WeekGrid: View {
     private static let hours = (0 ..< 24).map(Hour.init(id:))
 
     private var days: [Day] {
-        zip(keys, CalWeek.bucket(week.meetings, keys: keys)).map { key, rows in
-            Day(id: key, meetings: rows.filter { !$0.isAllDay }, allDay: rows.filter(\.isAllDay))
+        let main = CalWeek.bucket(week.meetings, keys: keys)
+        let over = CalWeek.bucket(week.overlayRows, keys: keys)
+        return zip(keys, zip(main, over)).map { key, pair in
+            Day(id: key,
+                meetings: (pair.0 + pair.1).filter { !$0.isAllDay }
+                    .sorted { ($0.start ?? "~") < ($1.start ?? "~") },
+                allDay: (pair.0 + pair.1).filter(\.isAllDay)
+                    .sorted { ($0.start ?? "~") < ($1.start ?? "~") },
+                overlay: Set(pair.1.map(\.id)))
         }
     }
 
@@ -55,7 +64,7 @@ struct WeekGrid: View {
                         gutter
                         ForEach(days) { day in
                             let today = Self.isToday(day.id, now)
-                            WeekDayColumn(meetings: day.meetings, selectedID: selectedID,
+                            WeekDayColumn(meetings: day.meetings, overlay: day.overlay, selectedID: selectedID,
                                           nowMinute: today ? nowMinute : nil, select: select)
                                 .frame(maxWidth: .infinity)
                                 .background(today ? AnyShapeStyle(.tint.opacity(0.05)) : AnyShapeStyle(Color.clear))
@@ -149,7 +158,8 @@ struct WeekGrid: View {
             ForEach(days) { day in
                 VStack(spacing: 2) {
                     ForEach(day.allDay) { m in
-                        CalendarChip(meeting: m, selected: m.id == selectedID, showTime: false) { select(m.id) }
+                        CalendarChip(meeting: m, selected: m.id == selectedID, showTime: false,
+                                     isOverlay: day.overlay.contains(m.id)) { select(m.id) }
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .top)
@@ -202,6 +212,8 @@ private struct HourLines: View {
 /// One day: meetings placed by start/end minutes and lane.
 private struct WeekDayColumn: View {
     let meetings: [MeetingItem]
+    /// Row ids from overlaid calendars (read-only, secondary style).
+    let overlay: Set<String>
     let selectedID: String?
     /// Minutes after midnight on today's column (the now line), else nil.
     let nowMinute: Int?
@@ -221,7 +233,8 @@ private struct WeekDayColumn: View {
                        minimumHeight: WeekGridMath.minimumHeight(scale: scale)) {
             ForEach(meetings) { m in
                 let i = meetings.firstIndex(of: m) ?? 0
-                WeekEventBlock(meeting: m, selected: m.id == selectedID) { select(m.id) }
+                WeekEventBlock(meeting: m, selected: m.id == selectedID,
+                               isOverlay: overlay.contains(m.id)) { select(m.id) }
                     .layoutValue(key: WeekGridSpan.self,
                                  value: WeekGridSpan.Value(start: spans[i].0, end: spans[i].1,
                                                            lane: slots[i].lane, lanes: slots[i].lanes,
@@ -281,6 +294,8 @@ struct WeekGridLayout: Layout {
 private struct WeekEventBlock: View {
     let meeting: MeetingItem
     let selected: Bool
+    /// Overlaid-calendar row: secondary style, details stay read-only.
+    var isOverlay = false
     let action: () -> Void
     @Environment(\.contentTextScale) private var scale
 
@@ -360,9 +375,10 @@ private struct WeekEventBlock: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .opacity(isOverlay ? 0.72 : 1)
         // Hover shows the whole title and time when the block truncates it.
-        .help("\(meeting.subject)\n\(CalendarFormat.range(meeting))")
-        .accessibilityLabel("\(meeting.subject), \(CalendarFormat.range(meeting))")
+        .help("\(meeting.subject)\n\(CalendarFormat.range(meeting))" + (isOverlay ? "\nOther calendar" : ""))
+        .accessibilityLabel("\(meeting.subject), \(CalendarFormat.range(meeting))" + (isOverlay ? ", other calendar" : ""))
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
 }

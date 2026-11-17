@@ -64,6 +64,7 @@ struct NewMeetingSheet: View {
     @State private var start = NewMeetingSheet.nextHalfHour(RelativeClock.shared.now)
     @State private var end = NewMeetingSheet.nextHalfHour(RelativeClock.shared.now).addingTimeInterval(1800)
     @State private var online = true
+    @State private var channel: ChannelTarget?
     @State private var submitted = false
     @Environment(\.windowModel) private var model
 
@@ -77,8 +78,14 @@ struct NewMeetingSheet: View {
                 DatePicker("Starts", selection: $start)
                 DatePicker("Ends", selection: $end)
                 Toggle("Teams meeting", isOn: $online)
+                channelPicker
             }
             .formStyle(.columns)
+            if let channel {
+                Text("Also posts to \(channel.teamName) / \(channel.channelName).")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .onChange(of: week.scheduling) { _, busy in
             // Async (live) path: close once the created event landed.
@@ -86,10 +93,18 @@ struct NewMeetingSheet: View {
         }
     }
 
+    /// Channel picker ("schedule in a channel"): the event stays on the
+    /// organizer calendar; scheduling also posts it to the channel.
+    @ViewBuilder private var channelPicker: some View {
+        if let teams = model?.app?.teams {
+            ChannelPickerRow(teams: teams, channel: $channel)
+        }
+    }
+
     private func schedule() {
         submitted = true
         week.schedule(subject: subject, start: CalWeek.graphDateTime(start),
-                      end: CalWeek.graphDateTime(end), online: online)
+                      end: CalWeek.graphDateTime(end), online: online, channel: channel)
         // Local (demo) path completes synchronously.
         if !week.scheduling, week.scheduleError == nil { model?.dismissSheet() }
     }
@@ -103,6 +118,36 @@ struct NewMeetingSheet: View {
         let m = cal.component(.minute, from: minute)
         let add = m < 30 ? 30 - m : 60 - m
         return cal.date(byAdding: .minute, value: add, to: minute) ?? minute
+    }
+}
+
+/// Channel picker row for the New Meeting sheet: a native picker over
+/// the joined teams' channels. Loads the list on first open (the
+/// calendar route does not fetch teams itself).
+private struct ChannelPickerRow: View {
+    @ObservedObject var teams: TeamsViewModel
+    @Binding var channel: ChannelTarget?
+
+    var body: some View {
+        Group {
+            if !teams.teams.isEmpty {
+                Picker("Channel", selection: $channel) {
+                    Text("No channel").tag(nil as ChannelTarget?)
+                    ForEach(teams.teams) { team in
+                        ForEach(team.channels) { ch in
+                            Text("\(team.name) / \(ch.name)")
+                                .tag(ChannelTarget(teamID: team.teamId, channelID: ch.channelId,
+                                                   teamName: team.name, channelName: ch.name) as ChannelTarget?)
+                        }
+                    }
+                }
+            }
+        }
+        .task { load() }
+    }
+
+    private func load() {
+        if teams.teams.isEmpty { teams.refresh() }
     }
 }
 
@@ -299,6 +344,9 @@ struct EditEventSheet: View {
     @State private var start: Date
     @State private var end: Date
     @State private var location: String
+    @State private var responseRequested: Bool
+    @State private var newTimeProposals: Bool
+    @State private var hideAttendees: Bool
     @State private var wholeSeries = false
     @Environment(\.windowModel) private var model
 
@@ -310,6 +358,9 @@ struct EditEventSheet: View {
         _start = State(initialValue: s)
         _end = State(initialValue: CalendarFormat.date(meeting.end) ?? s.addingTimeInterval(1800))
         _location = State(initialValue: meeting.info?.location ?? "")
+        _responseRequested = State(initialValue: meeting.info?.responseRequested ?? true)
+        _newTimeProposals = State(initialValue: meeting.info?.allowNewTimeProposals ?? true)
+        _hideAttendees = State(initialValue: meeting.info?.hideAttendees ?? false)
     }
 
     private var patch: CalendarEventPatch {
@@ -322,6 +373,14 @@ struct EditEventSheet: View {
             if e != meeting.end.map({ String($0.prefix(19)) }) { p.end = e }
             // A moved meeting always sends both ends.
             if p.start != nil || p.end != nil { p.start = s; p.end = e }
+        }
+        // Organizer meeting options (lobby/presenter need the ungranted
+        // OnlineMeetings scope; these are the event-level knobs).
+        if meeting.isOrganizer {
+            let info = meeting.info
+            if responseRequested != (info?.responseRequested ?? true) { p.responseRequested = responseRequested }
+            if newTimeProposals != (info?.allowNewTimeProposals ?? true) { p.allowNewTimeProposals = newTimeProposals }
+            if hideAttendees != (info?.hideAttendees ?? false) { p.hideAttendees = hideAttendees }
         }
         return p
     }
@@ -347,6 +406,13 @@ struct EditEventSheet: View {
                         .disabled(wholeSeries)
                 }
                 TextField("Location", text: $location, prompt: prompt("Add a location"))
+                if meeting.isOrganizer {
+                    Section("Meeting options") {
+                        Toggle("Request responses", isOn: $responseRequested)
+                        Toggle("Allow new time proposals", isOn: $newTimeProposals)
+                        Toggle("Hide attendee list", isOn: $hideAttendees)
+                    }
+                }
             }
             .formStyle(.columns)
             if wholeSeries {

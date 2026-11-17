@@ -352,8 +352,11 @@ final class CalendarSection: SectionProvider, InspectorCapable {
             app.calWeek.loadDetail(id: id)
             return AnyView(EventDetailsSheet(week: app.calWeek, eventID: id))
         case CalendarCommands.editSheet:
-            guard let id = r.arg ?? Self.current(m).meetingID, let row = app.calWeek.row(id: id) else { return nil }
-            return AnyView(EditEventSheet(week: app.calWeek, meeting: row))
+            guard let id = r.arg ?? Self.current(m).meetingID else { return nil }
+            let week = app.calWeek
+            return AnyView(CalendarRowSheet(week: week, eventID: id, content: { row in
+                EditEventSheet(week: week, meeting: row!)
+            }, needsRow: true))
         case CalendarCommands.duplicateSheet:
             guard let id = r.arg ?? Self.current(m).meetingID else { return nil }
             let week = app.calWeek

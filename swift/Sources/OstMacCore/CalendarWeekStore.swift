@@ -9,15 +9,38 @@
 import Combine
 import Foundation
 
+/// A Teams channel chosen as a new meeting's channel ("schedule in a
+/// channel": the event is created on the organizer calendar and
+/// announced in the channel).
+public struct ChannelTarget: Sendable, Hashable {
+    public var teamID: String
+    public var channelID: String
+    public var teamName: String
+    public var channelName: String
+
+    public init(teamID: String, channelID: String, teamName: String, channelName: String) {
+        self.teamID = teamID
+        self.channelID = channelID
+        self.teamName = teamName
+        self.channelName = channelName
+    }
+}
+
 /// Week-grid state machine + schedule/cancel flows for one week window.
 @MainActor
 public final class CalendarWeekStore: ObservableObject {
+    /// Overlaid calendars are read-only: every refused write surfaces this.
+    public static let readOnlyOverlayMessage = "Other calendars are read-only"
     /// Sync week fetch (runs off-main). Throws `CoreCallError` on failure.
     public typealias WeekFetcher = @Sendable (Int64) throws -> CalWeekResponse
     public typealias ScheduleRunner = @Sendable (
         String, String, String, String, Bool
     ) throws -> CalEventResult
     public typealias CancelRunner = @Sendable (String) throws -> CalCancelResult
+    /// `(team id, channel id, subject, start, end, join URL?)` → channel post.
+    public typealias AnnounceRunner = @Sendable (
+        String, String, String, Date, Date, String?
+    ) throws -> Void
 
     /// Latest meetings (only meaningful in `.loaded`; stale otherwise).
     @Published public internal(set) var meetings: [MeetingItem] = []
@@ -94,6 +117,15 @@ public final class CalendarWeekStore: ObservableObject {
     @Published public internal(set) var instancesError: [String: String] = [:]
     @Published public internal(set) var creating = false
     @Published public internal(set) var createError: String?
+    /// Multi-calendar overlay (read-only): the mailbox's extra
+    /// calendars, the overlaid ids, and their rows per calendar id.
+    @Published public internal(set) var overlayCalendars: [CalendarFeed] = []
+    @Published public var overlayIDs: Set<String> = []
+    @Published public internal(set) var overlayMeetings: [String: [MeetingItem]] = [:]
+    @Published public internal(set) var overlayError: String?
+    @Published public internal(set) var overlayLoading = false
+    /// The channel a new meeting was last posted to (sheet confirmation).
+    @Published public internal(set) var lastAnnouncedChannel: ChannelTarget?
 
     /// Seven `"yyyy-MM-dd"` keys for the grid header row.
     public var dayKeys: [String] {
@@ -124,6 +156,7 @@ public final class CalendarWeekStore: ObservableObject {
     let weekFetcher: WeekFetcher
     private let scheduleRunner: ScheduleRunner
     private let cancelRunner: CancelRunner
+    private let announceRunner: AnnounceRunner
     /// Detail / RSVP / edit / Meet now calls (live: Graph).
     let runners: CalendarRunners
     /// Display calendar; its zone follows the system time zone.
@@ -158,6 +191,10 @@ public final class CalendarWeekStore: ObservableObject {
         weekFetcher: @escaping WeekFetcher = { try CalendarGraph.production().week(start: $0) },
         scheduleRunner: @escaping ScheduleRunner = CalendarRunners.graphSchedule,
         cancelRunner: @escaping CancelRunner = CalendarRunners.graphCancel,
+        announceRunner: @escaping AnnounceRunner = {
+            try CalendarGraph.production().announceChannelMeeting(
+                teamID: $0, channelID: $1, subject: $2, start: $3, end: $4, joinURL: $5)
+        },
         runners: CalendarRunners = .production,
         localEdits: Bool = false,
         demoGate: DemoGate? = nil,
@@ -169,6 +206,7 @@ public final class CalendarWeekStore: ObservableObject {
         self.weekFetcher = weekFetcher
         self.scheduleRunner = scheduleRunner
         self.cancelRunner = cancelRunner
+        self.announceRunner = announceRunner
         self.runners = runners
         self.localEdits = localEdits
         self.demoGate = demoGate
@@ -286,6 +324,7 @@ public final class CalendarWeekStore: ObservableObject {
             meetings = response.meetings
             state = response.meetings.isEmpty ? .empty : .loaded
             prefetch(around: target)
+            refreshOverlay()
         case .failure(let error):
             state = .error(Self.message(for: error))
         }
@@ -303,6 +342,7 @@ public final class CalendarWeekStore: ObservableObject {
             meetings = hit.response.meetings
             state = hit.response.meetings.isEmpty ? .empty : .loaded
             prefetch(around: target)
+            refreshOverlay()
             if Date().timeIntervalSince(hit.at) > Self.weekFreshness {
                 pendingWeekStart = target
                 Task { await fetch(target, behind: true) }
@@ -382,8 +422,11 @@ public final class CalendarWeekStore: ObservableObject {
 
     /// Schedule one meeting (`start`/`end` are Graph datetimes). Empty
     /// subjects and inverted ranges fail locally; on success the created
-    /// event appends and the sheet closes.
-    public func schedule(subject: String, start: String, end: String, online: Bool) {
+    /// event appends and the sheet closes. `channel`: also announce the
+    /// meeting in that channel (the event itself is created on the
+    /// organizer calendar; the post is the channel leg).
+    public func schedule(subject: String, start: String, end: String, online: Bool,
+                         channel: ChannelTarget? = nil) {
         let trimmed = subject.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             scheduleError = "Subject is required"
@@ -398,6 +441,7 @@ public final class CalendarWeekStore: ObservableObject {
                 meetingId: "demo-cal-local-\(meetings.count + 1)",
                 subject: trimmed, start: start, end: end,
                 isOrganizer: true, isOnline: online))
+            lastAnnouncedChannel = channel
             scheduleError = nil
             showSchedule = false
             if state == .empty { state = .loaded }
@@ -405,18 +449,36 @@ public final class CalendarWeekStore: ObservableObject {
             return
         }
         let runner = scheduleRunner
+        let announcer = announceRunner
         let timeZone = TimeZone.current.identifier
         scheduleError = nil
+        lastAnnouncedChannel = nil
         scheduling = true
         Task.blocking { [weak self] in
             do {
                 let created = try runner(trimmed, start, end, timeZone, online)
+                let outcome: (announced: ChannelTarget?, error: String?) = {
+                    guard let channel else { return (nil, nil) }
+                    do {
+                        guard let s = CalendarTime.instant(start, zone: timeZone),
+                              let e = CalendarTime.instant(end, zone: timeZone) else {
+                            throw CoreCallError.failed("calendar: bad meeting time")
+                        }
+                        try announcer(channel.teamID, channel.channelID, trimmed, s, e,
+                                      created.event.joinURL)
+                        return (channel, nil)
+                    } catch {
+                        return (nil, "Scheduled, but the channel post failed: \(Self.message(for: error))")
+                    }
+                }()
                 await MainActor.run { [weak self] in
                     guard let self else { return }
                     self.meetings.append(created.event)
                     self.invalidateShownWeek()
                     self.scheduling = false
                     self.showSchedule = false
+                    self.lastAnnouncedChannel = outcome.announced
+                    self.scheduleError = outcome.error
                     if self.state == .empty { self.state = .loaded }
                 }
             } catch {
@@ -436,8 +498,13 @@ public final class CalendarWeekStore: ObservableObject {
 
     /// Cancel one meeting. On success the row drops; on failure the row
     /// stays and `cancelError` surfaces. No-op while a cancel runs.
+    /// Overlaid-calendar rows are read-only: cancelling is refused.
     public func cancel(eventID: String) {
         guard cancelingID == nil else { return }
+        if overlayCalendarID(for: eventID) != nil {
+            cancelError = Self.readOnlyOverlayMessage
+            return
+        }
         if localEdits {
             meetings.removeAll { $0.id == eventID }
             invalidateShownWeek()

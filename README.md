@@ -399,7 +399,7 @@ Incomplete or not started yet ("in progress" = being worked on now):
 - **Compose:** stickers (deferred — no clean native path); importance/urgent, announcements, @team/@channel/@everyone shipped, live-send check pending; drafts show markers, not WYSIWYG
 - **Meetings:** raise hand, reactions, recording/transcription controls, muting/removing participants, presenter roles, background replace, background blur on the live camera preview (follow-up); lobby admit UI in final verification
 - **Calling:** Teams Phone (dial pad, voicemail, forwarding, delegates) — parked: no Teams Phone licence on this tenant
-- **Calendar:** channel meetings, meeting options (lobby/presenter knobs), overlaying multiple calendars (in progress)
+- **Calendar:** lobby/presenter meeting options (blocked: needs OnlineMeetings scope), month-view overlay (open); channel meetings, event-level options and week/day/list overlay shipped
 - **Status:** scheduled out-of-office: shipped, one live check pending
 - **Chats and teams:** Teams saved-messages sync, thread mute, full notification-rules matrix (all three parked — no server surface found); private/shared channels, archiving, moderation, team privacy switch
 - **External (federated) chat:** written, awaiting live proof — blocked: tenant has external access disabled

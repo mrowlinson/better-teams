@@ -28,6 +28,12 @@ public struct CalendarRunners: Sendable {
     public var webinar: @Sendable (String, Date, Date) throws -> String
     /// `(series master id, from, to)` → the series' occurrences.
     public var instances: @Sendable (String, Date, Date) throws -> [MeetingItem]
+    /// Extra mailbox calendars (overlay sources, read-only).
+    public var calendars: @Sendable () throws -> [CalendarFeed]
+    /// `(calendar id, from, to)` → that calendar's events (read-only).
+    public var calendarRange: @Sendable (String, Date, Date) throws -> [MeetingItem]
+    /// `(team id, channel id, subject, start, end, join URL?)` → channel post.
+    public var announce: @Sendable (String, String, String, Date, Date, String?) throws -> Void
 
     public static let unsupported: @Sendable () -> Error = { CoreCallError.failed("calendar: not available") }
 
@@ -43,7 +49,10 @@ public struct CalendarRunners: Sendable {
         categories: @escaping @Sendable () throws -> [CalendarCategory] = { throw unsupported() },
         create: @escaping @Sendable (CalendarEventDraft) throws -> MeetingItem = { _ in throw unsupported() },
         webinar: @escaping @Sendable (String, Date, Date) throws -> String = { _, _, _ in throw unsupported() },
-        instances: @escaping @Sendable (String, Date, Date) throws -> [MeetingItem] = { _, _, _ in throw unsupported() }
+        instances: @escaping @Sendable (String, Date, Date) throws -> [MeetingItem] = { _, _, _ in throw unsupported() },
+        calendars: @escaping @Sendable () throws -> [CalendarFeed] = { throw unsupported() },
+        calendarRange: @escaping @Sendable (String, Date, Date) throws -> [MeetingItem] = { _, _, _ in throw unsupported() },
+        announce: @escaping @Sendable (String, String, String, Date, Date, String?) throws -> Void = { _, _, _, _, _, _ in throw unsupported() }
     ) {
         self.detail = detail
         self.respond = respond
@@ -57,6 +66,9 @@ public struct CalendarRunners: Sendable {
         self.create = create
         self.webinar = webinar
         self.instances = instances
+        self.calendars = calendars
+        self.calendarRange = calendarRange
+        self.announce = announce
     }
 
     /// Signed-in profile over Graph.
@@ -77,7 +89,11 @@ public struct CalendarRunners: Sendable {
             categories: { try CalendarGraph.production().masterCategories() },
             create: { try CalendarGraph.production().create($0) },
             webinar: { try CalendarGraph.production().createWebinar(title: $0, start: $1, end: $2) },
-            instances: { try CalendarGraph.production().instances(seriesID: $0, from: $1, to: $2) })
+            instances: { try CalendarGraph.production().instances(seriesID: $0, from: $1, to: $2) },
+            calendars: { try CalendarGraph.production().calendars() },
+            calendarRange: { try CalendarGraph.production().calendarRange(id: $0, from: $1, to: $2) },
+            announce: { try CalendarGraph.production().announceChannelMeeting(
+                teamID: $0, channelID: $1, subject: $2, start: $3, end: $4, joinURL: $5) })
     }
 
     /// New-meeting sheet over Graph (`start`/`end` local datetimes in `tz`).
@@ -298,10 +314,17 @@ extension CalendarWeekStore {
 
     // MARK: rows
 
-    /// The row for `id` wherever it is shown.
+    /// The row for `id` wherever it is shown (overlay rows included:
+    /// their details open read-only).
     public func row(id: String) -> MeetingItem? {
         meetings.first { $0.id == id } ?? monthMeetings.first { $0.id == id } ?? details[id]?.event
             ?? seriesInstances.values.lazy.flatMap { $0 }.first { $0.id == id }
+            ?? overlayMeetings.values.lazy.flatMap { $0 }.first { $0.id == id }
+    }
+
+    /// The overlaid calendar holding `id` (nil = own calendar data).
+    public func overlayCalendarID(for id: String) -> String? {
+        overlayMeetings.first { $0.value.contains { $0.id == id } }?.key
     }
 
     /// Apply `change` to every shown/cached copy of rows matching `match`
@@ -329,8 +352,14 @@ extension CalendarWeekStore {
     // MARK: details
 
     /// Read `id`'s details once (body, attachments, fresh responses).
+    /// Overlay rows (read-only second calendars) carry their fields in
+    /// the row: the card renders from it, no per-event fetch.
     public func loadDetail(id: String, force: Bool = false) {
         guard force || details[id] == nil, !detailLoading.contains(id) else { return }
+        if overlayCalendarID(for: id) != nil {
+            if let row = row(id: id) { details[id] = CalendarEventDetail(event: row) }
+            return
+        }
         if localEdits {
             if let gate = demoGate, let row = row(id: id) ?? CalendarDemo.seriesMaster(id, from: meetings + monthMeetings) {
                 details[id] = CalendarDemo.detail(gate, for: row)
@@ -389,6 +418,10 @@ extension CalendarWeekStore {
     /// declined events from the calendar). A failure restores them.
     public func respond(to row: MeetingItem, _ action: RSVPAction, series: Bool = false) {
         guard respondingID == nil, !row.isOrganizer else { return }
+        guard overlayCalendarID(for: row.id) == nil else {
+            rsvpError = Self.readOnlyOverlayMessage
+            return
+        }
         let master = row.info?.seriesMasterID
         let target = series ? (master ?? row.id) : row.id
         let match: (MeetingItem) -> Bool = series && master != nil

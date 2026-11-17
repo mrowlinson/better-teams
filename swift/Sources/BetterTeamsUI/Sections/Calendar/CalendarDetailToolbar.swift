@@ -83,14 +83,17 @@ struct EventRespondControl: View {
     @ObservedObject var week: CalendarWeekStore
     @Environment(\.windowModel) private var model
 
+    /// Overlaid-calendar rows are read-only: no RSVP or Edit here.
+    private var isOverlay: Bool { week.overlayCalendarID(for: meeting.id) != nil }
+
     var body: some View {
-        if meeting.isOrganizer {
+        if !isOverlay, meeting.isOrganizer {
             if let model {
                 Button { CalendarSection.edit(meeting, model) } label: { Label("Edit", systemImage: "pencil") }
                     .labelStyle(.titleAndIcon)
                     .help("Edit")
             }
-        } else if let info = meeting.info {
+        } else if !isOverlay, let info = meeting.info {
             HStack(spacing: 4) {
                 Menu {
                     ForEach(RSVPAction.allCases, id: \.rawValue) { action in
@@ -138,14 +141,20 @@ struct EventActionsGroup: View {
     @Environment(\.windowModel) private var model
     @State private var forwardShown = false
 
+    /// Overlaid-calendar rows are read-only: only Duplicate (a new
+    /// event on the own calendar) stays; delete and forward go.
+    private var isOverlay: Bool { week.overlayCalendarID(for: meeting.id) != nil }
+
     var body: some View {
         ControlGroup {
-            deleteMenu
-            Button { forwardShown = true } label: { Label("Forward", systemImage: "arrowshape.turn.up.right") }
-                .help("Forward")
-                .popover(isPresented: $forwardShown, arrowEdge: .bottom) {
-                    ForwardEventPopover(meeting: meeting, week: week) { forwardShown = false }
-                }
+            if !isOverlay {
+                deleteMenu
+                Button { forwardShown = true } label: { Label("Forward", systemImage: "arrowshape.turn.up.right") }
+                    .help("Forward")
+                    .popover(isPresented: $forwardShown, arrowEdge: .bottom) {
+                        ForwardEventPopover(meeting: meeting, week: week) { forwardShown = false }
+                    }
+            }
             Button {
                 if let model { CalendarSection.duplicate(meeting, model) }
             } label: { Label("Duplicate", systemImage: "plus.square.on.square") }
@@ -190,19 +199,24 @@ struct EventPersonalGroup: View {
 
     var info: CalendarEventInfo? { meeting.info }
 
+    /// Overlaid-calendar rows are read-only: no personal fields here.
+    private var isOverlay: Bool { week.overlayCalendarID(for: meeting.id) != nil }
+
     var body: some View {
-        ControlGroup {
-            showAsMenu
-            reminderMenu
-            categorizeMenu
-            Toggle(isOn: privateBinding) {
-                Label("Private", systemImage: "lock")
+        if !isOverlay {
+            ControlGroup {
+                showAsMenu
+                reminderMenu
+                categorizeMenu
+                Toggle(isOn: privateBinding) {
+                    Label("Private", systemImage: "lock")
+                }
+                .toggleStyle(.button)
+                .labelStyle(.iconOnly)
+                .help(info?.sensitivity == "private" ? "Private (on)" : "Private")
             }
-            .toggleStyle(.button)
-            .labelStyle(.iconOnly)
-            .help(info?.sensitivity == "private" ? "Private (on)" : "Private")
+            .fixedSize()
         }
-        .fixedSize()
     }
 
     var privateBinding: Binding<Bool> {

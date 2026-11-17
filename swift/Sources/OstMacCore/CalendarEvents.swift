@@ -156,6 +156,9 @@ public struct CalendarEventInfo: Codable, Sendable, Equatable {
     public var isCancelled: Bool
     public var hasAttachments: Bool
     public var responseRequested: Bool
+    /// Nil when Graph did not return the value (older payloads).
+    public var allowNewTimeProposals: Bool?
+    public var hideAttendees: Bool?
     public var bodyPreview: String?
     public var webLink: String?
     public var sensitivity: String?
@@ -173,6 +176,7 @@ public struct CalendarEventInfo: Codable, Sendable, Equatable {
         kind: CalendarEventKind = .singleInstance, seriesMasterID: String? = nil,
         attendees: [EventAttendee] = [], originalStartTimeZone: String? = nil,
         isCancelled: Bool = false, hasAttachments: Bool = false, responseRequested: Bool = true,
+        allowNewTimeProposals: Bool? = nil, hideAttendees: Bool? = nil,
         bodyPreview: String? = nil, webLink: String? = nil, sensitivity: String? = nil,
         reminderMinutes: Int? = nil, dialIn: EventDialIn? = nil, recurrence: String? = nil,
         sentAt: String? = nil
@@ -187,6 +191,8 @@ public struct CalendarEventInfo: Codable, Sendable, Equatable {
         self.isCancelled = isCancelled
         self.hasAttachments = hasAttachments
         self.responseRequested = responseRequested
+        self.allowNewTimeProposals = allowNewTimeProposals
+        self.hideAttendees = hideAttendees
         self.bodyPreview = bodyPreview
         self.webLink = webLink
         self.sensitivity = sensitivity
@@ -331,11 +337,18 @@ public struct CalendarEventPatch: Sendable, Equatable {
     /// Full attendee list (Graph replaces it): room add / attendee
     /// removal by the organizer.
     public var attendees: [EventAttendee]?
+    /// Organizer meeting options (event-level; the online-meeting
+    /// lobby/presenter knobs need OnlineMeetings.ReadWrite, ungranted).
+    public var responseRequested: Bool?
+    public var allowNewTimeProposals: Bool?
+    public var hideAttendees: Bool?
 
     public init(subject: String? = nil, start: String? = nil, end: String? = nil,
                 timeZone: String = TimeZone.current.identifier, location: String? = nil,
                 showAs: String? = nil, reminderMinutes: Int? = nil, categories: [String]? = nil,
-                sensitivity: String? = nil, attendees: [EventAttendee]? = nil) {
+                sensitivity: String? = nil, attendees: [EventAttendee]? = nil,
+                responseRequested: Bool? = nil, allowNewTimeProposals: Bool? = nil,
+                hideAttendees: Bool? = nil) {
         self.subject = subject
         self.start = start
         self.end = end
@@ -346,13 +359,18 @@ public struct CalendarEventPatch: Sendable, Equatable {
         self.categories = categories
         self.sensitivity = sensitivity
         self.attendees = attendees
+        self.responseRequested = responseRequested
+        self.allowNewTimeProposals = allowNewTimeProposals
+        self.hideAttendees = hideAttendees
     }
 
     public var isEmpty: Bool { body.isEmpty }
 
-    /// Only fields any attendee may change on their own copy.
+    /// Only fields any attendee may change on their own copy
+    /// (organizer meeting options are organizer-only).
     public var isPersonal: Bool {
         subject == nil && start == nil && end == nil && location == nil && attendees == nil
+            && responseRequested == nil && allowNewTimeProposals == nil && hideAttendees == nil
     }
 
     /// The PATCH body.
@@ -374,6 +392,9 @@ public struct CalendarEventPatch: Sendable, Equatable {
                 ["type": a.type, "emailAddress": ["address": a.email, "name": a.name]]
             }
         }
+        if let responseRequested { b["responseRequested"] = responseRequested }
+        if let allowNewTimeProposals { b["allowNewTimeProposals"] = allowNewTimeProposals }
+        if let hideAttendees { b["hideAttendees"] = hideAttendees }
         return b
     }
 
@@ -389,6 +410,9 @@ public struct CalendarEventPatch: Sendable, Equatable {
         if let c = categories { m.categories = c }
         if let s = sensitivity { m.info?.sensitivity = s }
         if let a = attendees { m.info?.attendees = a }
+        if let r = responseRequested { m.info?.responseRequested = r }
+        if let n = allowNewTimeProposals { m.info?.allowNewTimeProposals = n }
+        if let h = hideAttendees { m.info?.hideAttendees = h }
         return m
     }
 }
@@ -842,6 +866,8 @@ struct GraphEventWire: Decodable {
     let isCancelled: Bool?
     let hasAttachments: Bool?
     let responseRequested: Bool?
+    let allowNewTimeProposals: Bool?
+    let hideAttendees: Bool?
     let isReminderOn: Bool?
     let reminderMinutesBeforeStart: Int?
     let sensitivity: String?
@@ -857,6 +883,7 @@ public enum CalendarEvents {
         "organizer", "isOrganizer", "webLink", "categories", "location", "locations",
         "attendees", "responseStatus", "showAs", "type", "seriesMasterId", "recurrence",
         "originalStartTimeZone", "isCancelled", "hasAttachments", "responseRequested",
+        "allowNewTimeProposals", "hideAttendees",
         "isReminderOn", "reminderMinutesBeforeStart", "sensitivity", "bodyPreview", "createdDateTime",
     ].joined(separator: ",")
 
@@ -911,6 +938,8 @@ public enum CalendarEvents {
             isCancelled: e.isCancelled ?? false,
             hasAttachments: e.hasAttachments ?? false,
             responseRequested: e.responseRequested ?? true,
+            allowNewTimeProposals: e.allowNewTimeProposals,
+            hideAttendees: e.hideAttendees,
             bodyPreview: nonEmpty(e.bodyPreview),
             webLink: nonEmpty(e.webLink),
             sensitivity: e.sensitivity,

@@ -1857,6 +1857,7 @@ Notes:
     and_wire`, `composer_b_parse_wire_mentions_tolerant`,
     `composer_b_apply_mentions_bounds`, `composer_b_body_opts_keys`,
     `composer_b_reply_body_opts` (ost chat module 68/68 green).
+    UPSTREAM: PR https://github.com/eisbaw/ost/pull/116 (fix/composer-send-opts, stacks on #114)
 
 102. [feature] `src/api/chat.rs` (+ `src/api/mod.rs` re-export) —
     **pin for everyone (SERVER-STATE)**. Thread `pinnedItems` property

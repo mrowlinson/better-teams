@@ -289,4 +289,37 @@ public enum CalendarDemo {
         return CalendarEventDetail(event: row, bodyHTML: html, attachments: attachments,
                                    recurrence: row.info?.recurrence)
     }
+
+    /// Demo overlay source (read-only second calendar for the overlay UI).
+    public static func overlayCalendars() -> [CalendarFeed] {
+        [CalendarFeed(id: "demo-cal-shared", name: "Team shared", color: "auto",
+                      canEdit: false, isDefault: false)]
+    }
+
+    /// Demo overlay rows for the shown week (Wednesday + Thursday).
+    public static func overlayMeetings(weekStart: Int64, calendar cal: Calendar) -> [MeetingItem] {
+        let start = Date(timeIntervalSince1970: TimeInterval(weekStart))
+        let mondayOffset = (2 - cal.firstWeekday + 7) % 7
+        func at(_ offset: Int, _ h: Int, _ m: Int, minutes: Int) -> (String, String) {
+            let base = cal.date(byAdding: .day, value: mondayOffset + offset, to: start) ?? start
+            let p = cal.dateComponents([.year, .month, .day], from: base)
+            let s = cal.date(from: DateComponents(year: p.year, month: p.month, day: p.day, hour: h, minute: m)) ?? start
+            let e = s.addingTimeInterval(TimeInterval(minutes * 60))
+            return (CalendarTime.wallClock(s, in: cal.timeZone), CalendarTime.wallClock(e, in: cal.timeZone))
+        }
+        let (s1, e1) = at(2, 10, 0, minutes: 60)
+        let (s2, e2) = at(3, 15, 30, minutes: 30)
+        func info() -> CalendarEventInfo {
+            CalendarEventInfo(myResponse: .accepted, showAs: "busy",
+                              attendees: [attendee(megan, .organizer), attendee(me, .accepted)])
+        }
+        return [
+            MeetingItem(meetingId: "demo-cal-overlay-1", subject: "Design review", start: s1, end: e1,
+                        joinURL: nil, organizer: megan.name, organizerEmail: megan.email,
+                        isOrganizer: false, isOnline: false, categories: ["Green category"], info: info()),
+            MeetingItem(meetingId: "demo-cal-overlay-2", subject: "Release check-in", start: s2, end: e2,
+                        joinURL: nil, organizer: megan.name, organizerEmail: megan.email,
+                        isOrganizer: false, isOnline: false, categories: ["Purple category"], info: info()),
+        ]
+    }
 }

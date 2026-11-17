@@ -91,6 +91,7 @@ struct CalendarHeaderBar: View {
                     ProgressView().controlSize(.small)
                 }
                 Spacer(minLength: 8)
+                CalendarsMenu(week: week)
                 ViewThatFits(in: .horizontal) {
                     switcher.pickerStyle(.segmented).fixedSize()
                     switcher.pickerStyle(.menu).fixedSize()
@@ -133,6 +134,39 @@ struct CalendarHeaderBar: View {
         }
         .labelsHidden()
         .help("Change the calendar view")
+    }
+}
+
+/// Multi-calendar overlay picker (read-only second calendars, CAL-REMNANT).
+struct CalendarsMenu: View {
+    @ObservedObject var week: CalendarWeekStore
+
+    var body: some View {
+        Menu {
+            if week.overlayCalendars.isEmpty {
+                Text(week.overlayError ?? "No other calendars")
+            } else {
+                ForEach(week.overlayCalendars) { cal in
+                    Button {
+                        week.setOverlay(id: cal.id, on: !week.overlayIDs.contains(cal.id))
+                    } label: {
+                        if week.overlayIDs.contains(cal.id) {
+                            Label(cal.name, systemImage: "checkmark")
+                        } else {
+                            Text(cal.name)
+                        }
+                    }
+                }
+                Divider()
+            }
+            Button("Refresh Calendars") { week.loadCalendars(force: true) }
+        } label: {
+            Label("Calendars", systemImage: week.overlayIDs.isEmpty ? "calendar" : "calendar.badge.checkmark")
+        }
+        .menuStyle(.button)
+        .fixedSize()
+        .help(week.overlayIDs.isEmpty ? "Overlay another calendar" : "Overlaid calendars on")
+        .onAppear { week.loadCalendars() }
     }
 }
 
@@ -211,11 +245,18 @@ struct CalendarAgendaPane: View {
         zip(week.dayKeys, week.columns).filter { !$0.1.isEmpty }.map { (key: $0.0, meetings: $0.1) }
     }
 
+    /// Overlaid-calendar rows per day key (read-only second calendars).
+    private var overlayDays: [(key: String, meetings: [MeetingItem])] {
+        let over = CalWeek.bucket(week.overlayRows, keys: week.dayKeys)
+        return zip(week.dayKeys, over).filter { !$0.1.isEmpty }.map { (key: $0.0, meetings: $0.1) }
+    }
+
     private func list(_ m: WindowModel) -> some View {
         let now = RelativeClock.shared.now
         let selection = Binding<String?>(
             get: { CalendarSection.current(m).meetingID },
             set: { CalendarSection.select($0, m) })
+        let over = Dictionary(uniqueKeysWithValues: overlayDays)
         return List(selection: selection) {
             ForEach(days, id: \.key) { day in
                 Section(CalendarFormat.dayTitle(day.key, now: now)) {
@@ -224,6 +265,15 @@ struct CalendarAgendaPane: View {
                             CalendarSection.join(meeting, m)
                         }
                         .tag(meeting.id)
+                    }
+                    if let extra = over[day.key] {
+                        ForEach(extra) { meeting in
+                            AgendaRow(meeting: meeting, joinable: CalendarFormat.joinableNow(meeting, now: now),
+                                      isOverlay: true) {
+                                CalendarSection.join(meeting, m)
+                            }
+                            .tag(meeting.id)
+                        }
                     }
                 }
             }
@@ -245,6 +295,9 @@ struct CalendarMeetingMenu: View {
     @ObservedObject var week: CalendarWeekStore
     @Environment(\.windowModel) private var model
 
+    /// Overlaid-calendar rows are read-only: no RSVP, edit or cancel.
+    private var isOverlay: Bool { week.overlayCalendarID(for: meeting.id) != nil }
+
     var body: some View {
         if let m = model {
             Button("Open Details") { CalendarSection.showDetails(meeting, m) }
@@ -259,7 +312,7 @@ struct CalendarMeetingMenu: View {
             if CalendarSection.hasRecap(meeting) {
                 Button("Recap") { CalendarSection.openRecap(meeting, m) }
             }
-            if !meeting.isOrganizer, meeting.info != nil {
+            if !meeting.isOrganizer, meeting.info != nil, !isOverlay {
                 Divider()
                 RSVPMenuItems(meeting: meeting, week: week)
             }
@@ -297,6 +350,8 @@ struct AgendaRow: View {
     let meeting: MeetingItem
     let joinable: Bool
     let join: () -> Void
+    /// Overlaid-calendar row: badged, details stay read-only.
+    var isOverlay = false
     @Environment(\.contentTextScale) private var scale
 
     var body: some View {
@@ -334,7 +389,11 @@ struct AgendaRow: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            if let r = meeting.info?.myResponse, !meeting.isOrganizer, r != .accepted {
+            if isOverlay {
+                Text("Other calendar")
+                    .font(AppFont.caption(scale))
+                    .foregroundStyle(.secondary)
+            } else if let r = meeting.info?.myResponse, !meeting.isOrganizer, r != .accepted {
                 Text(r.isPending ? "Not responded" : r.label)
                     .font(AppFont.caption(scale))
                     .foregroundStyle(.secondary)
@@ -482,7 +541,8 @@ struct MeetingInspector: View {
                     }
                     .accessibilityLabel("Responses: \(buckets)")
                 }
-                if !meeting.isOrganizer, let info = meeting.info {
+                if !meeting.isOrganizer, let info = meeting.info,
+                   week.overlayCalendarID(for: meeting.id) == nil {
                     CalendarFactRow(symbol: CalendarDetailsText.responseSymbol(info.myResponse)) {
                         HStack(spacing: 8) {
                             if info.myResponse.isPending { Text("Not responded") }

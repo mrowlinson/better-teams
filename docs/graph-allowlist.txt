@@ -105,7 +105,10 @@ rust/ost/src/api/transcripts.rs::search_transcripts_data | GET /me/drive/search(
 rust/ostmac-core/src/lib.rs::resolve_mri_json | GET /users/{oid}?$select=id,mail,displayName | works | live probeA /users 200; applog /users 200
 rust/ostmac-core/src/recap.rs::drive_item | GET /drives/{d}/items/{i} (meeting organizer's recording, RECAP2) | works | scope Files.ReadWrite.All granted (same basis as recordings list/search)
 rust/ostmac-core/src/recap.rs::resolve_share | GET /shares/u!{b64 url}/driveItem (meeting recording/notes by address, RECAP2) | works | scope Files.ReadWrite.All granted
+swift/Sources/OstMacCore/CalendarGraph.swift::announceChannelMeeting | POST /teams/{id}/channels/{id}/messages | unproven | scope ChannelMessage.Send granted — needs owner OK for one live channel post (visible to team members, never sent under the lane live rules)
 swift/Sources/OstMacCore/CalendarGraph.swift::attachment | GET /me/events/{id}/attachments/{aid} | works | scope Calendars.ReadWrite granted
+swift/Sources/OstMacCore/CalendarGraph.swift::calendarRange | GET /me/calendars/{id}/calendarView (+ nextLink) | works | scope Calendars.ReadWrite.Shared granted
+swift/Sources/OstMacCore/CalendarGraph.swift::calendars | GET /me/calendars | works | scope Calendars.ReadWrite.Shared granted
 swift/Sources/OstMacCore/CalendarGraph.swift::create | POST /me/events (+ GET re-read) | works | scope Calendars.ReadWrite granted
 swift/Sources/OstMacCore/CalendarGraph.swift::createWebinar | POST /solutions/virtualEvents/webinars | unproven | scope VirtualEvent.ReadWrite not in the granted list and a tenant write is never sent under the live rules — needs owner OK for one live webinar create
 swift/Sources/OstMacCore/CalendarGraph.swift::delete | DELETE /me/events/{id} | works | scope Calendars.ReadWrite granted
