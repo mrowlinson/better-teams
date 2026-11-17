@@ -202,11 +202,30 @@ fn inflight_for(profile: &str) -> std::sync::Arc<tokio::sync::Mutex<()>> {
         .clone()
 }
 
+/// Max time a refresher waits for another process's hold before failing
+/// loud (retryable [`crate::config::ProfileBusy`], never `ReauthRequired`:
+/// contention is not a burned credential). Worst legit hold is one main
+/// grant plus the derived chain (Skype/Graph/IC3/recorder), each
+/// HTTP-bounded; 90s covers a slow-but-alive holder, and the
+/// post-timeout adoption re-read saves the common case where the winner
+/// just finished while we waited.
+const PROFILE_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(90);
+
 /// Acquire the profile lockfile without stalling the async runtime
-/// (blocking `flock` runs on the blocking pool).
+/// (blocking `flock` runs on the blocking pool), waiting at most
+/// [`PROFILE_LOCK_WAIT`].
 async fn acquire_profile_lock(profile: &str) -> Result<crate::config::ProfileFileLock> {
+    acquire_profile_lock_for(profile, PROFILE_LOCK_WAIT).await
+}
+
+/// [`acquire_profile_lock`] with an explicit wait (tests pass seconds;
+/// production uses [`PROFILE_LOCK_WAIT`]).
+async fn acquire_profile_lock_for(
+    profile: &str,
+    wait: std::time::Duration,
+) -> Result<crate::config::ProfileFileLock> {
     let owned = profile.to_string();
-    tokio::task::spawn_blocking(move || Config::lock_profile_exclusive(&owned))
+    tokio::task::spawn_blocking(move || Config::try_lock_profile_exclusive(&owned, wait))
         .await
         .context("profile lock task failed")?
 }
@@ -216,15 +235,36 @@ async fn acquire_profile_lock(profile: &str) -> Result<crate::config::ProfileFil
 ///
 /// Race protocol (all under per-profile in-process single-flight AND the
 /// cross-process profile lockfile, held across read-exchange-write):
-///  1. snapshot the stored refresh token;
+///  1. snapshot the stored refresh and access tokens;
 ///  2. re-read from disk once the locks are held; if the refresh token
-///     rotated (or a fresh access token appeared) another process already
+///     rotated OR the access token changed, another process already
 ///     refreshed -> adopt it (invalidate cache) and return WITHOUT any
-///     exchange;
+///     exchange. Comparing token STRINGS (not validity) is what makes
+///     solo proactive refresh keep working: with no winner the re-read
+///     is identical to the snapshot, so a still-valid access token does
+///     NOT suppress the exchange (the missing-derived-token path in
+///     `login` depends on that);
 ///  3. otherwise exchange exactly once;
 ///  4. NEVER persist on failure (no downgrade writes: a burned store stays
 ///     exactly as it was, so a later sign-in is not clobbered).
+/// Lock contention fails loud: on [`crate::config::ProfileBusy`] the
+/// waiter re-reads once (adopting a winner that just finished) and
+/// otherwise returns the retryable busy error — never `ReauthRequired`.
 async fn refresh_for_with<E, F>(profile: &str, exchange: E, acquire_derived: bool) -> Result<bool>
+where
+    E: Fn(String) -> F + Send + Sync,
+    F: std::future::Future<Output = Result<RefreshedTokens>> + Send,
+{
+    refresh_for_with_wait(profile, exchange, acquire_derived, PROFILE_LOCK_WAIT).await
+}
+
+/// [`refresh_for_with`] with an explicit lock wait (tests pass seconds).
+async fn refresh_for_with_wait<E, F>(
+    profile: &str,
+    exchange: E,
+    acquire_derived: bool,
+    lock_wait: std::time::Duration,
+) -> Result<bool>
 where
     E: Fn(String) -> F + Send + Sync,
     F: std::future::Future<Output = Result<RefreshedTokens>> + Send,
@@ -234,30 +274,44 @@ where
         Some(rt) => rt,
         None => return Ok(false),
     };
-    let access_was_valid = snapshot.get_access_token().is_some_and(|t| !t.is_expired());
+    let snapshot_at = snapshot.get_access_token().map(|t| t.token);
 
     // (a) in-process single-flight.
     let slot = inflight_for(profile);
     let _inproc = slot.lock().await;
     // (b) cross-process exclusion, held across re-read + exchange + write.
-    let _file = acquire_profile_lock(profile).await?;
+    let _file = match acquire_profile_lock_for(profile, lock_wait).await {
+        Ok(g) => g,
+        Err(e) if crate::config::is_profile_busy(&e) => {
+            // Contended the whole wait: adopt a winner that finished
+            // meanwhile, else fail loud (retryable, not burned).
+            let fresh = Config::load_for(profile)?;
+            let rt_now = fresh.get_refresh_token();
+            let at_now = fresh.get_access_token().map(|t| t.token);
+            if rt_now.as_deref() != Some(refresh_token_str.as_str()) || at_now != snapshot_at {
+                Config::invalidate_cache_for(profile);
+                return Ok(rt_now.is_some());
+            }
+            return Err(e);
+        }
+        Err(e) => return Err(e),
+    };
 
     // (c) re-read under the locks; skip the exchange when already fresh.
+    // (`rt_now == None` lands here too — signed out elsewhere —
+    // returning Ok(false).)
     let fresh = Config::load_for(profile)?;
     let rt_now = fresh.get_refresh_token();
-    let access_now_valid = fresh.get_access_token().is_some_and(|t| !t.is_expired());
-    if rt_now.as_deref() != Some(refresh_token_str.as_str())
-        || (!access_was_valid && access_now_valid)
-    {
-        // Winner already persisted: adopt, no exchange. (`rt_now == None`
-        // lands here too — signed out elsewhere — returning Ok(false).)
+    let at_now = fresh.get_access_token().map(|t| t.token);
+    if rt_now.as_deref() != Some(refresh_token_str.as_str()) || at_now != snapshot_at {
+        // Winner already persisted: adopt, no exchange.
         Config::invalidate_cache_for(profile);
         return Ok(rt_now.is_some());
     }
+    let mut config = fresh;
 
     // (d) exactly one exchange; on failure persist NOTHING.
     let new_tokens = exchange(refresh_token_str).await?;
-    let mut config = fresh;
 
     config.set_access_token(new_tokens.access_token, new_tokens.expires_in);
 
@@ -663,6 +717,10 @@ pub struct TokenGrant {
     /// OIDC id token (NAA grants ask for `openid`: MSAL.js rejects a
     /// nested-app-auth reply without one). Never printed.
     pub id_token: Option<String>,
+    /// Rotated refresh token, when the IdP issued one (broker grants carry
+    /// `offline_access`, so they rotate the server-side RT chain: the
+    /// caller must persist this or the stored RT burns). Never printed.
+    pub refresh_token: Option<String>,
 }
 
 impl std::fmt::Debug for TokenGrant {
@@ -672,6 +730,7 @@ impl std::fmt::Debug for TokenGrant {
             .field("expires_in", &self.expires_in)
             .field("scope", &self.scope)
             .field("id_token", &self.id_token.as_ref().map(|t| format!("<{} chars>", t.len())))
+            .field("refresh_token", &self.refresh_token.as_ref().map(|t| format!("<{} chars>", t.len())))
             .finish()
     }
 }
@@ -823,6 +882,7 @@ pub async fn post_token_grant(
         expires_in: v.get("expires_in").and_then(|e| e.as_u64().or_else(|| e.as_str()?.parse().ok())),
         scope: v.get("scope").and_then(|s| s.as_str()).map(String::from),
         id_token: v.get("id_token").and_then(|t| t.as_str()).filter(|t| !t.is_empty()).map(String::from),
+        refresh_token: v.get("refresh_token").and_then(|t| t.as_str()).filter(|t| !t.is_empty()).map(String::from),
     })
 }
 
@@ -862,15 +922,32 @@ pub fn clear_grants_for(profile: &str) {
         .retain(|k, _| !k.starts_with(&prefix));
 }
 
-fn stored_refresh_token(profile: &str) -> Result<String> {
-    Config::load_cached_for(profile)?
-        .get_refresh_token()
-        .context("No refresh token. Sign in again.")
-}
-
 /// Access token for any resource or scope (`getAuthToken`), minted with
 /// the stored Teams refresh token on the Teams client id.
 pub async fn token_for_scope_for(profile: &str, scopes: &str) -> Result<TokenGrant> {
+    let auth = AuthConfig::default();
+    let endpoint = token_endpoint(auth.tenant);
+    token_for_scope_for_with(profile, scopes, move |form| {
+        let endpoint = endpoint.clone();
+        let http = crate::api::client::shared_http();
+        async move { post_token_grant(&http, &endpoint, &form, None).await }
+    })
+    .await
+}
+
+/// [`token_for_scope_for`] with an injectable grant POST (tests pass a
+/// stub IdP, zero live traffic). Joins the same exclusion as the refresh
+/// path (per-profile in-process single-flight + cross-process lockfile):
+/// broker grants carry `offline_access`, so each one rotates the
+/// server-side RT chain — concurrent unlocked callers redeem the same RT
+/// and burn it (TOKENRACE-R2 gap (a)). Same-scope losers re-hit the
+/// winner's cached grant (one exchange); the rotated RT is persisted so
+/// the store stays on the chain tip. Failures persist nothing.
+async fn token_for_scope_for_with<X, F>(profile: &str, scopes: &str, exchange: X) -> Result<TokenGrant>
+where
+    X: Fn(Vec<(String, String)>) -> F + Send + Sync,
+    F: std::future::Future<Output = Result<TokenGrant>> + Send,
+{
     let scopes = normalize_scopes(scopes);
     anyhow::ensure!(!scopes.is_empty(), "no scope");
     let auth = AuthConfig::default();
@@ -878,10 +955,42 @@ pub async fn token_for_scope_for(profile: &str, scopes: &str) -> Result<TokenGra
     if let Some(g) = cached_grant(&key) {
         return Ok(g);
     }
-    let rt = stored_refresh_token(profile)?;
-    let form = scope_grant_form(auth.client_id, &rt, &scopes);
-    let g = post_token_grant(&crate::api::client::shared_http(), &token_endpoint(auth.tenant), &form, None).await?;
-    store_grant(key, &g);
+    broker_grant_with(profile, &key, exchange, |rt| {
+        scope_grant_form(auth.client_id, &rt, &scopes)
+    })
+    .await
+}
+
+/// Shared broker exclusion: single-flight + lockfile, cache re-check
+/// (same-scope winner), redeem the FRESH stored RT, persist rotation.
+async fn broker_grant_with<X, F>(
+    profile: &str,
+    key: &str,
+    exchange: X,
+    form_for: impl Fn(String) -> Vec<(String, String)>,
+) -> Result<TokenGrant>
+where
+    X: Fn(Vec<(String, String)>) -> F + Send + Sync,
+    F: std::future::Future<Output = Result<TokenGrant>> + Send,
+{
+    let slot = inflight_for(profile);
+    let _inproc = slot.lock().await;
+    let _file = acquire_profile_lock(profile).await?;
+    if let Some(g) = cached_grant(key) {
+        return Ok(g);
+    }
+    let mut stored = Config::load_for(profile)?;
+    let rt = stored
+        .get_refresh_token()
+        .context("No refresh token. Sign in again.")?;
+    let g = exchange(form_for(rt.clone())).await?;
+    if let Some(new_rt) = g.refresh_token.clone() {
+        if new_rt != rt {
+            stored.set_refresh_token(new_rt);
+            stored.save_to(profile)?;
+        }
+    }
+    store_grant(key.to_string(), &g);
     Ok(g)
 }
 
@@ -889,6 +998,30 @@ pub async fn token_for_scope_for(profile: &str, scopes: &str) -> Result<TokenGra
 /// `origin` its page origin (redirect `brk-multihub://<host>`). The
 /// grant is sent without an `Origin` header (see [`naa_grant_form`]).
 pub async fn naa_token_for(profile: &str, client_id: &str, scopes: &str, origin: &str) -> Result<TokenGrant> {
+    let auth = AuthConfig::default();
+    let endpoint = token_endpoint(auth.tenant);
+    naa_token_for_with(profile, client_id, scopes, origin, move |form| {
+        let endpoint = endpoint.clone();
+        let http = crate::api::client::shared_http();
+        async move { post_token_grant(&http, &endpoint, &form, None).await }
+    })
+    .await
+}
+
+/// [`naa_token_for`] with an injectable grant POST (tests pass a stub
+/// IdP, zero live traffic). Same exclusion as [`token_for_scope_for_with`]
+/// (NAA grants rotate the RT chain the same way).
+async fn naa_token_for_with<X, F>(
+    profile: &str,
+    client_id: &str,
+    scopes: &str,
+    origin: &str,
+    exchange: X,
+) -> Result<TokenGrant>
+where
+    X: Fn(Vec<(String, String)>) -> F + Send + Sync,
+    F: std::future::Future<Output = Result<TokenGrant>> + Send,
+{
     let scopes = normalize_scopes(scopes);
     anyhow::ensure!(!scopes.is_empty(), "no scope");
     anyhow::ensure!(!client_id.trim().is_empty(), "no client id");
@@ -898,17 +1031,10 @@ pub async fn naa_token_for(profile: &str, client_id: &str, scopes: &str, origin:
     if let Some(g) = cached_grant(&key) {
         return Ok(g);
     }
-    let rt = stored_refresh_token(profile)?;
-    let form = naa_grant_form(auth.client_id, client_id, &rt, &scopes, &redirect);
-    let g = post_token_grant(
-        &crate::api::client::shared_http(),
-        &token_endpoint(auth.tenant),
-        &form,
-        None,
-    )
-    .await?;
-    store_grant(key, &g);
-    Ok(g)
+    broker_grant_with(profile, &key, exchange, |rt| {
+        naa_grant_form(auth.client_id, client_id, &rt, &scopes, &redirect)
+    })
+    .await
 }
 
 #[cfg(test)]
@@ -951,8 +1077,8 @@ mod broker_tests {
         assert!(n.contains(&("brk_client_id".into(), "hub".into())));
         assert!(n.contains(&("redirect_uri".into(), "brk-multihub://a.example.com".into())));
         assert!(n.contains(&("brk_redirect_uri".into(), HUB_REDIRECT_URI.into())));
-        let dbg = format!("{:?}", TokenGrant { access_token: "SECRET".into(), expires_in: Some(1), scope: None, id_token: Some("IDSECRET".into()) });
-        assert!(!dbg.contains("SECRET"));
+        let dbg = format!("{:?}", TokenGrant { access_token: "SECRET".into(), expires_in: Some(1), scope: None, id_token: Some("IDSECRET".into()), refresh_token: Some("RTSECRET".into()) });
+        assert!(!dbg.contains("SECRET") && !dbg.contains("RTSECRET"), "grant Debug must redact secrets: {dbg}");
     }
 
     /// One-shot HTTP stub: records the raw request, answers `resp`.
@@ -1033,7 +1159,7 @@ mod broker_tests {
 
     #[test]
     fn grant_cache_expiry_and_clear() {
-        let g = TokenGrant { access_token: "t".into(), expires_in: Some(3600), scope: None, id_token: None };
+        let g = TokenGrant { access_token: "t".into(), expires_in: Some(3600), scope: None, id_token: None, refresh_token: None };
         store_grant("p1|c|s".into(), &g);
         store_grant("p2|c|s".into(), &TokenGrant { expires_in: Some(60), ..g.clone() });
         assert!(cached_grant("p1|c|s").is_some());
@@ -1120,6 +1246,16 @@ mod refresh_race_tests {
             cfg.set_refresh_token(rt.to_string());
             cfg.save_to(&self.profile).expect("seed store");
         }
+
+        /// Seed a still-VALID access token + `rt` (the proactive-refresh
+        /// shape: `login`'s missing-derived branch calls `refresh_for`
+        /// while the access token is good).
+        fn seed_valid(&self, rt: &str) {
+            let mut cfg = Config::default();
+            cfg.set_access_token("AT-OLD".to_string(), Some(3600));
+            cfg.set_refresh_token(rt.to_string());
+            cfg.save_to(&self.profile).expect("seed store");
+        }
     }
 
     impl Drop for TempStore {
@@ -1132,29 +1268,41 @@ mod refresh_race_tests {
         }
     }
 
-    /// Stub IdP: single-use rotating refresh tokens. The FIRST exchange of
-    /// the current token wins and rotates it; any replay of a burned token
-    /// fails with `invalid_grant`. `delay` forces caller overlap.
+    /// Stub IdP: single-use refresh tokens. The FIRST exchange of the
+    /// current token wins; any replay of a burned token fails with
+    /// `invalid_grant`. Rotating mode issues a fresh RT per win (like AAD
+    /// normally does); non-rotating mode re-issues the SAME RT string but
+    /// still burns it server-side after one redeem (the TOKENRACE-R2 gap
+    /// (b) shape: RT unchanged on disk while the store's access token is
+    /// already fresh). `delay` forces caller overlap.
     struct StubIdP {
         state: Mutex<StubState>,
         exchanges: AtomicU64,
         delay: std::time::Duration,
+        rotating: bool,
     }
 
     struct StubState {
         current_rt: String,
         next_id: u64,
+        consumed: bool,
     }
 
     impl StubIdP {
         fn new(rt0: &str, delay: std::time::Duration) -> Arc<Self> {
+            Self::new_mode(rt0, delay, true)
+        }
+
+        fn new_mode(rt0: &str, delay: std::time::Duration, rotating: bool) -> Arc<Self> {
             Arc::new(Self {
                 state: Mutex::new(StubState {
                     current_rt: rt0.to_string(),
                     next_id: 1,
+                    consumed: false,
                 }),
                 exchanges: AtomicU64::new(0),
                 delay,
+                rotating,
             })
         }
 
@@ -1162,16 +1310,45 @@ mod refresh_race_tests {
             self.exchanges.fetch_add(1, Ordering::SeqCst);
             tokio::time::sleep(self.delay).await;
             let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
-            if rt != st.current_rt {
+            if rt != st.current_rt || (st.consumed && !self.rotating) {
                 anyhow::bail!("token grant failed (HTTP 400): invalid_grant burned token replay");
             }
+            st.consumed = true;
             let id = st.next_id;
             st.next_id += 1;
-            st.current_rt = format!("RT-{}", id);
+            if self.rotating {
+                st.current_rt = format!("RT-{}", id);
+                st.consumed = false;
+            }
             Ok(RefreshedTokens {
                 access_token: format!("AT-{}", id),
                 expires_in: Some(3600),
-                refresh_token: Some(st.current_rt.clone()),
+                refresh_token: if self.rotating {
+                    Some(st.current_rt.clone())
+                } else {
+                    None
+                },
+            })
+        }
+
+        /// Broker-shaped stub: redeems the RT from a grant form, same
+        /// single-use rules as [`StubIdP::exchange`].
+        async fn exchange_form(
+            self: &Arc<Self>,
+            form: Vec<(String, String)>,
+        ) -> Result<TokenGrant> {
+            let rt = form
+                .iter()
+                .find(|(k, _)| k == "refresh_token")
+                .map(|(_, v)| v.clone())
+                .unwrap_or_default();
+            let won = self.exchange(rt).await?;
+            Ok(TokenGrant {
+                access_token: format!("BROKER-{}", won.access_token),
+                expires_in: won.expires_in,
+                scope: None,
+                id_token: None,
+                refresh_token: won.refresh_token,
             })
         }
     }
@@ -1377,5 +1554,307 @@ mod refresh_race_tests {
     #[test]
     fn lock_child_entry() {
         let _ = do_child_increment();
+    }
+
+    /// R2 gap (a): N concurrent broker grants redeem the stored RT with NO
+    /// exclusion (outside the §98 single-flight + flock). Single-use RT:
+    /// one caller wins, the rest get `invalid_grant` on the burned token.
+    /// Fixed code: broker paths join the same exclusion, same-scope
+    /// losers share the winner's cached grant (exactly one exchange) and
+    /// the rotated RT is persisted to the store.
+    #[tokio::test]
+    async fn broker_concurrent_same_scope_single_exchange() {
+        if !in_spawned_child("refresh_race_tests::broker_concurrent_same_scope_single_exchange") {
+            return;
+        }
+        let store = TempStore::new("broker");
+        store.seed("RT-0");
+        let stub = StubIdP::new("RT-0", std::time::Duration::from_millis(100));
+
+        let mut tasks = Vec::new();
+        for _ in 0..4 {
+            let s = stub.clone();
+            let profile = store.profile.clone();
+            tasks.push(tokio::spawn(async move {
+                token_for_scope_for_with(&profile, "https://r2broker.example/S1", move |form| {
+                    let s = s.clone();
+                    async move { s.exchange_form(form).await }
+                })
+                .await
+            }));
+        }
+        for t in tasks {
+            match t.await.expect("task") {
+                Ok(_) => {}
+                Err(e) => panic!("every broker caller must succeed, got: {:#}", e),
+            }
+        }
+        assert_eq!(
+            stub.exchanges.load(Ordering::SeqCst),
+            1,
+            "same scope: one IdP exchange, losers share the winner's grant"
+        );
+        let final_cfg = Config::load_cached_for(&store.profile).expect("reload");
+        assert_eq!(
+            final_cfg.get_refresh_token().expect("stored rt"),
+            stub.state.lock().unwrap().current_rt,
+            "rotated RT must be persisted"
+        );
+    }
+
+    /// R2 gap (b): proactive refresh (still-valid access token, e.g.
+    /// `login`'s missing-derived branch) racing a winner against a
+    /// NON-rotating IdP. The re-read sees an unchanged RT with
+    /// `access_was_valid == true`, so the loser redeems the
+    /// already-redeemed RT and fails spuriously on a store that is
+    /// actually fresh. Fixed code: the loser adopts whenever the access
+    /// token changed under it (exactly one exchange, both callers Ok).
+    #[tokio::test]
+    async fn proactive_refresh_adopts_after_winner_no_rotation() {
+        if !in_spawned_child(
+            "refresh_race_tests::proactive_refresh_adopts_after_winner_no_rotation",
+        ) {
+            return;
+        }
+        let store = TempStore::new("proactive");
+        store.seed_valid("RT-0");
+        let stub = StubIdP::new_mode("RT-0", std::time::Duration::from_millis(150), false);
+
+        let s = stub.clone();
+        let profile = store.profile.clone();
+        let first = tokio::spawn(async move {
+            refresh_for_with(
+                &profile,
+                move |rt| {
+                    let s = s.clone();
+                    async move { s.exchange(rt).await }
+                },
+                false,
+            )
+            .await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        let s = stub.clone();
+        let profile = store.profile.clone();
+        let second = tokio::spawn(async move {
+            refresh_for_with(
+                &profile,
+                move |rt| {
+                    let s = s.clone();
+                    async move { s.exchange(rt).await }
+                },
+                false,
+            )
+            .await
+        });
+        let a = first.await.expect("task");
+        let b = second.await.expect("task");
+        match (&a, &b) {
+            (Ok(_), Ok(_)) => {}
+            _ => panic!("both callers must succeed (a={a:?}, b={b:?})"),
+        }
+        assert_eq!(
+            stub.exchanges.load(Ordering::SeqCst),
+            1,
+            "loser must adopt, not redeem"
+        );
+        let final_cfg = Config::load_cached_for(&store.profile).expect("reload");
+        assert!(
+            final_cfg
+                .get_access_token()
+                .is_some_and(|t| !t.is_expired()),
+            "store must hold the winner's fresh access token"
+        );
+    }
+
+    /// Corner-fix guard: a SOLO proactive refresh (still-valid access,
+    /// no concurrent winner — `login`'s missing-derived-token path) must
+    /// STILL exchange. The string-compare adopt rule only skips when the
+    /// re-read differs from the snapshot, and with no winner they are
+    /// identical.
+    #[tokio::test]
+    async fn proactive_solo_refresh_still_exchanges() {
+        if !in_spawned_child("refresh_race_tests::proactive_solo_refresh_still_exchanges") {
+            return;
+        }
+        let store = TempStore::new("prosol");
+        store.seed_valid("RT-0");
+        let stub = StubIdP::new("RT-0", std::time::Duration::ZERO);
+        let s = stub.clone();
+        let profile = store.profile.clone();
+        match refresh_for_with(
+            &profile,
+            move |rt| {
+                let s = s.clone();
+                async move { s.exchange(rt).await }
+            },
+            false,
+        )
+        .await
+        {
+            Ok(true) => {}
+            other => panic!("solo proactive refresh must exchange (got {other:?})"),
+        }
+        assert_eq!(
+            stub.exchanges.load(Ordering::SeqCst),
+            1,
+            "no winner: exactly one exchange, not a silent adopt"
+        );
+    }
+
+    /// R2 gap (c): the profile `flock` used to block with NO timeout — a
+    /// process hung mid-exchange stalled every other refresher forever.
+    /// Fixed code waits boundedly ([`PROFILE_LOCK_WAIT`], seconds in this
+    /// test) and fails loud with retryable `ProfileBusy` — never
+    /// `ReauthRequired`. REPLACES the R0 characterization test
+    /// `profile_lock_wait_is_unbounded` (which proved the unbounded wait;
+    /// reason recorded: the wait is now bounded by construction).
+    #[tokio::test]
+    async fn refresh_fails_loud_when_lock_busy() {
+        if !in_spawned_child("refresh_race_tests::refresh_fails_loud_when_lock_busy") {
+            return;
+        }
+        let store = TempStore::new("lockbusy");
+        store.seed("RT-0");
+        let stub = StubIdP::new("RT-0", std::time::Duration::ZERO);
+        let held = Config::lock_profile_exclusive(&store.profile).expect("hold lock");
+        let s = stub.clone();
+        let profile = store.profile.clone();
+        let t0 = std::time::Instant::now();
+        let r = refresh_for_with_wait(
+            &profile,
+            move |rt| {
+                let s = s.clone();
+                async move { s.exchange(rt).await }
+            },
+            false,
+            std::time::Duration::from_secs(2),
+        )
+        .await;
+        let waited = t0.elapsed();
+        let e = r.expect_err("contended lock must fail, not hang");
+        assert!(
+            crate::config::is_profile_busy(&e),
+            "must be typed ProfileBusy, got: {:#}",
+            e
+        );
+        assert!(
+            !is_reauth_required(&e),
+            "contention is not a burned credential: {:#}",
+            e
+        );
+        assert!(
+            waited < std::time::Duration::from_secs(10),
+            "wait must be bounded (took {waited:?})"
+        );
+        assert_eq!(
+            stub.exchanges.load(Ordering::SeqCst),
+            0,
+            "no exchange while contended"
+        );
+        // Store untouched: a later retry or sign-in is not clobbered.
+        let after = Config::load_for(&store.profile).expect("reload");
+        assert_eq!(after.get_refresh_token().as_deref(), Some("RT-0"));
+        drop(held);
+    }
+
+    /// Gap (a), NAA shape: concurrent nested-app grants share the same
+    /// exclusion and the same cache re-check (one exchange per app).
+    #[tokio::test]
+    async fn naa_concurrent_same_app_single_exchange() {
+        if !in_spawned_child("refresh_race_tests::naa_concurrent_same_app_single_exchange") {
+            return;
+        }
+        let store = TempStore::new("naanew");
+        store.seed("RT-0");
+        let stub = StubIdP::new("RT-0", std::time::Duration::from_millis(100));
+
+        let mut tasks = Vec::new();
+        for _ in 0..4 {
+            let s = stub.clone();
+            let profile = store.profile.clone();
+            tasks.push(tokio::spawn(async move {
+                naa_token_for_with(
+                    &profile,
+                    "11111111-2222-3333-4444-555555555555",
+                    "User.Read",
+                    "https://tasks.r2naa.example/teamsui/x",
+                    move |form| {
+                        let s = s.clone();
+                        async move { s.exchange_form(form).await }
+                    },
+                )
+                .await
+            }));
+        }
+        for t in tasks {
+            match t.await.expect("task") {
+                Ok(_) => {}
+                Err(e) => panic!("every NAA caller must succeed, got: {:#}", e),
+            }
+        }
+        assert_eq!(
+            stub.exchanges.load(Ordering::SeqCst),
+            1,
+            "same app: one IdP exchange, losers share the cached grant"
+        );
+        let final_cfg = Config::load_cached_for(&store.profile).expect("reload");
+        assert_eq!(
+            final_cfg.get_refresh_token().expect("stored rt"),
+            stub.state.lock().unwrap().current_rt,
+            "rotated RT must be persisted"
+        );
+    }
+
+    /// Gap (a), second shape: concurrent broker grants for DISTINCT scopes
+    /// cannot share a cached grant, so each exchanges — sequentially under
+    /// the exclusion, each redeeming the FRESH RT left by the previous one.
+    /// All succeed (no burn) and the store ends on the chain tip.
+    #[tokio::test]
+    async fn broker_concurrent_distinct_scopes_all_succeed() {
+        if !in_spawned_child("refresh_race_tests::broker_concurrent_distinct_scopes_all_succeed") {
+            return;
+        }
+        let store = TempStore::new("brokermulti");
+        store.seed("RT-0");
+        let stub = StubIdP::new("RT-0", std::time::Duration::from_millis(50));
+
+        let mut tasks = Vec::new();
+        for i in 0..3 {
+            let s = stub.clone();
+            let profile = store.profile.clone();
+            tasks.push(tokio::spawn(async move {
+                token_for_scope_for_with(
+                    &profile,
+                    &format!("https://r2multi.example/S{i}"),
+                    move |form| {
+                        let s = s.clone();
+                        async move { s.exchange_form(form).await }
+                    },
+                )
+                .await
+            }));
+        }
+        for t in tasks {
+            match t.await.expect("task") {
+                Ok(g) => assert!(
+                    g.access_token.starts_with("BROKER-AT-"),
+                    "grant shape: {}",
+                    g.access_token
+                ),
+                Err(e) => panic!("every broker caller must succeed, got: {:#}", e),
+            }
+        }
+        assert_eq!(
+            stub.exchanges.load(Ordering::SeqCst),
+            3,
+            "one exchange per distinct scope, chained on fresh RTs"
+        );
+        let final_cfg = Config::load_cached_for(&store.profile).expect("reload");
+        assert_eq!(
+            final_cfg.get_refresh_token().expect("stored rt"),
+            stub.state.lock().unwrap().current_rt,
+            "store ends on the chain tip"
+        );
     }
 }

@@ -1804,6 +1804,40 @@ Notes:
     `wire_block_markdown_to_teams_html`, `wire_rich_mixed_with_code`.
     UPSTREAM: PR https://github.com/eisbaw/ost/pull/114 (fix/composer-wire-html, stacks on #54)
 
+100. [fix] `src/auth/oauth.rs` (+ `src/config/mod.rs`) — **refresh
+    single-flight hardens broker race, proactive corner, lock hang**
+    (TOKENRACE-R2, follow-up to §98). (a) `token_for_scope_for` /
+    `naa_token_for` redeemed the stored RT with no exclusion: concurrent
+    broker grants burned the single-use RT the same way §98 fixed for
+    `refresh_for`. Both now share one `broker_grant_with` under the same
+    per-profile single-flight + `flock` (cache re-check, redeem the fresh
+    RT, persist rotation, nothing on failure). `TokenGrant` gains
+    `refresh_token` (parsed in `post_token_grant`, redacted in `Debug`)
+    because broker grants carry `offline_access` and rotate the chain.
+    (b) Proactive refresh (valid access, e.g. `login`'s missing-derived
+    path) racing a winner against a non-rotating IdP re-read an unchanged
+    RT with `access_was_valid == true` and redeemed the burned RT. The
+    adopt rule now compares access-token STRINGS (changed under us =
+    winner), which keeps solo proactive refresh exchanging (no winner:
+    re-read identical). The suggested `|| access_now_valid` was rejected:
+    it would no-op every solo proactive refresh. (c) The `flock` blocked
+    with no timeout. New `try_lock_profile_exclusive` (`LOCK_EX|LOCK_NB`,
+    50ms polls, 90s default covers one main grant + the derived chain);
+    contention fails loud as typed `ProfileBusy` (new `is_profile_busy`
+    predicate) — retryable, never `ReauthRequired` — after one adoption
+    re-read for a winner that just finished. Verified derived-token
+    acquisition never re-enters the exclusion (direct oauth2 calls, no
+    broker path), so no self-deadlock. Tests (stub IdP, zero traffic):
+    `broker_concurrent_same_scope_single_exchange` (4 callers, 1
+    exchange), `naa_concurrent_same_app_single_exchange`,
+    `broker_concurrent_distinct_scopes_all_succeed` (3 chained, store on
+    chain tip), `proactive_refresh_adopts_after_winner_no_rotation`
+    (R0: loser got `invalid_grant`; now both Ok, 1 exchange),
+    `proactive_solo_refresh_still_exchanges`,
+    `refresh_fails_loud_when_lock_busy` (replaces the R0 unbounded-wait
+    characterization). R1's 5 tests unmodified, still green.
+    UPSTREAM: pending
+
 ## Upstream PRs, wave 9 (2026-09-25 R10 audit; base 0892144; origin/main still 0892144)
 
 No-file wave. `git diff 307d221..db62ed7 -- rust/ost` is empty (wave-8
