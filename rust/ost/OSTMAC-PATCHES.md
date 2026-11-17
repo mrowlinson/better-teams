@@ -1838,6 +1838,27 @@ Notes:
     characterization). R1's 5 tests unmodified, still green.
     UPSTREAM: PARTIAL: (b) proactive adopt + (c) bounded lock wait https://github.com/eisbaw/ost/pull/115 (fix/refresh-broker-race, stacks on #113); (a) broker exclusion pending: needs #75's broker code (TokenGrant/broker fns, unmerged on the #113 base)
 
+101. [feature] `src/api/chat.rs` — **send options: importance, subject,
+    broadcast mentions (COMPOSER-B)**. Additive `SendOpts{importance,
+    subject, mentions}` (`none()` = legacy body bit-identical):
+    `importance` serializes `"high"`/`"urgent"` only when set (Graph
+    `chatMessage.importance` parity); `subject` only when non-blank;
+    `properties.mentions[{itemid,mentionType,displayName}]` only for
+    tokens that actually substituted (stale lists never notify blind).
+    `apply_mentions` swaps whole `@channel`/`@team`/`@everyone` tokens
+    for private-use sentinels pre-escape (whole-token bounds mirroring
+    the composer trigger, case-insensitive, longest-first; fenced code
+    and inline-code spans excluded), `restore_mentions` emits observed
+    `<at id="0">…</at>` broadcast tags post-escape (ids/display escaped).
+    Flows through `send_message_body_opts`, `build_reply_html_opts`,
+    `*_with_client_id_opts` (plain/reply/thread; legacy fns delegate
+    with `none()`). No FFI breakage (new `*_opts` entry points live in
+    ostmac-core, not vendored). Tests: `composer_b_importance_parse_
+    and_wire`, `composer_b_parse_wire_mentions_tolerant`,
+    `composer_b_apply_mentions_bounds`, `composer_b_body_opts_keys`,
+    `composer_b_reply_body_opts` (ost chat module 68/68 green).
+    UPSTREAM: pending
+
 ## Upstream PRs, wave 9 (2026-09-25 R10 audit; base 0892144; origin/main still 0892144)
 
 No-file wave. `git diff 307d221..db62ed7 -- rust/ost` is empty (wave-8

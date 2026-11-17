@@ -387,6 +387,87 @@ public enum RustCore {
         }
     }
 
+    /// COMPOSER-B: post with importance/subject/mentions (empty = legacy
+    /// body — the Rust layer guarantees bit-identity). Blocking FFI
+    /// (network): call off the main thread.
+    public static func sendIdemOpts(
+        chatID: String, text: String, clientMessageID: String,
+        importance: String, subject: String, mentionsJSON: String
+    ) throws -> SendResponse {
+        try chatID.withCString { idPtr in
+            try text.withCString { textPtr in
+                try clientMessageID.withCString { cPtr in
+                    try importance.withCString { impPtr in
+                        try subject.withCString { subPtr in
+                            try mentionsJSON.withCString { menPtr in
+                                try call(
+                                    ostmac_send_idem_opts(idPtr, textPtr, cPtr, impPtr, subPtr, menPtr),
+                                    as: SendResponse.self)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// COMPOSER-B: quote reply with importance/subject/mentions.
+    /// Blocking FFI (network): call off the main thread.
+    public static func replyIdemOpts(
+        chatID: String, parentID: String, parentSender: String, parentText: String,
+        text: String, clientMessageID: String,
+        importance: String, subject: String, mentionsJSON: String
+    ) throws -> SendResponse {
+        try chatID.withCString { idPtr in
+            try parentID.withCString { parentPtr in
+                try parentSender.withCString { senderPtr in
+                    try parentText.withCString { snippetPtr in
+                        try text.withCString { textPtr in
+                            try clientMessageID.withCString { cPtr in
+                                try importance.withCString { impPtr in
+                                    try subject.withCString { subPtr in
+                                        try mentionsJSON.withCString { menPtr in
+                                            try call(
+                                                ostmac_reply_idem_opts(idPtr, parentPtr, senderPtr, snippetPtr,
+                                                                       textPtr, cPtr, impPtr, subPtr, menPtr),
+                                                as: SendResponse.self)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// COMPOSER-B: channel thread reply with importance/subject/mentions.
+    /// Blocking FFI (network): call off the main thread.
+    public static func threadReplyIdemOpts(
+        channelID: String, rootID: String, text: String, clientMessageID: String,
+        importance: String, subject: String, mentionsJSON: String
+    ) throws -> SendResponse {
+        try channelID.withCString { idPtr in
+            try rootID.withCString { rootPtr in
+                try text.withCString { textPtr in
+                    try clientMessageID.withCString { cPtr in
+                        try importance.withCString { impPtr in
+                            try subject.withCString { subPtr in
+                                try mentionsJSON.withCString { menPtr in
+                                    try call(
+                                        ostmac_thread_reply_idem_opts(idPtr, rootPtr, textPtr, cPtr,
+                                                                      impPtr, subPtr, menPtr),
+                                        as: SendResponse.self)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     /// §106 verify: the newest page of `chatID` searched for the client
     /// message id (nil message = not posted, as far as that page shows).
     public static func findClientMessage(chatID: String, clientMessageID: String) throws -> FindClientMessageResponse {

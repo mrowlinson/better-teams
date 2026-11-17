@@ -88,9 +88,20 @@ struct Composer: View {
     /// People to mention: other people in this conversation (you are
     /// never offered), newest speaker first.
     private var roster: [String] {
-        MentionCompose.filtered(MentionCompose.roster(from: conv.messages.filter { !$0.isOwn },
-                                                      excluding: conv.ownDisplayName),
-                                query: MentionTrigger.query(in: composer.draft(chatID)) ?? "")
+        let query = MentionTrigger.query(in: composer.draft(chatID)) ?? ""
+        let people = MentionCompose.filtered(MentionCompose.roster(from: conv.messages.filter { !$0.isOwn },
+                                                                   excluding: conv.ownDisplayName),
+                                             query: query)
+        // COMPOSER-B: broadcast specials after people (channel-gated).
+        let specials = MentionWire.displays(channel: isChannel).filter { display in
+            query.isEmpty || display.lowercased().contains(query.lowercased())
+        }
+        return people + specials.filter { !people.contains($0) }
+    }
+
+    /// COMPOSER-B: channel posts get team/channel broadcasts + subject.
+    private var isChannel: Bool {
+        ConversationStore.isChannelConversation(chatID)
     }
 
     var body: some View {
@@ -108,6 +119,7 @@ struct Composer: View {
                 AttachmentChips(store: attachments)
             }
             if showFormat { formatBar }
+            if isChannel { subjectField }
             // Reaction More… opens at its message (the timeline owns it).
             // Both accessory groups center on the field's last text line
             // (its center while single-line), whatever their heights.
@@ -177,6 +189,7 @@ struct Composer: View {
             .foregroundStyle(showFormat ? AnyShapeStyle(.tint) : AnyShapeStyle(.primary))
             .help(showFormat ? "Hide Formatting" : "Show Formatting")
             .accessibilityLabel(showFormat ? "Hide Formatting" : "Show Formatting")
+            importanceMenu
             iconButton("paperclip", "Attach Files") { attach() }
             iconButton("face.smiling", "Emoji & Symbols") {
                 composer.focusRequest += 1
@@ -226,6 +239,46 @@ struct Composer: View {
         .controlSize(.large)
         .help(shortcut == nil ? label : "\(label) (\(shortcut!))")
         .accessibilityLabel(shortcut == nil ? label : "\(label), \(shortcut!)")
+    }
+
+    /// COMPOSER-B: importance picker (native Menu + Picker checkmarks,
+    /// same 24 pt targets as its neighbors).
+    private var importanceMenu: some View {
+        let level = composer.importance(for: chatID)
+        return Menu {
+            Picker("Importance", selection: importanceBinding) {
+                ForEach(MessageImportance.allCases, id: \.rawValue) { Text($0.label).tag($0) }
+            }
+        } label: {
+            Image(systemName: level == .normal ? "exclamationmark.circle" : "exclamationmark.circle.fill")
+                .frame(width: 24, height: 24)
+        }
+        .menuStyle(.button)
+        .buttonStyle(.borderless)
+        .controlSize(.large)
+        .foregroundStyle(level == .normal ? AnyShapeStyle(.primary) : AnyShapeStyle(.tint))
+        .help("Importance: \(level.label)")
+        .accessibilityLabel("Message importance, \(level.label)")
+    }
+
+    private var importanceBinding: Binding<MessageImportance> {
+        Binding(get: { composer.importance(for: chatID) },
+                set: { composer.setImportance($0, for: chatID) })
+    }
+
+    /// COMPOSER-B: announcement subject (channels only). The wire
+    /// carries it when non-blank; blank posts are unchanged.
+    private var subjectField: some View {
+        TextField("Subject", text: subjectBinding)
+            .textFieldStyle(.roundedBorder)
+            .font(AppFont.body(scale))
+            .help("Announcement subject")
+            .accessibilityLabel("Announcement subject")
+    }
+
+    private var subjectBinding: Binding<String> {
+        Binding(get: { composer.subject(for: chatID) },
+                set: { composer.setSubject($0, for: chatID) })
     }
 
     /// Routes a bar tap or shortcut through the text view (single path,
@@ -435,7 +488,13 @@ struct Composer: View {
             }
         }
         guard !body.isEmpty else { composer.setDraft("", for: chatID); return }
-        conv.send(text: body)
+        // COMPOSER-B: thread importance/subject/mentions, then reset (a
+        // fresh post starts plain).
+        conv.send(text: body,
+                  importance: composer.importance(for: chatID),
+                  subject: isChannel ? composer.subject(for: chatID) : "",
+                  mentions: MentionWire.resolve(in: body, channel: isChannel))
+        composer.resetSendOptions(chatID: chatID)
         composer.setDraft("", for: chatID)
         composer.popover = nil
     }
@@ -472,9 +531,20 @@ struct Composer: View {
         if route.query["draft"] == "rich" {
             composer.setDraft("**Budget** approved, *see notes*\n__Sign here__ and ~~old total~~\n`deploy.sh` at 10", for: chatID)
         }
+        // COMPOSER-B evidence: `subject=1` prefills an announcement
+        // subject (channels only), `importance=<level>` presets the
+        // picker for captures.
+        if route.query["subject"] == "1", isChannel {
+            composer.setSubject("Weekly sync — ship notes", for: chatID)
+        }
+        if let level = route.query["importance"] {
+            composer.setImportance(MessageImportance.parse(level), for: chatID)
+        }
         guard let name = route.query["popover"],
               let p = ComposerPopover(evidenceName: name, lastMessageID: conv.messages.last?.id) else { return }
-        if p == .mention { composer.setDraft("Thanks @", for: chatID) }
+        // `mentionq=<q>` narrows the picker (exercises the filter path;
+        // captures the below-the-fold broadcast specials).
+        if p == .mention { composer.setDraft("Thanks @\(route.query["mentionq"] ?? "")", for: chatID) }
         if p == .sendLater { composer.setDraft("Reminder: review deck at 10", for: chatID) }
         composer.show(p)
     }

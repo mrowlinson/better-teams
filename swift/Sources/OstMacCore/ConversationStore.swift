@@ -880,7 +880,8 @@ public final class ConversationStore: ObservableObject {
     /// With `replyTarget` armed, posts through the reply path (quote
     /// block) and disarms; the optimistic bubble already shows the quote.
     /// Core failure marks the bubble failed (per-message state + retry).
-    public func send(text: String) {
+    public func send(text: String, importance: MessageImportance = .normal, subject: String = "",
+                     mentions: [WireMentionRef] = []) {
         // Top10-code: line endings normalized, interior bytes (indent)
         // verbatim — pasted code survives the send path exactly.
         let body = CodeBlocks.sendBody(for: text)
@@ -923,7 +924,8 @@ public final class ConversationStore: ObservableObject {
                 wireRoute = .plain
             }
         }
-        let request = OutgoingSend(chatID: id, text: body, route: wireRoute, clientMessageID: cmid)
+        let request = OutgoingSend(chatID: id, text: body, route: wireRoute, clientMessageID: cmid,
+                                   importance: importance, subject: subject, mentions: mentions)
         outgoing[pendingID] = request
         deliver(localID: pendingID, request: request, verifyFirst: false)
     }

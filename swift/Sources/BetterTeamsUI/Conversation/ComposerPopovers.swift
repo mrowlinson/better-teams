@@ -71,7 +71,7 @@ struct MentionPicker: View {
     var body: some View {
         Group {
             if names.isEmpty {
-                Text("No Matching People")
+                Text("No Matches")
                     .foregroundStyle(.secondary)
                     .frame(width: 240, height: 60)
             } else {
@@ -84,7 +84,15 @@ struct MentionPicker: View {
                     ForEach(Indexed.wrap(names)) { n in
                         let on = names.indices.contains(selected) && names[selected] == n.value
                         HStack(spacing: 8) {
-                            Avatar(name: n.value, diameter: 22)
+                            // COMPOSER-B: broadcast specials get a
+                            // megaphone, people keep their avatar.
+                            if MentionWire.isSpecialDisplay(n.value) {
+                                Image(systemName: "megaphone")
+                                    .frame(width: 22, height: 22)
+                                    .foregroundStyle(.secondary)
+                            } else {
+                                Avatar(name: n.value, diameter: 22)
+                            }
                             Text(n.value).lineLimit(1)
                                 .foregroundStyle(on ? Color(nsColor: .alternateSelectedControlTextColor) : .primary)
                         }

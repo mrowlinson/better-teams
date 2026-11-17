@@ -26,12 +26,23 @@ public struct OutgoingSend: Sendable, Equatable {
     public let text: String
     public let route: Route
     public let clientMessageID: String
+    /// COMPOSER-B: importance level (normal = legacy wire, never sent).
+    public let importance: MessageImportance
+    /// COMPOSER-B: announcement subject (channel posts; blank = absent).
+    public let subject: String
+    /// COMPOSER-B: resolved broadcast mentions (empty = none).
+    public let mentions: [WireMentionRef]
 
-    public init(chatID: String, text: String, route: Route = .plain, clientMessageID: String) {
+    public init(chatID: String, text: String, route: Route = .plain, clientMessageID: String,
+                importance: MessageImportance = .normal, subject: String = "",
+                mentions: [WireMentionRef] = []) {
         self.chatID = chatID
         self.text = text
         self.route = route
         self.clientMessageID = clientMessageID
+        self.importance = importance
+        self.subject = subject
+        self.mentions = mentions
     }
 }
 
@@ -54,22 +65,29 @@ public struct SendTransport: Sendable {
     /// account hop).
     public static let live = SendTransport(
         post: { r in
+            // COMPOSER-B: the additive `_opts` FFI always (empty opts
+            // render the legacy body bit-identical — unit-tested in ost).
+            let imp = r.importance.wireValue
+            let men = WireMentionRef.json(for: r.mentions)
             switch r.route {
             case .plain:
-                let id = try RustCore.sendIdem(
-                    chatID: r.chatID, text: r.text, clientMessageID: r.clientMessageID).id
+                let id = try RustCore.sendIdemOpts(
+                    chatID: r.chatID, text: r.text, clientMessageID: r.clientMessageID,
+                    importance: imp, subject: r.subject, mentionsJSON: men).id
                 MeetingChatUnmute.after(.send, chatID: r.chatID) // CHATSYNC3 R1
                 return id
             case .reply(let pid, let sender, let ptext):
-                let id = try RustCore.replyIdem(
+                let id = try RustCore.replyIdemOpts(
                     chatID: r.chatID, parentID: pid, parentSender: sender, parentText: ptext,
-                    text: r.text, clientMessageID: r.clientMessageID).id
+                    text: r.text, clientMessageID: r.clientMessageID,
+                    importance: imp, subject: r.subject, mentionsJSON: men).id
                 MeetingChatUnmute.after(.send, chatID: r.chatID) // CHATSYNC3 R1
                 return id
             case .thread(let root):
-                return try RustCore.threadReplyIdem(
+                return try RustCore.threadReplyIdemOpts(
                     channelID: r.chatID, rootID: root, text: r.text,
-                    clientMessageID: r.clientMessageID).id
+                    clientMessageID: r.clientMessageID,
+                    importance: imp, subject: r.subject, mentionsJSON: men).id
             }
         },
         find: { chat, cmid in

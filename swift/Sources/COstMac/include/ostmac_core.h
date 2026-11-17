@@ -142,6 +142,18 @@ char *ostmac_reply_idem(const char *chat_id, const char *parent_id, const char *
                         const char *parent_text, const char *text, const char *client_message_id);
 char *ostmac_thread_reply_idem(const char *channel_id, const char *root_id, const char *text,
                                const char *client_message_id);
+// COMPOSER-B: idempotent posts with importance (`high`/`urgent`, empty =
+// normal), subject (empty = absent), and broadcast mentions (`mentions_json`
+// `[{token,id,display,kind}]`, empty/bad = none). New params tolerate NULL.
+// Caller frees.
+char *ostmac_send_idem_opts(const char *chat_id, const char *text, const char *client_message_id,
+                            const char *importance, const char *subject, const char *mentions_json);
+char *ostmac_reply_idem_opts(const char *chat_id, const char *parent_id, const char *parent_sender,
+                             const char *parent_text, const char *text, const char *client_message_id,
+                             const char *importance, const char *subject, const char *mentions_json);
+char *ostmac_thread_reply_idem_opts(const char *channel_id, const char *root_id, const char *text,
+                                    const char *client_message_id, const char *importance,
+                                    const char *subject, const char *mentions_json);
 // §106 verify: {ok, found, message?} — newest page searched by client
 // message id (a timed-out send checks before Failed/re-post). Caller frees.
 char *ostmac_find_client_message(const char *chat_id, const char *client_message_id);

@@ -43,6 +43,10 @@ enum ComposerPopover: Hashable, Identifiable {
 @MainActor
 final class ComposerModel: ObservableObject {
     @Published var drafts: [String: String] = [:]
+    /// COMPOSER-B: per-chat importance level + announcement subject
+    /// (channel posts). Reset on every send — a fresh post starts plain.
+    @Published var importanceLevels: [String: MessageImportance] = [:]
+    @Published var subjects: [String: String] = [:]
     @Published var popover: ComposerPopover?
     /// Own message being edited (Return saves through `conv.edit`).
     @Published var editing: ChatMessage?
@@ -70,6 +74,34 @@ final class ComposerModel: ObservableObject {
 
     func setDraft(_ text: String, for chatID: String) {
         if drafts[chatID] != text { drafts[chatID] = text }
+    }
+
+    /// COMPOSER-B: importance level for this chat (`.normal` unset).
+    func importance(for chatID: String) -> MessageImportance {
+        importanceLevels[chatID] ?? .normal
+    }
+
+    func setImportance(_ level: MessageImportance, for chatID: String) {
+        if level == .normal {
+            importanceLevels.removeValue(forKey: chatID)
+        } else if importanceLevels[chatID] != level {
+            importanceLevels[chatID] = level
+        }
+    }
+
+    /// COMPOSER-B: announcement subject for this channel (`""` unset).
+    func subject(for chatID: String) -> String {
+        subjects[chatID] ?? ""
+    }
+
+    func setSubject(_ text: String, for chatID: String) {
+        if subjects[chatID] != text { subjects[chatID] = text }
+    }
+
+    /// COMPOSER-B: clear send options after a post (draft clears with it).
+    func resetSendOptions(chatID: String) {
+        importanceLevels.removeValue(forKey: chatID)
+        subjects.removeValue(forKey: chatID)
     }
 
     func beginEdit(_ m: ChatMessage, chatID: String) {

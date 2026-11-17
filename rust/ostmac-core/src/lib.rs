@@ -974,6 +974,51 @@ pub fn reply_idem_json(
     text: &str,
     client_message_id: &str,
 ) -> String {
+    reply_idem_inner(
+        chat_id,
+        parent_id,
+        parent_sender,
+        parent_text,
+        text,
+        client_message_id,
+        &ost::api::SendOpts::none(),
+    )
+}
+
+/// COMPOSER-B: [`reply_idem_json`] with importance/subject/mentions
+/// (same tolerant parsing as [`send_idem_opts_json`]).
+pub fn reply_idem_opts_json(
+    chat_id: &str,
+    parent_id: &str,
+    parent_sender: &str,
+    parent_text: &str,
+    text: &str,
+    client_message_id: &str,
+    importance: &str,
+    subject: &str,
+    mentions_json: &str,
+) -> String {
+    reply_idem_inner(
+        chat_id,
+        parent_id,
+        parent_sender,
+        parent_text,
+        text,
+        client_message_id,
+        &send_opts(importance, subject, mentions_json),
+    )
+}
+
+/// COMPOSER-B: shared reply core (both plain and opts replies land here).
+fn reply_idem_inner(
+    chat_id: &str,
+    parent_id: &str,
+    parent_sender: &str,
+    parent_text: &str,
+    text: &str,
+    client_message_id: &str,
+    opts: &ost::api::SendOpts,
+) -> String {
     let cmid = cmid_or_new(client_message_id);
     if chat_id.trim().is_empty() {
         return err_json("arg", "empty chat_id");
@@ -1000,8 +1045,8 @@ pub fn reply_idem_json(
             let client = ost::api::client::TeamsClient::new()
                 .await
                 .map_err(|e| format!("{:#}", e))?;
-            let sent = ost::api::reply_message_with_client_id(
-                &client, chat_id, parent_id, sender, snippet_src, text, &cmid,
+            let sent = ost::api::reply_message_with_client_id_opts(
+                &client, chat_id, parent_id, sender, snippet_src, text, &cmid, opts,
             )
             .await
             .map_err(|e| format!("{:#}", e))?;
@@ -1030,6 +1075,43 @@ pub fn thread_reply_idem_json(
     text: &str,
     client_message_id: &str,
 ) -> String {
+    thread_reply_idem_inner(
+        channel_id,
+        root_id,
+        text,
+        client_message_id,
+        &ost::api::SendOpts::none(),
+    )
+}
+
+/// COMPOSER-B: [`thread_reply_idem_json`] with importance/subject/mentions
+/// (same tolerant parsing as [`send_idem_opts_json`]).
+pub fn thread_reply_idem_opts_json(
+    channel_id: &str,
+    root_id: &str,
+    text: &str,
+    client_message_id: &str,
+    importance: &str,
+    subject: &str,
+    mentions_json: &str,
+) -> String {
+    thread_reply_idem_inner(
+        channel_id,
+        root_id,
+        text,
+        client_message_id,
+        &send_opts(importance, subject, mentions_json),
+    )
+}
+
+/// COMPOSER-B: shared thread-reply core (plain and opts land here).
+fn thread_reply_idem_inner(
+    channel_id: &str,
+    root_id: &str,
+    text: &str,
+    client_message_id: &str,
+    opts: &ost::api::SendOpts,
+) -> String {
     let cmid = cmid_or_new(client_message_id);
     if !ost::api::is_channel_conversation_id(channel_id) {
         return err_json("arg", "not a channel id");
@@ -1047,10 +1129,11 @@ pub fn thread_reply_idem_json(
             let client = ost::api::client::TeamsClient::new()
                 .await
                 .map_err(|e| format!("{:#}", e))?;
-            let sent =
-                ost::api::thread_reply_with_client_id(&client, channel_id.trim(), root, text, &cmid)
-                    .await
-                    .map_err(|e| format!("{:#}", e))?;
+            let sent = ost::api::thread_reply_with_client_id_opts(
+                &client, channel_id.trim(), root, text, &cmid, opts,
+            )
+            .await
+            .map_err(|e| format!("{:#}", e))?;
             Ok(json!({"ok": true, "chat_id": channel_id.trim(), "root_id": root,
                       "id": sent.id, "client_message_id": sent.client_message_id})
             .to_string())
@@ -1200,6 +1283,31 @@ fn cmid_or_new(client_message_id: &str) -> String {
 /// §106: [`send_json`] with a caller-owned `clientmessageid` (retries
 /// reuse it; blank = fresh). Success adds `id` + `client_message_id`.
 pub fn send_idem_json(chat_id: &str, text: &str, client_message_id: &str) -> String {
+    send_idem_inner(chat_id, text, client_message_id, &ost::api::SendOpts::none())
+}
+
+/// COMPOSER-B: [`send_idem_json`] with importance (`"high"`/`"urgent"`,
+/// else normal), subject (blank = absent), and broadcast mentions
+/// (`[{token,id,display,kind}]` JSON, tolerant). Additive: `none()` is
+/// the legacy request bit-identical.
+pub fn send_idem_opts_json(
+    chat_id: &str,
+    text: &str,
+    client_message_id: &str,
+    importance: &str,
+    subject: &str,
+    mentions_json: &str,
+) -> String {
+    send_idem_inner(chat_id, text, client_message_id, &send_opts(importance, subject, mentions_json))
+}
+
+/// COMPOSER-B: shared send core (both plain and opts posts land here).
+fn send_idem_inner(
+    chat_id: &str,
+    text: &str,
+    client_message_id: &str,
+    opts: &ost::api::SendOpts,
+) -> String {
     let cmid = cmid_or_new(client_message_id);
     if chat_id.trim().is_empty() {
         return err_json("arg", "empty chat_id");
@@ -1213,7 +1321,7 @@ pub fn send_idem_json(chat_id: &str, text: &str, client_message_id: &str) -> Str
             let client = ost::api::client::TeamsClient::new()
                 .await
                 .map_err(|e| format!("{:#}", e))?;
-            let sent = ost::api::send_message_with_client_id(&client, chat_id, text, &cmid)
+            let sent = ost::api::send_message_with_client_id_opts(&client, chat_id, text, &cmid, opts)
                 .await
                 .map_err(|e| format!("{:#}", e))?;
             Ok(sent_json(chat_id, &sent))
@@ -1222,6 +1330,22 @@ pub fn send_idem_json(chat_id: &str, text: &str, client_message_id: &str) -> Str
     match run() {
         Ok(s) => s,
         Err(e) => err_json("send", e),
+    }
+}
+
+/// COMPOSER-B: build [`ost::api::SendOpts`] from FFI strings (all three
+/// tolerant: unknown importance → normal, blank subject → absent, bad
+/// mentions JSON → none).
+fn send_opts(importance: &str, subject: &str, mentions_json: &str) -> ost::api::SendOpts {
+    let subject = subject.trim();
+    ost::api::SendOpts {
+        importance: ost::api::WireImportance::parse(importance),
+        subject: if subject.is_empty() {
+            None
+        } else {
+            Some(subject.to_string())
+        },
+        mentions: ost::api::parse_wire_mentions(mentions_json),
     }
 }
 
@@ -3559,6 +3683,105 @@ pub extern "C" fn ostmac_thread_reply_idem(
     }
 }
 
+/// COMPOSER-B: post with importance/subject/broadcast-mentions. New
+/// params are `opt` (NULL or empty = absent); the required params keep
+/// the [`ostmac_send_idem`] contract. See [`send_idem_opts_json`].
+/// Caller frees.
+#[no_mangle]
+pub extern "C" fn ostmac_send_idem_opts(
+    chat_id: *const c_char,
+    text: *const c_char,
+    client_message_id: *const c_char,
+    importance: *const c_char,
+    subject: *const c_char,
+    mentions_json: *const c_char,
+) -> *mut c_char {
+    let args = (|| {
+        Ok::<_, String>((
+            cstr_to_string(chat_id)?,
+            cstr_to_string(text)?,
+            cstr_to_string(client_message_id)?,
+            opt_cstr_to_string(importance)?.unwrap_or_default(),
+            opt_cstr_to_string(subject)?.unwrap_or_default(),
+            opt_cstr_to_string(mentions_json)?.unwrap_or_default(),
+        ))
+    })();
+    match args {
+        Ok((id, t, c, imp, sub, men)) => {
+            string_to_c(send_idem_opts_json(&id, &t, &c, &imp, &sub, &men))
+        }
+        Err(e) => string_to_c(err_json("arg", e)),
+    }
+}
+
+/// COMPOSER-B: quote reply with importance/subject/broadcast-mentions.
+/// New params are `opt` (NULL or empty = absent). See
+/// [`reply_idem_opts_json`]. Caller frees.
+#[no_mangle]
+pub extern "C" fn ostmac_reply_idem_opts(
+    chat_id: *const c_char,
+    parent_id: *const c_char,
+    parent_sender: *const c_char,
+    parent_text: *const c_char,
+    text: *const c_char,
+    client_message_id: *const c_char,
+    importance: *const c_char,
+    subject: *const c_char,
+    mentions_json: *const c_char,
+) -> *mut c_char {
+    let args = (|| {
+        Ok::<_, String>((
+            cstr_to_string(chat_id)?,
+            cstr_to_string(parent_id)?,
+            cstr_to_string(parent_sender)?,
+            cstr_to_string(parent_text)?,
+            cstr_to_string(text)?,
+            cstr_to_string(client_message_id)?,
+            opt_cstr_to_string(importance)?.unwrap_or_default(),
+            opt_cstr_to_string(subject)?.unwrap_or_default(),
+            opt_cstr_to_string(mentions_json)?.unwrap_or_default(),
+        ))
+    })();
+    match args {
+        Ok((id, p, s, pt, t, c, imp, sub, men)) => {
+            string_to_c(reply_idem_opts_json(&id, &p, &s, &pt, &t, &c, &imp, &sub, &men))
+        }
+        Err(e) => string_to_c(err_json("arg", e)),
+    }
+}
+
+/// COMPOSER-B: channel thread reply with
+/// importance/subject/broadcast-mentions. New params are `opt` (NULL or
+/// empty = absent). See [`thread_reply_idem_opts_json`]. Caller frees.
+#[no_mangle]
+pub extern "C" fn ostmac_thread_reply_idem_opts(
+    channel_id: *const c_char,
+    root_id: *const c_char,
+    text: *const c_char,
+    client_message_id: *const c_char,
+    importance: *const c_char,
+    subject: *const c_char,
+    mentions_json: *const c_char,
+) -> *mut c_char {
+    let args = (|| {
+        Ok::<_, String>((
+            cstr_to_string(channel_id)?,
+            cstr_to_string(root_id)?,
+            cstr_to_string(text)?,
+            cstr_to_string(client_message_id)?,
+            opt_cstr_to_string(importance)?.unwrap_or_default(),
+            opt_cstr_to_string(subject)?.unwrap_or_default(),
+            opt_cstr_to_string(mentions_json)?.unwrap_or_default(),
+        ))
+    })();
+    match args {
+        Ok((id, r, t, c, imp, sub, men)) => {
+            string_to_c(thread_reply_idem_opts_json(&id, &r, &t, &c, &imp, &sub, &men))
+        }
+        Err(e) => string_to_c(err_json("arg", e)),
+    }
+}
+
 /// §106: find a posted message by client message id. See
 /// [`find_client_message_json`]. Caller frees.
 #[no_mangle]
@@ -4689,6 +4912,30 @@ mod tests {
         let v = team_to_json(&t);
         assert_eq!(v["name"], "Lonely");
         assert_eq!(v["channels"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn composer_b_opts_rejects_bad_args_without_network() {
+        // Tolerant opts parsing must not matter here: arg gates fire
+        // before any network (unsigned → `arg`, never a POST attempt).
+        for (chat, text) in [("", "hi"), ("   ", "hi"), ("c1", ""), ("c1", "   ")] {
+            let v: serde_json::Value = serde_json::from_str(&send_idem_opts_json(
+                chat, text, "cmid1", "urgent", "Subj", "not-json",
+            ))
+            .unwrap();
+            assert_eq!(v["ok"], false, "chat {chat:?} text {text:?}");
+            assert_eq!(v["error"], "arg");
+        }
+        let v: serde_json::Value = serde_json::from_str(&reply_idem_opts_json(
+            "", "p", "s", "t", "hi", "c", "high", "", "[]",
+        ))
+        .unwrap();
+        assert_eq!(v["error"], "arg");
+        let v: serde_json::Value = serde_json::from_str(&thread_reply_idem_opts_json(
+            "not-a-channel", "r", "hi", "c", "", "", "",
+        ))
+        .unwrap();
+        assert_eq!(v["error"], "arg");
     }
 
     #[test]

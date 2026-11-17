@@ -103,6 +103,13 @@ pub use chat::{
     reply_message_with_client_id, send_message_with_client_id, sent_id_from_response,
     thread_reply_with_client_id, SentMessage,
 };
+// OstMac COMPOSER-B (C1b): importance/urgent, subject, broadcast mentions.
+pub use chat::{
+    apply_mentions, build_message_html_opts, build_reply_html_opts, parse_wire_mentions,
+    reply_message_with_client_id_opts, restore_mentions, send_message_body_opts,
+    send_message_with_client_id_opts, thread_reply_with_client_id_opts,
+    SendOpts, WireImportance, WireMention, WIRE_MENTION_MAX,
+};
 // OstMac §84: server-side pinned chat messages.
 pub use chat::{
     chat_pinned_messages_data, chat_unpin_message_with_client, fill_pin_from_message,

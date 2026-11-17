@@ -396,7 +396,7 @@ on GitHub by opening an issue.
 
 Incomplete or not started yet ("in progress" = being worked on now):
 
-- **Compose:** importance/urgent flags, announcement posts with subjects, addressing @team/@channel/@everyone, stickers (in progress); drafts show markers, not WYSIWYG
+- **Compose:** stickers (deferred — no clean native path); importance/urgent, announcements, @team/@channel/@everyone shipped, live-send check pending; drafts show markers, not WYSIWYG
 - **Meetings:** raise hand, reactions, recording/transcription controls, muting/removing participants, presenter roles, background replace, background blur on the live camera preview (follow-up); lobby admit UI in final verification
 - **Calling:** Teams Phone (dial pad, voicemail, forwarding, delegates) — parked: no Teams Phone licence on this tenant
 - **Calendar:** channel meetings, meeting options (lobby/presenter knobs), overlaying multiple calendars (in progress)
