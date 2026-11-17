@@ -22,7 +22,8 @@ struct PreJoinView: View {
                 Text(status)
                     .font(AppFont.body(scale))
                     .foregroundStyle(.secondary)
-                CallTileView(tile: preview, camera: session.camera)
+                CallTileView(tile: preview, camera: session.camera, blurred: session.selfBlur,
+                                 onToggleBlur: { session.toggleSelfBlur() })
                     .aspectRatio(16.0 / 9.0, contentMode: .fit)
                     .frame(width: 400)
                 HStack(spacing: 20) {
@@ -30,6 +31,8 @@ struct PreJoinView: View {
                                                        set: { if $0 != session.preMicOn { session.toggleMute() } }))
                     Toggle("Camera", isOn: Binding(get: { session.preCameraOn },
                                                    set: { if $0 != session.preCameraOn { session.toggleCamera() } }))
+                    Toggle("Blur Background", isOn: Binding(get: { session.selfBlur },
+                                                            set: { if $0 != session.selfBlur { session.toggleSelfBlur() } }))
                 }
                 .toggleStyle(.switch)
                 CallDevicesForm(devices: session.devices)

@@ -82,6 +82,16 @@ public final class CallSession {
     /// Pre-join toggles (§8 pre-join): applied at Join Now.
     public private(set) var preMicOn = true
     public private(set) var preCameraOn = false
+    // MARK: C2a local-only meeting controls (no signaling, no server writes)
+    /// The stage layout choice (meetings; 1:1 ignores it).
+    public private(set) var layout: MeetingLayoutMode = .automatic
+    /// Own-video background blur (Vision, on-device; demo blurs the
+    /// rendered self scene, live needs a frame tap — still unblurred).
+    public private(set) var selfBlur = false
+    /// Local live captions (on-device Speech in live calls).
+    public private(set) var captionsEnabled = false
+    public private(set) var captions = LiveCaptionsLog()
+    @ObservationIgnored private var captionsEngine: LiveCaptionsEngine?
 
     @ObservationIgnored private let live: Bool
     @ObservationIgnored private let evidence: Bool
@@ -279,6 +289,60 @@ public final class CallSession {
         }
     }
 
+    /// C2a: the stage layout (meetings). Pure local choice.
+    public func setLayout(_ mode: MeetingLayoutMode) {
+        guard !ended, layout != mode else { return }
+        layout = mode
+    }
+
+    /// C2a: own-video background blur. Live camera frames have no tap
+    /// yet, so the toggle shows on the demo self scene only.
+    public func setSelfBlur(_ on: Bool) {
+        guard !ended, selfBlur != on else { return }
+        selfBlur = on
+    }
+
+    public func toggleSelfBlur() { setSelfBlur(!selfBlur) }
+
+    /// C2a: local live captions. Live starts the on-device recognizer;
+    /// demo and evidence seed lines instead (never the mic).
+    public func setCaptions(_ on: Bool) {
+        guard !ended, captionsEnabled != on else { return }
+        captionsEnabled = on
+        if on, live { startCaptionsEngine() } else { stopCaptionsEngine() }
+    }
+
+    public func toggleCaptions() { setCaptions(!captionsEnabled) }
+
+    /// Demo/evidence only: deterministic caption lines (Western names).
+    func seedDemoCaptions() {
+        guard !live else { return }
+        captions = LiveCaptionsLog(lines: [
+            LiveCaptionLine(text: "Ava Lindqvist: Let's take the launch date first."),
+            LiveCaptionLine(text: "Marco Chen: Thursday works if QA signs off."),
+            LiveCaptionLine(text: "Priya Nair: I'll post the checklist after this call."),
+        ])
+    }
+
+    @MainActor
+    private func startCaptionsEngine() {
+        guard captionsEngine == nil else { return }
+        let engine = LiveCaptionsEngine()
+        engine.onLine = { [weak self] text, _ in
+            guard let self else { return }
+            var log = captions
+            log.append(text)
+            captions = log
+        }
+        captionsEngine = engine
+        engine.start()
+    }
+
+    private func stopCaptionsEngine() {
+        captionsEngine?.stop()
+        captionsEngine = nil
+    }
+
     /// Share Screen (⇧⌘E): the system `SCContentSharingPicker` through
     /// the core share model; demo flips a local flag (no capture).
     public func toggleShare() {
@@ -344,6 +408,7 @@ public final class CallSession {
         }
         camera?.setLiveSend(false)
         camera?.stop()
+        stopCaptionsEngine()
         for v in remoteVideos.values { v.stop() }
         meetingVideo?.stop()
         devices.close()

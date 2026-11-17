@@ -45,6 +45,7 @@ struct MeetingVideoStage: View {
                     .frame(maxWidth: 480)
                     .accessibilityAddTraits(.updatesFrequently)
             }
+            meetLocalBar
             layout {
                 ForEach(items) { item in
                     switch item {
@@ -58,19 +59,40 @@ struct MeetingVideoStage: View {
                     case .demoShare:
                         DemoShareView(presenter: video.presenter?.name)
                     case .local(let t):
-                        CallTileView(tile: t, camera: session.camera)
+                        CallTileView(tile: t, camera: session.camera, blurred: session.selfBlur,
+                                     onToggleBlur: { session.toggleSelfBlur() })
                     }
                 }
             }
             .animation(VideoFade.animation, value: video.pinnedID)
             .animation(VideoFade.animation, value: video.shareVideo != nil)
+            if session.captionsEnabled {
+                LiveCaptionsView(lines: session.captions.recent)
+            }
         }
         .padding(16)
     }
 
+    /// C2a local controls: the layout picker (native segmented control,
+    /// never web-look tabs) and the live-captions toggle.
+    private var meetLocalBar: some View {
+        HStack(spacing: 12) {
+            Picker("Layout", selection: Binding(get: { session.layout }, set: { session.setLayout($0) })) {
+                ForEach(MeetingLayoutMode.allCases) { m in Text(m.title).tag(m) }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .fixedSize()
+            Spacer(minLength: 4)
+            Toggle("Live Captions", isOn: Binding(get: { session.captionsEnabled },
+                                                 set: { session.setCaptions($0) }))
+        }
+    }
+
     private var layout: AnyLayout {
-        video.pinnedID == nil && video.shareVideo == nil && !video.demoPresenting
-            ? AnyLayout(TileGridLayout(spacing: 8)) : AnyLayout(SpotlightLayout(spacing: 8))
+        session.layout.resolve(pinnedID: video.pinnedID, shareUp: video.shareVideo != nil,
+                               demoPresenting: video.demoPresenting)
+            ? AnyLayout(SpotlightLayout(spacing: 8)) : AnyLayout(TileGridLayout(spacing: 8))
     }
 
     private var items: [Item] {
@@ -379,6 +401,39 @@ private struct TileVideo: View {
             }
         }
         .animation(VideoFade.animation, value: model.remoteImage == nil)
+    }
+}
+
+/// Local live captions (C2a): the newest lines under the stage, in
+/// the system font on the standard chrome material. VoiceOver reads
+/// the newest line as captions arrive.
+struct LiveCaptionsView: View {
+    let lines: [LiveCaptionLine]
+    @Environment(\.contentTextScale) private var scale
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            if lines.isEmpty {
+                Text("Listening for captions…")
+                    .font(AppFont.subheadline(scale))
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(lines) { l in
+                    Text(l.text)
+                        .font(AppFont.body(scale))
+                        .lineLimit(2)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(8)
+        .chromeBackground(.callNameChip, in: RoundedRectangle(cornerRadius: 8, style: .continuous)) {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color(nsColor: .windowBackgroundColor).opacity(0.85))
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(lines.last?.text ?? "Listening for captions")
+        .accessibilityAddTraits(.updatesFrequently)
     }
 }
 

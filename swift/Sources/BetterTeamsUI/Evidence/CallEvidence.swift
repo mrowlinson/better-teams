@@ -11,6 +11,7 @@
 //       through the core slot and the DL1 host shows the call
 //   call?state=prejoin|active|muted|sharing|ended|meetingvideo|presenting&presentation=main|window
 //       [&inspector=1|people|chat][&popover=devices]
+//       [&layout=automatic|grid|spotlight][&captions=1][&blur=1] (C2a local only)
 //       (meetingvideo: the meeting joined with video, the tile grid;
 //       presenting: the same meeting with a colleague sharing a slide,
 //       everyone camera-off)
@@ -85,7 +86,8 @@ enum CallEvidence {
             if route.query["accept"] == "1" { m.app?.call.accept() }
         case "call":
             let p = presentation(route.query["presentation"]) ?? .current
-            let session = begin(route.query["state"] ?? "prejoin", presentation: p, show: true, wc)
+            let session = begin(route.query["state"] ?? "prejoin", presentation: p, show: true, wc,
+                                query: route.query)
             if route.query["popover"] == CallCommands.devicesPopover { session?.showDevices() }
             if p == .separateWindow, let w = session?.window?.window, session?.ended == false { focus(w, over: wc) }
         case _ where route.query["call"] != nil:
@@ -126,7 +128,7 @@ enum CallEvidence {
     /// sharing, ended; video: 1:1 video call).
     @discardableResult
     private static func begin(_ state: String, presentation p: CallPresentation, show: Bool,
-                              _ wc: ShellWindowController) -> CallSession? {
+                              _ wc: ShellWindowController, query: [String: String] = [:]) -> CallSession? {
         let m = wc.model
         guard let app = m.app else { return nil }
         if state == "video" {
@@ -148,6 +150,13 @@ enum CallEvidence {
                                  messages: MeetingDemo.messages)
         let s = m.beginCall(kind, presentation: p, show: show)
         s?.joinForDemo(video: state == "meetingvideo" || state == "presenting")
+        // C2a local-only controls (no signaling, no server writes).
+        if let raw = query["layout"], let mode = MeetingLayoutMode(rawValue: raw) { s?.setLayout(mode) }
+        if query["captions"] == "1" {
+            s?.setCaptions(true)
+            s?.seedDemoCaptions()
+        }
+        if query["blur"] == "1" { s?.setSelfBlur(true) }
         switch state {
         case "presenting":
             s?.meetingVideo?.startDemoPresentation()

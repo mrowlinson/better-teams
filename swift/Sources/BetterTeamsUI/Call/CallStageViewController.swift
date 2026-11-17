@@ -149,7 +149,8 @@ struct CallStageView: View {
             }
             TileGridLayout(spacing: 8) {
                 ForEach(tiles) { t in
-                    CallTileView(tile: t, camera: session.camera)
+                    CallTileView(tile: t, camera: session.camera, blurred: session.selfBlur,
+                                 onToggleBlur: { session.toggleSelfBlur() })
                 }
             }
         }
@@ -167,7 +168,8 @@ struct CallStageView: View {
                             demo: session.store?.isDemo == true && session.connected,
                             animated: !session.isEvidence, status: session.connected ? nil : status)
             if let own {
-                CallTileView(tile: own, camera: session.camera)
+                CallTileView(tile: own, camera: session.camera, blurred: session.selfBlur,
+                             onToggleBlur: { session.toggleSelfBlur() })
                     .frame(width: 192, height: 108)
                     .shadow(radius: 4)
                     .padding(12)
@@ -202,10 +204,14 @@ struct CallStageView: View {
 }
 
 /// One tile: camera (self view), screen share, or avatar with a
-/// speaking ring (audio). Name + muted glyph on a label chip.
+/// speaking ring (audio). Name + muted glyph on a label chip. `blurred`
+/// blurs the self-view background (C2a, on-device); `onToggleBlur`
+/// adds the self tile's Blur Background context-menu item.
 struct CallTileView: View {
     let tile: CallTile
     let camera: CameraCapture?
+    var blurred = false
+    var onToggleBlur: (() -> Void)? = nil
     @Environment(\.contentTextScale) private var scale
 
     var body: some View {
@@ -215,6 +221,11 @@ struct CallTileView: View {
         }
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay(alignment: .bottomLeading) { nameChip.padding(8) }
+        .contextMenu {
+            if tile.kind == .selfView, let toggle = onToggleBlur {
+                Toggle("Blur Background", isOn: Binding(get: { blurred }, set: { _ in toggle() }))
+            }
+        }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibility)
     }
@@ -225,6 +236,8 @@ struct CallTileView: View {
         case .selfView where tile.cameraOn:
             if let camera {
                 CameraPreview(camera: camera)
+            } else if blurred {
+                BlurredSelfView()
             } else {
                 PlaceholderFeed()
             }
@@ -271,8 +284,25 @@ struct CallTileView: View {
         if tile.kind == .share { parts = ["Your screen"] }
         if tile.speaking { parts.append("speaking") }
         if tile.muted { parts.append("muted") }
-        if tile.kind == .selfView { parts.append(tile.cameraOn ? "camera on" : "camera off") }
+        if tile.kind == .selfView {
+            parts.append(tile.cameraOn ? "camera on" : "camera off")
+            if blurred, tile.cameraOn { parts.append("background blurred") }
+        }
         return parts.joined(separator: ", ")
+    }
+}
+
+/// Demo self view with background blur (C2a): the synthetic scene
+/// with a heavily blurred, dimmed room and the person sharp. The demo
+/// scene is drawn in layers, so this is ground-truth background-only
+/// blur (Vision cannot segment cartoons — see `PersonBackgroundBlur`).
+/// The Vision + Core Image pipeline in OstMacCore is the live-camera
+/// path (unit-proven on synthetic frames; the live camera has no frame
+/// tap yet, so a live preview stays unblurred — see `CallSession`
+/// `selfBlur`).
+struct BlurredSelfView: View {
+    var body: some View {
+        DemoRemoteVideo(animated: false, seed: 3, backgroundBlur: true)
     }
 }
 
@@ -360,14 +390,18 @@ private struct RemoteVideoWaiting: View {
 struct DemoRemoteVideo: View {
     let animated: Bool
     var seed = 0
+    /// C2a: background-only blur (the room goes soft, the person stays
+    /// sharp). Demo and evidence only.
+    var backgroundBlur = false
 
     var body: some View {
         if animated {
             TimelineView(.periodic(from: .now, by: 1.0 / 12)) { ctx in
-                DemoCameraScene(seed: seed, time: ctx.date.timeIntervalSinceReferenceDate)
+                DemoCameraScene(seed: seed, time: ctx.date.timeIntervalSinceReferenceDate,
+                                backgroundBlur: backgroundBlur)
             }
         } else {
-            DemoCameraScene(seed: seed, time: 0)
+            DemoCameraScene(seed: seed, time: 0, backgroundBlur: backgroundBlur)
         }
     }
 }
@@ -375,6 +409,7 @@ struct DemoRemoteVideo: View {
 private struct DemoCameraScene: View {
     let seed: Int
     let time: Double
+    var backgroundBlur = false
 
     private static let rooms: [(wall: Color, floor: Color, top: Color)] = [
         (.teal, .indigo, .blue), (.orange, .brown, .red), (.gray, .blue, .indigo),
@@ -393,13 +428,18 @@ private struct DemoCameraScene: View {
                                            startPoint: .zero, endPoint: CGPoint(x: w, y: h)))
             // Out-of-focus background: window light and a shelf.
             var back = ctx
-            back.addFilter(.blur(radius: max(3, w / 55)))
+            back.addFilter(.blur(radius: backgroundBlur ? max(8, w / 10) : max(3, w / 55)))
             let window = CGRect(x: left ? w * 0.05 : w * 0.67, y: h * 0.08, width: w * 0.28, height: h * 0.5)
             back.fill(Path(roundedRect: window, cornerRadius: w * 0.012), with: .color(.white.opacity(0.3)))
             let shelf = CGRect(x: left ? w * 0.7 : w * 0.06, y: h * 0.34, width: w * 0.22, height: h * 0.045)
             back.fill(Path(roundedRect: shelf, cornerRadius: 2), with: .color(.black.opacity(0.3)))
             back.fill(Path(ellipseIn: CGRect(x: left ? w * 0.72 : w * 0.08, y: h * 0.22, width: w * 0.06,
                                              height: h * 0.12)), with: .color(room.top.opacity(0.55)))
+            if backgroundBlur {
+                // Blur mode: the room dims further; the person below
+                // stays sharp (ground-truth background-only blur).
+                ctx.fill(Path(CGRect(origin: .zero, size: size)), with: .color(.black.opacity(0.22)))
+            }
             // The person, backlit, with a slight sway.
             let sway = sin(time * 0.8 + Double(seed)) * w * 0.006
             let bob = sin(time * 1.3 + Double(seed) * 0.7) * h * 0.004
