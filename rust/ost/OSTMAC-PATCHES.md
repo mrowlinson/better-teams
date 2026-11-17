@@ -1836,7 +1836,7 @@ Notes:
     `proactive_solo_refresh_still_exchanges`,
     `refresh_fails_loud_when_lock_busy` (replaces the R0 unbounded-wait
     characterization). R1's 5 tests unmodified, still green.
-    UPSTREAM: pending
+    UPSTREAM: PARTIAL: (b) proactive adopt + (c) bounded lock wait https://github.com/eisbaw/ost/pull/115 (fix/refresh-broker-race, stacks on #113); (a) broker exclusion pending: needs #75's broker code (TokenGrant/broker fns, unmerged on the #113 base)
 
 ## Upstream PRs, wave 9 (2026-09-25 R10 audit; base 0892144; origin/main still 0892144)
 
