@@ -184,6 +184,20 @@ struct CallsEmptyPane: View {
     }
 }
 
+/// M2: the no-selection detail (R18) — a designed empty state (symbol +
+/// description + action), not a bare label. Same symbol and New Call
+/// action as the list pane's empty state.
+struct CallsNoContactPane: View {
+    @Environment(\.windowModel) private var model
+
+    var body: some View {
+        EmptyPane("No Contact Selected", systemImage: "phone",
+                  message: "Select a recent call or Speed Dial contact to see details.") {
+            Button("New Call…") { model?.presentSheet(SheetRequest(CallsCommands.newCallSheet, in: .calls)) }
+        }
+    }
+}
+
 /// Recent row (§6.5): direction symbol (missed: red + the word
 /// "Missed") · name · time · duration.
 struct CallsRow: View {
@@ -240,7 +254,7 @@ struct CallsDetailPane: View {
            let p = CallsSection.person(model.nav.selection(in: .calls)?.id, model) {
             detail(p, model)
         } else {
-            NoSelectionPane("No Contact Selected")
+            CallsNoContactPane()
         }
     }
 

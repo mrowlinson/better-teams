@@ -35,8 +35,13 @@ struct NotificationsPane: View {
                                          chatName: { id in chats.chats.first { $0.id == id }?.name ?? "Conversation" }))
     }
 
+    // M1: the pane keeps its 700x640 window slot, but the content is
+    // taller (DND + quiet hours + presence schedule below it), so the
+    // last row clipped with no way to reach it. The Form scrolls inside
+    // the fixed slot (macOS Settings panes scroll); other panes intact.
     var body: some View {
-        Form {
+        ScrollView(.vertical) {
+            Form {
             Section {
                 Toggle("Allow notifications", isOn: $notifs.enabled)
                 Toggle("Show message previews", isOn: $notifs.showPreview)
@@ -90,8 +95,9 @@ struct NotificationsPane: View {
             QuietHoursSection(quiet: quiet, focus: focus)
             PresenceStatusSection(truth: truth, presence: presence, live: live)
             PresenceScheduleSection(schedule: schedule)
+            }
+            .formStyle(.grouped)
         }
-        .formStyle(.grouped)
         .frame(width: SettingsWindowController.paneWidth, height: 640)
     }
 }
