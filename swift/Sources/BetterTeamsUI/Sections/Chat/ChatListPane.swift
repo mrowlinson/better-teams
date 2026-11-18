@@ -174,13 +174,12 @@ struct ChatListPane: View {
     }
 
     private func list(_ rows: [ChatItem], _ m: WindowModel) -> some View {
-        let pinnedIDs = Set(chats.pins.orderedIDs)
-        let pinned = rows.filter { pinnedIDs.contains($0.id) }
         // Teams Favorites folder, as in Teams: its own section above
         // the rest (a chat pinned here stays under Pinned).
-        let favIDs = Set(chats.folders.favoriteIDs).subtracting(pinnedIDs)
-        let favorites = rows.filter { favIDs.contains($0.id) }
-        let recent = rows.filter { !pinnedIDs.contains($0.id) && !favIDs.contains($0.id) }
+        let pinnedIDs = Set(chats.pins.orderedIDs)
+        let split = ChatSection.splitSections(
+            rows, pinnedIDs: pinnedIDs, favoriteIDs: Set(chats.folders.favoriteIDs))
+        let (pinned, favorites, recent) = (split.pinned, split.favorites, split.recent)
         let now = RelativeClock.shared.now
         let shownIDs = Set(rows.map(\.id))
         let selection = Binding<String?>(
@@ -195,26 +194,38 @@ struct ChatListPane: View {
         return ScrollViewReader { proxy in
         List(selection: selection) {
             if !pinned.isEmpty {
-                Section("Pinned") {
-                    ForEach(pinned) { c in row(c, pinned: true, now: now) }
-                        .onMove(perform: chats.movePinned)
+                Section {
+                    if !state.isCollapsed(.pinned) {
+                        ForEach(pinned) { c in row(c, pinned: true, now: now) }
+                            .onMove(perform: chats.movePinned)
+                    }
+                } header: {
+                    ChatSectionHeader(section: .pinned, state: state, model: m)
                 }
             }
             if !favorites.isEmpty {
-                Section("Favorites") {
-                    ForEach(favorites) { c in row(c, pinned: false, now: now) }
+                Section {
+                    if !state.isCollapsed(.favorites) {
+                        ForEach(favorites) { c in row(c, pinned: false, now: now) }
+                    }
+                } header: {
+                    ChatSectionHeader(section: .favorites, state: state, model: m)
                 }
             }
             if !recent.isEmpty {
-                Section("Recent") {
-                    ForEach(recent) { c in
-                        row(c, pinned: false, now: now)
-                            .onAppear {
-                                // Unfiltered only: a filter's look-back is
-                                // the bounded pager, never scroll paging.
-                                if state.filter == .all { chats.loadMoreIfNeeded(currentID: c.id, in: recent) }
-                            }
+                Section {
+                    if !state.isCollapsed(.recent) {
+                        ForEach(recent) { c in
+                            row(c, pinned: false, now: now)
+                                .onAppear {
+                                    // Unfiltered only: a filter's look-back is
+                                    // the bounded pager, never scroll paging.
+                                    if state.filter == .all { chats.loadMoreIfNeeded(currentID: c.id, in: recent) }
+                                }
+                        }
                     }
+                } header: {
+                    ChatSectionHeader(section: .recent, state: state, model: m)
                 }
             }
             combinedChannels(m)
@@ -297,7 +308,7 @@ struct ChatListPane: View {
            let teams, let prefs = chanPrefs
         {
             CombinedChannelsSection(teams: teams, prefs: prefs, unread: unread,
-                                    mentions: mentions, model: m)
+                                    mentions: mentions, model: m, state: state)
         }
     }
 
@@ -344,26 +355,69 @@ struct CombinedChannelsSection: View {
     @ObservedObject var unread: UnreadStore
     @ObservedObject var mentions: MentionStore
     let model: WindowModel
+    let state: ChatSectionState
 
     var body: some View {
         let rows = ChatListPane.channelRows(teams: teams, prefs: prefs)
         if !rows.isEmpty {
-            Section("Channels") {
-                ForEach(rows, id: \.channelID) { r in
-                    Button {
-                        model.navigator?.select(section: .teams)
-                        model.navigator?.select(
-                            TeamsSelection(teamID: r.teamID, channelID: r.channelID).selection,
-                            in: .teams)
-                    } label: {
-                        ChannelRow(name: r.channelName, teamName: r.teamName,
-                                   unread: unread.isUnread(chatID: r.channelID),
-                                   mentioned: mentions.contains(chatID: r.channelID),
-                                   hidden: false,
-                                   muted: prefs.level(r.channelID) == .muted)
+            Section {
+                if !state.isCollapsed(.channels) {
+                    ForEach(rows, id: \.channelID) { r in
+                        Button {
+                            model.navigator?.select(section: .teams)
+                            model.navigator?.select(
+                                TeamsSelection(teamID: r.teamID, channelID: r.channelID).selection,
+                                in: .teams)
+                        } label: {
+                            ChannelRow(name: r.channelName, teamName: r.teamName,
+                                       unread: unread.isUnread(chatID: r.channelID),
+                                       mentioned: mentions.contains(chatID: r.channelID),
+                                       hidden: false,
+                                       muted: prefs.level(r.channelID) == .muted)
+                        }
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
                 }
+            } header: {
+                ChatSectionHeader(section: .channels, state: state, model: model)
+            }
+        }
+    }
+}
+
+/// Collapsible chat-list section header: title + chevron (persisted per
+/// account); right-click marks the section read or collapses everything.
+struct ChatSectionHeader: View {
+    let section: ChatListSection
+    let state: ChatSectionState
+    let model: WindowModel
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Text(section.title)
+            Spacer(minLength: 8)
+            Button(state.isCollapsed(section) ? "Expand \(section.title)" : "Collapse \(section.title)",
+                   systemImage: state.isCollapsed(section) ? "chevron.right" : "chevron.down") {
+                state.toggleCollapsed(section)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .help(state.isCollapsed(section) ? "Expand \(section.title)" : "Collapse \(section.title)")
+            .accessibilityLabel(state.isCollapsed(section) ? "Expand \(section.title)" : "Collapse \(section.title)")
+        }
+        .contextMenu {
+            Button("Mark \(section.title) as Read") {
+                _ = model.provider(.chat).perform(ChatCommands.markAllRead, arg: section.rawValue, model)
+            }
+            Divider()
+            Button(state.isCollapsed(section) ? "Expand Section" : "Collapse Section") {
+                state.toggleCollapsed(section)
+            }
+            Button("Collapse All Sections") {
+                _ = model.provider(.chat).perform(ChatCommands.collapseAll, arg: nil, model)
+            }
+            Button("Expand All Sections") {
+                _ = model.provider(.chat).perform(ChatCommands.expandAll, arg: nil, model)
             }
         }
     }

@@ -4,6 +4,7 @@
 // inspector = Info | Catch Up | Pinned. Loads start in
 // `selectionDidChange` (R24), never in a view.
 import Combine
+import Foundation
 import Observation
 import OstMacCore
 import SwiftUI
@@ -98,11 +99,30 @@ struct ChatFilterRules {
     }
 }
 
+/// Chat-list collapsible sections (Pinned/Favorites/Recent/Channels).
+enum ChatListSection: String, CaseIterable, Sendable {
+    case pinned, favorites, recent, channels
+
+    var title: String {
+        switch self {
+        case .pinned: "Pinned"
+        case .favorites: "Favorites"
+        case .recent: "Recent"
+        case .channels: "Channels"
+        }
+    }
+}
+
 @Observable
 @MainActor
 final class ChatSectionState {
     /// Set through `select`/`toggle`/`clear` (they drive the pager).
     private(set) var filter: ChatFilter = .all
+    /// Collapsed section raw values (§6.2 collapse persisted per account,
+    /// like the Teams list).
+    private(set) var collapsed: Set<String> = []
+    @ObservationIgnored private let collapseKey: String?
+    static let collapseKeyPrefix = "bt.chat.collapsed."
     /// Bounded look through older pages for more matches (never the
     /// whole history); always ends in `.finished`.
     @ObservationIgnored let pager: ChatFilterPager
@@ -112,8 +132,46 @@ final class ChatSectionState {
     /// Top full-list row when the filter was entered.
     @ObservationIgnored private(set) var returnAnchor: String?
 
-    init(pager: ChatFilterPager? = nil) {
+    init(pager: ChatFilterPager? = nil, accountKey: String = "", persist: Bool = false) {
         self.pager = pager ?? ChatFilterPager()
+        let key = persist ? Self.collapseKeyPrefix + accountKey : nil
+        collapseKey = key
+        collapsed = Set(key.flatMap { UserDefaults.standard.stringArray(forKey: $0) } ?? [])
+    }
+
+    /// True while this section's rows are hidden.
+    func isCollapsed(_ s: ChatListSection) -> Bool { collapsed.contains(s.rawValue) }
+
+    /// Collapse or expand one section (persists like the Teams list).
+    func setCollapsed(_ s: ChatListSection, _ c: Bool) {
+        guard isCollapsed(s) != c else { return }
+        if c { collapsed.insert(s.rawValue) } else { collapsed.remove(s.rawValue) }
+        saveCollapsed()
+    }
+
+    /// Section header chevron.
+    func toggleCollapsed(_ s: ChatListSection) { setCollapsed(s, !isCollapsed(s)) }
+
+    /// Collapse every section at once.
+    func collapseAll() {
+        let all = Set(ChatListSection.allCases.map(\.rawValue))
+        guard collapsed != all else { return }
+        collapsed = all
+        saveCollapsed()
+    }
+
+    /// Expand every section at once.
+    func expandAll() {
+        guard !collapsed.isEmpty else { return }
+        collapsed = []
+        saveCollapsed()
+    }
+
+    /// Demo/evidence seed (in memory only, never persisted).
+    func seedCollapsed(_ ids: Set<String>) { collapsed = ids }
+
+    private func saveCollapsed() {
+        if let collapseKey { UserDefaults.standard.set(collapsed.sorted(), forKey: collapseKey) }
     }
 
     /// Apply `f` to the rows already loaded (at once); with few matches,
@@ -158,7 +216,16 @@ final class ChatSection: SectionProvider, InspectorCapable {
     let section: SectionID = .chat
     let title = "Chat"
     let hasInspector = true
-    let state = ChatSectionState()
+    private var uiState: ChatSectionState?
+
+    /// Per-window list state (filter + collapse, persisted per account
+    /// like the Teams list).
+    func state(_ m: WindowModel) -> ChatSectionState {
+        if let s = uiState { return s }
+        let s = ChatSectionState(accountKey: m.accountKey, persist: !m.options.demo)
+        uiState = s
+        return s
+    }
     /// Fallback for side-account graphs (mentions live on AppState).
     private lazy var noMentions = MentionStore()
     private lazy var noPresence = PresenceStore()
@@ -175,7 +242,7 @@ final class ChatSection: SectionProvider, InspectorCapable {
                                     rules: services.rules(m), snooze: services.snooze(m),
                                     failures: services.sendFailures,
                                     presence: m.app?.presence ?? noPresence,
-                                    pager: state.pager, state: state,
+                                    pager: state(m).pager, state: state(m),
                                     settings: .shared,
                                     teams: m.app?.teams,
                                     chanPrefs: (m.provider(.teams) as? TeamsSection)?.prefs(m)))
@@ -197,19 +264,28 @@ final class ChatSection: SectionProvider, InspectorCapable {
     }
 
     var allToolbarItems: [CommandID] {
-        [ChatCommands.filter, ChatCommands.newChat] + ConversationToolbar.items
+        [ChatCommands.filter, ChatCommands.newChat, ChatCommands.markAllRead] + ConversationToolbar.items
     }
 
     func toolbarItems(_ sel: SectionSelection?) -> [CommandID] {
-        sel == nil ? [ChatCommands.filter, ChatCommands.newChat] : allToolbarItems
+        sel == nil ? [ChatCommands.filter, ChatCommands.newChat, ChatCommands.markAllRead] : allToolbarItems
     }
+
+    /// Route-applied once: selection(for:) stashes, selectionDidChange
+    /// applies (which also runs on ordinary clicks, so the stash is
+    /// consumed, never re-applied).
+    private var pendingRoute: (filter: ChatFilter?, collapsed: String?)?
+
+    /// Demo seed (in memory only, seeded once).
+    private var demoSeeded = false
 
     /// `chat/<id>?message=<mid>` opens the chat landed on that message
     /// (jump API + highlight; a miss shows the notice).
     func selection(for route: Route) -> SectionSelection? {
         // `chat?filter=unread`: open Chat with that filter on (the
         // loaded rows only; no look-back from a link).
-        if let f = route.query["filter"] { state.show(ChatFilter(arg: f)) }
+        // `chat?collapsed=all|none`: evidence preset for captures.
+        pendingRoute = (route.query["filter"].map { ChatFilter(arg: $0) }, route.query["collapsed"])
         // Evidence only: `chat?combined=1` renders the combined
         // chats+channels view for captures. Memory defaults are the
         // demo's (AppSettings.useDemoStorage), so a real profile's
@@ -222,7 +298,24 @@ final class ChatSection: SectionProvider, InspectorCapable {
         return SectionSelection(id: id)
     }
 
+    /// Demo: two unread 1:1s (one @mentioned) so captures show the
+    /// unread rows Mark All as Read clears. In memory only, seeded once.
+    private func seedDemoIfNeeded(_ m: WindowModel) {
+        guard m.options.demo, !demoSeeded, let app = m.app else { return }
+        demoSeeded = true
+        app.unread.markUnread(chatID: "demo-2")
+        app.unread.markUnread(chatID: "demo-tom")
+        app.mentions.adopt(["demo-tom"])
+    }
+
     func selectionDidChange(_ sel: SectionSelection?, _ m: WindowModel) {
+        seedDemoIfNeeded(m)
+        if let pending = pendingRoute {
+            pendingRoute = nil
+            if let f = pending.filter { state(m).show(f) }
+            if pending.collapsed == "all" { state(m).collapseAll() }
+            else if pending.collapsed == "none" { state(m).expandAll() }
+        }
         if let sel, sel.path.count > 1, let id = sel.id, let app = m.app {
             app.jumpToMessage(SearchHit(messageID: sel.path[1], chatID: id, sender: "", timestamp: "", preview: ""))
             return
@@ -277,7 +370,7 @@ final class ChatSection: SectionProvider, InspectorCapable {
         case ChatCommands.filter where arg == ChatCommands.manageFoldersSheet:
             m.presentSheet(SheetRequest(ChatCommands.manageFoldersSheet, in: .chat))
         case ChatCommands.filter:
-            state.toggle(ChatFilter(arg: arg ?? "all"), list: m.graph.chats, rules: filterRules(m))
+            state(m).toggle(ChatFilter(arg: arg ?? "all"), list: m.graph.chats, rules: filterRules(m))
         case ChatCommands.audioCall:
             return ConversationToolbar.startAudioCall(m) != nil
         case ChatCommands.videoCall:
@@ -319,6 +412,12 @@ final class ChatSection: SectionProvider, InspectorCapable {
             let composer = ConversationServices.of(m).composer
             composer.setImportance(
                 composer.importance(for: id) == .important ? .normal : .important, for: id)
+        case ChatCommands.markAllRead:
+            markAllRead(section: arg.flatMap(ChatListSection.init(rawValue:)), m)
+        case ChatCommands.collapseAll:
+            state(m).collapseAll()
+        case ChatCommands.expandAll:
+            state(m).expandAll()
         case ChatCommands.markUnread:
             // Same semantics as the message menu's Mark as Unread: Teams
             // bookmarks just behind the NEWEST loaded message.
@@ -388,6 +487,72 @@ final class ChatSection: SectionProvider, InspectorCapable {
         return true
     }
 
+    /// Split rows into Pinned/Favorites/Recent: the one split the pane
+    /// renders and mark-all-read scopes to (a pinned chat stays under
+    /// Pinned, like Teams Favorites).
+    static func splitSections(_ rows: [ChatItem], pinnedIDs: Set<String>,
+                              favoriteIDs: Set<String>) -> (pinned: [ChatItem], favorites: [ChatItem],
+                                                            recent: [ChatItem]) {
+        let pinned = rows.filter { pinnedIDs.contains($0.id) }
+        let fav = Set(favoriteIDs).subtracting(pinnedIDs)
+        let favorites = rows.filter { fav.contains($0.id) }
+        let recent = rows.filter { !pinnedIDs.contains($0.id) && !fav.contains($0.id) }
+        return (pinned, favorites, recent)
+    }
+
+    /// Chat ids in one list section (the pane's split above).
+    static func chatIDs(in section: ChatListSection, rows: [ChatItem], pinnedIDs: Set<String>,
+                        favoriteIDs: Set<String>) -> [String] {
+        let split = splitSections(rows, pinnedIDs: pinnedIDs, favoriteIDs: favoriteIDs)
+        switch section {
+        case .pinned: return split.pinned.map(\.id)
+        case .favorites: return split.favorites.map(\.id)
+        case .recent: return split.recent.map(\.id)
+        case .channels: return []
+        }
+    }
+
+    /// Mark-all-read (one section when scoped, else every chat-list row):
+    /// local counts clear at once; chats also write their read horizon
+    /// to Teams through the single-chat path. Combined channels clear
+    /// locally, like the Teams list's own mark-read.
+    private func markAllRead(section: ChatListSection?, _ m: WindowModel) {
+        let chats = m.graph.chats
+        let pinnedIDs = Set(chats.pins.orderedIDs)
+        let favoriteIDs = Set(chats.folders.favoriteIDs)
+        let rows = chats.displayChats
+        let chatIDs: [String]
+        let channelIDs: [String]
+        if let section {
+            chatIDs = Self.chatIDs(in: section, rows: rows, pinnedIDs: pinnedIDs, favoriteIDs: favoriteIDs)
+            channelIDs = section == .channels ? combinedChannelIDs(m) : []
+        } else {
+            chatIDs = rows.map(\.id)
+            channelIDs = combinedChannelIDs(m)
+        }
+        if let app = m.app {
+            app.markAllChatsRead(chatIDs: chatIDs, channelIDs: channelIDs)
+        } else {
+            for id in chatIDs + channelIDs { m.graph.unread.markRead(chatID: id) }
+        }
+    }
+
+    /// Any unread row in the chat list (chats or combined channels).
+    private func hasUnread(_ m: WindowModel) -> Bool {
+        if m.graph.chats.displayChats.contains(where: { m.graph.unread.isUnread(chatID: $0.id) }) {
+            return true
+        }
+        return combinedChannelIDs(m).contains { m.graph.unread.isUnread(chatID: $0) }
+    }
+
+    /// Visible combined-view channel rows (empty unless the switch is on).
+    private func combinedChannelIDs(_ m: WindowModel) -> [String] {
+        guard AppSettings.shared.combinedChatsChannels,
+              let teams = m.app?.teams,
+              let section = m.provider(.teams) as? TeamsSection else { return [] }
+        return ChatListPane.channelRows(teams: teams, prefs: section.prefs(m)).map(\.channelID)
+    }
+
     func validate(_ c: CommandID, arg: String?, _ m: WindowModel) -> CommandValidation {
         let inChat = m.nav.section == .chat && m.nav.search == nil
         switch c {
@@ -403,6 +568,13 @@ final class ChatSection: SectionProvider, InspectorCapable {
             return CommandValidation(enabled: m.app?.catchUp.mode ?? .off != .off)
         case ChatCommands.markUnread:
             return CommandValidation(enabled: inChat && selected(m) != nil)
+        case ChatCommands.markAllRead:
+            return CommandValidation(enabled: inChat && hasUnread(m))
+        case ChatCommands.collapseAll:
+            let anyOpen = ChatListSection.allCases.contains { !state(m).isCollapsed($0) }
+            return CommandValidation(enabled: inChat && anyOpen)
+        case ChatCommands.expandAll:
+            return CommandValidation(enabled: inChat && !state(m).collapsed.isEmpty)
         case ChatCommands.markImportant:
             // Any host showing a conversation (like Go to Compose Box);
             // the title follows the draft's current level.
@@ -459,12 +631,12 @@ final class ChatSection: SectionProvider, InspectorCapable {
         if c != ChatCommands.filter { return chatActionItems(c, m) }
         let enabled = m.nav.section == .chat
         var out = [ChatFilter.all, .unread, .mentions, .muted, .snoozed, .hidden].map {
-            SubmenuItem($0.title, arg: $0.arg, checked: state.filter == $0, enabled: enabled)
+            SubmenuItem($0.title, arg: $0.arg, checked: state(m).filter == $0, enabled: enabled)
         }
         var first = true
         for f in m.graph.chats.folders.allFolders {
             let filter = ChatFilter.folder(f.id)
-            out.append(SubmenuItem(f.name, arg: filter.arg, symbol: "folder", checked: state.filter == filter,
+            out.append(SubmenuItem(f.name, arg: filter.arg, symbol: "folder", checked: state(m).filter == filter,
                                    enabled: enabled, separatorBefore: first))
             first = false
         }

@@ -15,6 +15,13 @@ public enum ChatCommands {
     public static let catchUpWindow: CommandID = "chat.catchUpWindow"
     /// ⇧⌘U (Mail-style). Mark as Unread only: no Mark as Read here (owner).
     public static let markUnread: CommandID = "chat.markUnread"
+    /// Mark every chat-list row read (Teams parity): toolbar + menu.
+    /// `arg` = a `ChatListSection` raw value scopes it to one section.
+    public static let markAllRead: CommandID = "chat.markAllRead"
+    /// Collapse/expand every chat-list section (menu only; each section
+    /// header keeps its own chevron).
+    public static let collapseAll: CommandID = "chat.collapseAllSections"
+    public static let expandAll: CommandID = "chat.expandAllSections"
     /// SHORTCUTS-R2: was a planned footnote (⇧⌘I, still Sign In Again);
     /// ships here on ⌃⌘I, wired to the C1 compose importance path.
     public static let markImportant: CommandID = "chat.markImportant"
@@ -113,5 +120,11 @@ public enum ChatCommands {
                 menu: .init(.conversation, group: 1, order: 4), owner: .chat),
         Command(leave, "Leave Chat…", menu: .init(.conversation, group: 3, order: 0), owner: .chat),
         Command(block, "Block…", menu: .init(.conversation, group: 3, order: 1), owner: .chat),
+        Command(markAllRead, "Mark All as Read", symbol: "checkmark.circle",
+                menu: .init(.conversation, group: 3, order: 2), toolbar: .list, owner: .chat),
+        Command(collapseAll, "Collapse All Sections",
+                menu: .init(.conversation, group: 3, order: 3), owner: .chat),
+        Command(expandAll, "Expand All Sections",
+                menu: .init(.conversation, group: 3, order: 4), owner: .chat),
     ]
 }

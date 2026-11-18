@@ -977,6 +977,39 @@ public final class AppState: ObservableObject {
         }
     }
 
+    /// Mark every chat-list row read (chat-list "Mark All as Read"): the
+    /// local counts clear at once; each unread chat also writes its read
+    /// horizon to Teams through the single-chat path (`setChatUnread`
+    /// semantics, one Task). Channels clear locally only, like the
+    /// Teams list's own mark-read. The first server failure surfaces as
+    /// `readStateError`; successes stay read. Demo stops at the local
+    /// clear (no server writes). Empty input is a no-op.
+    public func markAllChatsRead(chatIDs: [String], channelIDs: [String] = []) {
+        for ch in channelIDs {
+            unread.markRead(chatID: ch)
+            mentions.markRead(chatID: ch)
+        }
+        let ids = chatIDs.filter { unread.isUnread(chatID: $0) }
+        for id in ids {
+            unread.markRead(chatID: id)
+            mentions.markRead(chatID: id)
+        }
+        guard !ids.isEmpty, !isDemo else { return }
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            var firstError: Error?
+            for id in ids {
+                let ms = CoreReads.arrivalMs(id: nil, time: chats.chat(id: id)?.last_message_time)
+                do {
+                    try await self.readSync.markRead(chatID: id, lastMessageMs: ms)
+                } catch {
+                    if firstError == nil { firstError = error }
+                }
+            }
+            if let firstError { self.chats.readStateError = "Couldn't mark all chats read: \(firstError)" }
+        }
+    }
+
     /// Read state made elsewhere (Teams on another device) lands here by
     /// re-reading the chat list quietly: on focus and every
     /// `readPollSeconds` while a window is visible and the app is active.
