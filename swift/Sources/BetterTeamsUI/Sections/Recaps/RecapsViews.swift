@@ -22,6 +22,7 @@ struct RecapsListPane: View {
     @ObservedObject var recordings: RecordingsViewModel
     @ObservedObject var transcripts: TranscriptsViewModel
     @ObservedObject var chats: ChatListViewModel
+    let filterState: RecapsFilterState
     @State private var filter = ""
     @State private var debounce = Debounce(milliseconds: 250)
     @Environment(\.windowModel) private var model
@@ -52,6 +53,18 @@ struct RecapsListPane: View {
                     HStack(spacing: 6) {
                         SearchField(text: $filter, placeholder: "Search Recaps")
                             .accessibilityLabel("Search Recaps")
+                        Menu {
+                            ForEach(RecapFilter.allCases, id: \.arg) { f in
+                                Toggle(f.title, isOn: Binding(get: { filterState.filter == f },
+                                                              set: { _ in filterState.toggle(f) }))
+                            }
+                        } label: {
+                            Image(systemName: "line.3.horizontal.decrease")
+                        }
+                        .menuStyle(.borderlessButton)
+                        .fixedSize()
+                        .help("Filter Meetings")
+                        .accessibilityLabel("Filter Meetings")
                         // Server search runs behind the rows on screen.
                         ProgressView()
                             .controlSize(.small)
@@ -68,8 +81,10 @@ struct RecapsListPane: View {
                             .padding(.horizontal, 10)
                             .padding(.bottom, 6)
                     }
+                    if filterState.filter != .all { filterBar }
                     list(all, model)
                 }
+                .onExitCommand { filterState.clear() }
                 // R12: a list refresh runs behind the rows on screen.
                 .refreshStatus(recordings.state == .loading || transcripts.state == .loading,
                                failure: RecapsListState.failure(recordings.state, transcripts.state),
@@ -91,17 +106,43 @@ struct RecapsListPane: View {
         }
     }
 
+    /// Active meeting filter: "Filtered by" label, native Clear button (also Esc).
+    private var filterBar: some View {
+        HStack(spacing: 8) {
+            Label("Filtered by \(filterState.filter.title)", systemImage: "line.3.horizontal.decrease")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Button("Clear") { filterState.clear() }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .help("Show All Meetings (Esc)")
+                .accessibilityLabel("Clear \(filterState.filter.title) filter")
+            Spacer(minLength: 4)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(.bar)
+    }
+
     @ViewBuilder
     private func list(_ all: [Recap], _ m: WindowModel) -> some View {
         let f = filter.trimmingCharacters(in: .whitespaces)
-        let matched = f.isEmpty ? all : all.filter { r in
+        let typed = filterState.filter == .all ? all : all.filter { filterState.filter.matches($0) }
+        let matched = f.isEmpty ? typed : typed.filter { r in
             r.matches(f) || (r.recording != nil && recordings.isSearchResults)
                 || (r.transcript != nil && transcripts.isSearchResults)
         }
         // Nothing matches locally while the server search runs: the rows
         // on screen stay until its hits land (never a blank list).
-        let rows = matched.isEmpty && (recordings.isSearching || transcripts.isSearching) ? all : matched
-        if rows.isEmpty {
+        let rows = matched.isEmpty && (recordings.isSearching || transcripts.isSearching) ? typed : matched
+        if rows.isEmpty, filterState.filter != .all, f.isEmpty {
+            EmptyPane(filterState.filter.emptyTitle, systemImage: "line.3.horizontal.decrease",
+                      message: filterState.filter.emptyMessage) {
+                Button("Show All Meetings") { filterState.clear() }
+            }
+        } else if rows.isEmpty {
             EmptyPane("No Results", systemImage: "magnifyingglass",
                       message: f.isEmpty ? "No recaps found." : "No recaps match \u{201C}\(f)\u{201D}.")
         } else {

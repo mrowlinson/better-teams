@@ -15,6 +15,7 @@ final class RecapsSection: SectionProvider, InspectorCapable {
     let section: SectionID = .native(.recaps)
     let title = NativeAppID.recaps.title
     let hasInspector = true
+    let filterState = RecapsFilterState()
 
     func subtitle(_ m: WindowModel) -> String {
         guard m.forced(section) == nil, let app = m.app, let id = Self.recapID(m) else { return "" }
@@ -26,7 +27,8 @@ final class RecapsSection: SectionProvider, InspectorCapable {
             return AnyView(EmptyPane(RecapsListState.emptyTitle, systemImage: NativeAppID.recaps.symbol,
                                      message: RecapsListState.emptyMessage))
         }
-        return AnyView(RecapsListPane(recordings: app.recordings, transcripts: app.transcripts, chats: app.chats))
+        return AnyView(RecapsListPane(recordings: app.recordings, transcripts: app.transcripts, chats: app.chats,
+                                     filterState: filterState))
     }
 
     func detailPane(_ m: WindowModel) -> AnyView {
@@ -42,13 +44,25 @@ final class RecapsSection: SectionProvider, InspectorCapable {
                                       store: app.meetingRecaps))
     }
 
+    /// Route-applied once: selection(for:) stashes, selectionDidChange
+    /// applies (which also runs on ordinary clicks, so the stash is
+    /// consumed, never re-applied).
+    private var pendingFilter: RecapFilter?
+
     /// `app/recaps/<recap>` (the tail's head is the app id).
+    /// `app/recaps?filter=recordings`: evidence preset for captures (the
+    /// loaded rows only).
     func selection(for route: Route) -> SectionSelection? {
+        if let raw = route.query["filter"] { pendingFilter = RecapFilter(arg: raw) }
         guard let id = route.tail.dropFirst().first else { return nil }
         return SectionSelection(id: id)
     }
 
     func selectionDidChange(_ sel: SectionSelection?, _ m: WindowModel) {
+        if let f = pendingFilter {
+            pendingFilter = nil
+            if filterState.filter == .all { filterState.toggle(f) }
+        }
         guard m.forced(section) == nil, let app = m.app else { return }
         // The viewer loads the selected recap itself (MeetingRecapView);
         // clearing the selection stops the player.

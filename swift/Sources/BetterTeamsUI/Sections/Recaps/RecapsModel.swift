@@ -195,3 +195,60 @@ enum TranscriptPlayhead {
         return cue.id
     }
 }
+
+/// Meetings (Recaps) list filter: the Filter Meetings pull-down. Pure
+/// rules shared by the list and the tests.
+enum RecapFilter: Equatable, CaseIterable {
+    case all, recordings, transcripts, meetingChats
+
+    var title: String {
+        switch self {
+        case .all: "All Meetings"
+        case .recordings: "With Recording"
+        case .transcripts: "With Transcript"
+        case .meetingChats: "With Meeting Chat"
+        }
+    }
+
+    var arg: String {
+        switch self {
+        case .all: "all"
+        case .recordings: "recordings"
+        case .transcripts: "transcripts"
+        case .meetingChats: "chats"
+        }
+    }
+
+    init(arg: String) { self = Self.allCases.first { $0.arg == arg } ?? .all }
+
+    var emptyTitle: String { self == .all ? "No Meetings" : "No Meetings \(title)" }
+
+    var emptyMessage: String {
+        switch self {
+        case .all: "Meetings you attend appear here."
+        case .recordings: "Meetings that were recorded appear here."
+        case .transcripts: "Meetings with a transcript appear here."
+        case .meetingChats: "Meetings whose chat is in your list appear here."
+        }
+    }
+
+    func matches(_ r: Recap) -> Bool {
+        switch self {
+        case .all: true
+        case .recordings: r.recording != nil
+        case .transcripts: r.transcript != nil
+        case .meetingChats: r.threadID != nil
+        }
+    }
+}
+
+/// Active Meetings filter (per window; not persisted).
+@Observable
+@MainActor
+final class RecapsFilterState {
+    private(set) var filter: RecapFilter = .all
+
+    /// The active filter again turns it off; another switches to it.
+    func toggle(_ f: RecapFilter) { filter = (f == filter || f == .all) ? .all : f }
+    func clear() { filter = .all }
+}

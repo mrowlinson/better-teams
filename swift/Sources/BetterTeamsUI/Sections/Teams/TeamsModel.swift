@@ -156,9 +156,67 @@ struct ChannelTabEntry: Identifiable, Equatable {
 
 /// UI-only Teams state (collapse, per-thread reply drafts). Never
 /// mirrors a store field (R3).
+/// Channel list filter (Filter Channels pull-down). Pure rules so the
+/// list and the tests share one definition.
+enum ChannelFilter: Equatable, CaseIterable {
+    case all, unread, mentions, pinned, muted
+
+    var title: String {
+        switch self {
+        case .all: "All Channels"
+        case .unread: "Unread"
+        case .mentions: "Mentions"
+        case .pinned: "Pinned"
+        case .muted: "Muted"
+        }
+    }
+
+    var arg: String {
+        switch self {
+        case .all: "all"
+        case .unread: "unread"
+        case .mentions: "mentions"
+        case .pinned: "pinned"
+        case .muted: "muted"
+        }
+    }
+
+    init(arg: String) { self = Self.allCases.first { $0.arg == arg } ?? .all }
+
+    var emptyTitle: String { self == .all ? "No Channels" : "No \(title) Channels" }
+
+    var emptyMessage: String {
+        switch self {
+        case .all: "Channels in your teams appear here."
+        case .unread: "You're all caught up."
+        case .mentions: "Channels where someone @mentions you appear here."
+        case .pinned: "Channels you pin appear here."
+        case .muted: "Channels you mute appear here."
+        }
+    }
+
+    /// Whether one channel passes; hidden channels only show in All.
+    func matches(hidden: Bool, unread: Bool, mentioned: Bool, pinned: Bool, level: ChatNotifyLevel) -> Bool {
+        if hidden { return false }
+        switch self {
+        case .all: return true
+        case .unread: return unread
+        case .mentions: return mentioned
+        case .pinned: return pinned
+        case .muted: return level == .muted
+        }
+    }
+}
+
 @Observable
 @MainActor
 final class TeamsSectionState {
+    /// Active channel filter; the list shows the matching channels flat.
+    private(set) var filter: ChannelFilter = .all
+
+    /// The active filter again turns it off; another switches to it.
+    func toggleFilter(_ f: ChannelFilter) { filter = (f == filter || f == .all) ? .all : f }
+    func clearFilter() { filter = .all }
     /// Collapsed team ids (§6.3 "collapse state persisted").
     private(set) var collapsed: Set<String>
     var replyDrafts: [String: String] = [:]

@@ -139,8 +139,16 @@ final class TeamsSection: SectionProvider, InspectorCapable {
 
     // MARK: routes and loads
 
+    /// Route-applied once: selection(for:) stashes, selectionDidChange
+    /// applies (which also runs on ordinary clicks, so the stash is
+    /// consumed, never re-applied).
+    private var pendingFilter: ChannelFilter?
+
     /// `teams/<team>/<channel>?tab=posts|files|notes|web:<id>&thread=<mid>`.
+    /// `teams?filter=unread`: evidence preset for captures (the loaded
+    /// rows only).
     func selection(for route: Route) -> SectionSelection? {
+        if let raw = route.query["filter"] { pendingFilter = ChannelFilter(arg: raw) }
         let tail = route.tail.map(TeamsDemoAliases.resolve)
         guard let team = tail.first else { return nil }
         var sel = TeamsSelection(teamID: team, channelID: tail.count > 1 ? tail[1] : nil)
@@ -150,6 +158,10 @@ final class TeamsSection: SectionProvider, InspectorCapable {
     }
 
     func selectionDidChange(_ sel: SectionSelection?, _ m: WindowModel) {
+        if let f = pendingFilter {
+            pendingFilter = nil
+            if state(m).filter == .all { state(m).toggleFilter(f) }
+        }
         guard let app = m.app, let s = TeamsSelection(sel) else { lastThread = nil; return }
         if let ch = s.channelID {
             if m.graph.openChatID != ch {

@@ -42,7 +42,7 @@ struct TeamsListPane: View {
             }
         } else {
             // R12: a refresh runs behind the rows on screen.
-            list(m)
+            listOrFiltered(m)
                 .refreshStatus(teams.state == .loading, failure: Self.failure(teams.state),
                                label: "Updating Teams", retry: { teams.refresh() })
                 .safeAreaInset(edge: .bottom, spacing: 0) { actionError }
@@ -74,6 +74,96 @@ struct TeamsListPane: View {
     /// A failed refresh behind the rows on screen (quiet notice).
     static func failure(_ state: TeamsState) -> String? {
         if case .error(let message) = state { message } else { nil }
+    }
+
+    /// The full outline, or (a filter on) the matching channels flat with
+    /// a "Filtered by" bar and a Clear button (also Esc), as the chat list.
+    @ViewBuilder
+    private func listOrFiltered(_ m: WindowModel) -> some View {
+        Group {
+            if state.filter == .all { list(m) } else { filteredList(m) }
+        }
+        .safeAreaInset(edge: .top, spacing: 0) { filterBar(count: matching.count) }
+        .onExitCommand { state.clearFilter() }
+    }
+
+    private var matching: [PinnedChannel] {
+        Self.matching(teams: teams.teams, filter: state.filter, prefs: prefs, unread: unread, mentions: mentions)
+    }
+
+    /// Channels the active filter keeps, flat (what the filtered list shows).
+    static func matching(teams: [TeamItem], filter: ChannelFilter, prefs: ChannelPrefs,
+                         unread: UnreadStore, mentions: MentionStore) -> [PinnedChannel] {
+        teams.flatMap { team in
+            team.channels.filter {
+                filter.matches(hidden: prefs.isHidden($0.channelId) || prefs.isHidden(team.teamId),
+                               unread: unread.isUnread(chatID: $0.channelId),
+                               mentioned: mentions.contains(chatID: $0.channelId),
+                               pinned: prefs.isPinned($0.channelId),
+                               level: prefs.level($0.channelId))
+            }.map { PinnedChannel(team: team, channel: $0) }
+        }
+    }
+
+    /// Native pull-down (checkmark on the active filter); with a filter on,
+    /// a native Clear button (also Esc) and the match count.
+    private func filterBar(count: Int) -> some View {
+        HStack(spacing: 8) {
+            Menu {
+                ForEach(ChannelFilter.allCases, id: \.arg) { f in
+                    Toggle(f.title, isOn: Binding(get: { state.filter == f }, set: { _ in state.toggleFilter(f) }))
+                }
+            } label: {
+                Label(state.filter == .all ? "Filter" : "Filtered by \(state.filter.title)",
+                      systemImage: "line.3.horizontal.decrease")
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .accessibilityLabel("Filter Channels")
+            if state.filter != .all {
+                Button("Clear") { state.clearFilter() }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .help("Show All Channels (Esc)")
+                    .accessibilityLabel("Clear \(state.filter.title) filter")
+                Spacer(minLength: 4)
+                Text(count == 1 ? "1 channel" : "\(count) channels")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            } else {
+                Spacer(minLength: 0)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(.bar)
+    }
+
+    private func filteredList(_ m: WindowModel) -> some View {
+        let rows = matching
+        let selection = Binding<String?>(
+            get: { TeamsSelection(m.nav.selection(in: .teams))?.rowTag },
+            set: { tag in select(tag, m) })
+        return List(selection: selection) {
+            ForEach(rows) { p in
+                channelRow(p.channel, team: p.team, showsTeam: true, m)
+            }
+        }
+        .listStyle(.inset)
+        .overlay {
+            if rows.isEmpty {
+                EmptyPane(state.filter.emptyTitle, systemImage: "line.3.horizontal.decrease",
+                          message: state.filter.emptyMessage) {
+                    Button("Show All Channels") { state.clearFilter() }
+                }
+            }
+        }
+        .contextMenu(forSelectionType: String.self) { tags in
+            if let tag = tags.first, tag.hasPrefix("chan:") { channelMenu(String(tag.dropFirst(5)), m) }
+        } primaryAction: { tags in
+            Self.primaryAction(tags, m) { select($0, m) }
+        }
     }
 
     private func list(_ m: WindowModel) -> some View {

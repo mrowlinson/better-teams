@@ -12,6 +12,8 @@ import SwiftUI
 /// UI-only chat list filter (§6.2 Filter menu).
 enum ChatFilter: Equatable {
     case all, unread, mentions, muted, snoozed, hidden
+    /// Type filters: 1:1 and group chats (not meetings), meeting chats.
+    case chats, meetings
     case folder(String)
 
     var title: String {
@@ -22,6 +24,8 @@ enum ChatFilter: Equatable {
         case .muted: "Muted"
         case .snoozed: "Snoozed"
         case .hidden: "Hidden"
+        case .chats: "Chats"
+        case .meetings: "Meetings"
         case .folder: "Folder"
         }
     }
@@ -34,6 +38,8 @@ enum ChatFilter: Equatable {
         case .muted: "muted"
         case .snoozed: "snoozed"
         case .hidden: "hidden"
+        case .chats: "chats"
+        case .meetings: "meetings"
         case .folder(let id): "folder:\(id)"
         }
     }
@@ -45,6 +51,8 @@ enum ChatFilter: Equatable {
         case "muted": self = .muted
         case "snoozed": self = .snoozed
         case "hidden": self = .hidden
+        case "chats": self = .chats
+        case "meetings": self = .meetings
         case _ where arg.hasPrefix("folder:"): self = .folder(String(arg.dropFirst(7)))
         default: self = .all
         }
@@ -56,6 +64,8 @@ extension ChatFilter {
     func emptyTitle(folderName: String?) -> String {
         switch self {
         case .all: "No Chats"
+        case .chats: "No 1:1 or Group Chats"
+        case .meetings: "No Meeting Chats"
         case .folder: "No Chats in \(folderName ?? "This Folder")"
         default: "No \(title) Chats"
         }
@@ -69,6 +79,8 @@ extension ChatFilter {
         case .muted: "Chats you mute appear here."
         case .snoozed: "Chats you snooze appear here."
         case .hidden: "Chats you hide appear here."
+        case .chats: "Conversations with one person or a group appear here."
+        case .meetings: "Chats from meetings you were invited to appear here."
         case .folder: "Chats you move to this folder appear here."
         }
     }
@@ -84,12 +96,16 @@ struct ChatFilterRules {
     let snooze: SnoozeStore
     let folders: FolderStore
 
+    static func kind(_ c: ChatItem) -> ChatKind { ChatKind.of(chatID: c.chatId, isGroup: c.is_group) }
+
     /// Hidden chats leave every view but Hidden (§6.2 Filter menu).
     func apply(_ filter: ChatFilter, to list: [ChatItem]) -> [ChatItem] {
         if filter == .hidden { return list.filter { rules.isHidden(chatID: $0.id) } }
         let shown = list.filter { !rules.isHidden(chatID: $0.id) }
         switch filter {
         case .all, .hidden: return shown
+        case .chats: return shown.filter { Self.kind($0) != .meeting }
+        case .meetings: return shown.filter { Self.kind($0) == .meeting }
         case .unread: return shown.filter { unread.isUnread(chatID: $0.id) }
         case .mentions: return shown.filter { mentions.contains(chatID: $0.id) }
         case .muted: return shown.filter { rules.level(chatID: $0.id) == .muted }
@@ -630,8 +646,9 @@ final class ChatSection: SectionProvider, InspectorCapable {
     func submenuItems(_ c: CommandID, _ m: WindowModel) -> [SubmenuItem] {
         if c != ChatCommands.filter { return chatActionItems(c, m) }
         let enabled = m.nav.section == .chat
-        var out = [ChatFilter.all, .unread, .mentions, .muted, .snoozed, .hidden].map {
-            SubmenuItem($0.title, arg: $0.arg, checked: state(m).filter == $0, enabled: enabled)
+        var out = [ChatFilter.all, .unread, .mentions, .muted, .snoozed, .hidden, .chats, .meetings].map {
+            SubmenuItem($0.title, arg: $0.arg, checked: state(m).filter == $0, enabled: enabled,
+                        separatorBefore: $0 == .chats)
         }
         var first = true
         for f in m.graph.chats.folders.allFolders {
