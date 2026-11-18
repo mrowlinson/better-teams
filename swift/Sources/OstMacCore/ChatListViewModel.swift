@@ -355,8 +355,11 @@ public final class ChatListViewModel: ObservableObject, ChatSelection {
             loadedPages = read
             nextPageLink = response.next_link
             apply(response, complete: response.next_link == nil)
-            await readFolders()
-            await readMentions(generation: gen)
+            // LAUNCHPERF: folders + mentions are independent post-list
+            // reads — run them together, never serially on launch.
+            async let folders: Void = readFolders()
+            async let mentions: Void = readMentions(generation: gen)
+            _ = await (folders, mentions)
         } catch {
             guard gen == generation else { return }
             state = .error(Self.message(for: error))

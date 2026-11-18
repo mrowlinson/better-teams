@@ -277,6 +277,8 @@ public final class AppState: ObservableObject {
     private var openChatFocusObserver: NSObjectProtocol?
     private var started = false
     private var contentOpened = false
+    /// LAUNCHPERF: paint-phase snapshots restore exactly once per launch.
+    private var paintRestored = false
     // om-rules: notify/skip rules over the live feed (RulesStore loads
     // rules.json once; Settings mute edits apply live, no relaunch).
     // meetingDedup collapses meeting bursts; ownerMRI is learned async
@@ -1410,14 +1412,12 @@ public final class AppState: ObservableObject {
         guard !contentOpened, isDemo || auth.state.allowsContent else { return }
         contentOpened = true
         let launchStart = DispatchTime.now().uptimeNanoseconds
-        // NOLOAD: every section paints its last good snapshot first
-        // (per-account disk cache), then revalidates behind the rows.
-        restoreSectionCaches()
         // NOLOAD: section loads run concurrently — none waits on
-        // another. Critical first (chats awaited: restore needs the
-        // list); teams → Shifts seed → Files specs chain on their own;
-        // To Do + Planner in parallel; recordings + transcripts (41.8s
-        // / 58.1s live) go to a utility-QoS idle pass below.
+        // another. Critical first (paint from cache, then chats
+        // revalidates behind the mark); teams → Shifts seed → Files
+        // specs chain on their own; To Do + Planner in parallel;
+        // recordings + transcripts (41.8s / 58.1s live) go to a
+        // utility-QoS idle pass below.
         let teamsLoad = Task { @MainActor [weak self] in
             guard let self else { return }
             await self.teams.load()
@@ -1427,8 +1427,22 @@ public final class AppState: ObservableObject {
             // Shifts needs only the teams list (team picker + grid).
             self.seedShifts()
         }
-        await chats.load()
-        Log.content("chats", ms: Log.ms(since: launchStart), cached: false)
+        // LAUNCHPERF: usable paint comes from cache — resolve + open
+        // before ANY network await, so content.open never waits on the
+        // list fetch, authorization, or the realtime feed.
+        var painted = paintCachedContent()
+        if !painted {
+            // No cache (first launch): the fresh list is the first
+            // paint — then resolve against it.
+            await chats.load()
+            Log.content("chats", ms: Log.ms(since: launchStart), cached: false)
+            painted = paintCachedContent()
+            if !painted {
+                // List is up but nothing selected (no persisted id):
+                // usable all the same — mark what the old code marked.
+                ColdStart.mark("content.open")
+            }
+        }
         Task { @MainActor [weak self] in await self?.activity.refresh() }
         Task { @MainActor [weak self] in await self?.presence.pollOnce() } // 1:1 dots
         // Second wave (after the chat list claims the core): To Do +
@@ -1467,6 +1481,41 @@ public final class AppState: ObservableObject {
             // working auth regardless.
             signedIn = true
         }
+        // The 2s tick runs in demo too (d2-send: the scheduled queue and
+        // the snooze sweep are client-side in both modes; the tick
+        // publishes nothing while idle, so demo stays still). Starts
+        // after the open above so launch catch-up delivers into the
+        // open chat (own-bubble) instead of racing it.
+        refreshFeedStatus()
+        stateTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.tick() }
+        }
+        // LAUNCHPERF: revalidation + live wiring run behind the usable
+        // mark (content.open fired in the paint phase above), never
+        // ahead of it.
+        Task { @MainActor [weak self] in
+            await self?.revalidateContent(launchStart: launchStart, refreshList: painted)
+        }
+    }
+
+    /// LAUNCHPERF paint phase (sync, never touches network): resolve the
+    /// launch selection against the current rows and open it. Returns true
+    /// when content painted (rows resolved) and marks content.open; false
+    /// on an empty or unresolvable list (first launch — the caller loads,
+    /// then paints again). The selection sink opens the chat, so
+    /// chat.first-open lands on the next main-actor hop.
+    func paintCachedContent() -> Bool {
+        // Restore once: several stores overwrite live rows on restore,
+        // so the second paint (after the fresh list lands) resolves
+        // only and never repaints stale snapshots over live data.
+        if !paintRestored {
+            paintRestored = true
+            // NOLOAD: every section paints its last good snapshot
+            // first (per-account disk cache), then revalidates behind
+            // the rows.
+            restoreSectionCaches()
+        }
+        guard !chats.chats.isEmpty else { return false }
         // Restore (om-demo-select): explicit --chat wins, else the last
         // selection — resolved against the loaded list, never blind. A
         // restored id absent from the list falls back to the first chat
@@ -1486,7 +1535,25 @@ public final class AppState: ObservableObject {
         case .openDirect(let id) where openChatID == nil:
             open(chatID: id, chatName: preselectName)
         default:
-            break
+            return false
+        }
+        ColdStart.mark("content.open") // top10-menubar: launch timeline
+        return true
+    }
+
+    /// LAUNCHPERF revalidation: runs behind the usable mark. Revalidates
+    /// the list (unless the paint phase already loaded it), re-resolves
+    /// the selection only when nothing is open (a cached row that vanished
+    /// server-side falls back to the fresh first chat), then wires the
+    /// live subsystems (presence, notifs, feed, background polls) that the
+    /// mark must never wait on.
+    private func revalidateContent(launchStart: UInt64, refreshList: Bool) async {
+        if refreshList {
+            await chats.load()
+            Log.content("chats", ms: Log.ms(since: launchStart), cached: false)
+            if openChatID == nil {
+                _ = paintCachedContent()
+            }
         }
         if !isDemo {
             startLivePresence() // own + people + 1:1 dots (unified presence)
@@ -1535,16 +1602,6 @@ public final class AppState: ObservableObject {
                 conv.send(text: say)
             }
         }
-        // The 2s tick runs in demo too (d2-send: the scheduled queue and
-        // the snooze sweep are client-side in both modes; the tick
-        // publishes nothing while idle, so demo stays still). Starts
-        // after the open above so launch catch-up delivers into the
-        // open chat (own-bubble) instead of racing it.
-        refreshFeedStatus()
-        stateTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in self?.tick() }
-        }
-        ColdStart.mark("content.open") // top10-menubar: launch timeline
     }
 
     /// NOLOAD: point every list section at one account's snapshots.
