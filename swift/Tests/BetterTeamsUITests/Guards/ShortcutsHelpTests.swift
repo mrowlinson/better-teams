@@ -59,6 +59,7 @@ final class ShortcutsHelpTests: XCTestCase {
         XCTAssertTrue(file?.rows.contains { $0.title == "New Meeting…" && $0.keys == "⌥⇧⌘N" } == true)
         let conv = sections.first { $0.menu == "Conversation" }
         XCTAssertTrue(conv?.rows.contains { $0.title == "Reply" && $0.keys == "⌥⌘R" } == true)
+        XCTAssertTrue(conv?.rows.contains { $0.title == "Mark as Important" && $0.keys == "⌃⌘I" } == true)
         let call = sections.first { $0.menu == "Call" }
         XCTAssertTrue(call?.rows.contains { $0.title == "Accept Call" && $0.keys == "⇧⌘A" } == true)
         let edit = sections.first { $0.menu == "Edit" }
@@ -74,11 +75,21 @@ final class ShortcutsHelpTests: XCTestCase {
     }
 
     func testPlannedBindingsAreFootnoteOnly() {
-        XCTAssertFalse(HelpContent.planned.isEmpty)
-        XCTAssertTrue(HelpContent.planned.contains { $0.title == "Mark as Important" })
-        // A planned binding has no catalog entry, so it can never fire.
+        // SHORTCUTS-R2 shipped the only planned binding (Mark as Important,
+        // lane brief: "remove the footnote, add the catalog entry +
+        // binding"), so the footnote list is empty and the window renders
+        // no footnote. Any future planned entry still has no catalog entry
+        // and can never fire.
+        XCTAssertTrue(HelpContent.planned.isEmpty)
+        let shipped = CommandCatalog.command("chat.markImportant")
+        XCTAssertNotNil(shipped)
+        XCTAssertEqual(shipped?.key, "i")
+        XCTAssertTrue(shipped?.modifiers.contains(.control) == true)
         XCTAssertNil(CommandCatalog.command("message.important"))
         XCTAssertNil(CommandCatalog.command("teams.markImportant"))
+        // Sign In Again keeps ⇧⌘I (owner-pinned); the new key is ⌃⌘I.
+        XCTAssertEqual(CommandCatalog.command(ShellCommand.connection)?.key, "i")
+        XCTAssertTrue(CommandCatalog.command(ShellCommand.connection)?.modifiers.contains(.shift) == true)
     }
 
     func testHelpTopicsAreComplete() {

@@ -87,7 +87,9 @@ enum EvidenceHarness {
         let main = primaryWindow ?? wc.window
         let win = (main?.attachedSheet ?? main)?.windowNumber ?? 0
         if let root = wc.window?.contentView { revealTimelineHeaders(root) }
-        if let path = options.snapshotPath, let w = wc.window {
+        if let path = options.snapshotPath, let w = main {
+            // SHORTCUTS-R2: snapshot the READY window (the Help window
+            // for help/shortcuts routes), not always the main shell.
             // Web views snapshot asynchronously: READY only once written.
             Task { @MainActor in
                 await snapshot(w, to: path)

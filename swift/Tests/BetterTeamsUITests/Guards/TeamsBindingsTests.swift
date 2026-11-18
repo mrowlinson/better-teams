@@ -31,6 +31,8 @@ final class TeamsBindingsTests: XCTestCase {
         XCTAssertEqual(key(CalendarCommands.newMeeting)?.1, [.command, .option, .shift])
         XCTAssertEqual(key(ChatCommands.compose)?.0, "x")
         XCTAssertEqual(key(ChatCommands.compose)?.1, [.command, .shift])
+        XCTAssertEqual(key(ChatCommands.markImportant)?.0, "i")
+        XCTAssertEqual(key(ChatCommands.markImportant)?.1, [.command, .control])
     }
 
     // MARK: accept / decline
@@ -149,6 +151,36 @@ final class TeamsBindingsTests: XCTestCase {
         model.navigator?.select(section: .chat)
         model.navigator?.select(nil, in: .chat)
         XCTAssertFalse(section.validate(ChatCommands.compose, arg: nil, model).enabled)
+    }
+
+    // MARK: mark as important (SHORTCUTS-R2: the C1 compose path on ⌃⌘I)
+
+    func testMarkAsImportantTogglesTheDraftLevel() throws {
+        let (app, model, nav) = GuardSupport.demoModel()
+        defer { withExtendedLifetime(nav) {} }
+        app.chats.insertLocally(ChatItem(chatId: "19:peer", name: "Ava Lindqvist"))
+        model.navigator?.select(section: .chat)
+        model.navigator?.select(SectionSelection(id: "19:peer"), in: .chat)
+        let section = try XCTUnwrap(model.provider(.chat) as? ChatSection)
+        let composer = ConversationServices.of(model).composer
+        XCTAssertTrue(section.validate(ChatCommands.markImportant, arg: nil, model).enabled)
+        XCTAssertEqual(composer.importance(for: "19:peer"), .normal)
+        XCTAssertTrue(section.perform(ChatCommands.markImportant, arg: nil, model))
+        XCTAssertEqual(composer.importance(for: "19:peer"), .important)
+        XCTAssertEqual(
+            section.validate(ChatCommands.markImportant, arg: nil, model).title,
+            "Unmark as Important")
+        XCTAssertTrue(section.perform(ChatCommands.markImportant, arg: nil, model))
+        XCTAssertEqual(composer.importance(for: "19:peer"), .normal)
+    }
+
+    func testMarkAsImportantNeedsAConversation() throws {
+        let (_, model, nav) = GuardSupport.demoModel()
+        defer { withExtendedLifetime(nav) {} }
+        let section = try XCTUnwrap(model.provider(.chat) as? ChatSection)
+        model.navigator?.select(section: .chat)
+        model.navigator?.select(nil, in: .chat)
+        XCTAssertFalse(section.validate(ChatCommands.markImportant, arg: nil, model).enabled)
     }
 
     func testGoToComposeBoxFocusesTheComposer() throws {

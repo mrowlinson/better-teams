@@ -575,6 +575,7 @@ public final class AppState: ObservableObject {
         }
         wireChats()
         wireSearchIndex() // gap-g6g7: history + delete → offline index
+        wireSearchOperators() // SHORTCUTS-R2: in:/unread/saved hooks
         // §106 diagnostics: lose the first send's answer (verify path).
         if !isDemo, CommandLine.arguments.contains("--send-timeout-shim") {
             conv.sendTransport = SendTransport.live.losingFirstAnswer()
@@ -919,6 +920,30 @@ public final class AppState: ObservableObject {
                      atLatest: atLatest, loaded: loaded)
     }
 
+    /// Chat/channel display name for search `in:` (SHORTCUTS-R2): chats
+    /// first, then teams and their channels. Nil = unknown id (the
+    /// predicate falls back to matching the raw id).
+    public func displayName(forConversation id: String) -> String? {
+        if let c = chats.chat(id: id) { return c.name }
+        for t in teams.teams {
+            if t.teamId == id { return t.name }
+            if let ch = t.channels.first(where: { $0.channelId == id }) { return ch.name }
+        }
+        return nil
+    }
+
+    /// Saved messages as search rows for `/saved` (SHORTCUTS-R2),
+    /// newest save first (the store already keeps that order).
+    public func savedMessageHits() -> [SearchHit] {
+        savedMessages.saves.map {
+            SearchHit(
+                messageID: $0.messageID, chatID: $0.chatID,
+                teamID: $0.teamID, channelID: $0.channelID,
+                sender: $0.sender, timestamp: $0.timestamp,
+                preview: $0.preview)
+        }
+    }
+
     /// Row menu Mark as read / Mark as unread, on Teams too. A refused
     /// write undoes the local change and says so under the list.
     /// `newest`: the newest loaded message (message menu, R5) — its
@@ -971,6 +996,18 @@ public final class AppState: ObservableObject {
 
     private func seedMentions() {
         mentions.seed(ChatListSeed.mentionedChats(mentionActivity, horizons: chatHorizons))
+    }
+
+    /// Search operator hooks (SHORTCUTS-R2): chat display names for
+    /// `in:`, thread read state for `/unread`, saved rows for `/saved`.
+    /// Weak self: the closures read the current lists on every query,
+    /// so account rebuilds need no rewiring.
+    private func wireSearchOperators() {
+        messageSearch.chatName = { [weak self] id in self?.displayName(forConversation: id) }
+        messageSearch.isUnread = { [weak self] id in self?.unread.isUnread(chatID: id) ?? false }
+        messageSearch.savedHits = { [weak self] in self?.savedMessageHits() ?? [] }
+        localSearch.chatName = { [weak self] id in self?.displayName(forConversation: id) }
+        localSearch.isUnread = { [weak self] id in self?.unread.isUnread(chatID: id) ?? false }
     }
 
     /// Offline-index writer wiring (gap-g6g7): fetched history

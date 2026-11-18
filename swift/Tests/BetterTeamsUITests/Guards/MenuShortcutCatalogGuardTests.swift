@@ -169,6 +169,7 @@ final class MenuShortcutCatalogGuardTests: XCTestCase {
         "Conversation > Pin",
         "Conversation > Translate…",
         "Conversation > Go to Compose Box [$@X]",
+        "Conversation > Mark as Important [^@I]",
         "Conversation > Mute",
         "Conversation > Snooze >",
         "Conversation > Notifications >",

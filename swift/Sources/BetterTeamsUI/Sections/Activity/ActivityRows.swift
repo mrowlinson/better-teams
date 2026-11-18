@@ -156,14 +156,40 @@ struct ActivityRowModel: Identifiable, Equatable {
 
     /// Feed text search (ACT-04): person, headline, snippet, and kind
     /// match, case- and diacritic-insensitive. Blank matches everything.
+    /// SHORTCUTS-R2: the same operators as message search narrow the feed
+    /// (`from:` the person, `date:` the row day, `/unread` unread rows,
+    /// `/saved` saved rows; free text still matches all four fields).
     static func matching(_ rows: [ActivityRowModel], query: String) -> [ActivityRowModel] {
-        let q = query.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
-        guard !q.isEmpty else { return rows }
+        let parsed = MessageSearchQuery.parse(query)
+        let q = parsed.text.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+        guard !q.isEmpty || parsed.hasFilters else { return rows }
         return rows.filter { r in
-            [r.person, r.headline, r.snippet, r.kindLabel].contains {
+            if parsed.slash == .saved, !r.isSaved { return false }
+            if parsed.slash == .unread, !r.unread { return false }
+            if let from = parsed.from,
+               !r.person.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+                   .contains(from) { return false }
+            if let date = parsed.date, !Self.dayString(r.date).hasPrefix(date) { return false }
+            if q.isEmpty { return true }
+            return [r.person, r.headline, r.snippet, r.kindLabel].contains {
                 $0.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil).contains(q)
             }
         }
+    }
+
+    /// Row day as `yyyy-MM-dd` (UTC) for `date:` prefix matching.
+    private static func dayString(_ date: Date) -> String {
+        DayFormatter.shared.string(from: date)
+    }
+
+    private enum DayFormatter {
+        static let shared: DateFormatter = {
+            let f = DateFormatter()
+            f.dateFormat = "yyyy-MM-dd"
+            f.timeZone = TimeZone(secondsFromGMT: 0)
+            f.locale = Locale(identifier: "en_US_POSIX")
+            return f
+        }()
     }
 
     /// Rows for a filter, newest first (feed order is already newest

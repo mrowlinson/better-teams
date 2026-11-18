@@ -54,6 +54,14 @@ public final class LocalSearchStore: ObservableObject {
     /// Wall ms of the last synchronous query run (gap-g6g7: the
     /// airplane-mode <200ms accept reads this; nil before any query).
     @Published public private(set) var lastQueryMs: Double?
+    /// Chat/channel id → display name for `in:` matching (SHORTCUTS-R2;
+    /// nil = ids only). Set by AppState alongside the store.
+    public var chatName: ((String) -> String?)?
+    /// Thread unread answer for `/unread` (SHORTCUTS-R2; nil = no thread
+    /// is unread). Set by AppState alongside the store.
+    public var isUnread: ((String) -> Bool)?
+    /// Thread unread answer for `/unread` (SHORTCUTS-R2; nil = no thread
+    /// is unread). Set by AppState alongside the store.
 
     /// Page size matches server search so callers can swap stores.
     public nonisolated static let pageSize: Int32 = 25
@@ -225,14 +233,23 @@ public final class LocalSearchStore: ObservableObject {
     /// not by filtering a global window afterwards: a common word fills
     /// the first 25 global hits with other chats and drops this one's.
     public func hits(matching query: String, inChat chatID: String) -> [SearchHit] {
-        let terms = Self.tokenize(query).map(Self.fold)
-        guard !terms.isEmpty, !chatID.isEmpty else { return [] }
+        let parsed = MessageSearchQuery.parse(query)
+        let terms = Self.tokenize(parsed.text).map(Self.fold)
+        guard (!terms.isEmpty || parsed.hasFilters), !chatID.isEmpty else { return [] }
         let prefix = Self.docKey(chatID: chatID, messageID: "")
         return snapshot.docs
             .filter { key, doc in
                 guard key.hasPrefix(prefix) else { return false }
                 let words = Self.tokenize("\(doc.sender) \(doc.content)").map(Self.fold)
-                return terms.allSatisfy { t in words.contains { $0.hasPrefix(t) } }
+                guard terms.allSatisfy({ t in words.contains { $0.hasPrefix(t) } }) else { return false }
+                // Operators narrow the ⌘F window too (`/saved` never
+                // matches the index — MessageSearchStore serves those).
+                if parsed.slash == .saved { return false }
+                return parsed.matches(
+                    sender: doc.sender, chatID: doc.chatID,
+                    channelID: doc.channelID, teamID: doc.teamID,
+                    timestamp: doc.timestamp, chatName: chatName,
+                    isUnread: isUnread)
             }
             .sorted { a, b in
                 a.value.timestamp != b.value.timestamp ? a.value.timestamp > b.value.timestamp : a.key < b.key
@@ -246,7 +263,29 @@ public final class LocalSearchStore: ObservableObject {
 
     private func runQuery(_ query: String) {
         let t0 = CFAbsoluteTimeGetCurrent()
-        rankedKeys = allMatches(for: query)
+        let parsed = MessageSearchQuery.parse(query)
+        let base: [String]
+        if parsed.text.isEmpty {
+            // Operators/slash alone scan the whole index, newest first
+            // (allMatches needs at least one text term).
+            base = snapshot.docs.sorted {
+                $0.value.timestamp != $1.value.timestamp
+                    ? $0.value.timestamp > $1.value.timestamp : $0.key < $1.key
+            }.map(\.key)
+        } else {
+            base = allMatches(for: parsed.text)
+        }
+        rankedKeys = base.filter { key in
+            guard let doc = snapshot.docs[key] else { return false }
+            // `/saved` never matches the on-device index:
+            // MessageSearchStore serves those rows from the saved list.
+            if parsed.slash == .saved { return false }
+            return parsed.matches(
+                sender: doc.sender, chatID: doc.chatID,
+                channelID: doc.channelID, teamID: doc.teamID,
+                timestamp: doc.timestamp, chatName: chatName,
+                isUnread: isUnread)
+        }
         total = rankedKeys.count
         applyWindow(from: 0)
         let ms = (CFAbsoluteTimeGetCurrent() - t0) * 1000

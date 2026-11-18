@@ -15,6 +15,9 @@ public enum ChatCommands {
     public static let catchUpWindow: CommandID = "chat.catchUpWindow"
     /// ⇧⌘U (Mail-style). Mark as Unread only: no Mark as Read here (owner).
     public static let markUnread: CommandID = "chat.markUnread"
+    /// SHORTCUTS-R2: was a planned footnote (⇧⌘I, still Sign In Again);
+    /// ships here on ⌃⌘I, wired to the C1 compose importance path.
+    public static let markImportant: CommandID = "chat.markImportant"
     /// Teams ⇧⌘X (the compose box): focuses the open conversation's
     /// composer. Group 0 order 8 reserves 2–7 for the message-half menu.
     public static let compose: CommandID = "chat.compose"
@@ -79,6 +82,9 @@ public enum ChatCommands {
                 menu: .init(.window, group: 2, order: 0), owner: .chat),
         Command(markUnread, "Mark as Unread", key: "u", modifiers: [.command, .shift],
                 menu: .init(.conversation, group: 0, order: 0), owner: .chat),
+        Command(markImportant, "Mark as Important", alternateTitle: "Unmark as Important",
+                key: "i", modifiers: [.command, .control],
+                menu: .init(.conversation, group: 0, order: 9), owner: .chat),
         Command(pin, "Pin Chat", alternateTitle: "Unpin Chat",
                 menu: .init(.conversation, group: 0, order: 1), owner: .chat),
         Command(compose, "Go to Compose Box", symbol: "square.and.pencil",

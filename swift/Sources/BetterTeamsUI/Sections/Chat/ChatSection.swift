@@ -312,6 +312,13 @@ final class ChatSection: SectionProvider, InspectorCapable {
             // Teams ⇧⌘X: the open conversation's composer takes focus.
             guard ConversationToolbar.chatID(m) != nil else { return false }
             ConversationServices.of(m).composer.focusRequest += 1
+        case ChatCommands.markImportant:
+            // SHORTCUTS-R2: toggle Important on the open conversation's
+            // draft through the C1 compose path (the send carries it).
+            guard let id = ConversationToolbar.chatID(m) else { return false }
+            let composer = ConversationServices.of(m).composer
+            composer.setImportance(
+                composer.importance(for: id) == .important ? .normal : .important, for: id)
         case ChatCommands.markUnread:
             // Same semantics as the message menu's Mark as Unread: Teams
             // bookmarks just behind the NEWEST loaded message.
@@ -396,6 +403,14 @@ final class ChatSection: SectionProvider, InspectorCapable {
             return CommandValidation(enabled: m.app?.catchUp.mode ?? .off != .off)
         case ChatCommands.markUnread:
             return CommandValidation(enabled: inChat && selected(m) != nil)
+        case ChatCommands.markImportant:
+            // Any host showing a conversation (like Go to Compose Box);
+            // the title follows the draft's current level.
+            guard let id = ConversationToolbar.chatID(m) else { return .disabled }
+            let level = ConversationServices.of(m).composer.importance(for: id)
+            return CommandValidation(
+                enabled: true,
+                title: level == .important ? "Unmark as Important" : "Mark as Important")
         case ChatCommands.compose:
             // Any host showing a conversation (Chat, Activity, Search).
             return CommandValidation(enabled: ConversationToolbar.chatID(m) != nil)

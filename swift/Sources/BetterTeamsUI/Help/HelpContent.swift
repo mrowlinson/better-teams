@@ -117,7 +117,9 @@ public enum HelpContent {
             HelpSection("Scopes",
                         "One field searches messages, people, and files. The scope bar narrows it; typing scopes to the open conversation with ⌘F.",
                         bullets: ["⌘G and ⇧⌘G step through in-conversation matches.",
-                                  "Use Selection for Find (⌘E) searches the selected text."]),
+                                  "Use Selection for Find (⌘E) searches the selected text.",
+                                  "from:, in:, and date: narrow by sender, conversation, or day (from:ava date:2026-11-17).",
+                                  "/unread keeps unread threads; /saved searches saved messages."]),
         ]),
         HelpTopic("notifications", "Notifications and Presence", symbol: "bell.badge", sections: [
             HelpSection("Staying reachable",
@@ -134,12 +136,11 @@ public enum HelpContent {
         ]),
     ]
 
-    /// Teams bindings the lane reserves but a later lane ships: shown as
-    /// a footnote, never as working keys.
-    public static let planned: [(keys: String, title: String, note: String)] = [
-        ("⇧⌘I", "Mark as Important",
-         "Teams parity, reserved: needs the rich-compose send path (C1). ⇧⌘I still opens Sign In Again… meanwhile."),
-    ]
+    /// Teams bindings a lane reserves but a later lane ships: shown as a
+    /// footnote, never as working keys. SHORTCUTS-R2 shipped the only
+    /// entry (Mark as Important, on ⌃⌘I — ⇧⌘I stays Sign In Again), so
+    /// the list is empty and the window renders no footnote.
+    public static let planned: [(keys: String, title: String, note: String)] = []
 
     /// Notes attached to generated rows (Teams differences and macOS
     /// standards), keyed by command id.
@@ -152,6 +153,7 @@ public enum HelpContent {
         "call.showChat": "Teams parity: the meeting chat.",
         "chat.compose": "Teams parity: the compose box.",
         "chat.reply": "Teams uses R or ⌥⇧R in context; ⌥⌘R keeps ⇧⌘R free for the meeting chat.",
+        "chat.markImportant": "No Teams twin: Teams marks importance in the compose options only. ⇧⌘I stays Sign In Again… here.",
     ]
 
     /// Every menu-bar command with a key equivalent, grouped by menu in

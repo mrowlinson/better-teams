@@ -62,6 +62,15 @@ public final class MessageSearchStore: ObservableObject {
     /// Attached on-device index (AppState owns both halves). Nil =
     /// online-only (legacy behavior, all legacy tests).
     public var local: LocalSearchStore?
+    /// Chat/channel id → display name for `in:` matching (SHORTCUTS-R2;
+    /// nil = ids only). Set by AppState alongside the store.
+    public var chatName: ((String) -> String?)?
+    /// Thread unread answer for `/unread` (SHORTCUTS-R2; nil = no thread
+    /// is unread). Set by AppState alongside the store.
+    public var isUnread: ((String) -> Bool)?
+    /// Saved-messages rows for `/saved` (SHORTCUTS-R2; nil = none saved).
+    /// Set by AppState alongside the store.
+    public var savedHits: (() -> [SearchHit])?
 
     private let searcher: Searcher
     private var generation = 0
@@ -102,6 +111,30 @@ public final class MessageSearchStore: ObservableObject {
         isSearching = true
         loadingMore = false
         error = nil
+        let parsed = MessageSearchQuery.parse(q)
+        // `/saved` serves the saved-messages list, not search hits: no
+        // local pass, no server window. Free text filters sender/preview.
+        if parsed.slash == .saved {
+            let all = savedHits?() ?? []
+            let needle = MessageSearchQuery.fold(parsed.text)
+            let rows = needle.isEmpty ? all : all.filter {
+                MessageSearchQuery.fold(
+                    "\($0.sender) \($0.preview) \($0.subject ?? "")"
+                ).contains(needle)
+            }
+            hits = rows
+            total = rows.count
+            more = false
+            nextFrom = nil
+            source = .offline
+            onlineIDs = []
+            offlineMs = nil
+            isSearching = false
+            return
+        }
+        // Operators/slash alone carry no server text (blank-to-core never
+        // fetches): the local pass below is the whole answer.
+        let serverText = parsed.text
         // Offline-first pass (synchronous, instant): local hits show
         // immediately, then the online window merges above them.
         var localHits: [SearchHit] = []
@@ -125,24 +158,48 @@ public final class MessageSearchStore: ObservableObject {
         } else {
             offlineMs = nil
         }
+        if serverText.isEmpty {
+            // No server window for operators/slash alone: answer what the
+            // local pass found (or clear the stale rows when it found
+            // nothing — no "searching online" follows).
+            isSearching = false
+            if localHits.isEmpty {
+                hits = []
+                total = nil
+                more = false
+                nextFrom = nil
+                source = .none
+                onlineIDs = []
+            }
+            return
+        }
         let searcher = searcher
         do {
             let response = try await Task.blocking {
-                try searcher(q, 0, Self.pageSize)
+                try searcher(serverText, 0, Self.pageSize)
             }.value
             guard gen == generation else { return } // superseded
-            onlineIDs = Set(response.hits.map(\.id))
+            // Client-side operator predicates: Graph ranks the free text;
+            // `from:`/`in:`/`date:`/`/unread` narrow here, identically to
+            // the on-device index.
+            let ranked = response.hits.filter {
+                parsed.matches($0, chatName: chatName, isUnread: isUnread)
+            }
+            onlineIDs = Set(ranked.map(\.id))
+            // Unfiltered queries keep the server total verbatim (legacy
+            // numbers); filtered totals count the rows on screen.
+            let serverTotal = parsed.hasFilters ? ranked.count : response.total
             if local == nil {
-                hits = response.hits
-                total = response.total
-                source = .online
+                hits = ranked
+                total = serverTotal
+                source = ranked.isEmpty ? .none : .online
             } else {
                 let extras = localHits.filter { l in
-                    !response.hits.contains(where: { $0.id == l.id })
+                    !ranked.contains(where: { $0.id == l.id })
                 }
-                hits = response.hits + extras
-                total = (response.total ?? response.hits.count) + extras.count
-                source = response.hits.isEmpty
+                hits = ranked + extras
+                total = (serverTotal ?? ranked.count) + extras.count
+                source = ranked.isEmpty
                     ? (extras.isEmpty ? .none : .offline)
                     : (extras.isEmpty ? .online : .mixed)
             }
@@ -182,18 +239,22 @@ public final class MessageSearchStore: ObservableObject {
     /// tapping again retries the same window.
     public func loadMore() async {
         guard canLoadMore, let cursor = nextFrom else { return }
+        let parsed = MessageSearchQuery.parse(lastQuery)
+        guard !parsed.text.isEmpty else { return } // no server chain
         loadingMore = true
         error = nil
         let gen = generation
-        let query = lastQuery
         let searcher = searcher
         do {
             let response = try await Task.blocking {
-                try searcher(query, Int32(cursor), Self.pageSize)
+                try searcher(parsed.text, Int32(cursor), Self.pageSize)
             }.value
             guard gen == generation else { return } // superseded
-            hits = Self.merged(hits, response.hits)
-            onlineIDs.formUnion(response.hits.map(\.id))
+            let page = response.hits.filter {
+                parsed.matches($0, chatName: chatName, isUnread: isUnread)
+            }
+            hits = Self.merged(hits, page)
+            onlineIDs.formUnion(page.map(\.id))
             total = response.total
             more = response.more
             nextFrom = response.next_from

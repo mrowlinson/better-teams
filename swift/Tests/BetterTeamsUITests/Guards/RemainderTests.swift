@@ -112,6 +112,36 @@ final class RemainderTests: XCTestCase {
         XCTAssertTrue(ActivityRowModel.matching(rows, query: "zzz").isEmpty)
     }
 
+    // MARK: feed search operators (SHORTCUTS-R2)
+
+    private func operatorRows() -> [ActivityRowModel] {
+        // 1794873600 = 2026-11-17T00:00:00Z.
+        let items = [
+            ActivityItem(kind: .mention, chatID: "c1", actor: "Megan Harper", chatName: "Launch",
+                         snippet: "please review the deck", at: 1794873600, reviewed: false),
+            ActivityItem(kind: .reply, chatID: "c2", actor: "Marco Chen", chatName: "Launch",
+                         snippet: "looks good to me", at: 1794873600 + 86400, reviewed: true),
+        ]
+        let saved = SavedMessage(
+            chatID: "c2", messageID: "m9", sender: "Marco Chen",
+            preview: "looks good to me", content: "looks good to me",
+            timestamp: "2026-11-18T10:00:00Z", savedAt: 1794960000)
+        return ActivityRowModel.rows(items, saved: [saved], filter: .all, place: { _ in "Launch" })
+            + ActivityRowModel.rows([], saved: [saved], filter: .saved, place: { _ in "Launch" })
+    }
+
+    func testFeedSearchOperators() {
+        let rows = operatorRows()
+        XCTAssertEqual(ActivityRowModel.matching(rows, query: "from:harper").count, 1)
+        XCTAssertEqual(ActivityRowModel.matching(rows, query: "deck from:marco").count, 0)
+        XCTAssertEqual(ActivityRowModel.matching(rows, query: "date:2026-11-17").count, 1)
+        XCTAssertEqual(ActivityRowModel.matching(rows, query: "date:2026-11").count, 3)
+        XCTAssertEqual(ActivityRowModel.matching(rows, query: "/unread").count, 1)
+        XCTAssertEqual(ActivityRowModel.matching(rows, query: "/saved").count, 1)
+        XCTAssertEqual(ActivityRowModel.matching(rows, query: "/saved marco").count, 1)
+        XCTAssertEqual(ActivityRowModel.matching(rows, query: "/saved harper").count, 0)
+    }
+
     // MARK: settings search (SET-13)
 
     func testSettingsSearchFindsPanes() {
