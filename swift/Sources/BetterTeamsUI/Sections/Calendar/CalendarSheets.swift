@@ -347,6 +347,8 @@ struct EditEventSheet: View {
     @State private var responseRequested: Bool
     @State private var newTimeProposals: Bool
     @State private var hideAttendees: Bool
+    @State private var lobby: MeetingLobbyBypass?
+    @State private var presenters: MeetingPresenters?
     @State private var wholeSeries = false
     @Environment(\.windowModel) private var model
 
@@ -361,6 +363,27 @@ struct EditEventSheet: View {
         _responseRequested = State(initialValue: meeting.info?.responseRequested ?? true)
         _newTimeProposals = State(initialValue: meeting.info?.allowNewTimeProposals ?? true)
         _hideAttendees = State(initialValue: meeting.info?.hideAttendees ?? false)
+        _lobby = State(initialValue: week.optionsSelections[meeting.id]?.lobby)
+        _presenters = State(initialValue: week.optionsSelections[meeting.id]?.presenters)
+    }
+
+    /// The lobby/presenter choice changed since the last load or save.
+    private var optionsChanged: Bool {
+        let sel = week.optionsSelections[meeting.id]
+        return (lobby != nil && lobby != sel?.lobby)
+            || (presenters != nil && presenters != sel?.presenters)
+    }
+
+    /// Picker bindings: the user's pick, else the last loaded choice (the
+    /// sheet opens before the load lands, so `@State` alone stays blank).
+    private var lobbyBinding: Binding<MeetingLobbyBypass?> {
+        Binding(get: { lobby ?? week.optionsSelections[meeting.id]?.lobby },
+                set: { lobby = $0 })
+    }
+
+    private var presentersBinding: Binding<MeetingPresenters?> {
+        Binding(get: { presenters ?? week.optionsSelections[meeting.id]?.presenters },
+                set: { presenters = $0 })
     }
 
     private var patch: CalendarEventPatch {
@@ -387,9 +410,9 @@ struct EditEventSheet: View {
 
     var body: some View {
         CalendarSheetFrame(title: "Edit Meeting", action: "Save",
-                           enabled: !trimmed(subject).isEmpty && end > start && !patch.isEmpty,
-                           busy: week.updating ? "Saving\u{2026}" : nil,
-                           error: week.updateError, perform: save) {
+                           enabled: !trimmed(subject).isEmpty && end > start && (!patch.isEmpty || optionsChanged),
+                           busy: week.updating || week.savingOptionsID != nil ? "Saving\u{2026}" : nil,
+                           error: week.updateError ?? week.optionsError, perform: save) {
             Form {
                 if meeting.isSeries {
                     Picker("Apply to", selection: $wholeSeries) {
@@ -411,10 +434,34 @@ struct EditEventSheet: View {
                         Toggle("Request responses", isOn: $responseRequested)
                         Toggle("Allow new time proposals", isOn: $newTimeProposals)
                         Toggle("Hide attendee list", isOn: $hideAttendees)
+                        if meeting.isOnline, meeting.joinURL != nil {
+                            if week.optionsLoading.contains(meeting.id),
+                               lobbyBinding.wrappedValue == nil,
+                               presentersBinding.wrappedValue == nil {
+                                ProgressView("Loading meeting options")
+                                    .controlSize(.small)
+                            } else {
+                                Picker("Who can bypass the lobby", selection: lobbyBinding) {
+                                    ForEach(MeetingLobbyBypass.allCases, id: \.self) { v in
+                                        Text(MeetingLobbyLabel.label(v)).tag(Optional(v))
+                                    }
+                                }
+                                Picker("Who can present", selection: presentersBinding) {
+                                    ForEach(MeetingPresenters.allCases, id: \.self) { v in
+                                        Text(MeetingLobbyLabel.label(v)).tag(Optional(v))
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
             .formStyle(.columns)
+            .onAppear {
+                if meeting.isOrganizer, meeting.isOnline {
+                    week.loadOptions(meeting)
+                }
+            }
             if wholeSeries {
                 HStack {
                     Spacer()
@@ -427,10 +474,17 @@ struct EditEventSheet: View {
 
     private func save() {
         let p = patch
+        let sel = week.optionsSelections[meeting.id]
+        let l = lobby ?? sel?.lobby, pr = presenters ?? sel?.presenters
+        let wantOptions = optionsChanged
         Task {
-            if await week.update(meeting, patch: p, series: wholeSeries) {
-                model?.dismissSheet()
+            if !p.isEmpty {
+                guard await week.update(meeting, patch: p, series: wholeSeries) else { return }
             }
+            if wantOptions, let l, let pr {
+                guard await week.saveOptions(meeting, lobby: l, presenters: pr) != nil else { return }
+            }
+            model?.dismissSheet()
         }
     }
 }

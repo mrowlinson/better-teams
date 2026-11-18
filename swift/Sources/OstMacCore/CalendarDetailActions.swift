@@ -358,13 +358,15 @@ extension CalendarWeekStore {
         }
     }
 
-    /// Overlay `id` on/off, then reload the shown week for it.
+    /// Overlay `id` on/off, then reload the shown week and month for it.
     public func setOverlay(id: String, on: Bool) {
         if on { overlayIDs.insert(id) } else {
             overlayIDs.remove(id)
             overlayMeetings[id] = nil
+            overlayMonthMeetings[id] = nil
         }
         refreshOverlay()
+        refreshMonthOverlay()
     }
 
     /// (Re)read every overlaid calendar for the shown week. No-op when
@@ -407,6 +409,50 @@ extension CalendarWeekStore {
     /// id order; the grid styles them secondary).
     public var overlayRows: [MeetingItem] {
         overlayIDs.sorted().compactMap { overlayMeetings[$0] }.flatMap { $0 }
+            .sorted { ($0.start ?? "~") < ($1.start ?? "~") }
+    }
+
+    /// (Re)read every overlaid calendar for the shown month. No-op when
+    /// nothing is overlaid. Read-only: overlay rows are never written.
+    public func refreshMonthOverlay() {
+        let ids = overlayIDs.intersection(overlayCalendars.map(\.id))
+        guard !ids.isEmpty else {
+            overlayMonthMeetings = [:]
+            return
+        }
+        let from = monthGridStart
+        let to = calendar.date(byAdding: .day, value: monthWeeks * 7, to: from)
+            ?? from.addingTimeInterval(Double(monthWeeks * 7) * 86_400)
+        if localEdits {
+            overlayError = nil
+            overlayMonthMeetings = Dictionary(uniqueKeysWithValues: ids.map {
+                ($0, CalendarDemo.overlayMeetings(weekStart: key(from), calendar: calendar))
+            })
+            return
+        }
+        overlayLoading = true
+        overlayError = nil
+        let runner = runners.calendarRange
+        Task {
+            var rows: [String: [MeetingItem]] = [:]
+            var firstError: String?
+            for id in ids.sorted() {
+                do {
+                    rows[id] = try await Task.blocking { try runner(id, from, to) }.value
+                } catch {
+                    firstError = firstError ?? Self.message(for: error)
+                }
+            }
+            overlayMonthMeetings = rows
+            overlayError = firstError
+            overlayLoading = false
+        }
+    }
+
+    /// Overlay rows merged for the shown month (the month grid styles
+    /// them secondary, like the week grid).
+    public var overlayMonthRows: [MeetingItem] {
+        overlayIDs.sorted().compactMap { overlayMonthMeetings[$0] }.flatMap { $0 }
             .sorted { ($0.start ?? "~") < ($1.start ?? "~") }
     }
 }

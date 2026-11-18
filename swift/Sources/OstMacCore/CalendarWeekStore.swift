@@ -88,6 +88,14 @@ public final class CalendarWeekStore: ObservableObject {
     /// An edit PATCH is in flight / its last failure.
     @Published public internal(set) var updating = false
     @Published public internal(set) var updateError: String?
+    /// Lobby + presenter choice per event id (middle tier, organizer
+    /// online meetings only); ids loading; last failure; id saving.
+    @Published public internal(set) var optionsSelections: [String: MeetingOptionsReader.Selection] = [:]
+    @Published public internal(set) var optionsLoading: Set<String> = []
+    @Published public internal(set) var optionsError: String?
+    @Published public internal(set) var savingOptionsID: String?
+    /// Overlaid-calendar rows for the shown month (read-only).
+    @Published public internal(set) var overlayMonthMeetings: [String: [MeetingItem]] = [:]
     /// Meet now create in flight / its last failure.
     @Published public internal(set) var meetingNow = false
     @Published public internal(set) var meetNowError: String?

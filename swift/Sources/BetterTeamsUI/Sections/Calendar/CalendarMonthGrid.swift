@@ -42,6 +42,8 @@ struct MonthGrid: View {
         let now = RelativeClock.shared.now
         let buckets = Dictionary(uniqueKeysWithValues: zip(week.monthDayKeys,
                                                            CalWeek.bucket(week.monthMeetings, keys: week.monthDayKeys)))
+        let over = Dictionary(uniqueKeysWithValues: zip(week.monthDayKeys,
+                                                       CalWeek.bucket(week.overlayMonthRows, keys: week.monthDayKeys)))
         let month = week.calendar.component(.month, from: week.monthStart)
         VStack(spacing: 0) {
             HStack(spacing: 0) {
@@ -61,6 +63,7 @@ struct MonthGrid: View {
                             let key = cell.id
                             MonthDayCell(
                                 key: key, meetings: buckets[key] ?? [],
+                                overlayMeetings: over[key] ?? [],
                                 inMonth: CalendarFormat.day(key).map { week.calendar.component(.month, from: $0) == month } ?? false,
                                 today: CalendarFormat.day(key).map { Calendar.current.isDate($0, inSameDayAs: now) } ?? false,
                                 selectedID: selectedID, week: week, select: select, openDay: openDay)
@@ -79,6 +82,8 @@ struct MonthGrid: View {
 private struct MonthDayCell: View {
     let key: String
     let meetings: [MeetingItem]
+    /// Overlaid-calendar rows for this day (read-only, secondary style).
+    let overlayMeetings: [MeetingItem]
     let inMonth: Bool
     let today: Bool
     let selectedID: String?
@@ -100,12 +105,15 @@ private struct MonthDayCell: View {
             .buttonStyle(.plain)
             .help("Show this day")
             .accessibilityLabel(CalendarFormat.dayTitle(key, now: RelativeClock.shared.now))
-            ForEach(meetings.prefix(MonthGrid.chipsPerDay)) { m in
-                CalendarChip(meeting: m, selected: m.id == selectedID, showTime: !m.isAllDay) { select(m.id) }
+            let shown = meetings + overlayMeetings
+            let overIDs = Set(overlayMeetings.map(\.id))
+            ForEach(shown.prefix(MonthGrid.chipsPerDay)) { m in
+                CalendarChip(meeting: m, selected: m.id == selectedID, showTime: !m.isAllDay,
+                             isOverlay: overIDs.contains(m.id)) { select(m.id) }
                     .contextMenu { CalendarMeetingMenu(meeting: m, week: week) }
             }
-            if meetings.count > MonthGrid.chipsPerDay {
-                Button("+\(meetings.count - MonthGrid.chipsPerDay) more") { openDay(key) }
+            if shown.count > MonthGrid.chipsPerDay {
+                Button("+\(shown.count - MonthGrid.chipsPerDay) more") { openDay(key) }
                     .buttonStyle(.plain)
                     .font(AppFont.caption(scale))
                     .foregroundStyle(.tint)

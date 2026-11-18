@@ -53,4 +53,28 @@ final class CalendarRemnantGuardTests: XCTestCase {
         let views = try source("CalendarViews.swift")
         XCTAssertTrue(views.contains("Other calendar"), "list badge")
     }
+
+    /// Lobby/presenter knobs are native pickers on the organizer edit
+    /// sheet only (never for attendees or overlay rows).
+    func testMeetingOptionKnobsAreNativeAndGated() throws {
+        let sheets = try source("CalendarSheets.swift")
+        XCTAssertTrue(sheets.contains("Picker(\"Who can bypass the lobby\""), "lobby picker")
+        XCTAssertTrue(sheets.contains("Picker(\"Who can present\""), "presenter picker")
+        XCTAssertTrue(sheets.contains("meeting.isOrganizer"), "organizer gate")
+        XCTAssertTrue(sheets.contains("meeting.joinURL != nil"), "link gate")
+        let store = try String(contentsOf: calDir
+            .deletingLastPathComponent().appendingPathComponent("..")
+            .appendingPathComponent("..").appendingPathComponent("..")
+            .appendingPathComponent("Sources/OstMacCore/CalendarStoreActions.swift"),
+            encoding: .utf8)
+        XCTAssertTrue(store.contains("overlayCalendarID(for: row.id) == nil"), "options refuse overlay rows")
+    }
+
+    /// Month cells render the overlay with the same secondary treatment.
+    func testMonthOverlayMarksSecondaryRows() throws {
+        let grid = try source("CalendarMonthGrid.swift")
+        XCTAssertTrue(grid.contains("overlayMonthRows"), "month merges overlay rows")
+        XCTAssertTrue(grid.contains("isOverlay"), "month chips mark overlay rows")
+        XCTAssertTrue(grid.contains("other calendar"), "month overlay accessibility label")
+    }
 }

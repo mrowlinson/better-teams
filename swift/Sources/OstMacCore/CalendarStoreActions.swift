@@ -34,6 +34,11 @@ public struct CalendarRunners: Sendable {
     public var calendarRange: @Sendable (String, Date, Date) throws -> [MeetingItem]
     /// `(team id, channel id, subject, start, end, join URL?)` → channel post.
     public var announce: @Sendable (String, String, String, Date, Date, String?) throws -> Void
+    /// `meeting` → lobby + presenter choice (middle tier, read-back).
+    public var meetingOptions: @Sendable (MeetingItem) throws -> MeetingOptionsReader.Selection
+    /// `(meeting, lobby, presenters)` → saved choice (middle tier, read-back).
+    public var setMeetingOptions: @Sendable (MeetingItem, MeetingLobbyBypass, MeetingPresenters) throws
+        -> MeetingOptionsReader.Selection
 
     public static let unsupported: @Sendable () -> Error = { CoreCallError.failed("calendar: not available") }
 
@@ -52,7 +57,10 @@ public struct CalendarRunners: Sendable {
         instances: @escaping @Sendable (String, Date, Date) throws -> [MeetingItem] = { _, _, _ in throw unsupported() },
         calendars: @escaping @Sendable () throws -> [CalendarFeed] = { throw unsupported() },
         calendarRange: @escaping @Sendable (String, Date, Date) throws -> [MeetingItem] = { _, _, _ in throw unsupported() },
-        announce: @escaping @Sendable (String, String, String, Date, Date, String?) throws -> Void = { _, _, _, _, _, _ in throw unsupported() }
+        announce: @escaping @Sendable (String, String, String, Date, Date, String?) throws -> Void = { _, _, _, _, _, _ in throw unsupported() },
+        meetingOptions: @escaping @Sendable (MeetingItem) throws -> MeetingOptionsReader.Selection = { _ in throw unsupported() },
+        setMeetingOptions: @escaping @Sendable (MeetingItem, MeetingLobbyBypass, MeetingPresenters) throws
+            -> MeetingOptionsReader.Selection = { _, _, _ in throw unsupported() }
     ) {
         self.detail = detail
         self.respond = respond
@@ -69,6 +77,8 @@ public struct CalendarRunners: Sendable {
         self.calendars = calendars
         self.calendarRange = calendarRange
         self.announce = announce
+        self.meetingOptions = meetingOptions
+        self.setMeetingOptions = setMeetingOptions
     }
 
     /// Signed-in profile over Graph.
@@ -93,7 +103,9 @@ public struct CalendarRunners: Sendable {
             calendars: { try CalendarGraph.production().calendars() },
             calendarRange: { try CalendarGraph.production().calendarRange(id: $0, from: $1, to: $2) },
             announce: { try CalendarGraph.production().announceChannelMeeting(
-                teamID: $0, channelID: $1, subject: $2, start: $3, end: $4, joinURL: $5) })
+                teamID: $0, channelID: $1, subject: $2, start: $3, end: $4, joinURL: $5) },
+            meetingOptions: { try MeetingOptionsReader.load(meeting: $0) },
+            setMeetingOptions: { try MeetingOptionsReader.save(meeting: $0, lobby: $1, presenters: $2) })
     }
 
     /// New-meeting sheet over Graph (`start`/`end` local datetimes in `tz`).
@@ -229,6 +241,7 @@ extension CalendarWeekStore {
         monthMeetings = rows
         monthLoaded = true
         if case .error = state, !rows.isEmpty { state = .loaded }
+        refreshMonthOverlay()
     }
 
     private func prefetchNeighborMonths(of first: Date) {
@@ -317,14 +330,18 @@ extension CalendarWeekStore {
     /// The row for `id` wherever it is shown (overlay rows included:
     /// their details open read-only).
     public func row(id: String) -> MeetingItem? {
-        meetings.first { $0.id == id } ?? monthMeetings.first { $0.id == id } ?? details[id]?.event
-            ?? seriesInstances.values.lazy.flatMap { $0 }.first { $0.id == id }
-            ?? overlayMeetings.values.lazy.flatMap { $0 }.first { $0.id == id }
+        if let m = meetings.first(where: { $0.id == id }) { return m }
+        if let m = monthMeetings.first(where: { $0.id == id }) { return m }
+        if let m = details[id]?.event { return m }
+        if let m = seriesInstances.values.lazy.flatMap({ $0 }).first(where: { $0.id == id }) { return m }
+        if let m = overlayMeetings.values.lazy.flatMap({ $0 }).first(where: { $0.id == id }) { return m }
+        return overlayMonthMeetings.values.lazy.flatMap({ $0 }).first(where: { $0.id == id })
     }
 
     /// The overlaid calendar holding `id` (nil = own calendar data).
     public func overlayCalendarID(for id: String) -> String? {
         overlayMeetings.first { $0.value.contains { $0.id == id } }?.key
+            ?? overlayMonthMeetings.first { $0.value.contains { $0.id == id } }?.key
     }
 
     /// Apply `change` to every shown/cached copy of rows matching `match`
@@ -495,6 +512,61 @@ extension CalendarWeekStore {
     }
 
     public func clearUpdateError() { updateError = nil }
+
+    // MARK: meeting options (lobby + presenters, middle tier)
+
+    /// Load the lobby + presenter choice for `row` (organizer online
+    /// meetings with a Teams link only; overlay rows stay read-only).
+    public func loadOptions(_ row: MeetingItem) {
+        guard row.isOrganizer, row.joinURL != nil,
+              overlayCalendarID(for: row.id) == nil else { return }
+        guard optionsSelections[row.id] == nil, !optionsLoading.contains(row.id) else { return }
+        if localEdits {
+            optionsSelections[row.id] = MeetingOptionsReader.Selection(
+                lobby: .everyone, presenters: .everyone)
+            return
+        }
+        optionsLoading.insert(row.id)
+        optionsError = nil
+        let runner = runners.meetingOptions
+        Task {
+            do {
+                let sel = try await Task.blocking { try runner(row) }.value
+                optionsSelections[row.id] = sel
+            } catch {
+                optionsError = Self.message(for: error)
+            }
+            optionsLoading.remove(row.id)
+        }
+    }
+
+    /// Save the lobby + presenter choice for `row` (organizer only);
+    /// returns the server read-back, or nil with `optionsError` set.
+    @discardableResult
+    public func saveOptions(_ row: MeetingItem, lobby: MeetingLobbyBypass,
+                            presenters: MeetingPresenters) async -> MeetingOptionsReader.Selection? {
+        guard row.isOrganizer, overlayCalendarID(for: row.id) == nil,
+              savingOptionsID == nil else { return nil }
+        optionsError = nil
+        if localEdits {
+            let sel = MeetingOptionsReader.Selection(lobby: lobby, presenters: presenters)
+            optionsSelections[row.id] = sel
+            return sel
+        }
+        savingOptionsID = row.id
+        defer { savingOptionsID = nil }
+        let runner = runners.setMeetingOptions
+        do {
+            let sel = try await Task.blocking { try runner(row, lobby, presenters) }.value
+            optionsSelections[row.id] = sel
+            return sel
+        } catch {
+            optionsError = Self.message(for: error)
+            return nil
+        }
+    }
+
+    public func clearOptionsError() { optionsError = nil }
 
     // MARK: Meet now
 
