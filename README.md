@@ -400,7 +400,6 @@ Incomplete or not started yet ("in progress" = being worked on now):
 - **Meetings:** recording/transcription controls, background replace, background blur on the live camera preview (follow-up); hand/reactions/pin/participant UI shipped local-only, wire pending owner live test; lobby admit UI on hold pending owner pick
 - **Calling:** Teams Phone (dial pad, voicemail, forwarding, delegates) — parked: no Teams Phone licence on this tenant
 - **Calendar:** lobby/presenter meeting options (blocked: needs OnlineMeetings scope), month-view overlay (open); channel meetings, event-level options and week/day/list overlay shipped
-- **Status:** scheduled out-of-office: shipped, one live check pending
 - **Chats and teams:** Teams saved-messages sync, thread mute, full notification-rules matrix (all three parked — no server surface found); private/shared channels, archiving, moderation, team privacy switch
 - **External (federated) chat:** written, awaiting live proof — blocked: tenant has external access disabled
 - **On hold:** Praise, Polls, Loop components, webinars, breakout rooms, whiteboard, Copilot, Share-to-Outlook
