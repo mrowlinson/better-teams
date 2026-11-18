@@ -65,8 +65,13 @@ final class MessageHover {
     /// The message whose bar is up (after the dwell).
     var shownID: String?
     var focusedID: String?
-    /// The message under the pointer right now (drives `shownID`).
-    @ObservationIgnored private(set) var pointerID: String?
+    /// The message whose BUBBLE is under the pointer right now (arms
+    /// `shownID` after the dwell). Row whitespace reports nothing, so
+    /// hovering it never shows the menu (HOVER-SCOPE).
+    @ObservationIgnored private(set) var bubbleID: String?
+    /// The message whose TOOLBAR is under the pointer (keep-alive while
+    /// the pointer travels bubble -> bar; never arms the menu on its own).
+    @ObservationIgnored private(set) var barID: String?
     @ObservationIgnored private let scheduler: HoverScheduler
 
     init(scheduler: HoverScheduler? = nil) {
@@ -75,20 +80,42 @@ final class MessageHover {
 
     static let evidence = MessageHover()
 
-    /// Pointer entered/left a row. Leaving only clears its own hover, so
-    /// enter-next/leave-previous in either order ends on the next row.
+    /// The hover regions that report the pointer (HOVER-SCOPE): the bubble
+    /// arms the menu, the bar only holds it open while travelling onto it.
+    private enum Zone { case bubble, bar }
+
+    /// Pointer entered/left a bubble. Leaving only clears its own hover, so
+    /// enter-next/leave-previous in either order ends on the next row. A
+    /// bubble leave while the pointer is on that message's bar holds the bar
+    /// open (the click path); the hide fires only once both regions are
+    /// outside, in either event order.
     func pointer(_ inside: Bool, id: String) {
+        region(inside, id: id, zone: .bubble)
+    }
+
+    /// Pointer entered/left a toolbar. Never arms the menu: it only cancels
+    /// a pending hide while the pointer travels onto the bar.
+    func bar(_ inside: Bool, id: String) {
+        region(inside, id: id, zone: .bar)
+    }
+
+    private func region(_ inside: Bool, id: String, zone: Zone) {
         if inside {
-            pointerID = id
+            set(zone, to: id)
             if shownID == id {
-                scheduler.cancel()    // back within the grace: keep it
+                scheduler.cancel()    // back within the grace, or onto the bar: keep it
                 return
             }
+            if zone == .bar { return }  // the bar never arms the menu
             let delay = shownID == nil ? HoverTiming.showDelay : HoverTiming.warmDelay
             scheduler.schedule(after: delay) { [weak self] in self?.settle() }
         } else {
-            guard pointerID == id else { return }
-            pointerID = nil
+            guard get(zone) == id else { return }
+            set(zone, to: nil)
+            if get(other(zone)) == id {
+                scheduler.cancel()    // the other region holds it open
+                return
+            }
             if shownID == nil {
                 scheduler.cancel()    // left before the dwell ended
             } else {
@@ -97,11 +124,19 @@ final class MessageHover {
         }
     }
 
+    private func get(_ zone: Zone) -> String? { zone == .bubble ? bubbleID : barID }
+
+    private func set(_ zone: Zone, to id: String?) {
+        if zone == .bubble { bubbleID = id } else { barID = id }
+    }
+
+    private func other(_ zone: Zone) -> Zone { zone == .bubble ? .bar : .bubble }
+
     /// The timeline scrolled: hide now, show again once the pointer has
     /// rested for a full dwell after the last scroll step.
     func scrolled() {
         if shownID != nil { shownID = nil }
-        if pointerID != nil {
+        if bubbleID != nil || barID != nil {
             scheduler.schedule(after: HoverTiming.showDelay) { [weak self] in self?.settle() }
         } else {
             scheduler.cancel()
@@ -113,7 +148,10 @@ final class MessageHover {
     }
 
     private func settle() {
-        if shownID != pointerID { shownID = pointerID }
+        if let b = bubbleID { shownID = b; return }
+        // The bar never arms the menu: hold it only while the pointer is
+        // on the already-shown bar, else hide.
+        if barID != shownID { shownID = nil }
     }
 }
 
@@ -397,5 +435,9 @@ struct MessageHoverToolbar: View {
         }
         // VoiceOver reaches the same items as named row actions.
         .accessibilityHidden(true)
+        // HOVER-SCOPE: the bar holds itself open while the pointer travels
+        // onto it (never arms the menu; hit-test-gated, so the hidden bar
+        // reports nothing).
+        .onHover { inside in actions.hover.bar(inside, id: row.message.id) }
     }
 }

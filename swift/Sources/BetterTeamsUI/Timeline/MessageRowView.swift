@@ -178,8 +178,6 @@ struct MessageRowView: View {
         .padding(.top, row.showsHeader ? density.metrics.headerTop : density.metrics.continuationTop)
         .padding(.bottom, density.metrics.rowBottom)
         .background { highlight }
-        .contentShape(Rectangle())
-        .onHover { inside in actions?.hover.pointer(inside, id: message.id) }
         .contextMenu { if let actions { MessageContextMenu(row: row, actions: actions) } }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(accessibilityText)
@@ -251,6 +249,10 @@ struct MessageRowView: View {
                 RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(.separator)
             }
         }
+        // HOVER-SCOPE: only the bubble arms the hover menu — the row's
+        // whitespace (spacers, gutters, padding) reports nothing.
+        .contentShape(Rectangle())
+        .onHover { inside in actions?.hover.pointer(inside, id: message.id) }
     }
 
     /// Empty row width beside own / others' bubbles (the free side).
