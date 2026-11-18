@@ -442,6 +442,7 @@ needing maintainer buy-in. Minor PRs stand alone; majors are separate PRs.
     <query> [--limit]`. No scope change. NOT live-verified (stored Graph
     token expired; shapes per MS driveitem-search + `$search` docs) —
     confirm on a signed-in box before upstreaming. TUI untouched.
+    UPSTREAM: PR https://github.com/eisbaw/ost/pull/43 (record gap fixed 11-17: content was already open)
 
 42. [minor] `src/api/teams.rs` + `src/api/mod.rs` — **channel message
     reactions, Graph groundwork (om-je-parity lane)**. Pure builders
