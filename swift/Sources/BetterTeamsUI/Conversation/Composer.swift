@@ -121,17 +121,15 @@ struct Composer: View {
             if showFormat { formatBar }
             if isChannel { subjectField }
             // Reaction More… opens at its message (the timeline owns it).
-            // Both accessory groups center on the field's last text line
-            // (its center while single-line), whatever their heights.
-            HStack(alignment: .composerLine, spacing: 8) {
-                leadingButtons
-                    .alignmentGuide(.composerLine) { $0[VerticalAlignment.center] }
+            // Both accessory strips top-align with the field: at 6 rows
+            // the left strip is much taller than the 2-line field, so
+            // centering on the last text line would leave the field
+            // floating mid-strip.
+            HStack(alignment: .top, spacing: 8) {
+                leadingStrip
                 field
-                    .alignmentGuide(.composerLine) { [line = ComposerTextView.lineHeight(scale)] d in
-                        d[.bottom] - Self.fieldInset - line / 2
-                    }
+                    .layoutPriority(1)
                 sendButton
-                    .alignmentGuide(.composerLine) { $0[VerticalAlignment.center] }
             }
           }
             statusLine
@@ -178,9 +176,12 @@ struct Composer: View {
         .background(.fill.quaternary, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 
-    /// Toolbar-like icon row: 24 pt targets, 6 pt apart (HIG spacing).
-    private var leadingButtons: some View {
-        HStack(spacing: 6) {
+    /// Toolbar-like icon strip: the same 24 pt targets, stacked
+    /// vertically (2 pt apart) so the cluster costs one 24 pt column
+    /// instead of ~150 pt of horizontal buttons. Same buttons, same
+    /// order, same actions — geometry only.
+    private var leadingStrip: some View {
+        VStack(spacing: 2) {
             Button(action: { showFormat.toggle() }) {
                 Image(systemName: "textformat.size").frame(width: 24, height: 24)
             }
@@ -305,6 +306,7 @@ struct Composer: View {
             onSubmit: submit, onCommand: handleCommand,
             onFormat: requestFormat,
             onPasteFiles: { attachments.stage(urls: $0) })
+            .frame(minWidth: Self.minFieldWidth)
             .frame(height: fieldHeight)
             .overlay(alignment: .topLeading) {
                 if composer.draft(chatID).isEmpty {
@@ -349,41 +351,58 @@ struct Composer: View {
             .help("Save Edit")
             .accessibilityLabel("Save Edit")
         } else {
-            sendMenu
+            sendColumn
         }
     }
 
-    private var sendMenu: some View {
-        Menu {
-            Button("Send Now", action: submit)
-            Button("Send Later…") { composer.show(.sendLater) }
-                .disabled(trimmed.isEmpty || services.scheduled(model) == nil)
-        } label: {
-            Image(systemName: "paperplane.fill")
-        } primaryAction: {
-            submit()
+    /// Send + chevron as a vertical pair: the paperplane sends, the
+    /// chevron below it opens the Send Now / Send Later menu. Same two
+    /// actions, same order (send first) — geometry only.
+    private var sendColumn: some View {
+        VStack(spacing: 2) {
+            Button(action: submit) {
+                Image(systemName: "paperplane.fill").frame(width: 24, height: 24)
+            }
+            .buttonStyle(.borderless)
+            .controlSize(.large)
+            .disabled(!canSend)
+            .help("Send")
+            .accessibilityLabel("Send")
+            Menu {
+                Button("Send Now", action: submit)
+                Button("Send Later…") { composer.show(.sendLater) }
+                    .disabled(trimmed.isEmpty || services.scheduled(model) == nil)
+            } label: {
+                Image(systemName: "chevron.down").frame(width: 24, height: 24)
+            }
+            .menuStyle(.button)
+            .buttonStyle(.borderless)
+            .menuIndicator(.hidden)
+            .controlSize(.large)
+            // Anchored to the chevron that opens it (§9.5 "anchored to
+            // its control"), not to a point over the field.
+            .popover(item: popoverBinding(only: [.sendLater]),
+                     attachmentAnchor: .point(UnitPoint(x: Self.chevronX, y: 0)),
+                     arrowEdge: .top) { p in popoverContent(p) }
+            .disabled(!canSend)
+            .help("Send options")
+            .accessibilityLabel("Send options")
         }
-        .menuStyle(.button)
-        .buttonStyle(.borderless)
-        .menuIndicator(.visible)
-        .controlSize(.large)
-        .fixedSize()
-        // Anchored to the pull-down chevron that opens it (§9.5 "anchored
-        // to its control"), not to a point over the field.
-        .popover(item: popoverBinding(only: [.sendLater]),
-                 attachmentAnchor: .point(UnitPoint(x: Self.chevronX, y: 0)),
-                 arrowEdge: .top) { p in popoverContent(p) }
-        .disabled(!canSend)
-        .help("Send")
-        .accessibilityLabel("Send")
     }
 
     /// Text inset inside the field's rounded box (top and bottom).
     static let fieldInset: CGFloat = 7
 
-    /// The Send pull-down's chevron, as a fraction of the button's width
-    /// (glyph leading, menu indicator trailing).
-    static let chevronX: CGFloat = 0.8
+    /// The field's pinned minimum usable width: ~20 average glyphs at
+    /// body size (~7 pt each at 13 pt), ~6x the 24 pt accessory target,
+    /// so the field stays dominant over the chrome at narrow windows.
+    /// Density guard pins the value; the row's strips are fixed at
+    /// 24 pt + 8 pt spacing, so below ~236 pt the window itself clips.
+    static let minFieldWidth: CGFloat = 140
+
+    /// The Send Later chevron's center, as a fraction of its button's
+    /// width (the chevron sits centered under the paperplane).
+    static let chevronX: CGFloat = 0.5
 
     /// Status line: typing on the leading side, queue and ghost state
     /// trailing. Each piece draws nothing when idle, so the line has zero
@@ -1018,12 +1037,3 @@ struct ComposerTextView: NSViewRepresentable {
     }
 }
 
-extension VerticalAlignment {
-    /// The composer field's last text line center: the accessory
-    /// buttons on both sides of the field align to it.
-    private enum ComposerLine: AlignmentID {
-        static func defaultValue(in d: ViewDimensions) -> CGFloat { d[VerticalAlignment.center] }
-    }
-
-    static let composerLine = VerticalAlignment(ComposerLine.self)
-}
