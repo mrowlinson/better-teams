@@ -1885,7 +1885,7 @@ Notes:
     full team scan (~20 joinedTeams + ~180 channels per launch); Swift
     already knows the team and now threads it through. Rust tests:
     existing Fake suites cover the `None` path (signature-only change).
-    UPSTREAM: pending
+    UPSTREAM: PR https://github.com/eisbaw/ost/pull/118 (fix/channel-known-team-id, stacks on #95)
 
 ## Upstream PRs, wave 9 (2026-09-25 R10 audit; base 0892144; origin/main still 0892144)
 
