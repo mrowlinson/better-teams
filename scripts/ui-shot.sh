@@ -71,6 +71,8 @@
 #   settings/accounts                          Settings ▸ Accounts
 #   settings/notifications                     Settings ▸ Notifications
 #   settings/chats                             Settings ▸ Chats
+#   settings/chats?drafts=1                    Settings ▸ Chats, scheduled drafts seeded (WYSIWYG)
+#   chat/demo-rich?drafts=1&sheet=scheduled    scheduled queue sheet, drafts seeded (WYSIWYG)
 #   settings/calls                             Settings ▸ Calls (devices, meter, preview, Test Call)
 #   settings/apps                              Settings ▸ Apps
 #   settings/ai                                Settings ▸ AI

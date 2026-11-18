@@ -19,6 +19,7 @@ struct ChatsPane: View {
     @ObservedObject var privacy: PrivacyStore
     @ObservedObject var blocked: BlockedStore
     let model: WindowModel
+    @Environment(\.contentTextScale) private var scale
     @State private var template: UUID?
     @State private var templateTitle = ""
     @State private var templateBody = ""
@@ -113,7 +114,8 @@ struct ChatsPane: View {
                             Button("Cancel") { scheduled.cancel(id: item.id) }
                         } label: {
                             Text(item.chatName)
-                            Text("\(item.fireAt.formatted(date: .abbreviated, time: .shortened)) · \(item.text)")
+                            (Text(item.fireAt.formatted(date: .abbreviated, time: .shortened)) + Text(" · ")
+                                + Text(DraftBody.styled(item.text, scale: scale)))
                                 .lineLimit(1)
                         }
                     }

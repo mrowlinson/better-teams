@@ -123,7 +123,7 @@ struct ScheduledQueueSheet: View {
             List(selection: $picked) {
                 ForEach(items) { item in
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(item.text).lineLimit(1)
+                        DraftBodyText(text: item.text).lineLimit(1)
                         Label(ScheduledPresets.fireLabel(for: item.fireAt), systemImage: "clock")
                             .font(.caption)
                             .foregroundStyle(.secondary)

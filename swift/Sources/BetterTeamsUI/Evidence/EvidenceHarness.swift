@@ -32,6 +32,9 @@ enum EvidenceHarness {
         // New Chat sheet); with `sheet=contactCard` it names the full card.
         let query = options.route.flatMap(Route.init(string:))?.query
         if query?["sheet"] != ContactActions.sheetName { ContactHover.shared.pinnedName = query?["contact"] }
+        // `drafts=1` (DRAFTS lane): seed the demo scheduled queue with
+        // formatted samples so captures show WYSIWYG drafts.
+        if query?["drafts"] == "1" { seedDrafts(wc) }
         let deadline = Date().addingTimeInterval(10)
         let earliest = Date().addingTimeInterval(0.8)
         var quiet = 0
@@ -144,6 +147,28 @@ enum EvidenceHarness {
             v.window?.displayIfNeeded()
         }
         for s in v.subviews { revealTimelineHeaders(s) }
+    }
+
+    /// `?drafts=1` (DRAFTS lane, demo only): two formatted samples in
+    /// the demo scheduled queue (markers in, WYSIWYG out). Demo-gated
+    /// twice: the harness only runs with `--demo --evidence`, and the
+    /// seed writes only the demo store (never the live `scheduled.json`).
+    private static func seedDrafts(_ wc: ShellWindowController) {
+        let services = ConversationServices.of(wc.model)
+        guard services.isDemo, let store = services.scheduled(wc.model) else { return }
+        if store.items.isEmpty {
+            let seedID = wc.model.graph.conv.chatID.flatMap { $0.isEmpty ? nil : $0 } ?? "demo-rich"
+            let base = Date().addingTimeInterval(3600)
+            _ = store.enqueue(chatID: seedID, chatName: "Demo Rich",
+                              text: "**Budget** approved, *see notes* — https://x.example/list",
+                              fireAt: base)
+            _ = store.enqueue(chatID: seedID, chatName: "Demo Rich",
+                              text: "- alpha\n- beta\n`deploy.sh` at 10",
+                              fireAt: base.addingTimeInterval(3600))
+            _ = store.enqueue(chatID: seedID, chatName: "Demo Rich",
+                              text: "__Sign here__ and ~~old total~~",
+                              fireAt: base.addingTimeInterval(7200))
+        }
     }
 
     /// `<route>?recents=1` (§5.5 recents, G1): focuses the empty search

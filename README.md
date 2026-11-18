@@ -396,7 +396,7 @@ on GitHub by opening an issue.
 
 Incomplete or not started yet ("in progress" = being worked on now):
 
-- **Compose:** stickers (deferred — no clean native path); emphasis wire proven live, importance/subject/mentions live proof needs a test channel; drafts show markers, not WYSIWYG
+- **Compose:** stickers (deferred — no clean native path); emphasis wire proven live, importance/subject/mentions live proof needs a test channel
 - **Meetings:** recording/transcription controls, background replace, background blur on the live camera preview (follow-up); hand/reactions/pin/participant UI shipped local-only, wire pending owner live test; lobby admit UI on hold pending owner pick
 - **Calling:** Teams Phone (dial pad, voicemail, forwarding, delegates) — parked: no Teams Phone licence on this tenant
 - **Chats and teams:** Teams saved-messages sync, thread mute, full notification-rules matrix (all three parked — no server surface found); private/shared channels, archiving, moderation, team privacy switch
