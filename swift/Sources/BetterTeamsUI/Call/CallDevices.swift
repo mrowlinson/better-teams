@@ -193,7 +193,17 @@ struct CallDevicesForm: View {
     let devices: CallDevices
 
     var body: some View {
-        Form {
+        Form { CallDevicesRows(devices: devices) }
+            .formStyle(.columns)
+    }
+}
+
+/// Rows only (no Form), so Settings can place them in its own grouped Form.
+struct CallDevicesRows: View {
+    let devices: CallDevices
+
+    var body: some View {
+        Group {
             Picker("Microphone", selection: Binding(get: { devices.mic ?? "" },
                                                     set: { devices.selectMic($0.isEmpty ? nil : $0) })) {
                 if devices.mics.isEmpty { Text("No Microphone").tag("") }
@@ -219,7 +229,6 @@ struct CallDevicesForm: View {
                 Text(e).font(.caption).foregroundStyle(.secondary)
             }
         }
-        .formStyle(.columns)
         .disabled(!devices.loaded)
     }
 }

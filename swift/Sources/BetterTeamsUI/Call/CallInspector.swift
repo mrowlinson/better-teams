@@ -274,14 +274,17 @@ struct CallChatList: View {
                         .onChange(of: chat.messages.last?.id) {
                             if Self.followsNewMessage(atNewest: atBottom, lastIsOwn: chat.messages.last?.isOwn == true) { scrollToNewest(proxy) }
                         }
-                        .overlay(alignment: .bottom) {
-                            if !atBottom {
-                                Button("Jump to Latest", systemImage: "chevron.down") { scrollToNewest(proxy) }
-                                    .buttonStyle(.borderedProminent)
-                                    .buttonBorderShape(.capsule)
-                                    .controlSize(.small)
-                                    .padding(.bottom, 8)
-                            }
+                        .safeAreaBar(edge: .bottom) {
+                            // Always laid out (hidden, not removed) so the inset never changes
+                            // and the list does not shift or re-evaluate atBottom on appear.
+                            Button("Jump to Latest", systemImage: "chevron.down") { scrollToNewest(proxy) }
+                                .buttonStyle(.borderedProminent)
+                                .buttonBorderShape(.capsule)
+                                .controlSize(.small)
+                                .padding(.vertical, 6)
+                                .opacity(atBottom ? 0 : 1)
+                                .allowsHitTesting(!atBottom)
+                                .accessibilityHidden(atBottom)
                         }
                     }
                 }

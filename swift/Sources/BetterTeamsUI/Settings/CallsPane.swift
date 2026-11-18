@@ -39,7 +39,7 @@ struct CallsSettingsPane: View {
                 .pickerStyle(.radioGroup)
             }
             Section("Devices") {
-                CallDevicesForm(devices: devices)
+                CallDevicesRows(devices: devices)
                 LabeledContent("Test") {
                     Button("Test Speaker and Microphone\u{2026}") { testing = true }
                         .disabled(!devices.loaded)
