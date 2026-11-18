@@ -77,9 +77,16 @@ struct ChatsPane: View {
                     Text(t.title).tag(t.id)
                 }
                 .frame(height: 96)
+                .overlay {
+                    if canned.templates.isEmpty {
+                        Text("No templates").foregroundStyle(.secondary)
+                    }
+                }
                 .onChange(of: template) { _, id in load(id) }
-                TextField("Name", text: $templateTitle)
-                TextField("Text", text: $templateBody, axis: .vertical)
+                TextField("Name", text: $templateTitle, prompt: Text("Name"))
+                    .textFieldStyle(.roundedBorder)
+                TextField("Text", text: $templateBody, prompt: Text("Text"), axis: .vertical)
+                    .textFieldStyle(.roundedBorder)
                     .lineLimit(2...5)
                 HStack {
                     Button(template == nil ? "Add Template" : "Save") { saveTemplate() }

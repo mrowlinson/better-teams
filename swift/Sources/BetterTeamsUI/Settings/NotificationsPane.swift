@@ -154,6 +154,7 @@ private struct KeywordList: View {
                 HStack {
                     TextField("Keyword", text: $text, prompt: Text("Keyword"))
                         .labelsHidden()
+                        .textFieldStyle(.roundedBorder)
                         .frame(width: 140)
                         .onSubmit(commit)
                     Button("Add", action: commit)

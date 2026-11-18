@@ -11,6 +11,14 @@ public enum DiagnosticsFormat {
         "core \(version) · init=\(initCode)"
     }
 
+    /// Plain-words core row for the Diagnostics UI: never the raw
+    /// `init=-99` sentinel (core not started yet, e.g. in the demo).
+    public static func coreStatus(version: String, initCode: Int32) -> String {
+        if initCode == -99 || version == "?" { return "Not started" }
+        if initCode == 0 { return "Version \(version)" }
+        return "Version \(version) \u{00B7} error \(initCode)"
+    }
+
     /// Session one-liner: demo mode, signed in/out, or still checking.
     public static func sessionLine(isDemo: Bool, signedIn: Bool?) -> String {
         if isDemo { return "DEMO · offline" }

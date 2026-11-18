@@ -35,7 +35,7 @@ struct AdvancedPane: View {
     var body: some View {
         Form {
             Section("Diagnostics") {
-                LabeledContent("Core", value: app.coreLine)
+                LabeledContent("Core", value: app.coreStatus)
                 LabeledContent("Session", value: app.sessionLine)
                 LabeledContent("Realtime", value: app.feedWord)
                 LabeledContent("Health") {
@@ -50,7 +50,12 @@ struct AdvancedPane: View {
                 LabeledContent("Server", value: Self.mcpHelper == nil ? "Not included in this build" : "Installed")
                 if let url = Self.mcpHelper {
                     LabeledContent("Location") {
-                        Text(url.path).foregroundStyle(.secondary).textSelection(.enabled)
+                        Text(url.path)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .textSelection(.enabled)
+                            .help(url.path)
                     }
                 }
             }
@@ -182,6 +187,7 @@ final class AppStateDiagnostics: ObservableObject {
     let store: AppState
     init(_ store: AppState) { self.store = store }
 
+    var coreStatus: String { DiagnosticsFormat.coreStatus(version: store.coreVersion, initCode: store.initCode) }
     var coreLine: String { DiagnosticsFormat.coreLine(version: store.coreVersion, initCode: store.initCode) }
     var sessionLine: String { DiagnosticsFormat.sessionLine(isDemo: store.isDemo, signedIn: store.signedIn) }
     var feedWord: String { DiagnosticsFormat.feedWord(state: store.feedState) }

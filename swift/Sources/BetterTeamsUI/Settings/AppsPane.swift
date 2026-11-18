@@ -34,6 +34,9 @@ struct AppsPane: View {
         return AnyView(AppsPane(host: host, defaults: AppSettings.shared.defaults))
     }
 
+    /// Minutes before a hidden app is unloaded: the policy constant, so the label cannot drift.
+    static var idleUnloadMinutes: Int { Int(FramePolicy.idleUnloadAfter / 60) }
+
     init(host: FrameHost, defaults: UserDefaults) {
         self.host = host
         self.defaults = defaults
@@ -64,8 +67,8 @@ struct AppsPane: View {
                               text: "How long a hidden app stays active before it is suspended.")
                 }
                 Toggle(isOn: $unloadIdle) {
-                    InfoLabel(title: "Unload apps after 30 minutes hidden", subject: "unloading hidden apps",
-                              text: "Apps you have not opened for 30 minutes are unloaded to free memory. Opening one reloads it where you left off. Notifications, calls and unread counts are not affected.")
+                    InfoLabel(title: "Unload apps after \(Self.idleUnloadMinutes) minutes hidden", subject: "unloading hidden apps",
+                              text: "Apps you have not opened for \(Self.idleUnloadMinutes) minutes are unloaded to free memory. Opening one reloads it where you left off. Notifications, calls and unread counts are not affected.")
                 }
                 Toggle(isOn: $pauseInBackground) {
                     InfoLabel(title: "Pause apps while Better Teams is in the background", subject: "pausing apps in the background",
