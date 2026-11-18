@@ -43,7 +43,7 @@ struct ChatRow: View {
                 .opacity(style.showsUnreadDot ? 1 : 0)
                 .accessibilityHidden(true)
             Avatar(name: chat.name, isGroup: chat.is_group, diameter: density.metrics.chatAvatar)
-                .contactHover(name: chat.is_group ? "" : chat.name, arrowEdge: .bottom)
+                .contactHover(name: chat.is_group ? "" : chat.name, arrowEdge: .bottom, claimsEvidencePin: false)
                 .overlay(alignment: .bottomTrailing) {
                     // 4 pt out, as in Search People: at 2 pt the ring
                     // clipped the monogram's trailing letter.

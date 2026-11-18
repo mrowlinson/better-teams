@@ -145,21 +145,25 @@ final class ContactHover {
 
 extension View {
     /// Contact hover card for this name/avatar (~1 s dwell).
-    func contactHover(_ ref: ContactRef, arrowEdge: Edge = .trailing) -> some View {
-        modifier(ContactHoverModifier(ref: ref, arrowEdge: arrowEdge))
+    /// `claimsEvidencePin: false` keeps this anchor out of the evidence pin
+    /// (`?contact=`) so the card opens from the sender name in the timeline,
+    /// not from a sidebar row or avatar for the same person.
+    func contactHover(_ ref: ContactRef, arrowEdge: Edge = .trailing, claimsEvidencePin: Bool = true) -> some View {
+        modifier(ContactHoverModifier(ref: ref, arrowEdge: arrowEdge, claimsEvidencePin: claimsEvidencePin))
     }
 
     /// Name-only form (senders, chat titles): the directory fills the id.
     func contactHover(name: String, userID: String? = nil, email: String? = nil,
-                      arrowEdge: Edge = .trailing) -> some View {
+                      arrowEdge: Edge = .trailing, claimsEvidencePin: Bool = true) -> some View {
         modifier(ContactHoverModifier(ref: ContactRef(name: name, userID: userID, email: email),
-                                      arrowEdge: arrowEdge))
+                                      arrowEdge: arrowEdge, claimsEvidencePin: claimsEvidencePin))
     }
 }
 
 struct ContactHoverModifier: ViewModifier {
     let ref: ContactRef
     var arrowEdge: Edge = .trailing
+    var claimsEvidencePin = true
     var hover: ContactHover = .shared
 
     @Environment(\.windowModel) private var model
@@ -175,7 +179,7 @@ struct ContactHoverModifier: ViewModifier {
             content
                 .background { PopoverAnchorReader(box: anchorBox) }
                 .onHover { inside in hover.pointer(inside, anchor: anchor) }
-                .onAppear { hover.claimPin(anchor: anchor, name: ref.name) }
+                .onAppear { if claimsEvidencePin { hover.claimPin(anchor: anchor, name: ref.name) } }
                 .popover(isPresented: Binding(
                     get: { hover.isShown(anchor) },
                     set: { if !$0, hover.isShown(anchor) { hover.dismiss() } }

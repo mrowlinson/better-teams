@@ -71,7 +71,7 @@ public enum ChatCommands {
                 menu: .init(.edit, group: 3, order: 0, submenu: "Speech"), owner: .chat),
         Command(speakStop, "Stop Speaking",
                 menu: .init(.edit, group: 3, order: 1, submenu: "Speech"), owner: .chat),
-        Command(filter, "Filter", symbol: "line.3.horizontal.decrease",
+        Command(filter, "Filter", symbol: "line.3.horizontal.decrease.circle",
                 menu: .init(.view, group: 2, order: 0), toolbar: .list, isSubmenu: true, owner: .chat),
         Command(newChat, "New Chat", symbol: "square.and.pencil", key: "n",
                 menu: .init(.file, group: 0, order: 0), toolbar: .list, owner: .chat),

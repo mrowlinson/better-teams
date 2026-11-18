@@ -372,8 +372,22 @@ final class ValidatedMenuToolbarItem: NSMenuToolbarItem {
 
     override func validate() {
         guard let c = controller ?? ShellWindowController.current else { return }
-        let on = c.validate(CommandID(itemIdentifier.rawValue)).enabled
-        if isEnabled != on { isEnabled = on }
+        let v = c.validate(CommandID(itemIdentifier.rawValue))
+        if isEnabled != v.enabled { isEnabled = v.enabled }
+        applyFilterState(active: v.active)
+    }
+
+    private var appliedActive: Bool?
+
+    /// Filter on: filled glyph + tinted (prominent) button; off: outline,
+    /// plain. Only items whose symbol has a `.fill` variant switch.
+    private func applyFilterState(active: Bool) {
+        guard appliedActive != active,
+              let cmd = CommandCatalog.command(CommandID(itemIdentifier.rawValue)),
+              let base = cmd.symbol, base.hasSuffix("decrease.circle") else { return }
+        appliedActive = active
+        image = NSImage(systemSymbolName: active ? base + ".fill" : base, accessibilityDescription: cmd.title)
+        style = active ? .prominent : .plain
     }
 }
 

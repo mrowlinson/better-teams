@@ -107,11 +107,15 @@ public struct CommandValidation: Sendable {
     public var enabled: Bool
     public var checked: Bool
     public var title: String?
+    /// A filter menu with a filter on: its toolbar glyph switches to the
+    /// filled variant and tints (Mail's filter button).
+    public var active: Bool
 
-    public init(enabled: Bool, checked: Bool = false, title: String? = nil) {
+    public init(enabled: Bool, checked: Bool = false, title: String? = nil, active: Bool = false) {
         self.enabled = enabled
         self.checked = checked
         self.title = title
+        self.active = active
     }
 
     public static let disabled = CommandValidation(enabled: false)

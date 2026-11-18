@@ -262,9 +262,10 @@ private struct ContactActionBar: View {
                 action("Video call", "video") { if let m = model { ContactActions.call(ref, m, video: true) } }
                 action("Audio call", "phone") { if let m = model { ContactActions.call(ref, m, video: false) } }
             }
+            // SF Symbols has no brand marks: a template symbol like its
+            // four siblings, labeled LinkedIn.
             Button { ContactActions.linkedIn(ref, card) } label: {
-                Text("in")
-                    .font(AppFont.headline(scale))
+                Image(systemName: Self.linkedInSymbol)
                     .frame(width: 18, height: 18)
             }
             .buttonStyle(.bordered)
@@ -273,6 +274,8 @@ private struct ContactActionBar: View {
             .accessibilityLabel("LinkedIn")
         }
     }
+
+    static let linkedInSymbol = "person.crop.square"
 
     private func action(_ title: String, _ symbol: String, _ run: @escaping () -> Void) -> some View {
         Button(action: run) {
@@ -523,21 +526,27 @@ struct ContactCardSheet: View {
     private var current: ContactRef { history.last ?? initial }
 
     var body: some View {
-        ZStack(alignment: .topTrailing) {
+        // Native sheet: content, then a bottom bar with Done (default
+        // action; Escape also closes). No corner close glyph.
+        VStack(spacing: 0) {
             if let store = model?.app?.contactCards {
                 CardBody(ref: current, store: store, initialTab: Self.tab(fromArg: model?.sheet?.arg),
                          back: history.isEmpty ? nil : { history.removeLast() }) { next in history.append(next) }
+            } else {
+                Spacer(minLength: 0)
             }
-            Button { model?.dismissSheet() } label: {
-                Image(systemName: "xmark")
-                    .frame(width: 18, height: 18)
-                    .contentShape(Rectangle())
+            Divider()
+            HStack {
+                Spacer()
+                Button("Done") { model?.dismissSheet() }
+                    .keyboardShortcut(.defaultAction)
+                    .background(
+                        Button("Cancel") { model?.dismissSheet() }
+                            .keyboardShortcut(.cancelAction)
+                            .hidden())
             }
-            .buttonStyle(.borderless)
-            .keyboardShortcut(.cancelAction)
-            .help("Close")
-            .accessibilityLabel("Close")
-            .padding(12)
+            .padding(.horizontal, 20)
+            .padding(.vertical, 12)
         }
         .frame(width: 560, height: 640)
     }
@@ -568,13 +577,14 @@ struct ContactCardSheet: View {
     }
 
     /// The card's sections as a native segmented control (system accent
-    /// for the selected segment), left-aligned above the scrolling content.
+    /// for the selected segment), centered above the scrolling content.
     private struct SectionPicker: View {
         let tabs: [Tab]
         @Binding var selection: Tab
 
         var body: some View {
             HStack(spacing: 0) {
+                Spacer(minLength: 0)
                 Picker("Section", selection: $selection) {
                     ForEach(tabs) { tab in
                         Text(tab.rawValue).tag(tab)
@@ -585,6 +595,7 @@ struct ContactCardSheet: View {
                 .fixedSize()
                 Spacer(minLength: 0)
             }
+            .padding(.bottom, 12) // clear space above the divider
         }
     }
 
@@ -624,7 +635,6 @@ struct ContactCardSheet: View {
                             .help("Back to the previous contact card")
                     }
                     ContactHeader(ref: ref, card: card, presence: store.presence(for: ref), diameter: 88)
-                        .padding(.trailing, 28)
                     ContactActionBar(ref: target, card: card, own: own) { tab = .organization }
                     SectionPicker(tabs: tabs, selection: Binding(get: { shown }, set: { tab = $0 }))
                 }

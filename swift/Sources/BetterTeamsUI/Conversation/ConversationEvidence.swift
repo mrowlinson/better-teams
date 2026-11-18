@@ -3,6 +3,7 @@
 //
 //   chat/<id>?conv=error|loading|reauth
 //   chat/<id>?seed=reply,edit,attach,typing,pending,scheduled,delete,pins,rich
+//   chat/<id>?seed=deletefail        (own last bubble shows failed delete + Retry)
 //   chat/<id>?jump=pinned            (after seed=pins: jump to the first pin)
 //
 // A route chat the demo list doesn't have (e.g. `demo-new`) joins the
@@ -127,6 +128,15 @@ enum ConversationEvidence {
             // applied before the window is first shown).
             DispatchQueue.main.async {
                 TimelineActions.confirmDelete(target, conv: conv, model: m, services: services)
+            }
+        }
+        if seeds.contains("deletefail"), let target = own.last {
+            // Demo has no server to refuse the delete: run the real path
+            // (the demo ids are not live, so the wire throws and the row
+            // takes the failed-delete form with Retry, via the same catch
+            // as a live refusal). Next turn, like `delete` above.
+            DispatchQueue.main.async {
+                conv.deleteMessage(id: target.id, isOneToOne: false)
             }
         }
     }

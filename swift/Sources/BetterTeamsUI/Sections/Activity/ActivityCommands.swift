@@ -9,7 +9,7 @@ public enum ActivityCommands {
 
     @MainActor
     public static let all: [Command] = [
-        Command(filter, "Filter Activity", symbol: "line.3.horizontal.decrease",
+        Command(filter, "Filter Activity", symbol: "line.3.horizontal.decrease.circle",
                 menu: .init(.view, group: 2, order: 1), toolbar: .list, isSubmenu: true, owner: .activity),
         Command(markAllRead, "Mark All Activity as Read", symbol: "checkmark.circle",
                 key: "\u{1b}", modifiers: [.shift],

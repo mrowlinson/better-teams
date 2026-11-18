@@ -182,7 +182,8 @@ final class ActivitySection: SectionProvider, InspectorCapable {
         let here = m.nav.section == .activity && m.nav.search == nil && m.app != nil
         switch c {
         case ActivityCommands.showSaved: return CommandValidation(enabled: m.app != nil)
-        case ActivityCommands.filter: return CommandValidation(enabled: here && hasItems(m))
+        case ActivityCommands.filter:
+            return CommandValidation(enabled: here && hasItems(m), active: state.filter != .all)
         case ActivityCommands.markAllRead:
             return CommandValidation(enabled: here && unread(m) > 0)
         case ActivityCommands.markRead:

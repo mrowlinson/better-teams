@@ -573,7 +573,7 @@ final class ChatSection: SectionProvider, InspectorCapable {
         let inChat = m.nav.section == .chat && m.nav.search == nil
         switch c {
         case ChatCommands.newChat: return .enabled
-        case ChatCommands.filter: return CommandValidation(enabled: inChat)
+        case ChatCommands.filter: return CommandValidation(enabled: inChat, active: state(m).filter != .all)
         case ChatCommands.catchUp:
             // Any host of the conversation view; nothing to summarize in
             // a chat with no messages.

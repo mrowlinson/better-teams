@@ -105,9 +105,14 @@ struct BodySegment: Identifiable {
     let isBlock: Bool
 }
 
-/// "Message failed to send." + a Retry button on the bubble (a7d8375).
+/// "Not Sent" + a Retry button on the bubble (a7d8375). Messages-style: a
+/// short status, no trailing period; a failed delete ("Couldn't Delete")
+/// uses the same glyph and the same bordered Retry control. The sentence
+/// stays as the tooltip / VoiceOver text.
 struct FailedSendStatus: View {
     static let text = "Message failed to send."
+    static let visibleTitle = "Not Sent"
+    static let deleteFailedTitle = "Couldn't Delete"
     static let retryTitle = "Retry"
     let retry: (() -> Void)?
 
@@ -120,9 +125,11 @@ struct FailedSendStatus: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            Label(Self.text, systemImage: "exclamationmark.circle")
+            Label(Self.visibleTitle, systemImage: "exclamationmark.circle")
                 .font(AppFont.caption(scale))
                 .foregroundStyle(Palette.failed)
+                .help(Self.text)
+                .accessibilityLabel(Self.text)
             if let retry {
                 Button(Self.retryTitle, action: retry)
                     .controlSize(.small)
@@ -161,7 +168,8 @@ struct MessageRowView: View {
                     // Own posts (channels, threads): initials from the owner's name.
                     if row.showsHeader {
                         Avatar(name: message.isOwn ? (model?.ownDisplayName ?? message.sender) : message.sender)
-                            .contactHover(name: message.isOwn ? (model?.ownDisplayName ?? message.sender) : message.sender)
+                            .contactHover(name: message.isOwn ? (model?.ownDisplayName ?? message.sender) : message.sender,
+                                          claimsEvidencePin: false) // the sender name below claims the pin
                     } else { Color.clear }
                 }
                 .frame(width: 28, height: row.showsHeader ? 28 : 1)
@@ -410,12 +418,12 @@ struct MessageRowView: View {
     private var sendStatus: some View {
         if row.deleteFailed {
             HStack(spacing: 6) {
-                Label("Couldn't Delete", systemImage: "exclamationmark.circle")
+                Label(FailedSendStatus.deleteFailedTitle, systemImage: "exclamationmark.circle")
                     .font(AppFont.caption(scale))
                     .foregroundStyle(Palette.failed)
-                Button("Retry") { actions?.retryDelete(message) }
-                    .buttonStyle(.link)
-                    .font(AppFont.caption(scale))
+                Button(FailedSendStatus.retryTitle) { actions?.retryDelete(message) }
+                    .controlSize(.small)
+                    .accessibilityLabel("Retry deleting")
             }
             .help("The message was not deleted. Retry, or choose Retry Delete from its context menu.")
         } else {

@@ -202,6 +202,7 @@ struct ChatListPane: View {
                 } header: {
                     ChatSectionHeader(section: .pinned, state: state, model: m)
                 }
+                .listSectionSeparator(.hidden) // no rule under section headers
             }
             if !favorites.isEmpty {
                 Section {
@@ -211,6 +212,7 @@ struct ChatListPane: View {
                 } header: {
                     ChatSectionHeader(section: .favorites, state: state, model: m)
                 }
+                .listSectionSeparator(.hidden)
             }
             if !recent.isEmpty {
                 Section {
@@ -227,6 +229,7 @@ struct ChatListPane: View {
                 } header: {
                     ChatSectionHeader(section: .recent, state: state, model: m)
                 }
+                .listSectionSeparator(.hidden)
             }
             combinedChannels(m)
             if state.filter == .all {
