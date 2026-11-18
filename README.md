@@ -401,5 +401,6 @@ Incomplete or not started yet ("in progress" = being worked on now):
 - **Calling:** Teams Phone (dial pad, voicemail, forwarding, delegates) — parked: no Teams Phone licence on this tenant
 - **Chats and teams:** Teams saved-messages sync, thread mute, full notification-rules matrix (all three parked — no server surface found); private/shared channels, archiving, moderation, team privacy switch
 - **External (federated) chat:** shipped, live proof blocked: tenant has external access disabled
-- **On hold:** Praise, Polls, Loop components, webinars, breakout rooms, whiteboard, Copilot, Share-to-Outlook
+- **On hold:** Praise, Polls, webinars, breakout rooms, whiteboard, Copilot, Share-to-Outlook
+- **Blocked by Microsoft:** Loop components (no public create/embed/sync API exists; ships if one appears)
 - **Live proof:** multi-person meetings not yet verified end to end (solo and organizer paths only so far)
