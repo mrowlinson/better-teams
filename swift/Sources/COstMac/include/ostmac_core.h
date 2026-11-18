@@ -258,6 +258,12 @@ char *ostmac_files(const char *chat_id, int limit);
 // Same {ok, chat_id, files} envelope. Caller frees.
 char *ostmac_files_opts(const char *chat_id, int limit, int include_folders);
 
+// Shared files with a caller-known team id for channel ids (launch-r2):
+// skips the channel->team scan (joinedTeams + one channels call per
+// team). Null/empty team_id scans as before. Caller frees.
+char *ostmac_files_opts_team(const char *chat_id, int limit, int include_folders,
+                             const char *team_id);
+
 // The files one message shares (its reference attachments; each file's
 // attachment_id = the body's <attachment id>). Same {ok, chat_id, files}
 // envelope. Caller frees.

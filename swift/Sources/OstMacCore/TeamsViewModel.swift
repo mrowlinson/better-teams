@@ -108,7 +108,10 @@ public final class TeamsViewModel: ObservableObject {
     /// Menu writes in flight: a sync landing mid-write would resurrect
     /// the optimistic change, so sync results wait for zero.
     private var pendingWrites = 0
-    private var syncing = false
+    /// The shared in-flight tree fetch (launch-r2 dedup).
+    private var syncFlight: Task<Bool, Never>?
+    /// The shared in-flight ownership pass (launch-r2 dedup).
+    private var ownershipFlight: Task<Void, Never>?
 
     public init(
         fetcher: @escaping Fetcher = { try RustCore.teams() },
@@ -177,6 +180,7 @@ public final class TeamsViewModel: ObservableObject {
     /// Lands on `.empty` (static, no spinner); the caller follows
     /// with `loadQuietly`.
     public func resetForAccount() {
+        CoreReads.teamsCacheClear() // account switch: never serve the old team's list
         teams = []
         createError = nil
         joiningIDs = []
@@ -336,13 +340,21 @@ public final class TeamsViewModel: ObservableObject {
     /// Quiet tree refresh at utility priority: never shows a spinner,
     /// never drops rows on failure, and publishes only when the tree
     /// actually changed (stable list, selection and scroll kept).
-    /// Returns false when the fetch failed (caller backs off).
+    /// Returns false when the fetch failed (caller backs off). One
+    /// in-flight fetch is shared (launch-r2: load + TeamsSync kicks
+    /// fire together) — every waiter gets the same result.
     @discardableResult
     public func sync() async -> Bool {
-        guard !syncing else { return true }
-        syncing = true
-        defer { syncing = false }
+        if let flight = syncFlight { return await flight.value }
         let fetcher = fetcher
+        let flight = Task<Bool, Never> { await self.runSync(fetcher: fetcher) }
+        syncFlight = flight
+        let result = await flight.value
+        syncFlight = nil
+        return result
+    }
+
+    private func runSync(fetcher: @escaping Fetcher) async -> Bool {
         do {
             let response = try await Task.blocking(priority: .utility) {
                 try fetcher()
@@ -381,8 +393,18 @@ public final class TeamsViewModel: ObservableObject {
     /// team lets members do, for every team not asked within
     /// `rightsTTL`. Each read stands alone: a failure leaves that fact
     /// unknown (never "no"). Answers gate Edit/Delete channel and pin
-    /// General first.
+    /// General first. One in-flight pass is shared (launch-r2: the
+    /// launch task and TeamsSync both ask) — every waiter gets the
+    /// same pass.
     public func refreshOwnership() async {
+        if let flight = ownershipFlight { await flight.value; return }
+        let flight = Task<Void, Never> { await self.runOwnership() }
+        ownershipFlight = flight
+        await flight.value
+        ownershipFlight = nil
+    }
+
+    private func runOwnership() async {
         let now = Date()
         let ask = teams.map(\.teamId).filter { id in
             guard let at = ownershipAskedAt[id] else { return true }

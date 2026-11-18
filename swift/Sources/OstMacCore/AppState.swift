@@ -1506,7 +1506,7 @@ public final class AppState: ObservableObject {
                 let fileSpecs = UnifiedFilesStore.specsFor(chats: self.chats.chats, teams: self.teams.teams)
                 self.unifiedFiles.load(
                     chats: fileSpecs.filter { $0.kind == .chat }.map { ($0.id, $0.name) },
-                    channels: fileSpecs.filter { $0.kind == .channel }.map { ($0.id, $0.name) })
+                    channels: fileSpecs.filter { $0.kind == .channel }.map { ($0.id, $0.name, $0.teamID) })
             }
         }
         scheduleIdleLoads(launchStart: launchStart)

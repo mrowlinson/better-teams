@@ -76,6 +76,7 @@ public enum RustCore {
         // FFI always ran the core clear first).
         defer {
             CoreReads.whoamiCacheClear(profile: profile)
+            CoreReads.teamsCacheClear()
             // B18: pending device sessions lived in Rust (`retain` in
             // `sign_out_json_for`); they live in Swift now. B19 must
             // preserve this line when sign-out itself moves.
@@ -94,7 +95,7 @@ public enum RustCore {
     /// Swift-native (R14 om-later-b18 B18; was `ostmac_device_poll`).
     public static func devicePoll(session: String) throws -> DevicePoll {
         // Tokens may land (profile untracked here): drop all Swift slots.
-        defer { CoreReads.whoamiCacheClearAll() }
+        defer { CoreReads.whoamiCacheClearAll(); CoreReads.teamsCacheClear() }
         return try SyncBridge.run {
             try await DeviceAuth.devicePoll(
                 session: session, store: DeviceAuth.productionStore(),
@@ -110,6 +111,7 @@ public enum RustCore {
     public static func signOut() throws -> SignOutResponse {
         defer {
             CoreReads.whoamiCacheClear(profile: CoreLocal.activeProfileID())
+            CoreReads.teamsCacheClear()
             DeviceAuth.Sessions.drop(profile: CoreLocal.activeProfileID())
         }
         return try call(ostmac_sign_out(), as: SignOutResponse.self)
@@ -126,7 +128,7 @@ public enum RustCore {
     /// off the main thread.
     public static func browserComplete(session: String, callback: String) throws -> AuthCodeComplete {
         // Tokens land (profile untracked here): drop all Swift slots.
-        defer { CoreReads.whoamiCacheClearAll() }
+        defer { CoreReads.whoamiCacheClearAll(); CoreReads.teamsCacheClear() }
         return try session.withCString { sPtr in
             try callback.withCString { cPtr in
                 try call(ostmac_authcode_complete(sPtr, cPtr), as: AuthCodeComplete.self)
@@ -306,16 +308,25 @@ public enum RustCore {
         }
     }
 
+    /// In-flight coalescer (launch-r2): the open/refresh/poll/catch-up
+    /// paths fetch the same chat head concurrently — one fetch, shared
+    /// result. Pages chain on distinct tokens, so key by token too.
+    private static let messagesCoalescer = SyncCoalescer<MessagesResponse>()
+
     public static func messages(chatID: String, limit: Int32 = 50) throws -> MessagesResponse {
-        try chatID.withCString { ptr in
-            try call(ostmac_messages(ptr, limit), as: MessagesResponse.self)
+        try messagesCoalescer.run(key: "head:\(chatID):\(limit)") {
+            try chatID.withCString { ptr in
+                try call(ostmac_messages(ptr, limit), as: MessagesResponse.self)
+            }
         }
     }
 
     public static func messagesPage(chatID: String, pageToken: String, limit: Int32 = 50) throws -> MessagesResponse {
-        try chatID.withCString { idPtr in
-            try pageToken.withCString { tokPtr in
-                try call(ostmac_messages_page(idPtr, tokPtr, limit), as: MessagesResponse.self)
+        try messagesCoalescer.run(key: "page:\(chatID):\(pageToken):\(limit)") {
+            try chatID.withCString { idPtr in
+                try pageToken.withCString { tokPtr in
+                    try call(ostmac_messages_page(idPtr, tokPtr, limit), as: MessagesResponse.self)
+                }
             }
         }
     }
@@ -651,12 +662,16 @@ public enum RustCore {
         }
     }
 
-    public static func sharedFiles(chatID: String, limit: Int32 = 20, includeFolders: Bool = false) throws -> SharedFilesResponse {
+    public static func sharedFiles(chatID: String, limit: Int32 = 20, includeFolders: Bool = false, teamID: String? = nil) throws -> SharedFilesResponse {
         try chatID.withCString { ptr in
-            if includeFolders {
-                try call(ostmac_files_opts(ptr, limit, 1), as: SharedFilesResponse.self)
-            } else {
-                try call(ostmac_files(ptr, limit), as: SharedFilesResponse.self)
+            try withOptionalCString(teamID) { team in
+                if team != nil {
+                    try call(ostmac_files_opts_team(ptr, limit, includeFolders ? 1 : 0, team), as: SharedFilesResponse.self)
+                } else if includeFolders {
+                    try call(ostmac_files_opts(ptr, limit, 1), as: SharedFilesResponse.self)
+                } else {
+                    try call(ostmac_files(ptr, limit), as: SharedFilesResponse.self)
+                }
             }
         }
     }

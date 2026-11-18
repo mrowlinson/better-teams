@@ -165,6 +165,12 @@ final class Top10FilesTests: XCTestCase {
         XCTAssertEqual(
             specs.filter { $0.kind == .channel }.map(\.name),
             ["Eng > #General", "Eng > #Shipping"])
+        // Launch-r2: channel legs carry their team so core skips the
+        // channel→team scan; chat legs carry none.
+        XCTAssertEqual(
+            specs.filter { $0.kind == .channel }.map(\.teamID),
+            ["t1", "t1"])
+        XCTAssertTrue(specs.filter { $0.kind == .chat }.allSatisfy { $0.teamID == nil })
         let capped = UnifiedFilesStore.specsFor(
             chats: chats, teams: teams, chatCap: 2, channelCap: 1)
         XCTAssertEqual(capped.count, 3)
@@ -226,7 +232,7 @@ final class Top10FilesTests: XCTestCase {
         failChat: Bool = false, failAll: Bool = false
     ) -> UnifiedFilesStore {
         UnifiedFilesStore(
-            list: { id, _ in
+            list: { id, _, _ in
                 if failAll || (failChat && id == "chat-1") {
                     throw CoreCallError.failed("files: boom")
                 }
@@ -252,7 +258,7 @@ final class Top10FilesTests: XCTestCase {
         let store = mockStore(
             chatFiles: [Self.chatFile], channelFiles: [Self.channelFile],
             driveFiles: [Self.driveFile])
-        store.load(chats: [("chat-1", "Design Sync")], channels: [("chan-1", "Eng > #General")])
+        store.load(chats: [("chat-1", "Design Sync")], channels: [("chan-1", "Eng > #General", "team-1")])
         await poll(store)
         XCTAssertEqual(store.state, .loaded)
         let names = store.displayedRows.map(\.file.name)
@@ -263,11 +269,52 @@ final class Top10FilesTests: XCTestCase {
         XCTAssertEqual(names, ["qna-export.csv", "chan-sheet.xlsx", "chat-deck.pdf"])
     }
 
+    /// Launch-r2: the channel leg hands its caller-known team to the
+    /// fetcher (core skips the channel→team scan); the chat leg hands nil.
+    func testLoadPassesChannelTeamToFetcher() async {
+        let seen = LockedBox<[(String, String?)]>([])
+        let store = UnifiedFilesStore(
+            list: { id, team, _ in
+                seen.mutate { $0.append((id, team)) }
+                return SharedFilesResponse(ok: true, chat_id: id, files: [])
+            },
+            recents: { _ in DriveRecentsResponse(ok: true, files: []) })
+        store.load(chats: [("chat-1", "C")], channels: [("chan-1", "H", "team-9")])
+        await poll(store)
+        let got = Dictionary(uniqueKeysWithValues: seen.value)
+        XCTAssertEqual(got.count, 2)
+        XCTAssertEqual(got["chan-1"] ?? nil, "team-9")
+        XCTAssertNil(got["chat-1"] ?? nil)
+    }
+
+    /// Launch-r2: back-to-back loads with equal specs share one
+    /// fan-out (launch paths fire together) — each leg fetched once.
+    func testConcurrentSameSpecsLoadSharesOneFanout() async {
+        let lists = LockedBox(0)
+        let recentsCalls = LockedBox(0)
+        let store = UnifiedFilesStore(
+            list: { id, _, _ in
+                lists.mutate { $0 += 1 }
+                Thread.sleep(forTimeInterval: 0.3)
+                return SharedFilesResponse(ok: true, chat_id: id, files: [])
+            },
+            recents: { _ in
+                recentsCalls.mutate { $0 += 1 }
+                Thread.sleep(forTimeInterval: 0.3)
+                return DriveRecentsResponse(ok: true, files: [])
+            })
+        store.load(chats: [("chat-1", "C")], channels: [("chan-1", "H", nil)])
+        store.load(chats: [("chat-1", "C")], channels: [("chan-1", "H", nil)])
+        await poll(store)
+        XCTAssertEqual(lists.value, 2)
+        XCTAssertEqual(recentsCalls.value, 1)
+    }
+
     func testLoadToleratesLegFailure() async {
         let store = mockStore(
             chatFiles: [Self.chatFile], channelFiles: [Self.channelFile],
             driveFiles: [Self.driveFile], failChat: true)
-        store.load(chats: [("chat-1", "C")], channels: [("chan-1", "H")])
+        store.load(chats: [("chat-1", "C")], channels: [("chan-1", "H", nil)])
         await poll(store)
         XCTAssertEqual(store.state, .loaded)
         let names = store.displayedRows.map(\.file.name)
@@ -327,7 +374,7 @@ final class Top10FilesTests: XCTestCase {
     func testUploadPregatesOversize() async {
         let calls = LockedBox(0)
         let store = UnifiedFilesStore(
-            list: { id, _ in SharedFilesResponse(ok: true, chat_id: id, files: []) },
+            list: { id, _, _ in SharedFilesResponse(ok: true, chat_id: id, files: []) },
             recents: { _ in DriveRecentsResponse(ok: true, files: []) },
             upload: { _, _ in
                 calls.mutate { $0 += 1 }
@@ -355,7 +402,7 @@ final class Top10FilesTests: XCTestCase {
         // signed-in user's real rows land in `rows` and the count
         // assertions below fail nondeterministically.
         let store = UnifiedFilesStore(
-            list: { id, _ in SharedFilesResponse(ok: true, chat_id: id, files: []) },
+            list: { id, _, _ in SharedFilesResponse(ok: true, chat_id: id, files: []) },
             recents: { _ in DriveRecentsResponse(ok: true, files: []) },
             upload: { _, _ in SharedFileUploadResponse(ok: true, file: uploaded) },
             sizeProbe: { _ in 512 })

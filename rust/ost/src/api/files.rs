@@ -272,7 +272,7 @@ pub async fn list_chat_files_data(
     chat_id: &str,
     limit: usize,
 ) -> Result<Vec<SharedFile>> {
-    list_chat_files_data_opts(client, chat_id, limit, false).await
+    list_chat_files_data_opts(client, chat_id, limit, false, None).await
 }
 
 /// List shared files, optionally including folders (om-i5-folders).
@@ -280,11 +280,15 @@ pub async fn list_chat_files_data(
 /// each carries `is_folder` so callers can drill in via
 /// [`list_folder_children_data`]. Default callers use
 /// [`list_chat_files_data`] (folders filtered, shape unchanged).
+/// `team` is a caller-known team id for channel ids: when present the
+/// channel→team scan (`joinedTeams` + one channels call per team) is
+/// skipped (launch-r2: the unified Files fan-out already knows it).
 pub async fn list_chat_files_data_opts(
     client: &TeamsClient,
     chat_id: &str,
     limit: usize,
     include_folders: bool,
+    team: Option<&str>,
 ) -> Result<Vec<SharedFile>> {
     // §GRAPHSWEEP: no Graph `/me/chats/{id}/messages` route any more — it
     // needs Chat.Read, which the Teams web token lacks (live 403), and for
@@ -294,7 +298,7 @@ pub async fn list_chat_files_data_opts(
     if is_chat_id(chat_id) {
         list_via_chat_service(client, chat_id, limit, include_folders).await
     } else {
-        list_via_channel_folder(client, chat_id, limit, include_folders).await
+        list_via_channel_folder(client, chat_id, limit, include_folders, team).await
     }
 }
 
@@ -531,8 +535,15 @@ async fn list_via_channel_folder(
     channel_id: &str,
     limit: usize,
     include_folders: bool,
+    team: Option<&str>,
 ) -> Result<Vec<SharedFile>> {
-    let team_id = find_team_for_channel(client, channel_id).await?;
+    // A caller-known team id skips the channel→team scan (one
+    // `joinedTeams` + one channels call per team); blank falls back to
+    // the scan so unknown shapes still resolve.
+    let team_id = match team.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(t) => t.to_string(),
+        None => find_team_for_channel(client, channel_id).await?,
+    };
     let fpath = format!("/teams/{}/channels/{}/filesFolder", team_id, channel_id);
     let resp = client.graph_get(&fpath).await?;
     let folder: DriveItem = resp

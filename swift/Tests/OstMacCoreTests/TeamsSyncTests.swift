@@ -167,6 +167,51 @@ final class TeamsSyncTests: XCTestCase {
         XCTAssertFalse(vm.canManageChannels(teamID: "team-2"))
     }
 
+    // MARK: - Launch-r2 dedup
+
+    /// Concurrent syncs share one fetch (load + TeamsSync kicks fire
+    /// together at launch): the fetcher runs once, every waiter lands.
+    func testConcurrentSyncSharesOneFetch() async {
+        let fetches = LockedBox(0)
+        let vm = TeamsViewModel(fetcher: {
+            fetches.mutate { $0 += 1 }
+            Thread.sleep(forTimeInterval: 0.3)
+            return TeamsResponse(ok: true, teams: Self.base)
+        })
+        let tasks = (0 ..< 5).map { _ in Task { await vm.sync() } }
+        var oks = 0
+        for task in tasks { if await task.value { oks += 1 } }
+        XCTAssertEqual(oks, 5)
+        XCTAssertEqual(fetches.value, 1)
+        XCTAssertEqual(vm.teams, Self.base)
+    }
+
+    /// Concurrent ownership passes share one pass (launch task +
+    /// TeamsSync both ask): per-team reads fire once per team.
+    func testConcurrentOwnershipSharesOnePass() async {
+        let checks = LockedBox(0)
+        let settings = LockedBox(0)
+        let vm = TeamsViewModel(
+            fetcher: { TeamsResponse(ok: true, teams: Self.base) },
+            ownerCheck: {
+                checks.mutate { $0 += 1 }
+                Thread.sleep(forTimeInterval: 0.2)
+                return $0 == "team-1"
+            },
+            settingsFetcher: { _ in
+                settings.mutate { $0 += 1 }
+                Thread.sleep(forTimeInterval: 0.2)
+                return TeamMemberSettings()
+            })
+        await vm.load()
+        let passes = (0 ..< 3).map { _ in Task { await vm.refreshOwnership() } }
+        for pass in passes { await pass.value }
+        // Two teams (base tree, no second flag): one pass = 2 reads each.
+        XCTAssertEqual(checks.value, 2)
+        XCTAssertEqual(settings.value, 2)
+        XCTAssertTrue(vm.canManageChannels(teamID: "team-1"))
+    }
+
     // MARK: - Driver
 
     func testBackoffSchedule() {

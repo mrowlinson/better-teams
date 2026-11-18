@@ -260,6 +260,7 @@ public enum DeviceAuth {
         )
         Sessions.remove(session)
         CoreReads.whoamiCacheClear(profile: p.profile)
+        CoreReads.teamsCacheClear()
     }
 
     // MARK: - JSON helpers

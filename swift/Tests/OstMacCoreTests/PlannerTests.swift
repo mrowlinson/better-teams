@@ -405,4 +405,52 @@ final class PlannerTests: XCTestCase {
         if await TestWait.until(interval: 0.02, cond) { return }
         XCTFail("condition not met before the hang ceiling", file: file, line: line)
     }
+
+    // MARK: - Launch-r2 dedup
+
+    /// One load fetches each team's plans once: the selected team's
+    /// list is adopted from loadAllPlans, not fetched a second time.
+    func testLoadReusesPlansForSelectedTeam() async {
+        let teamsFetches = LockedBox(0)
+        let plansFetches = LockedBox(0)
+        let model = PlannerViewModel(
+            teamsFetcher: {
+                teamsFetches.mutate { $0 += 1 }
+                return Self.teamsJSON()
+            },
+            plansFetcher: { id in
+                plansFetches.mutate { $0 += 1 }
+                return PlannerPlansResponse(ok: true, group_id: id, plans: Self.plansJSON().plans)
+            },
+            bucketsFetcher: { _ in Self.bucketsJSON() },
+            tasksFetcher: { _ in Self.tasksJSON() })
+        await model.load()
+        // Two teams: loadAllPlans fetches both; the selected team's
+        // re-fetch is skipped (was N+1 = 3).
+        XCTAssertEqual(teamsFetches.value, 1)
+        XCTAssertEqual(plansFetches.value, 2)
+        XCTAssertEqual(model.selectedTeamID, "G1")
+        XCTAssertEqual(model.plans.count, 2)
+        XCTAssertEqual(model.selectedPlanID, "P1")
+        XCTAssertFalse(model.boardLoading)
+    }
+
+    /// Concurrent loads share one fetch (launch + sign-in/account
+    /// paths fire together): teams and plans each fetched once.
+    func testConcurrentLoadSharesOneFetch() async {
+        let teamsFetches = LockedBox(0)
+        let model = PlannerViewModel(
+            teamsFetcher: {
+                teamsFetches.mutate { $0 += 1 }
+                Thread.sleep(forTimeInterval: 0.3)
+                return Self.teamsJSON()
+            },
+            plansFetcher: { id in PlannerPlansResponse(ok: true, group_id: id, plans: []) },
+            bucketsFetcher: { _ in Self.bucketsJSON() },
+            tasksFetcher: { _ in Self.tasksJSON() })
+        let loads = (0 ..< 3).map { _ in Task { await model.load() } }
+        for load in loads { await load.value }
+        XCTAssertEqual(teamsFetches.value, 1)
+        XCTAssertEqual(model.state, .loaded)
+    }
 }

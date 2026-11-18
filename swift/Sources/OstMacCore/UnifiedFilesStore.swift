@@ -4,7 +4,9 @@ import Combine
 
 @MainActor
 public final class UnifiedFilesStore: ObservableObject {
-    public typealias ListFetcher = SharedFilesStore.ListFetcher
+    /// One leg's shared files (id, caller-known team for channel legs —
+    /// lets core skip the channel→team scan, limit).
+    public typealias ListFetcher = @Sendable (String, String?, Int32) throws -> SharedFilesResponse
     public typealias RecentsFetcher = @Sendable (Int32) throws -> DriveRecentsResponse
     public typealias UploadFetcher = SharedFilesStore.UploadFetcher
     public typealias DownloadFetcher = SharedFilesStore.DownloadFetcher
@@ -65,6 +67,9 @@ public final class UnifiedFilesStore: ObservableObject {
     private let previewFn: PreviewFn
     private let shareFn: ShareFn
     private var loadGeneration = 0
+    /// The shared in-flight fan-out (launch-r2 dedup): equal specs join
+    /// it instead of re-firing every leg.
+    private var loadFlight: (specs: [UnifiedSourceSpec], task: Task<Void, Never>)?
     /// Rows awaiting QL/share after their save lands (save-then-act).
     private var pendingPreview: Set<String> = []
     private var pendingShare: Set<String> = []
@@ -85,7 +90,7 @@ public final class UnifiedFilesStore: ObservableObject {
 
     public nonisolated init(
         list: @escaping ListFetcher = {
-            try RustCore.sharedFiles(chatID: $0, limit: $1, includeFolders: true)
+            try RustCore.sharedFiles(chatID: $0, limit: $2, includeFolders: true, teamID: $1)
         },
         recents: @escaping RecentsFetcher = { try RustCore.driveRecents(limit: $0) },
         upload: @escaping UploadFetcher = { try RustCore.sharedUpload(chatID: $0, path: $1) },
@@ -151,7 +156,8 @@ public final class UnifiedFilesStore: ObservableObject {
                 guard channels < max(0, channelCap) else { break }
                 out.append(UnifiedSourceSpec(
                     kind: .channel, id: channel.channelId,
-                    name: "\(team.name) > #\(channel.name)"))
+                    name: "\(team.name) > #\(channel.name)",
+                    teamID: team.teamId))
                 channels += 1
             }
             if channels >= max(0, channelCap) { break }
@@ -277,14 +283,18 @@ public final class UnifiedFilesStore: ObservableObject {
     /// newest). Demo mode stays offline (see `showDemo`).
     public func load(
         chats: [(id: String, name: String)],
-        channels: [(id: String, name: String)],
+        channels: [(id: String, name: String, teamID: String?)],
         limitPerSource: Int32 = 10, recentsLimit: Int32 = 25
     ) {
         let next = chats.map {
             UnifiedSourceSpec(kind: .chat, id: $0.id, name: $0.name)
         } + channels.map {
-            UnifiedSourceSpec(kind: .channel, id: $0.id, name: $0.name)
+            UnifiedSourceSpec(kind: .channel, id: $0.id, name: $0.name, teamID: $0.teamID)
         }
+        // Launch-r2: the same fan-out already flying is shared, not
+        // re-fired — a repeat load with equal specs joins the in-flight
+        // one (same data, fewer requests). Different specs supersede it.
+        if loadFlight?.specs == next { return }
         specs = next
         isDemo = false
         loadGeneration += 1
@@ -294,80 +304,98 @@ public final class UnifiedFilesStore: ObservableObject {
         let recents = recentsFetcher
         // R12: a source that fails this refresh keeps the rows it had.
         let previous = rows
-        Task {
-            var legs: [(source: UnifiedFileSource, sourceName: String, files: [SharedFile])] =
-                Array(repeating: (source: .chat, sourceName: "", files: []), count: next.count + 1)
-            var landed = 0
-            var firstError: String?
-            await withTaskGroup(of: (Int, [SharedFile]?, String?).self) { group in
-                for (i, spec) in next.enumerated() {
-                    group.addTask {
-                        do {
-                            let resp = try await Task.blocking {
-                                try list(spec.id, limitPerSource)
-                            }.value
-                            return (i, resp.files, nil)
-                        } catch {
-                            return (i, nil, Self.message(for: error))
-                        }
-                    }
-                }
+        let flight = Task {
+            await self.runLegs(
+                next: next, gen: gen, list: list, recents: recents,
+                previous: previous, limitPerSource: limitPerSource,
+                recentsLimit: recentsLimit)
+        }
+        loadFlight = (specs: next, task: flight)
+
+    }
+
+    private func runLegs(
+        next: [UnifiedSourceSpec], gen: Int,
+        list: @escaping ListFetcher, recents: @escaping RecentsFetcher,
+        previous: [UnifiedFileRow],
+        limitPerSource: Int32, recentsLimit: Int32
+    ) async {
+        var legs: [(source: UnifiedFileSource, sourceName: String, files: [SharedFile])] =
+            Array(repeating: (source: .chat, sourceName: "", files: []), count: next.count + 1)
+        var landed = 0
+        var firstError: String?
+        await withTaskGroup(of: (Int, [SharedFile]?, String?).self) { group in
+            for (i, spec) in next.enumerated() {
                 group.addTask {
                     do {
                         let resp = try await Task.blocking {
-                            try recents(recentsLimit)
+                            try list(spec.id, spec.teamID, limitPerSource)
                         }.value
-                        return (next.count, resp.files, nil)
+                        return (i, resp.files, nil)
                     } catch {
-                        return (next.count, nil, Self.message(for: error))
+                        return (i, nil, Self.message(for: error))
                     }
                 }
-                for await (i, files, err) in group {
-                    if let files {
-                        landed += 1
-                        if i < next.count {
-                            let spec = next[i]
-                            legs[i] = (spec.kind, spec.name,
-                                       files.map { $0.withSource(name: spec.name, id: spec.id) })
-                        } else {
-                            legs[i] = (.drive, UnifiedFileSource.drive.label, files)
-                        }
+            }
+            group.addTask {
+                do {
+                    let resp = try await Task.blocking {
+                        try recents(recentsLimit)
+                    }.value
+                    return (next.count, resp.files, nil)
+                } catch {
+                    return (next.count, nil, Self.message(for: error))
+                }
+            }
+            for await (i, files, err) in group {
+                if let files {
+                    landed += 1
+                    if i < next.count {
+                        let spec = next[i]
+                        legs[i] = (spec.kind, spec.name,
+                                   files.map { $0.withSource(name: spec.name, id: spec.id) })
                     } else {
-                        if firstError == nil { firstError = err }
-                        let kept = i < next.count
-                            ? previous.filter { $0.source == next[i].kind && $0.sourceID == next[i].id }
-                            : previous.filter { $0.source == .drive }
-                        if !kept.isEmpty {
-                            legs[i] = i < next.count
-                                ? (next[i].kind, next[i].name, kept.map(\.file))
-                                : (.drive, UnifiedFileSource.drive.label, kept.map(\.file))
-                        }
+                        legs[i] = (.drive, UnifiedFileSource.drive.label, files)
+                    }
+                } else {
+                    if firstError == nil { firstError = err }
+                    let kept = i < next.count
+                        ? previous.filter { $0.source == next[i].kind && $0.sourceID == next[i].id }
+                        : previous.filter { $0.source == .drive }
+                    if !kept.isEmpty {
+                        legs[i] = i < next.count
+                            ? (next[i].kind, next[i].name, kept.map(\.file))
+                            : (.drive, UnifiedFileSource.drive.label, kept.map(\.file))
                     }
                 }
-            }
-            guard gen == loadGeneration else { return }
-            let merged = Self.merge(legs: legs.filter {
-                !($0.sourceName.isEmpty && $0.files.isEmpty)
-            })
-            rows = merged
-            if landed > 0, !merged.isEmpty {
-                snapshots?.save(Snapshot(
-                    specs: next,
-                    rows: merged.prefix(Self.snapshotRows).map {
-                        UnifiedFileRow(file: $0.file.withoutDownloadURL, source: $0.source,
-                                       sourceName: $0.sourceName)
-                    }), key: Self.snapshotKey)
-            }
-            if landed == 0, let err = firstError {
-                // Every source failed: rows kept above stay on screen
-                // (R12), the error only shows as the quiet refresh notice.
-                state = .error(err)
-            } else if !merged.isEmpty {
-                state = .loaded
-            } else {
-                state = .empty
             }
         }
+        guard gen == loadGeneration else { return }
+        let merged = Self.merge(legs: legs.filter {
+            !($0.sourceName.isEmpty && $0.files.isEmpty)
+        })
+        rows = merged
+        if landed > 0, !merged.isEmpty {
+            snapshots?.save(Snapshot(
+                specs: next,
+                rows: merged.prefix(Self.snapshotRows).map {
+                    UnifiedFileRow(file: $0.file.withoutDownloadURL, source: $0.source,
+                                   sourceName: $0.sourceName)
+                }), key: Self.snapshotKey)
+        }
+        if landed == 0, let err = firstError {
+            // Every source failed: rows kept above stay on screen
+            // (R12), the error only shows as the quiet refresh notice.
+            state = .error(err)
+        } else if !merged.isEmpty {
+            state = .loaded
+        } else {
+            state = .empty
+        }
+        // Landed (not superseded above): release the shared flight
+        // only when it still describes these specs — a newer load
+        // owns the slot otherwise.
+        if loadFlight?.specs == next { loadFlight = nil }
     }
 
     /// NOLOAD: last-good snapshot store (nil = memory only / demo).
@@ -424,7 +452,7 @@ public final class UnifiedFilesStore: ObservableObject {
         guard !isDemo else { return }
         load(
             chats: specs.filter { $0.kind == .chat }.map { ($0.id, $0.name) },
-            channels: specs.filter { $0.kind == .channel }.map { ($0.id, $0.name) },
+            channels: specs.filter { $0.kind == .channel }.map { ($0.id, $0.name, $0.teamID) },
             limitPerSource: limitPerSource, recentsLimit: recentsLimit)
     }
 

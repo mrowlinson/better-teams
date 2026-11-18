@@ -75,6 +75,8 @@ public final class PlannerViewModel: ObservableObject {
     private let assignFetcher: AssignFetcher
     private let membersFetcher: MembersFetcher?
     private let localEdits: Bool
+    /// The shared in-flight full load (launch-r2 dedup).
+    private var loadFlight: Task<Void, Never>?
 
     public init(
         teamsFetcher: @escaping TeamsFetcher = { try RustCore.teams() },
@@ -157,7 +159,17 @@ public final class PlannerViewModel: ObservableObject {
     }
 
     /// Fetch teams, select the first, fetch its plans + first board.
+    /// One in-flight load is shared (launch-r2: sign-in/account/launch
+    /// paths fire together) — every waiter gets the same result.
     public func load() async {
+        if let flight = loadFlight { await flight.value; return }
+        let flight = Task<Void, Never> { await self.runLoad() }
+        loadFlight = flight
+        await flight.value
+        loadFlight = nil
+    }
+
+    private func runLoad() async {
         state = .loading
         boardError = nil
         let fetcher = teamsFetcher
@@ -176,7 +188,28 @@ public final class PlannerViewModel: ObservableObject {
                 return
             }
             if let id = selectedTeamID {
-                await loadPlans(teamID: id)
+                // Launch-r2: loadAllPlans just fetched this team's plans —
+                // adopt them instead of fetching the same list again
+                // (same clear/board flow as loadPlans, minus the fetch).
+                // Only refetch when that leg failed (retry).
+                if plansByTeam[id] != nil {
+                    boardLoading = true
+                    boardError = nil
+                    clearBoard(keepLoading: true)
+                    if id == selectedTeamID {
+                        plans = plansByTeam[id] ?? []
+                        selectedPlanID = plans.first?.planId
+                        if let planID = selectedPlanID {
+                            await loadBoard(planID: planID)
+                            return
+                        }
+                    }
+                    if id == selectedTeamID {
+                        boardLoading = false
+                    }
+                } else {
+                    await loadPlans(teamID: id)
+                }
             } else {
                 clearBoard()
             }

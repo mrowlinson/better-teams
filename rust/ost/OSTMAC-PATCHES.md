@@ -1874,6 +1874,19 @@ Notes:
     `pinned_items_add_remove_round_trip`, `pin_paths` URL case.
     UPSTREAM: PR https://github.com/eisbaw/ost/pull/117 (fix/pin-for-everyone, stacks on #91)
 
+103. [minor] `src/api/files.rs` — **caller-known team id skips the
+    channel→team scan (launch-r2)**. `list_chat_files_data_opts` and
+    `list_via_channel_folder` take `team: Option<&str>`; `Some`
+    (non-blank) uses it directly for the filesFolder path, `None`/blank
+    falls back to `find_team_for_channel` (one `joinedTeams` + one
+    channels call per team) so unknown shapes still resolve. Default
+    callers (`list_chat_files_data`, message-files, upload) pass `None`
+    — behavior unchanged. Each unified-Files channel leg was paying a
+    full team scan (~20 joinedTeams + ~180 channels per launch); Swift
+    already knows the team and now threads it through. Rust tests:
+    existing Fake suites cover the `None` path (signature-only change).
+    UPSTREAM: pending
+
 ## Upstream PRs, wave 9 (2026-09-25 R10 audit; base 0892144; origin/main still 0892144)
 
 No-file wave. `git diff 307d221..db62ed7 -- rust/ost` is empty (wave-8

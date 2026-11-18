@@ -1969,6 +1969,18 @@ pub fn files_json(chat_id: &str, limit: usize) -> String {
 /// `is_folder`, and folders drill in via [`files_children_json`].
 /// Returns `{ok:true, chat_id, files:[...]}`.
 pub fn files_json_opts(chat_id: &str, limit: usize, include_folders: bool) -> String {
+    files_json_opts_team(chat_id, limit, include_folders, None)
+}
+
+/// [`files_json_opts`] with a caller-known team id for channel ids:
+/// skips the channel→team scan (launch-r2). `None`/blank scans as
+/// before, so unknown shapes still resolve.
+pub fn files_json_opts_team(
+    chat_id: &str,
+    limit: usize,
+    include_folders: bool,
+    team: Option<&str>,
+) -> String {
     if chat_id.trim().is_empty() {
         return err_json("arg", "empty chat_id");
     }
@@ -1979,7 +1991,7 @@ pub fn files_json_opts(chat_id: &str, limit: usize, include_folders: bool) -> St
                 .await
                 .map_err(|e| format!("{:#}", e))?;
             let files =
-                ost::api::list_chat_files_data_opts(&client, chat_id, limit, include_folders)
+                ost::api::list_chat_files_data_opts(&client, chat_id, limit, include_folders, team)
                     .await
                     .map_err(|e| format!("{:#}", e))?;
             let items: Vec<_> = files.iter().map(shared_file_to_json).collect();
@@ -4068,6 +4080,27 @@ pub extern "C" fn ostmac_files_opts(
     let lim = if limit <= 0 { 20 } else { limit as usize };
     match cstr_to_string(chat_id) {
         Ok(id) => string_to_c(files_json_opts(&id, lim, include_folders != 0)),
+        Err(e) => string_to_c(err_json("arg", e)),
+    }
+}
+
+/// Shared files with a caller-known team id for channel ids (launch-r2:
+/// skips the channel→team scan). Null/empty `team_id` scans as before.
+/// Caller frees.
+#[no_mangle]
+pub extern "C" fn ostmac_files_opts_team(
+    chat_id: *const c_char,
+    limit: c_int,
+    include_folders: c_int,
+    team_id: *const c_char,
+) -> *mut c_char {
+    let lim = if limit <= 0 { 20 } else { limit as usize };
+    let team = opt_cstr_to_string(team_id)
+        .ok()
+        .flatten()
+        .filter(|s| !s.trim().is_empty());
+    match cstr_to_string(chat_id) {
+        Ok(id) => string_to_c(files_json_opts_team(&id, lim, include_folders != 0, team.as_deref())),
         Err(e) => string_to_c(err_json("arg", e)),
     }
 }

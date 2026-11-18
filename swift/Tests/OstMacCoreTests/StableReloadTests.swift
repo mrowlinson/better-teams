@@ -36,7 +36,7 @@ final class StableReloadTests: XCTestCase {
                               web_url: "https://w/chat-deck", drive_id: "D1",
                               modified: "2026-09-22T10:00:00Z", sender: "Tom Becker")
         let store = UnifiedFilesStore(
-            list: { id, _ in
+            list: { id, _, _ in
                 if flag.fail { throw CoreCallError.failed("files: boom") }
                 return SharedFilesResponse(ok: true, chat_id: id, files: [file])
             },

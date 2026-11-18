@@ -114,7 +114,42 @@ public enum CoreReads {
     }
 
     public static func teams() throws -> TeamsResponse {
-        try teams(ctx: production())
+        // Launch-r2: the launch fan-out (TeamsViewModel.load, planner
+        // teams, TeamsSync kicks) fires teams() back-to-back — one
+        // fetch, shared result, plus a short TTL for sequential
+        // repeats. TTL (10s) stays under the TeamsSync tick (15s), so
+        // every scheduled refresh still fetches fresh.
+        if let hit = freshTeamsCache() { return hit }
+        let resp = try teamsCoalescer.run(key: "teams") {
+            try teams(ctx: production())
+        }
+        storeTeamsCache(resp)
+        return resp
+    }
+
+    /// In-flight coalescer for the production teams fetch above.
+    private static let teamsCoalescer = SyncCoalescer<TeamsResponse>()
+
+    /// Launch-window cache for the production teams fetch above.
+    nonisolated static let teamsCacheTTL: TimeInterval = 10
+    private static let teamsCacheLock = NSLock()
+    private static var teamsCache: (at: Date, value: TeamsResponse)?
+
+    private static func freshTeamsCache() -> TeamsResponse? {
+        teamsCacheLock.lock(); defer { teamsCacheLock.unlock() }
+        guard let c = teamsCache, Date().timeIntervalSince(c.at) < teamsCacheTTL else { return nil }
+        return c.value
+    }
+
+    private static func storeTeamsCache(_ value: TeamsResponse) {
+        teamsCacheLock.lock(); defer { teamsCacheLock.unlock() }
+        teamsCache = (Date(), value)
+    }
+
+    /// Test seam: clear the production teams cache (test isolation).
+    static func teamsCacheClear() {
+        teamsCacheLock.lock(); defer { teamsCacheLock.unlock() }
+        teamsCache = nil
     }
 
     public static func meetings(limit: Int32 = 20) throws -> MeetingsResponse {
