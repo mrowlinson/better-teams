@@ -679,6 +679,7 @@ fn team_member_to_json(m: &ost::api::TeamMemberInfo) -> serde_json::Value {
         "email": m.email,
         "roles": m.roles,
         "is_owner": m.is_owner,
+        "user_type": m.user_type,
     })
 }
 
@@ -5118,6 +5119,7 @@ mod tests {
             email: Some("j@x.example".to_string()),
             roles: vec!["owner".to_string()],
             is_owner: true,
+            user_type: None,
         };
         let v = team_member_to_json(&m);
         assert_eq!(v["id"], "M1");
@@ -5137,6 +5139,7 @@ mod tests {
             email: None,
             roles: vec![],
             is_owner: false,
+            user_type: None,
         };
         let v = team_member_to_json(&m);
         assert!(v["user_id"].is_null());
@@ -6852,6 +6855,7 @@ mod tests {
             email: Some("ava@x".to_string()),
             roles: Vec::new(),
             is_owner: false,
+            user_type: Some("Guest".to_string()),
         };
         let v = team_member_to_json(&m);
         assert_eq!(v["id"], "u1");
@@ -6860,6 +6864,7 @@ mod tests {
         assert_eq!(v["email"], "ava@x");
         assert!(v["roles"].as_array().unwrap().is_empty());
         assert_eq!(v["is_owner"], false);
+        assert_eq!(v["user_type"], "Guest");
     }
 
     #[test]

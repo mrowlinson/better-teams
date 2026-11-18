@@ -472,6 +472,10 @@ public struct TeamMember: Decodable, Sendable, Identifiable, Equatable {
     public let email: String?
     public let roles: [String]
     public let isOwner: Bool
+    /// Graph `userType` (`Member`/`Guest`) or the federated `type`
+    /// (`Federated`/`SkypeConsumer`/…) from `externalsearchv3`. Nil for
+    /// roster rows and older wire (internal by default).
+    public let userType: String?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -479,16 +483,28 @@ public struct TeamMember: Decodable, Sendable, Identifiable, Equatable {
         case userId = "user_id"
         case email, roles
         case isOwner = "is_owner"
+        case userType = "user_type"
     }
 
     /// Host-side construction (demo data, previews). Wire decoding is untouched.
-    public init(id: String, displayName: String, userId: String? = nil, email: String? = nil, roles: [String] = [], isOwner: Bool = false) {
+    public init(id: String, displayName: String, userId: String? = nil, email: String? = nil, roles: [String] = [], isOwner: Bool = false, userType: String? = nil) {
         self.id = id
         self.displayName = displayName
         self.userId = userId
         self.email = email
         self.roles = roles
         self.isOwner = isOwner
+        self.userType = userType
+    }
+
+    /// True when the person is outside the tenant: any set `userType`
+    /// other than `Member` (Guest/Federated/SkypeConsumer/…).
+    /// Drives the New Chat "External" badge and the 1:1-only rule.
+    public var isExternal: Bool {
+        guard let t = userType?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !t.isEmpty
+        else { return false }
+        return t.caseInsensitiveCompare("Member") != .orderedSame
     }
 }
 

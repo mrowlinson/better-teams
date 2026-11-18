@@ -2602,21 +2602,43 @@ async fn aad_object_id(client: &TeamsClient, user: &str) -> Result<String> {
         .context("user id missing")
 }
 
+/// True when `user` is already a chat MRI (`8:...`, externchat:
+/// federated rows carry the verbatim MRI from `externalsearchv3`).
+pub fn is_chat_mri(user: &str) -> bool {
+    let u = user.trim();
+    u.len() > 2 && u.starts_with("8:")
+}
+
 /// OstMac §106: chat-service body creating the 1:1 thread for two AAD
 /// ids (pure). `uniquerosterthread` + `fixedRoster` make it the roster's
 /// one 1:1 (`19:<lo>_<hi>@unq.gbl.spaces`), never a group thread.
+/// Externchat: `peer` may be a full federated MRI (`8:...`, used
+/// verbatim); `me` stays `8:orgid:`. Federated members add
+/// `isFederated` (the AADInternals externals recipe).
 pub fn one_to_one_thread_body(me: &str, peer: &str) -> serde_json::Value {
+    let (peer_mri, federated) = if is_chat_mri(peer) {
+        (peer.trim().to_string(), true)
+    } else {
+        (
+            format!("8:orgid:{}", peer.trim().to_ascii_lowercase()),
+            false,
+        )
+    };
+    let mut properties = serde_json::json!({
+        "threadType": "chat",
+        "chatFilesIndexId": "2",
+        "fixedRoster": "true",
+        "uniquerosterthread": "true",
+    });
+    if federated {
+        properties["isFederated"] = serde_json::json!("true");
+    }
     serde_json::json!({
         "members": [
-            {"id": format!("8:orgid:{}", peer.trim().to_ascii_lowercase()), "role": "Admin"},
+            {"id": peer_mri, "role": "Admin"},
             {"id": format!("8:orgid:{}", me.trim().to_ascii_lowercase()), "role": "Admin"},
         ],
-        "properties": {
-            "threadType": "chat",
-            "chatFilesIndexId": "2",
-            "fixedRoster": "true",
-            "uniquerosterthread": "true",
-        },
+        "properties": properties,
     })
 }
 
@@ -2628,6 +2650,12 @@ pub fn one_to_one_thread_body(me: &str, peer: &str) -> serde_json::Value {
 /// Now: both AAD ids resolve to the derived thread id
 /// ([`one_to_one_thread_id`]); an existing thread re-opens; a first
 /// contact creates the unique-roster 1:1 on the chat service.
+///
+/// Externchat: `user` may be a federated MRI (`8:...`, verbatim from
+/// `externalsearchv3`): resolution is skipped, the probe derives from
+/// the MRI pair, and the create answers the server-assigned thread
+/// (federated ids are not derivable client-side, so the server is
+/// authoritative — unlike the strict internal check).
 pub async fn create_one_to_one_chat_data(
     client: &TeamsClient,
     user: &str,
@@ -2636,13 +2664,23 @@ pub async fn create_one_to_one_chat_data(
         bail!("empty user");
     }
     let me = aad_object_id(client, "me").await?;
-    let peer = aad_object_id(client, user).await?;
-    if me == peer {
+    let federated = is_chat_mri(user);
+    let peer = if federated {
+        user.trim().to_string()
+    } else {
+        aad_object_id(client, user).await?
+    };
+    if !federated && me == peer {
         bail!("1:1 with self (use the self-chat)");
     }
-    let derived = one_to_one_thread_id(&me, &peer);
+    let peer_key = peer
+        .strip_prefix("8:orgid:")
+        .map(str::to_string)
+        .unwrap_or_else(|| peer.clone());
+    let derived = one_to_one_thread_id(&me, &peer_key);
     let base = client.chat_service_url();
     let probe = format!("{}/v1/threads/{}?view=msnp24Equivalent", base, derived);
+    let mut thread_id = derived.clone();
     let missing = match client.chat_get(&probe).await {
         Ok(_) => false,
         Err(e) => format!("{:#}", e).starts_with("HTTP 404"),
@@ -2660,12 +2698,16 @@ pub async fn create_one_to_one_chat_data(
             .and_then(|l| l.rsplit('/').next())
             .map(|id| id.replace("%3A", ":").replace("%3a", ":").replace("%40", "@"))
             .unwrap_or_default();
-        if !made.is_empty() && made != derived {
+        if federated {
+            if !made.is_empty() {
+                thread_id = made;
+            }
+        } else if !made.is_empty() && made != derived {
             bail!("1:1 thread create answered an unexpected thread");
         }
     }
     Ok(ChatInfo {
-        id: derived,
+        id: thread_id,
         name: String::new(),
         is_group: false,
         last_message_time: None,
@@ -5490,6 +5532,46 @@ mod sendfix_tests {
         assert_eq!(one_to_one_thread_id(b, a), want);
         assert!(looks_like_guid(b));
         assert!(!looks_like_guid("someone@example.org"));
+    }
+
+    #[test]
+    fn externchat_mri_gate_matches_8_prefix_only() {
+        assert!(is_chat_mri("8:orgid:87da1b0b-e2a5-4964-9fcc-70bf0a186fe0"));
+        assert!(is_chat_mri("8:live:megan.bowen"));
+        assert!(!is_chat_mri("87da1b0b-e2a5-4964-9fcc-70bf0a186fe0"));
+        assert!(!is_chat_mri("freddiem@snoopcore.com"));
+        assert!(!is_chat_mri(""));
+        assert!(!is_chat_mri("8:"));
+    }
+
+    #[test]
+    fn externchat_federated_thread_body_uses_verbatim_mri() {
+        let b = one_to_one_thread_body(
+            "me-oid",
+            "8:orgid:87da1b0b-e2a5-4964-9fcc-70bf0a186fe0",
+        );
+        assert_eq!(
+            b.pointer("/members/0/id").and_then(|v| v.as_str()),
+            Some("8:orgid:87da1b0b-e2a5-4964-9fcc-70bf0a186fe0")
+        );
+        assert_eq!(
+            b.pointer("/members/1/id").and_then(|v| v.as_str()),
+            Some("8:orgid:me-oid")
+        );
+        assert_eq!(
+            b.pointer("/properties/isFederated").and_then(|v| v.as_str()),
+            Some("true")
+        );
+    }
+
+    #[test]
+    fn externchat_internal_thread_body_is_unchanged() {
+        let b = one_to_one_thread_body("me-oid", "peer-oid");
+        assert_eq!(
+            b.pointer("/members/0/id").and_then(|v| v.as_str()),
+            Some("8:orgid:peer-oid")
+        );
+        assert!(b.pointer("/properties/isFederated").is_none());
     }
 
     #[test]

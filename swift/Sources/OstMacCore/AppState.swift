@@ -2264,6 +2264,12 @@ public final class AppState: ObservableObject {
             openSearchPerson(person)
             return true
         }
+        // Externchat: outside accounts are 1:1-only (federated group
+        // create is out of scope — the core 1:1 path carries the MRI).
+        if people.contains(where: { $0.isExternal }) {
+            newChatError = "External contacts can only be messaged 1:1."
+            return false
+        }
         let name = cleanTopic ?? GroupChat.defaultName(for: people)
         if isDemo {
             jump(chatID: GroupChat.demoChatID(refs: refs, topic: cleanTopic), chatName: name)

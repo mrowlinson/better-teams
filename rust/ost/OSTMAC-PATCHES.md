@@ -1788,6 +1788,7 @@ Notes:
     each, no retry), `reauth_required_predicate`,
     `profile_lock_serializes_across_processes` (4 real child processes,
     counter 4/4, no lost updates) + `lock_child_entry` no-op.
+
     UPSTREAM: PR https://github.com/eisbaw/ost/pull/113 (fix/refresh-single-flight, stacks on #50)
 
 99. [feature] `src/api/chat.rs` — **composer markdown → Teams HTML
@@ -1886,6 +1887,32 @@ Notes:
     already knows the team and now threads it through. Rust tests:
     existing Fake suites cover the `None` path (signature-only change).
     UPSTREAM: PR https://github.com/eisbaw/ost/pull/118 (fix/channel-known-team-id, stacks on #95)
+
+104. [feat] `src/api/filesearch.rs`, `src/api/chat.rs`, `src/api/teams.rs` —
+    federated (external) people lookup + 1:1 create by federated MRI
+    (externchat lane, renumbered 97 -> 99 on merge with main 0fbced35,
+    99 -> 104 on merge with main 49c2d179).
+    `people_search_path` `$select` gains `userType`
+    (guests badge); new `people_mail_path` (`$filter=mail eq`, exact
+    address hits guests by mail) and `external_search_path` + parse +
+    `search_external_data` (`GET {mt}/beta/users/{email}/
+    externalsearchv3?includeTFLUsers=true`, the Teams web client's own
+    external-resolution endpoint; Bearer AAD + X-Skypetoken via `mt_get`;
+    404 = unknown/blocked, never fatal). `search_people_data` appends
+    both best-effort lookups behind the directory window when the query
+    looks like a complete email (`looks_like_email`), merged by
+    `merge_people` (user-ref-first dedupe; federated MRIs never collide
+    with directory ids). External rows carry the verbatim chat MRI
+    (`8:orgid:`/`8:live:`/`8:sfb:`) as `user_id` and the `type` as
+    `user_type` (`TeamMemberInfo.user_type`, roster rows `None`).
+    `create_one_to_one_chat_data` accepts a full `8:` MRI (`is_chat_mri`):
+    skips Graph resolution, uses it verbatim in `one_to_one_thread_body`
+    (+ `isFederated: "true"` property per the AADInternals externals
+    recipe), probes the derived id, and takes the server-assigned thread
+    on create (federated ids are not derivable client-side; the strict
+    internal check is unchanged). Tests: filesearch path/gate/parse/
+    merge (10 new), `externchat_*` thread-body/MRI-gate (3 new).
+    UPSTREAM: pending
 
 ## Upstream PRs, wave 9 (2026-09-25 R10 audit; base 0892144; origin/main still 0892144)
 

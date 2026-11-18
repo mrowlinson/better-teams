@@ -529,6 +529,8 @@ struct Member {
 /// One team roster entry. `id` is the membership id (the DELETE
 /// target), NOT the user id. Owners are members whose `roles`
 /// contains `"owner"`; `is_owner` pins that rule in one place.
+/// `user_type` is the Graph `userType` (`Member`/`Guest`, externchat:
+/// badges + federated create); roster rows leave it `None`.
 pub struct TeamMemberInfo {
     pub id: String,
     pub display_name: String,
@@ -536,6 +538,7 @@ pub struct TeamMemberInfo {
     pub email: Option<String>,
     pub roles: Vec<String>,
     pub is_owner: bool,
+    pub user_type: Option<String>,
 }
 
 /// `GET/POST /teams/{id}/members` path. Pure so tests pin it.
@@ -576,6 +579,7 @@ fn member_info(m: Member) -> TeamMemberInfo {
         email: m.email,
         roles: m.roles,
         is_owner,
+        user_type: None,
     }
 }
 

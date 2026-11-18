@@ -401,6 +401,6 @@ Incomplete or not started yet ("in progress" = being worked on now):
 - **Calling:** Teams Phone (dial pad, voicemail, forwarding, delegates) — parked: no Teams Phone licence on this tenant
 - **Calendar:** lobby/presenter meeting options (blocked: needs OnlineMeetings scope), month-view overlay (open); channel meetings, event-level options and week/day/list overlay shipped
 - **Chats and teams:** Teams saved-messages sync, thread mute, full notification-rules matrix (all three parked — no server surface found); private/shared channels, archiving, moderation, team privacy switch
-- **External (federated) chat:** written, awaiting live proof — blocked: tenant has external access disabled
+- **External (federated) chat:** shipped, live proof blocked: tenant has external access disabled
 - **On hold:** Praise, Polls, Loop components, webinars, breakout rooms, whiteboard, Copilot, Share-to-Outlook
 - **Live proof:** multi-person meetings not yet verified end to end (solo and organizer paths only so far)

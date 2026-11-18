@@ -98,7 +98,7 @@ pub use chat::{
 };
 // OstMac §106 (SENDFIX): idempotent sends + verify-by-clientmessageid.
 pub use chat::{
-    find_by_client_id, find_message_by_client_id, new_client_message_id,
+    find_by_client_id, find_message_by_client_id, is_chat_mri, new_client_message_id,
     one_to_one_thread_body, one_to_one_thread_id,
     reply_message_with_client_id, send_message_with_client_id, sent_id_from_response,
     thread_reply_with_client_id, SentMessage,
@@ -139,9 +139,10 @@ pub use calweek::{
     schedule_event_body, schedule_meeting_data, validate_schedule,
 };
 pub use filesearch::{
-    clamp_limit, drive_search_path, parse_drive_search_response,
-    parse_people_search_response, people_search_path, search_files_data,
-    search_people_data, FIND_MAX_LIMIT,
+    clamp_limit, drive_search_path, external_search_path, looks_like_email,
+    merge_people, parse_drive_search_response, parse_external_search_response,
+    parse_people_search_response, people_mail_path, people_search_path,
+    search_external_data, search_files_data, search_people_data, FIND_MAX_LIMIT,
 };
 pub use files::{
     content_range_value, copy_body, copy_file_data, create_folder_data, create_link_data,

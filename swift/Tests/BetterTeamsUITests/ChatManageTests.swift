@@ -55,7 +55,7 @@ final class ChatManageTests: XCTestCase {
         let members = DemoChatRoster.members(for: DemoData.standupID)
         let directory = DemoData.peopleSearchResponse(for: "").people
         XCTAssertEqual(ChatManageRule.addable(directory, members: members).map(\.displayName),
-                       ["Daniel Brooks", "Olivia Carter"])
+                       ["Daniel Brooks", "Olivia Carter", "Priya Nair"])
         // MRI-only and email-only matches hide too; strangers stay.
         let byMRI = ChatMember(mri: "8:orgid:AAAA-1", userId: nil, displayName: "", email: nil)
         let byMail = ChatMember(mri: "8:orgid:bbbb-2", userId: nil, displayName: "", email: "Pat@Example.com")

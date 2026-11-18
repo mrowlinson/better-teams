@@ -352,6 +352,10 @@ public enum DemoData {
             UserPresenceResponse(
                 ok: true, id: "demo-u-olivia", availability: "DoNotDisturb",
                 activity: "Presenting"),
+            // Externchat demo external (federated MRI id, like search rows).
+            UserPresenceResponse(
+                ok: true, id: "8:orgid:federated-oid-priya", availability: "Available",
+                activity: "Available"),
         ]
     }
 
@@ -702,6 +706,10 @@ public enum DemoData {
         // Not in the demo group chats, so Add People has someone to add.
         TeamMember(id: "demo-u-daniel", displayName: "Daniel Brooks", userId: "demo-u-daniel", email: "daniel@example.com"),
         TeamMember(id: "demo-u-olivia", displayName: "Olivia Carter", userId: "demo-u-olivia", email: "olivia@example.com"),
+        // Externchat: federated-style outside account (verbatim MRI ref,
+        // like `externalsearchv3` rows) so the External badge has demo
+        // coverage. Last on purpose: speed dial takes the first two.
+        TeamMember(id: "federated-oid-priya", displayName: "Priya Nair", userId: "8:orgid:federated-oid-priya", email: "priya@partner.example", userType: "Federated"),
     ]
 
     /// Canned version history for `--demo` file pop-outs (gap-g8).

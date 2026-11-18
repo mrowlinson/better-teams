@@ -20,6 +20,7 @@ enum NativeControlsScanner {
     static let capsuleAllowlist: [(suffix: String, reason: String)] = [
         ("Sections/Calendar/CalendarWeekGrid.swift", "today marker behind the day number (Apple Calendar style)"),
         ("Sections/Calendar/CalendarMonthGrid.swift", "today marker behind the day number (Apple Calendar style)"),
+        ("Sections/Chat/NewChatSheet.swift", "External contact badge (content marker; Q-EXTERNCHAT-GUARD Recommended: approve)"),
     ]
     static let bannedIdentifiers = ["TabStrip", "UnderlineTab", "ChatTabItem"]
     static let noBrandChromeFiles = ["Conversation/ChatTabs.swift", "Shared/ContactCardViews.swift"]

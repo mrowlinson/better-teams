@@ -139,6 +139,21 @@ struct NewChatSheet: View {
     }
 }
 
+/// "External" marker for directory rows and To: chips (externchat):
+/// system caption in a quaternary capsule — native materials, no
+/// custom colors. VoiceOver reads "External contact".
+struct ExternalBadge: View {
+    var body: some View {
+        Text("External")
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 1)
+            .background(.quaternary, in: Capsule())
+            .accessibilityLabel("External contact")
+    }
+}
+
 /// "To:" line: the picked people, each removable (also New Call).
 struct PickedPeople: View {
     @Binding var people: [TeamMember]
@@ -152,9 +167,14 @@ struct PickedPeople: View {
                         Button {
                             people.removeAll { $0.id == p.id }
                         } label: {
-                            Label(p.displayName, systemImage: "xmark.circle.fill")
-                                .labelStyle(TrailingIconLabel())
-                                .contactHover(ContactRef(p), arrowEdge: .bottom)
+                            HStack(spacing: 4) {
+                                Label(p.displayName, systemImage: "xmark.circle.fill")
+                                    .labelStyle(TrailingIconLabel())
+                                if p.isExternal {
+                                    ExternalBadge()
+                                }
+                            }
+                            .contactHover(ContactRef(p), arrowEdge: .bottom)
                         }
                         .buttonStyle(.bordered)
                         .controlSize(.small)
@@ -202,7 +222,12 @@ struct DirectoryResults: View {
                         HStack(spacing: 8) {
                             Avatar(name: p.displayName, person: ContactRef(p))
                             VStack(alignment: .leading, spacing: 0) {
-                                Text(p.displayName)
+                                HStack(spacing: 6) {
+                                    Text(p.displayName)
+                                    if p.isExternal {
+                                        ExternalBadge()
+                                    }
+                                }
                                 if let email = p.email, !email.isEmpty {
                                     Text(email).font(.caption).foregroundStyle(.secondary)
                                 }
