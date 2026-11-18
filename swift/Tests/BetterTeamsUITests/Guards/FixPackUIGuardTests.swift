@@ -1,6 +1,8 @@
 // FixPackUIGuardTests — filter stack (TRIAGE D5): chat type filters,
-// channel/meeting filters as in-list native pull-downs. Logic-level
-// (what each control is bound to); nothing is shown on screen.
+// channel/meeting filters as in-list native pull-downs; channel sheets
+// (TRIAGE D6): Manage Channel sheet + Workflows store (demo acts, live
+// unavailable). Logic-level (what each control is bound to); nothing is
+// shown on screen.
 import XCTest
 
 import OstMacCore
@@ -137,5 +139,102 @@ final class FixPackUIGuardTests: XCTestCase {
         prefs.setHidden(a, true)
         XCTAssertFalse(ids(.muted).contains(a))
         XCTAssertFalse(ids(.unread).contains(a))
+    }
+
+    func testWorkflowsSourceIsDemoFakeOrUnavailableByMode() {
+        let demo = DemoWorkflowsAPI()
+        XCTAssertTrue(TeamsSection.workflowsAPI(demo: true, demoAPI: demo) as AnyObject === demo)
+        XCTAssertTrue(TeamsSection.workflowsAPI(demo: false, demoAPI: demo) is UnavailableWorkflowsAPI)
+    }
+
+    // MARK: Sheets: Manage Channel (what the sheet is bound to, not the team roster)
+
+    func testManageChannelOpensItsOwnSheetNotTheTeamRoster() async throws {
+        let (app, model, nav) = GuardSupport.demoModel()
+        defer { withExtendedLifetime(nav) {} }
+        await app.teams.load()
+        let team = try XCTUnwrap(app.teams.teams.first { !$0.channels.isEmpty })
+        let ch = try XCTUnwrap(team.channels.first)
+        let teams = try XCTUnwrap(model.provider(.teams) as? TeamsSection)
+        let before = model.nav.selection(in: .teams)
+        XCTAssertTrue(teams.perform(TeamsCommands.manageChannel, arg: ch.channelId, model))
+        XCTAssertEqual(model.nav.selection(in: .teams), before, "no roster navigation any more")
+        XCTAssertNotNil(teams.sheet(SheetRequest(TeamsCommands.manageChannelSheet, in: .teams, arg: ch.channelId), model))
+        // Control: an unknown channel is refused.
+        XCTAssertFalse(teams.perform(TeamsCommands.manageChannel, arg: "nope", model))
+        XCTAssertEqual(ManageChannelInfo.typeTitle("private"), "Private")
+        XCTAssertEqual(ManageChannelInfo.typeTitle(nil), "Standard")
+        XCTAssertEqual(ManageChannelInfo.audience("shared"), "Selected people and teams")
+    }
+
+    // MARK: Sheets: channel Workflows (demo acts, live unavailable, never writes)
+
+    func testWorkflowsSheetOpensForADemoChannel() async throws {
+        let (app, model, nav) = GuardSupport.demoModel()
+        defer { withExtendedLifetime(nav) {} }
+        await app.teams.load()
+        let team = try XCTUnwrap(app.teams.teams.first { !$0.channels.isEmpty })
+        let ch = try XCTUnwrap(team.channels.first)
+        let teams = try XCTUnwrap(model.provider(.teams) as? TeamsSection)
+        XCTAssertTrue(teams.perform(TeamsCommands.channelWorkflows, arg: ch.channelId, model))
+        XCTAssertNotNil(teams.sheet(SheetRequest(TeamsCommands.channelWorkflowsSheet, in: .teams, arg: ch.channelId), model))
+    }
+
+    func testDemoWorkflowsListAddToggleRun() async throws {
+        let store = ChannelWorkflowsStore(api: DemoWorkflowsAPI(now: { Date(timeIntervalSince1970: 5_000) }),
+                                          teamID: "t", channelID: "c")
+        await store.load()
+        XCTAssertEqual(store.state, .loaded)
+        XCTAssertEqual(store.workflows.count, 2)
+        XCTAssertEqual(store.templates.count, DemoWorkflowsAPI.catalog.count)
+        await store.add(store.templates[0])
+        XCTAssertEqual(store.workflows.count, 3)
+        let off = try XCTUnwrap(store.workflows.first { !$0.isEnabled })
+        await store.setEnabled(true, off.id)
+        XCTAssertTrue(try XCTUnwrap(store.workflows.first { $0.id == off.id }).isEnabled)
+        await store.run(off.id)
+        let ran = try XCTUnwrap(store.workflows.first { $0.id == off.id })
+        XCTAssertEqual(ran.lastRun, Date(timeIntervalSince1970: 5_000))
+        XCTAssertEqual(ran.lastRunSucceeded, true)
+        XCTAssertNil(store.actionError)
+        XCTAssertTrue(store.busy.isEmpty)
+    }
+
+    func testFailedRunShowsErrorAndRecordsTheAttempt() async throws {
+        let api = DemoWorkflowsAPI()
+        let store = ChannelWorkflowsStore(api: api, teamID: "t", channelID: "c")
+        await store.load()
+        let id = try XCTUnwrap(store.workflows.first).id
+        await api.failNextRunOnce()
+        await store.run(id)
+        XCTAssertNotNil(store.actionError)
+        XCTAssertEqual(store.workflows.first { $0.id == id }?.lastRunSucceeded, false)
+        XCTAssertEqual(store.state, .loaded, "the list stays")
+        await store.run(id)
+        XCTAssertNil(store.actionError, "a later success clears it")
+    }
+
+    /// Live sign-ins: Workflows say they are unavailable and do nothing;
+    /// every call (reads and writes) throws, so no live write can happen.
+    func testLiveSourceIsUnavailableAndNeverWrites() async {
+        let api = UnavailableWorkflowsAPI()
+        let store = ChannelWorkflowsStore(api: api, teamID: "t", channelID: "c")
+        await store.load()
+        XCTAssertEqual(store.state, .unsupported(UnavailableWorkflowsAPI.reason))
+        XCTAssertFalse(store.isSupported)
+        XCTAssertTrue(store.workflows.isEmpty)
+        let t = WorkflowTemplate(id: "x", name: "x", trigger: "x")
+        await assertUnsupported { _ = try await api.add(template: t, teamID: "t", channelID: "c") }
+        await assertUnsupported { _ = try await api.setEnabled(true, workflowID: "w") }
+        await assertUnsupported { _ = try await api.run(workflowID: "w") }
+        // Control: the demo source does not throw.
+        let ok = try? await DemoWorkflowsAPI().list(teamID: "t", channelID: "c")
+        XCTAssertEqual(ok?.count, 2)
+    }
+
+    private func assertUnsupported(_ op: () async throws -> Void, line: UInt = #line) async {
+        do { try await op(); XCTFail("expected unsupported", line: line) } catch {
+            XCTAssertEqual(error as? ChannelWorkflowsError, .unsupported(UnavailableWorkflowsAPI.reason), line: line)
+        }
     }
 }

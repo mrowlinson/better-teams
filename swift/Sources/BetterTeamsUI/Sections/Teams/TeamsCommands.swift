@@ -34,6 +34,8 @@ public enum TeamsCommands {
     public static let createChannelSheet = "createChannel"
     public static let addMemberSheet = "addMember"
     public static let editChannelSheet = "editChannel"
+    public static let manageChannelSheet = "manageChannel"
+    public static let channelWorkflowsSheet = "channelWorkflows"
 
     @MainActor
     public static let all: [Command] = [

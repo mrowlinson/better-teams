@@ -219,8 +219,35 @@ final class TeamsSection: SectionProvider, InspectorCapable {
         case TeamsCommands.editChannelSheet:
             guard let id = r.arg ?? current(m)?.channelID else { return nil }
             return AnyView(EditChannelSheet(teams: app.teams, channelID: id))
+        case TeamsCommands.manageChannelSheet:
+            guard let id = r.arg ?? current(m)?.channelID else { return nil }
+            return AnyView(ManageChannelSheet(teams: app.teams, prefs: prefs(m),
+                                              folders: m.graph.chats.folders, channelID: id))
+        case TeamsCommands.channelWorkflowsSheet:
+            guard let id = r.arg ?? current(m)?.channelID else { return nil }
+            // Demo: an in-memory fake that acts. Live: says Workflows
+            // aren't reachable (no Power Automate access); never writes.
+            // Evidence (demo routes): `&workflows=unsupported` forces the
+            // live unavailable pane for captures without a sign-in.
+            // The team resolves lazily in the view: `?sheet=` presents
+            // before demo teams load, and the store keys by channel.
+            let forceUnsupported = m.options.demo
+                && m.options.route.flatMap(Route.init(string:))?.query["workflows"] == "unsupported"
+            let api: ChannelWorkflowsAPI = forceUnsupported ? UnavailableWorkflowsAPI()
+                : Self.workflowsAPI(demo: m.options.demo, demoAPI: demoWorkflows)
+            let teamID = TeamsListPane.locate(id, in: app.teams.teams)?.0.teamId ?? ""
+            return AnyView(ChannelWorkflowsSheet(
+                store: ChannelWorkflowsStore(api: api, teamID: teamID, channelID: id),
+                teams: app.teams, channelID: id))
         default: return nil
         }
+    }
+
+    /// One fake per section, so demo edits persist between openings.
+    private let demoWorkflows = DemoWorkflowsAPI()
+
+    static func workflowsAPI(demo: Bool, demoAPI: DemoWorkflowsAPI) -> ChannelWorkflowsAPI {
+        demo ? demoAPI : UnavailableWorkflowsAPI()
     }
 
     // MARK: commands
@@ -286,10 +313,9 @@ final class TeamsSection: SectionProvider, InspectorCapable {
             guard let ch = channelTarget(arg, m) else { return false }
             prefs(m).setHidden(ch, !prefs(m).isHidden(ch))
         case TeamsCommands.manageChannel:
-            // Standard channels share the team roster: open it.
             guard let ch = channelTarget(arg, m),
-                  let (team, _) = TeamsListPane.locate(ch, in: app.teams.teams) else { return false }
-            return perform(TeamsCommands.manageMembers, arg: team.teamId, m)
+                  TeamsListPane.locate(ch, in: app.teams.teams) != nil else { return false }
+            m.presentSheet(SheetRequest(TeamsCommands.manageChannelSheet, in: .teams, arg: ch))
         case TeamsCommands.channelEmail:
             guard let ch = channelTarget(arg, m),
                   let email = TeamsListPane.locate(ch, in: app.teams.teams)?.1.email, !email.isEmpty else {
@@ -322,9 +348,10 @@ final class TeamsSection: SectionProvider, InspectorCapable {
                   let ch = channelTarget(parts.count > 1 ? parts[1] : nil, m) else { return false }
             m.graph.chats.folders.assign(chatID: ch, folderID: target == "none" ? nil : target)
         case TeamsCommands.channelWorkflows:
-            guard channelTarget(arg, m) != nil else { return false }
-            // Teams' Workflows are Power Automate flows; that site is the entry.
-            if !m.options.demo, let url = Self.workflowsURL { TeamsLinkRouter.open(url) }
+            guard let ch = channelTarget(arg, m), TeamsListPane.locate(ch, in: app.teams.teams) != nil else {
+                return false
+            }
+            m.presentSheet(SheetRequest(TeamsCommands.channelWorkflowsSheet, in: .teams, arg: ch))
         case TeamsCommands.hideTeam:
             guard let team = teamTarget(arg, m) else { return false }
             prefs(m).setHidden(team, !prefs(m).isHidden(team))
