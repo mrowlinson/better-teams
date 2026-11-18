@@ -176,7 +176,9 @@ struct RefreshStatus: ViewModifier {
                                 .foregroundStyle(.secondary)
                         }
                         .buttonStyle(.borderless)
-                        .help("Couldn\u{2019}t refresh: \(failure)")
+                        // AUTH-UX: an expired session reads as the short
+                        // prompt here too, never the raw core string.
+                        .help(ReauthPrompt.isReauth(failure) ? ReauthPrompt.message : "Couldn\u{2019}t refresh: \(failure)")
                         .accessibilityLabel("Couldn\u{2019}t Refresh")
                     }
                 }
@@ -208,8 +210,21 @@ struct ErrorPane: View {
     let retry: () -> Void
 
     var body: some View {
-        EmptyPane(title, systemImage: "exclamationmark.triangle", message: message) {
-            Button("Try Again", action: retry)
+        if ReauthPrompt.isReauth(message) {
+            // Expired session (AUTH-UX): a clean prompt, never the raw
+            // core string — IdP codes, trace IDs, and CLI commands stay
+            // in the logs. Sign In Again opens the app's sign-in sheet;
+            // Try Again is retained for after signing in elsewhere.
+            EmptyPane(title, systemImage: "exclamationmark.triangle", message: ReauthPrompt.message) {
+                Button(ReauthPrompt.signInTitle) {
+                    NotificationCenter.default.post(name: .showSignIn, object: nil)
+                }
+                Button(ReauthPrompt.retryTitle, action: retry)
+            }
+        } else {
+            EmptyPane(title, systemImage: "exclamationmark.triangle", message: message) {
+                Button("Try Again", action: retry)
+            }
         }
     }
 }

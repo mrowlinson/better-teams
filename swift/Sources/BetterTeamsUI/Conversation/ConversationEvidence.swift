@@ -1,7 +1,7 @@
 // ConversationEvidence.swift — demo-only evidence states for the
 // conversation (UI-SPEC §11.3 `state=`-style modifiers, P2a):
 //
-//   chat/<id>?conv=error|loading
+//   chat/<id>?conv=error|loading|reauth
 //   chat/<id>?seed=reply,edit,attach,typing,pending,scheduled,delete,pins,rich
 //   chat/<id>?jump=pinned            (after seed=pins: jump to the first pin)
 //
@@ -33,6 +33,17 @@ enum ConversationEvidence {
             ? "Showing saved content." : "The server didn't respond. Check your connection and try again.")
     }
 
+    /// AUTH-UX: seeds the expired-session error in its fixed
+    /// single-wrap shape (what the core reports after the R2 unwrap:
+    /// lowercase display, one "session expired"), so captures show the
+    /// clean sign-in prompt instead of raw protocol text.
+    private static func seedReauth(_ m: WindowModel) {
+        m.graph.conv.seedDemoError(
+            "failed(\"messages: stored session expired (refresh token "
+            + "rejected: AADSTS70043 ... Trace ID ... Correlation ID ...); "
+            + "run `teams-cli login` to sign in again.\")")
+    }
+
     /// After startup (the list loaded and the demo chat re-opened, which
     /// clears a seeded error): list row, error, and pinned jump.
     static func afterStartup(_ m: WindowModel) {
@@ -45,7 +56,10 @@ enum ConversationEvidence {
             m.app?.presence.adoptChatPeer(chatID: id, response: UserPresenceResponse(
                 ok: true, id: "demo-u-piper", availability: "Available", activity: "Available"))
         }
-        if route.query["conv"] == "error", conv.chatID == id, conv.error == nil { seedError(m) }
+        if conv.chatID == id, conv.error == nil {
+            if route.query["conv"] == "reauth" { seedReauth(m) }
+            else if route.query["conv"] == "error" { seedError(m) }
+        }
         if route.query["jump"] == "pinned",
            let pin = m.graph.pinnedMessages.rows(for: id, messages: conv.messages).first(where: \.isAvailable) {
             conv.seek(messageID: pin.messageID)
@@ -58,6 +72,7 @@ enum ConversationEvidence {
         let services = ConversationServices.of(m)
         switch route.query["conv"] {
         case "error": seedError(m)
+        case "reauth": seedReauth(m)
         case "loading":
             conv.close()
         default: break

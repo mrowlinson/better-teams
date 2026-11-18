@@ -1915,6 +1915,19 @@ Notes:
     merge (10 new), `externchat_*` thread-body/MRI-gate (3 new).
     UPSTREAM: pending
 
+105. [minor] `src/api/client.rs` — **reauth branch propagates the typed
+    error unwrapped (AUTH-UX)**. `TeamsClient::new_for_profile`'s
+    `is_reauth_required` arm added its own `Stored session expired`
+    prefix around `ReauthRequired`, whose display already says "stored
+    session expired" — the doubled wrap that reached app screens as
+    `failed("messages: Stored session expired (stored session expired
+    ...")`. The arm now returns the error unchanged (fail fast, no
+    retry, unchanged): the typed marker and `is_reauth_required`
+    semantics for callers are intact, and the surfaced string carries
+    the session-expired sentence exactly once. Tests:
+    `api::client::tests::reauth_branch_surfaces_single_wrap`.
+    UPSTREAM: PR https://github.com/eisbaw/ost/pull/119 (fix/reauth-single-wrap, stacks on #115)
+
 ## Upstream PRs, wave 9 (2026-09-25 R10 audit; base 0892144; origin/main still 0892144)
 
 No-file wave. `git diff 307d221..db62ed7 -- rust/ost` is empty (wave-8

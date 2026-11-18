@@ -316,6 +316,12 @@ public final class ShellWindowController: NSWindowController, NSWindowDelegate, 
         app.$signedIn
             .sink { [weak self] signed in self?.signedInChanged(signed) }
             .store(in: &cancellables)
+        // AUTH-UX: error panes post this when their Sign In Again
+        // button fires; present the existing sign-in sheet (device-code
+        // flow). A sheet already up refuses and logs (SheetPresenter).
+        NotificationCenter.default.publisher(for: .showSignIn)
+            .sink { [weak self] _ in self?.presentSignInSheet() }
+            .store(in: &cancellables)
     }
 
     /// Activity badge dwell (owner 09-30): viewing Activity (selected,
