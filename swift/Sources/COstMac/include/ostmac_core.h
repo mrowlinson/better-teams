@@ -517,6 +517,60 @@ char *ostmac_planner_reopen(const char *task_id, const char *etag);
 char *ostmac_planner_assign(const char *task_id, const char *etag,
                             const char *user_id, int assign);
 
+// Planner depth: set (on!=0) or clear one label 1-6 on a task: {ok,task}.
+// Caller frees.
+char *ostmac_planner_labels(const char *task_id, const char *etag,
+                            int category, int on);
+
+// Planner depth: rename plan labels from a {"1":"Red"} object string:
+// {ok,plan}. Caller frees.
+char *ostmac_planner_plan_categories(const char *plan_id,
+                                     const char *names_json);
+
+// Planner depth: one task's details:
+// {ok,task_id,details:{etag,description,preview?,checklist:[{id,title,
+// checked}],references:[{url,alias}]}}. Caller frees.
+char *ostmac_planner_details(const char *task_id);
+
+// Planner depth: add/update (remove==0) or remove one checklist item
+// (empty item_id creates): {ok}. Caller frees.
+char *ostmac_planner_checklist(const char *task_id, const char *etag,
+                               const char *item_id, const char *title,
+                               int checked, int remove);
+
+// Planner depth: set a task's description: {ok}. Caller frees.
+char *ostmac_planner_description(const char *task_id, const char *etag,
+                                 const char *description);
+
+// Planner depth: attach (attach!=0) or detach one URL reference: {ok}.
+// Caller frees.
+char *ostmac_planner_reference(const char *task_id, const char *etag,
+                                const char *url, const char *alias,
+                                int attach);
+
+// Planner depth: delete one task (If-Match etag): {ok}. Caller frees.
+char *ostmac_planner_task_delete(const char *task_id, const char *etag);
+
+// Planner depth: create one plan under a group (team): {ok,plan}.
+// Caller frees.
+char *ostmac_planner_plan_create(const char *group_id, const char *title);
+
+// Planner depth: delete one plan: {ok}. Caller frees.
+char *ostmac_planner_plan_delete(const char *plan_id);
+
+// Planner depth: create one bucket in a plan: {ok,bucket}. Caller frees.
+char *ostmac_planner_bucket_create(const char *plan_id, const char *name);
+
+// Planner depth: post one Planner comment (group thread reply): {ok}.
+// Caller frees.
+char *ostmac_planner_comment(const char *group_id, const char *thread_id,
+                             const char *text);
+
+// Planner depth: read a plan thread's posts (Planner comments):
+// {ok,group_id,thread_id,posts:[{id,kind?,content,received?}]}.
+// Caller frees.
+char *ostmac_planner_comments(const char *group_id, const char *thread_id);
+
 // NOTE (R14 om-later-b4 B4): meetings/presence moved to Swift
 // (CoreReads); decls deleted.
 // NOTE (R12 ffi-move-now B1): meeting_join_parse moved to Swift

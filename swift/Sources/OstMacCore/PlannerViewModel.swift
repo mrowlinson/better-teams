@@ -65,6 +65,28 @@ public final class PlannerViewModel: ObservableObject {
     /// Team whose roster `members` holds.
     private var membersTeamID: String?
 
+    /// Board / Charts / Schedule selection (depth views; board default).
+    @Published public var boardView: PlannerBoardView = .board
+    /// Task details by task id (depth inspector; empty until loaded).
+    @Published public private(set) var detailsByTask: [String: PlannerTaskDetails] = [:]
+    /// Comments by thread id (depth inspector; empty until loaded).
+    @Published public private(set) var commentsByThread: [String: [PlannerComment]] = [:]
+
+    /// Depth fetchers (labels, details, comments, delete task,
+    /// create/delete plan). Nil when the host does not wire them.
+    private let depthLabelsFetcher: LabelsFetcher?
+    private let depthRenameFetcher: RenameFetcher?
+    private let depthDetailsFetcher: DetailsFetcher?
+    private let depthChecklistFetcher: ChecklistFetcher?
+    private let depthDescriptionFetcher: DescriptionFetcher?
+    private let depthReferenceFetcher: ReferenceFetcher?
+    private let depthDeleteTaskFetcher: DeleteTaskFetcher?
+    private let depthCreatePlanFetcher: CreatePlanFetcher?
+    private let depthDeletePlanFetcher: DeletePlanFetcher?
+    private let depthCreateBucketFetcher: CreateBucketFetcher?
+    private let depthCommentFetcher: CommentFetcher?
+    private let depthCommentsFetcher: CommentsFetcher?
+
     private let teamsFetcher: TeamsFetcher
     private let plansFetcher: PlansFetcher
     private let bucketsFetcher: BucketsFetcher
@@ -90,7 +112,25 @@ public final class PlannerViewModel: ObservableObject {
             try PlannerCore.assign(taskID: $0, etag: $1, userID: $2, assign: $3)
         },
         membersFetcher: MembersFetcher? = nil,
-        localEdits: Bool = false
+        localEdits: Bool = false,
+        labelsFetcher: LabelsFetcher? = { try PlannerCore.labels(taskID: $0, etag: $1, category: $2, on: $3) },
+        renameFetcher: RenameFetcher? = { try PlannerCore.renameLabels(planID: $0, names: $1) },
+        detailsFetcher: DetailsFetcher? = { try PlannerCore.details(taskID: $0) },
+        checklistFetcher: ChecklistFetcher? = {
+            try PlannerCore.checklist(taskID: $0, etag: $1, itemID: $2, title: $3, checked: $4, remove: $5)
+        },
+        descriptionFetcher: DescriptionFetcher? = {
+            try PlannerCore.description(taskID: $0, etag: $1, description: $2)
+        },
+        referenceFetcher: ReferenceFetcher? = {
+            try PlannerCore.reference(taskID: $0, etag: $1, url: $2, alias: $3, attach: $4)
+        },
+        deleteTaskFetcher: DeleteTaskFetcher? = { try PlannerCore.deleteTask(taskID: $0, etag: $1) },
+        createPlanFetcher: CreatePlanFetcher? = { try PlannerCore.createPlan(groupID: $0, title: $1) },
+        deletePlanFetcher: DeletePlanFetcher? = { try PlannerCore.deletePlan(planID: $0) },
+        createBucketFetcher: CreateBucketFetcher? = { try PlannerCore.createBucket(planID: $0, name: $1) },
+        commentFetcher: CommentFetcher? = { try PlannerCore.comment(groupID: $0, threadID: $1, text: $2) },
+        commentsFetcher: CommentsFetcher? = { try PlannerCore.comments(groupID: $0, threadID: $1) }
     ) {
         self.teamsFetcher = teamsFetcher
         self.plansFetcher = plansFetcher
@@ -102,6 +142,18 @@ public final class PlannerViewModel: ObservableObject {
         self.assignFetcher = assignFetcher
         self.membersFetcher = membersFetcher
         self.localEdits = localEdits
+        self.depthLabelsFetcher = labelsFetcher
+        self.depthRenameFetcher = renameFetcher
+        self.depthDetailsFetcher = detailsFetcher
+        self.depthChecklistFetcher = checklistFetcher
+        self.depthDescriptionFetcher = descriptionFetcher
+        self.depthReferenceFetcher = referenceFetcher
+        self.depthDeleteTaskFetcher = deleteTaskFetcher
+        self.depthCreatePlanFetcher = createPlanFetcher
+        self.depthDeletePlanFetcher = deletePlanFetcher
+        self.depthCreateBucketFetcher = createBucketFetcher
+        self.depthCommentFetcher = commentFetcher
+        self.depthCommentsFetcher = commentsFetcher
     }
 
     /// NOLOAD: last-good snapshot store (nil = memory only / demo).
@@ -518,5 +570,420 @@ public final class PlannerViewModel: ObservableObject {
 
     static func message(for error: Error) -> String {
         FriendlyError.message(for: error)
+    }
+}
+
+// MARK: - plannerdepth: labels, details, comments, delete task, create plan
+
+extension PlannerViewModel {
+    /// Set (`on == true`) or clear one label 1-6 on a task.
+    public func setLabel(taskID: String, category: Int, on: Bool) {
+        guard (1...6).contains(category),
+              let idx = tasks.firstIndex(where: { $0.taskId == taskID }),
+              tasks[idx].labels.contains(category) != on
+        else { return }
+        if localEdits {
+            var ids = tasks[idx].labels.filter { $0 != category }
+            if on { ids.append(category) }
+            tasks[idx] = tasks[idx].with(labels: ids)
+            return
+        }
+        guard let fetcher = depthLabelsFetcher else { return }
+        let etag = tasks[idx].etag
+        boardError = nil
+        Task.blocking { [weak self] in
+            do {
+                let updated = try fetcher(taskID, etag, category, on)
+                await MainActor.run { [weak self] in
+                    guard let self,
+                          let i = self.tasks.firstIndex(where: { $0.taskId == taskID })
+                    else { return }
+                    self.tasks[i] = updated.task
+                }
+            } catch {
+                await MainActor.run { [weak self] in
+                    self?.boardError = Self.message(for: error)
+                }
+            }
+        }
+    }
+
+    /// Rename plan labels (display names by number). The service
+    /// currently ignores the write (API-limited); the plan list still
+    /// refreshes so a working write paints at once.
+    public func renameLabels(planID: String, names: [Int: String]) {
+        let clean = names.filter {
+            (1...6).contains($0.key)
+                && !$0.value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        guard !clean.isEmpty else { return }
+        if localEdits { return } // demo names come from fixtures
+        guard let fetcher = depthRenameFetcher else { return }
+        boardError = nil
+        Task.blocking { [weak self] in
+            do {
+                let result = try fetcher(planID, clean)
+                await MainActor.run { [weak self] in
+                    self?.adoptPlanResult(result.plan)
+                }
+            } catch {
+                await MainActor.run { [weak self] in
+                    self?.boardError = Self.message(for: error)
+                }
+            }
+        }
+    }
+
+    /// Adopt a created/renamed plan into the plans-by-team list.
+    func adoptPlanResult(_ plan: PlannerPlan) {
+        guard let team = teamID(containing: plan.planId) ?? selectedTeamID else { return }
+        var list = plansByTeam[team] ?? []
+        if let i = list.firstIndex(where: { $0.planId == plan.planId }) {
+            list[i] = plan
+        } else {
+            list.append(plan)
+        }
+        plansByTeam[team] = list
+        if team == selectedTeamID {
+            plans = list
+            if selectedPlanID == nil { selectedPlanID = plan.planId }
+        }
+    }
+
+    /// Load one task's details + comments (inspector). Demo resolves
+    /// fixtures synchronously; live refreshes behind the cached rows.
+    public func loadDetails(taskID: String) {
+        if localEdits {
+            detailsByTask[taskID] = PlannerDemo.details(for: taskID)
+            if let task = tasks.first(where: { $0.taskId == taskID }),
+               !task.threadID.isEmpty {
+                commentsByThread[task.threadID] = PlannerDemo.comments(for: taskID)
+            } else {
+                commentsByThread[taskID] = PlannerDemo.comments(for: taskID)
+            }
+            return
+        }
+        guard let fetcher = depthDetailsFetcher else { return }
+        Task.blocking { [weak self] in
+            do {
+                let response = try fetcher(taskID)
+                await MainActor.run { [weak self] in
+                    self?.detailsByTask[taskID] = response.details
+                }
+            } catch {
+                await MainActor.run { [weak self] in
+                    self?.boardError = Self.message(for: error)
+                }
+            }
+        }
+        loadComments(taskID: taskID)
+    }
+
+    /// Cached details etag for a task (checklist/description/reference
+    /// writes send it back).
+    func detailsEtag(taskID: String) -> String? {
+        let etag = detailsByTask[taskID]?.etag
+        return (etag?.isEmpty == false) ? etag : nil
+    }
+
+    /// Refresh cached details after a write (best effort: failure keeps
+    /// the stale rows, never an error state).
+    private func refreshDetails(taskID: String) {
+        guard let fetcher = depthDetailsFetcher else { return }
+        Task.blocking { [weak self] in
+            guard let response = try? fetcher(taskID) else { return }
+            await MainActor.run { [weak self] in
+                self?.detailsByTask[taskID] = response.details
+            }
+        }
+    }
+
+    /// Toggle one checklist item (title round-trips unchanged).
+    public func toggleChecklist(taskID: String, itemID: String) {
+        guard let item = detailsByTask[taskID]?.checklist.first(where: { $0.itemId == itemID }) else { return }
+        setChecklist(taskID: taskID, itemID: itemID, title: item.title, checked: !item.checked, remove: false)
+    }
+
+    /// Add one checklist item.
+    public func addChecklist(taskID: String, title: String) {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        setChecklist(taskID: taskID, itemID: "", title: trimmed, checked: false, remove: false)
+    }
+
+    /// Remove one checklist item.
+    public func removeChecklist(taskID: String, itemID: String) {
+        setChecklist(taskID: taskID, itemID: itemID, title: "", checked: false, remove: true)
+    }
+
+    private func setChecklist(taskID: String, itemID: String, title: String, checked: Bool, remove: Bool) {
+        if localEdits {
+            var details = detailsByTask[taskID] ?? PlannerDemo.details(for: taskID)
+            if remove {
+                details = PlannerTaskDetails(
+                    etag: details.etag, description: details.description, preview: details.preview,
+                    checklist: details.checklist.filter { $0.itemId != itemID },
+                    references: details.references)
+            } else if itemID.isEmpty {
+                let item = PlannerChecklistItem(
+                    itemId: "demo-check-local-\(details.checklist.count + 1)",
+                    title: title, checked: checked)
+                details = PlannerTaskDetails(
+                    etag: details.etag, description: details.description, preview: details.preview,
+                    checklist: details.checklist + [item], references: details.references)
+            } else {
+                details = PlannerTaskDetails(
+                    etag: details.etag, description: details.description, preview: details.preview,
+                    checklist: details.checklist.map {
+                        $0.itemId == itemID
+                            ? PlannerChecklistItem(itemId: $0.itemId, title: title, checked: checked)
+                            : $0
+                    },
+                    references: details.references)
+            }
+            detailsByTask[taskID] = details
+            return
+        }
+        guard let etag = detailsEtag(taskID: taskID),
+              let fetcher = depthChecklistFetcher else { return }
+        boardError = nil
+        Task.blocking { [weak self] in
+            do {
+                try fetcher(taskID, etag, itemID, title, checked, remove)
+                await MainActor.run { [weak self] in
+                    self?.refreshDetails(taskID: taskID)
+                }
+            } catch {
+                await MainActor.run { [weak self] in
+                    self?.boardError = Self.message(for: error)
+                }
+            }
+        }
+    }
+
+    public func setDescription(taskID: String, description: String) {
+        if localEdits {
+            let details = detailsByTask[taskID] ?? PlannerDemo.details(for: taskID)
+            detailsByTask[taskID] = PlannerTaskDetails(
+                etag: details.etag, description: description, preview: details.preview,
+                checklist: details.checklist, references: details.references)
+            return
+        }
+        guard let etag = detailsEtag(taskID: taskID),
+              let fetcher = depthDescriptionFetcher else { return }
+        boardError = nil
+        Task.blocking { [weak self] in
+            do {
+                try fetcher(taskID, etag, description)
+                await MainActor.run { [weak self] in
+                    self?.refreshDetails(taskID: taskID)
+                }
+            } catch {
+                await MainActor.run { [weak self] in
+                    self?.boardError = Self.message(for: error)
+                }
+            }
+        }
+    }
+
+    public func addReference(taskID: String, url: String, alias: String) {
+        let trimmed = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !trimmed.contains(where: \.isWhitespace) else { return }
+        setReference(taskID: taskID, url: trimmed, alias: alias, attach: true)
+    }
+
+    public func removeReference(taskID: String, url: String) {
+        setReference(taskID: taskID, url: url, alias: "", attach: false)
+    }
+
+    private func setReference(taskID: String, url: String, alias: String, attach: Bool) {
+        if localEdits {
+            let details = detailsByTask[taskID] ?? PlannerDemo.details(for: taskID)
+            var refs = details.references.filter { $0.url != url }
+            if attach {
+                refs.append(PlannerReference(url: url, alias: alias.isEmpty ? url : alias))
+            }
+            detailsByTask[taskID] = PlannerTaskDetails(
+                etag: details.etag, description: details.description, preview: details.preview,
+                checklist: details.checklist, references: refs)
+            return
+        }
+        guard let etag = detailsEtag(taskID: taskID),
+              let fetcher = depthReferenceFetcher else { return }
+        boardError = nil
+        Task.blocking { [weak self] in
+            do {
+                try fetcher(taskID, etag, url, alias, attach)
+                await MainActor.run { [weak self] in
+                    self?.refreshDetails(taskID: taskID)
+                }
+            } catch {
+                await MainActor.run { [weak self] in
+                    self?.boardError = Self.message(for: error)
+                }
+            }
+        }
+    }
+
+    /// Load a task's thread posts (no thread yet: clears to none).
+    public func loadComments(taskID: String) {
+        guard let task = tasks.first(where: { $0.taskId == taskID }) else { return }
+        if localEdits { return } // loadDetails already set fixtures
+        guard !task.threadID.isEmpty,
+              let team = teamID(containing: task.planId),
+              let fetcher = depthCommentsFetcher else {
+            if !task.threadID.isEmpty { commentsByThread[task.threadID] = [] }
+            return
+        }
+        let thread = task.threadID
+        Task.blocking { [weak self] in
+            do {
+                let response = try fetcher(team, thread)
+                await MainActor.run { [weak self] in
+                    self?.commentsByThread[thread] = response.posts
+                }
+            } catch {
+                await MainActor.run { [weak self] in
+                    self?.boardError = Self.message(for: error)
+                }
+            }
+        }
+    }
+
+    /// Post one comment to a task's thread, then re-read the posts.
+    public func postComment(taskID: String, text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              let task = tasks.first(where: { $0.taskId == taskID }),
+              !task.threadID.isEmpty,
+              let team = teamID(containing: task.planId)
+        else { return }
+        if localEdits {
+            let post = PlannerComment(
+                id: "demo-post-local-\((commentsByThread[task.threadID]?.count ?? 0) + 1)",
+                kind: "Text", content: trimmed)
+            commentsByThread[task.threadID, default: []].append(post)
+            return
+        }
+        guard let poster = depthCommentFetcher,
+              let reader = depthCommentsFetcher else { return }
+        boardError = nil
+        Task.blocking { [weak self] in
+            do {
+                try poster(team, task.threadID, trimmed)
+                let response = try reader(team, task.threadID)
+                await MainActor.run { [weak self] in
+                    self?.commentsByThread[task.threadID] = response.posts
+                }
+            } catch {
+                await MainActor.run { [weak self] in
+                    self?.boardError = Self.message(for: error)
+                }
+            }
+        }
+    }
+
+    /// Delete one task (confirmation lives in the UI). The row drops at
+    /// once; the selection clears because the task is gone.
+    public func deleteTask(taskID: String) {
+        guard let idx = tasks.firstIndex(where: { $0.taskId == taskID }) else { return }
+        if localEdits {
+            tasks.remove(at: idx)
+            detailsByTask.removeValue(forKey: taskID)
+            return
+        }
+        guard let fetcher = depthDeleteTaskFetcher else { return }
+        let etag = tasks[idx].etag
+        boardError = nil
+        Task.blocking { [weak self] in
+            do {
+                try fetcher(taskID, etag)
+                await MainActor.run { [weak self] in
+                    guard let self,
+                          let i = self.tasks.firstIndex(where: { $0.taskId == taskID })
+                    else { return }
+                    self.tasks.remove(at: i)
+                    self.detailsByTask.removeValue(forKey: taskID)
+                }
+            } catch {
+                await MainActor.run { [weak self] in
+                    self?.boardError = Self.message(for: error)
+                }
+            }
+        }
+    }
+
+    /// Create one plan under a team, with a first bucket, then show it.
+    public func createPlan(teamID: String, title: String) {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        if localEdits {
+            let plan = PlannerPlan(planId: "demo-plan-local-\(plansByTeam.count + 1)", title: trimmed)
+            adoptPlanResult(plan)
+            selectedTeamID = teamID
+            plans = plansByTeam[teamID] ?? []
+            selectPlan(planID: plan.planId)
+            return
+        }
+        guard let planFetcher = depthCreatePlanFetcher else { return }
+        let bucketFetcher = depthCreateBucketFetcher
+        boardError = nil
+        Task.blocking { [weak self] in
+            do {
+                let result = try planFetcher(teamID, trimmed)
+                if let bucket = try? bucketFetcher?(result.plan.planId, "To do") {
+                    await MainActor.run { [weak self] in
+                        self?.buckets.append(bucket.bucket)
+                    }
+                }
+                await MainActor.run { [weak self] in
+                    self?.adoptPlanResult(result.plan)
+                    self?.show(planID: result.plan.planId)
+                }
+            } catch {
+                await MainActor.run { [weak self] in
+                    self?.boardError = Self.message(for: error)
+                }
+            }
+        }
+    }
+
+    /// Delete one plan (confirmation lives in the UI). Falls back to
+    /// the team's first remaining plan.
+    public func deletePlan(planID: String) {
+        guard plansByTeam.values.contains(where: { $0.contains(where: { $0.planId == planID }) }) else { return }
+        if localEdits {
+            for team in plansByTeam.keys {
+                plansByTeam[team]?.removeAll { $0.planId == planID }
+            }
+            plans.removeAll { $0.planId == planID }
+            if selectedPlanID == planID {
+                selectedPlanID = plans.first?.planId
+            }
+            return
+        }
+        guard let fetcher = depthDeletePlanFetcher else { return }
+        boardError = nil
+        Task.blocking { [weak self] in
+            do {
+                try fetcher(planID)
+                await MainActor.run { [weak self] in
+                    guard let self else { return }
+                    for team in self.plansByTeam.keys {
+                        self.plansByTeam[team]?.removeAll { $0.planId == planID }
+                    }
+                    self.plans.removeAll { $0.planId == planID }
+                    if self.selectedPlanID == planID {
+                        let next = self.plans.first?.planId
+                        self.selectedPlanID = next
+                        if let next { self.show(planID: next) }
+                    }
+                }
+            } catch {
+                await MainActor.run { [weak self] in
+                    self?.boardError = Self.message(for: error)
+                }
+            }
+        }
     }
 }

@@ -1287,4 +1287,11 @@ public enum RustCore {
         let data = Data(bytes: UnsafeRawPointer(raw), count: strlen(raw))
         return try decodeOrThrow(type, from: data)
     }
+
+    /// `{ok}`-only core calls (delete/create legs that return no body).
+    /// Throws the envelope error on `{ok:false}`.
+    static func callVoid(_ raw: UnsafeMutablePointer<CChar>?) throws {
+        struct Ok: Decodable { let ok: Bool }
+        let _: Ok = try call(raw, as: Ok.self)
+    }
 }

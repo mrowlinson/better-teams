@@ -8,11 +8,14 @@ public enum PlannerDemo {
     public static func plans(for teamID: String) -> [PlannerPlan] {
         switch teamID {
         case "demo-team-eng": return [
-            PlannerPlan(planId: "demo-plan-sprint", title: "Sprint 12"),
-            PlannerPlan(planId: "demo-plan-debt", title: "Tech debt"),
+            PlannerPlan(planId: "demo-plan-sprint", title: "Sprint 12",
+                        categories: categories(for: "demo-plan-sprint")),
+            PlannerPlan(planId: "demo-plan-debt", title: "Tech debt",
+                        categories: categories(for: "demo-plan-debt")),
         ]
         case "demo-team-design": return [
-            PlannerPlan(planId: "demo-plan-rebrand", title: "Rebrand"),
+            PlannerPlan(planId: "demo-plan-rebrand", title: "Rebrand",
+                        categories: categories(for: "demo-plan-rebrand")),
         ]
         default: return []
         }
@@ -45,30 +48,42 @@ public enum PlannerDemo {
         PlannerBucketsResponse(ok: true, plan_id: planID, buckets: buckets(for: planID))
     }
 
+    /// Label display names for a demo plan (the service stores these;
+    /// demo carries them so Charts/labels render offline).
+    public static func categories(for planID: String) -> [Int: String] {
+        switch planID {
+        case "demo-plan-sprint": return [1: "Design", 2: "Beta", 3: "Docs"]
+        case "demo-plan-debt": return [1: "Infra"]
+        case "demo-plan-rebrand": return [2: "Beta"]
+        default: return [:]
+        }
+    }
+
     public static func tasks(for planID: String) -> [PlannerTask] {
         switch planID {
         case "demo-plan-sprint":
             func task(_ n: Int, _ bucket: String, _ title: String, percent: Int = 0, priority: Int? = nil,
-                      due: String? = nil, _ people: [String]) -> PlannerTask {
+                      due: String? = nil, labels: [Int] = [], thread: String = "", _ people: [String]) -> PlannerTask {
                 PlannerTask(
                     taskId: "demo-ptask-\(n)", planId: planID, bucketId: "demo-bucket-\(bucket)",
                     title: title, percent: percent, completed: percent == 100, priority: priority,
                     due: due.map { "2026-\($0)T12:00:00Z" }, etag: "W/\"demo-etag-\(n)\"",
-                    assignees: people.map { "demo-u-\($0)" })
+                    assignees: people.map { "demo-u-\($0)" }, labels: labels, threadID: thread)
             }
             return [
-                task(1, "todo", "Review empty-states mock", priority: 1, due: "10-02", ["megan"]),
-                task(6, "todo", "Draft App Store release notes", priority: 5, due: "10-06", ["luis"]),
+                task(1, "todo", "Review empty-states mock", priority: 1, due: "10-02", labels: [1], ["megan"]),
+                task(6, "todo", "Draft App Store release notes", priority: 5, due: "10-06", labels: [3], ["luis"]),
                 task(7, "todo", "Localize onboarding strings", priority: 5, due: "10-08", ["hannah"]),
-                task(8, "todo", "Plan beta feedback survey", priority: 9, due: "10-12", ["paula"]),
-                task(2, "doing", "Build sign-in error states", percent: 50, ["me", "tom"]),
+                task(8, "todo", "Plan beta feedback survey", priority: 9, due: "10-12", labels: [2], ["paula"]),
+                task(2, "doing", "Build sign-in error states", percent: 50, labels: [1, 2],
+                     thread: "demo-thread-2", ["me", "tom"]),
                 task(9, "doing", "Improve search result ranking", percent: 50, priority: 3, due: "10-03",
                      ["ryan"]),
                 task(10, "doing", "Refresh onboarding illustrations", percent: 50, due: "10-05", ["ava"]),
                 task(11, "review", "Offline drafts for messages", percent: 50, priority: 3, due: "10-01",
-                     ["ethan", "tom"]),
+                     labels: [2], ["ethan", "tom"]),
                 task(12, "review", "Accessibility audit fixes", percent: 50, priority: 1, due: "09-30",
-                     ["chloe"]),
+                     labels: [1], ["chloe"]),
                 task(3, "done", "Ship review deck", percent: 100, ["megan"]),
                 task(13, "done", "Set up crash reporting alerts", percent: 100, ["nathan"]),
                 task(14, "done", "Update privacy policy link", percent: 100, ["olivia"]),
@@ -91,5 +106,44 @@ public enum PlannerDemo {
 
     public static func tasksResponse(for planID: String) -> PlannerTasksResponse {
         PlannerTasksResponse(ok: true, plan_id: planID, tasks: tasks(for: planID))
+    }
+
+    /// Canned details for a demo task (offline inspector + captures).
+    public static func details(for taskID: String) -> PlannerTaskDetails {
+        switch taskID {
+        case "demo-ptask-1": return PlannerTaskDetails(
+            etag: "W/\"demo-detag-1\"",
+            description: "Match the empty-states spec in the design file.",
+            checklist: [
+                PlannerChecklistItem(itemId: "demo-check-1", title: "Draft copy", checked: true),
+                PlannerChecklistItem(itemId: "demo-check-2", title: "Review with design", checked: false),
+            ],
+            references: [PlannerReference(url: "https://example.com/spec", alias: "Spec")])
+        case "demo-ptask-2": return PlannerTaskDetails(
+            etag: "W/\"demo-detag-2\"",
+            description: "Cover expired sessions and revoked tokens.",
+            checklist: [
+                PlannerChecklistItem(itemId: "demo-check-3", title: "Expired session", checked: true),
+                PlannerChecklistItem(itemId: "demo-check-4", title: "Revoked token", checked: true),
+                PlannerChecklistItem(itemId: "demo-check-5", title: "Offline retry", checked: false),
+            ],
+            references: [])
+        default: return PlannerTaskDetails(etag: "W/\"demo-detag-0\"")
+        }
+    }
+
+    /// Canned comments for a demo task thread.
+    public static func comments(for taskID: String) -> [PlannerComment] {
+        switch taskID {
+        case "demo-ptask-2": return [
+            PlannerComment(id: "demo-post-1", kind: "Text",
+                           content: "Error states are in review.",
+                           received: "2026-10-04T12:00:00Z"),
+            PlannerComment(id: "demo-post-2", kind: "Text",
+                           content: "Approved the copy changes.",
+                           received: "2026-10-05T12:00:00Z"),
+        ]
+        default: return []
+        }
     }
 }

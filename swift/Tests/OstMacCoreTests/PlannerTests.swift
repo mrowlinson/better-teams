@@ -406,6 +406,276 @@ final class PlannerTests: XCTestCase {
         XCTFail("condition not met before the hang ceiling", file: file, line: line)
     }
 
+    // MARK: - Depth decode
+
+    func testDecodeTaskLabelsAndThread() {
+        let json = """
+            {"ok":true,"plan_id":"P1","tasks":[\
+            {"id":"T1","plan_id":"P1","bucket_id":"B1","title":"Labeled",\
+            "percent":0,"completed":false,"etag":"W/\\"e\\"",\
+            "labels":[1,3],"thread":"thread-9"}]}
+            """
+        let response = try! decodeOrThrow(PlannerTasksResponse.self, from: Data(json.utf8))
+        XCTAssertEqual(response.tasks[0].labels, [1, 3])
+        XCTAssertEqual(response.tasks[0].threadID, "thread-9")
+    }
+
+    func testDecodeTaskWithoutDepthKeys() {
+        // Old core JSON (no labels/thread) still decodes.
+        let response = Self.tasksJSON()
+        XCTAssertTrue(response.tasks.allSatisfy { $0.labels.isEmpty })
+        XCTAssertTrue(response.tasks.allSatisfy { $0.threadID.isEmpty })
+    }
+
+    func testDecodePlanCategoriesAndEtag() {
+        let json = """
+            {"ok":true,"group_id":"G1","plans":[\
+            {"id":"P1","title":"Sprint","etag":"W/\\"p\\"",\
+            "categories":{"category1":"Design","category9":"Out of range"}}]}
+            """
+        let response = try! decodeOrThrow(PlannerPlansResponse.self, from: Data(json.utf8))
+        XCTAssertEqual(response.plans[0].categories, [1: "Design"])
+        XCTAssertEqual(response.plans[0].etag, "W/\"p\"")
+        XCTAssertEqual(response.plans[0].labelName(1), "Design")
+        XCTAssertEqual(response.plans[0].labelName(4), "Label 4")
+    }
+
+    func testDecodeDetailsCommentsResults() {
+        let details = """
+            {"ok":true,"task_id":"T1","details":\
+            {"etag":"W/\\"d\\"","description":"notes","preview":"checklist",\
+            "checklist":[{"id":"c1","title":"A","checked":true}],\
+            "references":[{"url":"https://example.com/a","alias":"Spec"}]}}
+            """
+        let d = try! decodeOrThrow(PlannerDetailsResponse.self, from: Data(details.utf8))
+        XCTAssertTrue(d.ok)
+        XCTAssertEqual(d.details.etag, "W/\"d\"")
+        XCTAssertEqual(d.details.checklist.count, 1)
+        XCTAssertEqual(d.details.references.first?.alias, "Spec")
+        let comments = """
+            {"ok":true,"group_id":"G","thread_id":"th","posts":[\
+            {"id":"p1","kind":"Text","content":"hi","received":"2026-10-04T12:00:00Z"}]}
+            """
+        let c = try! decodeOrThrow(PlannerCommentsResponse.self, from: Data(comments.utf8))
+        XCTAssertEqual(c.posts.count, 1)
+        XCTAssertEqual(c.posts[0].text, "hi")
+        let html = PlannerComment(id: "p2", kind: "html", content: "<p>hey</p>")
+        XCTAssertEqual(html.text, "hey")
+        let plan = try! decodeOrThrow(PlannerPlanResult.self, from:
+            Data("{\"ok\":true,\"plan\":{\"id\":\"P1\",\"title\":\"B\"}}".utf8))
+        XCTAssertEqual(plan.plan.planId, "P1")
+        let bucket = try! decodeOrThrow(PlannerBucketResult.self, from:
+            Data("{\"ok\":true,\"bucket\":{\"id\":\"B1\",\"plan_id\":\"P1\",\"name\":\"To do\"}}".utf8))
+        XCTAssertEqual(bucket.bucket.name, "To do")
+    }
+
+    // MARK: - Charts / Schedule groupings
+
+    static func labeledTasks() -> ([PlannerTask], PlannerPlan) {
+        let plan = PlannerPlan(planId: "P1", title: "Sprint", categories: [1: "Design", 2: "Beta"])
+        let tasks = [
+            PlannerTask(taskId: "a", planId: "P1", bucketId: "B1", title: "A", labels: [1]),
+            PlannerTask(taskId: "b", planId: "P1", bucketId: "B1", title: "B", percent: 100, completed: true, labels: [1, 2]),
+            PlannerTask(taskId: "c", planId: "P1", bucketId: "B1", title: "C"),
+        ]
+        return (tasks, plan)
+    }
+
+    func testChartRowsGroupByLabel() {
+        let (tasks, plan) = Self.labeledTasks()
+        let (rows, unlabeled) = PlannerViewModel.chartRows(tasks, plan: plan)
+        XCTAssertEqual(rows.count, 2)
+        XCTAssertEqual(rows[0], PlannerChartRow(label: 1, name: "Design", total: 2, done: 1))
+        XCTAssertEqual(rows[1], PlannerChartRow(label: 2, name: "Beta", total: 1, done: 1))
+        XCTAssertEqual(unlabeled, PlannerChartRow(label: 0, name: "No label", total: 1, done: 0))
+    }
+
+    func testChartRowsEmpty() {
+        let (rows, unlabeled) = PlannerViewModel.chartRows([], plan: nil)
+        XCTAssertTrue(rows.isEmpty)
+        XCTAssertNil(unlabeled)
+    }
+
+    func testScheduleGroupsBucketAndSort() {
+        let cal = Calendar(identifier: .gregorian)
+        let now = cal.date(from: DateComponents(year: 2026, month: 10, day: 6, hour: 12))!
+        func dated(_ id: String, _ iso: String?, completed: Bool = false) -> PlannerTask {
+            PlannerTask(taskId: id, planId: "P1", bucketId: "B1", title: id,
+                        percent: completed ? 100 : 0, completed: completed, due: iso)
+        }
+        let tasks = [
+            dated("later", "2026-10-20T12:00:00Z"),
+            dated("past", "2026-10-01T12:00:00Z"),
+            dated("today", "2026-10-06T12:00:00Z"),
+            dated("week", "2026-10-08T12:00:00Z"),
+            dated("done-past", "2026-10-01T12:00:00Z", completed: true),
+            dated("none", nil),
+        ]
+        let groups = PlannerViewModel.scheduleGroups(tasks, now: now, calendar: cal)
+        XCTAssertEqual(groups.map(\.title), ["Overdue", "Today", "This week", "Later", "No due date"])
+        XCTAssertEqual(groups[0].tasks.map(\.taskId), ["past"])
+        XCTAssertEqual(groups[1].tasks.map(\.taskId), ["today"])
+        // Completed keeps its date (This week sorts oldest first).
+        XCTAssertEqual(groups[2].tasks.map(\.taskId), ["done-past", "week"])
+        XCTAssertEqual(groups[3].tasks.map(\.taskId), ["later"])
+        XCTAssertEqual(groups[4].tasks.map(\.taskId), ["none"])
+    }
+
+    // MARK: - Depth ViewModel (localEdits)
+
+    static func depthModel() -> PlannerViewModel {
+        PlannerViewModel(
+            teamsFetcher: { teamsJSON() },
+            plansFetcher: { _ in plansJSON() },
+            bucketsFetcher: { _ in bucketsJSON() },
+            tasksFetcher: { _ in tasksJSON() },
+            localEdits: true)
+    }
+
+    func testDepthLabelsLocalEdits() async {
+        let model = Self.depthModel()
+        await model.load()
+        model.setLabel(taskID: "T1", category: 1, on: true)
+        XCTAssertEqual(model.tasks[0].labels, [1])
+        model.setLabel(taskID: "T1", category: 7, on: true) // out of range: ignored
+        model.setLabel(taskID: "T1", category: 1, on: true) // no-op
+        XCTAssertEqual(model.tasks[0].labels, [1])
+        model.setLabel(taskID: "T1", category: 1, on: false)
+        XCTAssertTrue(model.tasks[0].labels.isEmpty)
+    }
+
+    func testDepthChecklistLocalEdits() async {
+        let model = Self.depthModel()
+        await model.load()
+        model.loadDetails(taskID: "T9") // unknown fixture: blank details
+        XCTAssertTrue(model.detailsByTask["T9"]?.checklist.isEmpty ?? false)
+        model.addChecklist(taskID: "T9", title: "  milk  ")
+        model.addChecklist(taskID: "T9", title: "   ") // ignored
+        XCTAssertEqual(model.detailsByTask["T9"]?.checklist.map(\.title), ["milk"])
+        let id = model.detailsByTask["T9"]!.checklist[0].itemId
+        model.toggleChecklist(taskID: "T9", itemID: id)
+        XCTAssertTrue(model.detailsByTask["T9"]!.checklist[0].checked)
+        model.toggleChecklist(taskID: "T9", itemID: id)
+        XCTAssertFalse(model.detailsByTask["T9"]!.checklist[0].checked)
+        model.removeChecklist(taskID: "T9", itemID: id)
+        XCTAssertTrue(model.detailsByTask["T9"]!.checklist.isEmpty ?? false)
+    }
+
+    func testDepthDescriptionReferenceLocalEdits() async {
+        let model = Self.depthModel()
+        await model.load()
+        model.loadDetails(taskID: "T1")
+        model.setDescription(taskID: "T1", description: "hello")
+        XCTAssertEqual(model.detailsByTask["T1"]?.description, "hello")
+        model.addReference(taskID: "T1", url: "https://example.com/a", alias: "")
+        XCTAssertEqual(model.detailsByTask["T1"]?.references.first?.alias, "https://example.com/a")
+        model.addReference(taskID: "T1", url: "  ", alias: "x") // ignored
+        XCTAssertEqual(model.detailsByTask["T1"]?.references.count, 1)
+        model.removeReference(taskID: "T1", url: "https://example.com/a")
+        XCTAssertTrue(model.detailsByTask["T1"]?.references.isEmpty ?? false)
+    }
+
+    func testDepthDeleteTaskAndPlanLocalEdits() async {
+        let model = Self.depthModel()
+        await model.load()
+        XCTAssertEqual(model.tasks.count, 2)
+        model.deleteTask(taskID: "T1")
+        XCTAssertEqual(model.tasks.map(\.taskId), ["T2"])
+        model.deleteTask(taskID: "T1") // unknown: ignored
+        XCTAssertEqual(model.tasks.count, 1)
+        let before = model.plans.count
+        model.createPlan(teamID: "G1", title: "  New board  ")
+        XCTAssertEqual(model.plans.count, before + 1)
+        XCTAssertEqual(model.selectedPlanID, model.plans.last?.planId)
+        model.createPlan(teamID: "G1", title: "   ") // ignored
+        XCTAssertEqual(model.plans.count, before + 1)
+        let created = model.plans.last!.planId
+        model.deletePlan(planID: created)
+        XCTAssertEqual(model.plans.count, before)
+        XCTAssertEqual(model.selectedPlanID, "P1")
+        model.deletePlan(planID: "nope") // unknown: ignored
+        XCTAssertEqual(model.plans.count, before)
+    }
+
+    func testDepthCommentsLocalEdits() async {
+        let model = Self.depthModel()
+        await model.load()
+        // Demo task T1 has no thread: fixture comments keyed by task.
+        model.loadDetails(taskID: "T1")
+        XCTAssertNotNil(model.commentsByThread["T1"])
+        // A threaded task posts into its thread.
+        let threaded = PlannerTask(
+            taskId: "T1", planId: "P1", bucketId: "B1", title: "Ship it",
+            percent: 50, etag: "W/\"e1\"", threadID: "thread-1")
+        let threadedModel = PlannerViewModel(
+            teamsFetcher: { Self.teamsJSON() },
+            plansFetcher: { _ in Self.plansJSON() },
+            bucketsFetcher: { _ in Self.bucketsJSON() },
+            tasksFetcher: { _ in PlannerTasksResponse(ok: true, plan_id: "P1", tasks: [threaded]) },
+            localEdits: true)
+        await threadedModel.load()
+        threadedModel.loadDetails(taskID: "T1")
+        XCTAssertTrue(threadedModel.commentsByThread["thread-1"]?.isEmpty ?? false)
+        threadedModel.postComment(taskID: "T1", text: "  looks good  ")
+        XCTAssertEqual(threadedModel.commentsByThread["thread-1"]?.map(\.content), ["looks good"])
+        threadedModel.postComment(taskID: "T1", text: "   ") // ignored
+        XCTAssertEqual(threadedModel.commentsByThread["thread-1"]?.count, 1)
+        threadedModel.postComment(taskID: "nope", text: "x") // unknown task: ignored
+    }
+
+    // MARK: - Depth ViewModel (mock fetchers)
+
+    func testSetLabelCallsFetcherAndAdopts() async {
+        let model = PlannerViewModel(
+            teamsFetcher: { Self.teamsJSON() },
+            plansFetcher: { _ in Self.plansJSON() },
+            bucketsFetcher: { _ in Self.bucketsJSON() },
+            tasksFetcher: { _ in Self.tasksJSON() },
+            labelsFetcher: { taskID, _, category, on in
+                var task = Self.tasksJSON().tasks[0]
+                task = PlannerTask(
+                    taskId: task.taskId, planId: task.planId, bucketId: task.bucketId,
+                    title: task.title, percent: task.percent, completed: task.completed,
+                    priority: task.priority, due: task.due, etag: "W/\"e2\"",
+                    assignees: task.assignees, labels: on ? [category] : [])
+                return PlannerTaskResult(ok: true, task: task)
+            })
+        await model.load()
+        XCTAssertTrue(model.tasks[0].labels.isEmpty)
+        model.setLabel(taskID: "T1", category: 2, on: true)
+        await waitFor { model.tasks[0].labels == [2] }
+        XCTAssertNil(model.boardError)
+        model.setLabel(taskID: "T1", category: 2, on: true) // no-op, no refetch
+    }
+
+    func testSetLabelErrorSurfaces() async {
+        let model = PlannerViewModel(
+            teamsFetcher: { Self.teamsJSON() },
+            plansFetcher: { _ in Self.plansJSON() },
+            bucketsFetcher: { _ in Self.bucketsJSON() },
+            tasksFetcher: { _ in Self.tasksJSON() },
+            labelsFetcher: { _, _, _, _ in throw CoreCallError.failed("stale etag") })
+        await model.load()
+        model.setLabel(taskID: "T1", category: 1, on: true)
+        await waitFor { model.boardError != nil }
+        XCTAssertEqual(model.boardError, "stale etag")
+        XCTAssertTrue(model.tasks[0].labels.isEmpty)
+    }
+
+    func testDemoFixturesCarryDepth() {
+        XCTAssertEqual(PlannerDemo.categories(for: "demo-plan-sprint"), [1: "Design", 2: "Beta", 3: "Docs"])
+        XCTAssertTrue(PlannerDemo.categories(for: "nope").isEmpty)
+        let sprint = PlannerDemo.tasks(for: "demo-plan-sprint")
+        XCTAssertTrue(sprint.contains { $0.labels == [1, 2] })
+        XCTAssertTrue(sprint.contains { $0.labels.isEmpty })
+        let details = PlannerDemo.details(for: "demo-ptask-2")
+        XCTAssertEqual(details.checklist.count, 3)
+        XCTAssertFalse(details.description.isEmpty)
+        XCTAssertTrue(PlannerDemo.details(for: "nope").checklist.isEmpty)
+        XCTAssertEqual(PlannerDemo.comments(for: "demo-ptask-2").count, 2)
+        XCTAssertTrue(PlannerDemo.comments(for: "nope").isEmpty)
+    }
+
     // MARK: - Launch-r2 dedup
 
     /// One load fetches each team's plans once: the selected team's

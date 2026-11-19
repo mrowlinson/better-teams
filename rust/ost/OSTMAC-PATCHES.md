@@ -2134,3 +2134,24 @@ this pass), `rust/ostmac-core` lib 224/0. Older counts (lib 257, core
     created request (net-zero; verified by re-list).
     Tests: path/validation unit tests + the ignored live probe.
     UPSTREAM: pending
+
+118. [minor] `src/api/planner.rs` + `src/api/mod.rs` — **planner depth
+    (lanes/plannerdepth)**. New Graph depth APIs, all live-proved on the
+    trial tenant (ignored `tests/planner_depth_live.rs` flow, net-zero):
+    task labels (`appliedCategories` 1-6, LIVE), plan label rename
+    (`categoryDescriptions`, PATCH 200 but service-ignored — GET never
+    returns the property; docs plannerplan-update lists `title` only),
+    details GET/PATCH (description LIVE, checklist add/check/remove
+    LIVE, references attach/detach LIVE with `%3A`/`%2E`-encoded keys),
+    comments via group threads (POST/GET `.../threads`, trial 403
+    ErrorAccessDenied — Group.ReadWrite.All not granted; demo-verified),
+    task DELETE + plan DELETE (both require `If-Match`, 412 without;
+    LIVE), plan create + bucket create (LIVE; new plans start with 0
+    buckets). `PlanInfo` gains `etag` + `categories`, `PlannerTaskInfo`
+    gains `applied_labels` + `thread_id`. Raw `patch_raw`/`delete_raw`
+    helpers carry the `If-Match` + `Prefer` contract (task PATCH
+    refactored onto `patch_raw`).
+    Tests: 17 `api::planner::tests` (paths/bodies/parse incl. encoded
+    reference keys) + new live flow (7 LIVE, 2 pending with exact
+    evidence).
+    UPSTREAM: pending

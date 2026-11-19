@@ -45,6 +45,12 @@ final class PlannerSection: SectionProvider, InspectorCapable {
     func selectionDidChange(_ sel: SectionSelection?, _ m: WindowModel) {
         guard m.forced(section) == nil, let planner = m.app?.planner else { return }
         planner.show(planID: PlannerSelection(sel).planID)
+        // Evidence routes: `app/planner/<plan>?view=charts|schedule`
+        // selects the depth view (§6.7); otherwise the last view stays.
+        if let raw = m.options.route.flatMap(Route.init(string:))?.query["view"],
+           let view = PlannerBoardView(rawValue: raw) {
+            planner.boardView = view
+        }
     }
 
     // MARK: shared helpers
@@ -102,6 +108,10 @@ final class PlannerSection: SectionProvider, InspectorCapable {
     // MARK: commands
 
     func perform(_ c: CommandID, arg: String?, _ m: WindowModel) -> Bool {
+        if c == PlannerCommands.newPlan {
+            m.presentSheet(SheetRequest(PlannerCommands.newPlanSheet, in: .native(.planner)))
+            return true
+        }
         guard c == PlannerCommands.toggleComplete, let planner = m.app?.planner,
               let task = Self.selectedTask(m) else { return false }
         Self.toggle(task, planner)
@@ -109,7 +119,15 @@ final class PlannerSection: SectionProvider, InspectorCapable {
     }
 
     func validate(_ c: CommandID, arg: String?, _ m: WindowModel) -> CommandValidation {
+        if c == PlannerCommands.newPlan {
+            return CommandValidation(enabled: !(m.app?.planner.teams.isEmpty ?? true))
+        }
         guard c == PlannerCommands.toggleComplete, let task = Self.selectedTask(m) else { return .disabled }
         return CommandValidation(enabled: true, title: task.completed ? "Mark as Incomplete" : "Mark as Complete")
+    }
+
+    func sheet(_ r: SheetRequest, _ m: WindowModel) -> AnyView? {
+        guard r.name == PlannerCommands.newPlanSheet, let planner = m.app?.planner else { return nil }
+        return AnyView(NewPlanSheet(planner: planner))
     }
 }

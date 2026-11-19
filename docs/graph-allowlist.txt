@@ -68,7 +68,16 @@ rust/ost/src/api/planner.rs::create_task_data | POST /planner/tasks | works | sc
 rust/ost/src/api/planner.rs::list_buckets_data | GET /planner/plans/{id}/buckets | works | scope Tasks.ReadWrite granted; probeA planner 200
 rust/ost/src/api/planner.rs::list_plans_data | GET /groups/{id}/planner/plans | works | live applog 200 (49x)
 rust/ost/src/api/planner.rs::list_tasks_data | GET /planner/plans/{id}/tasks | works | live probeA /me/planner/tasks 200; scope Tasks.ReadWrite
-rust/ost/src/api/planner.rs::patch_task | PATCH /planner/tasks/{id} (If-Match) | works | scope Tasks.ReadWrite granted
+rust/ost/src/api/planner.rs::patch_raw | PATCH /planner/tasks/{id} + /tasks/{id}/details + /planner/plans/{id} (If-Match, Prefer) | works | live plannerdepth flow: task labels/details + plan categories 200 (trial); scope Tasks.ReadWrite
+rust/ost/src/api/planner.rs::delete_raw | DELETE /planner/tasks/{id} + /planner/plans/{id} (If-Match) + /groups/{id}/threads/{id} | works | live plannerdepth flow: task + plan delete 204 (trial); If-Match required on both (412 without)
+rust/ost/src/api/planner.rs::create_bucket_data | POST /planner/buckets | works | live plannerdepth flow (trial); scope Tasks.ReadWrite
+rust/ost/src/api/planner.rs::create_plan_data | POST /planner/plans | works | live plannerdepth flow (trial); scope Tasks.ReadWrite
+rust/ost/src/api/planner.rs::create_thread_data | POST /groups/{id}/threads | blocked | scope Group.ReadWrite.All not granted on the trial token (plannerdepth flow 403 ErrorAccessDenied)
+rust/ost/src/api/planner.rs::delete_thread_data | DELETE /groups/{id}/threads/{id} | blocked | scope Group.ReadWrite.All not granted on the trial token (thread create 403 in plannerdepth flow; delete unproven live)
+rust/ost/src/api/planner.rs::get_plan_data | GET /planner/plans/{id} | works | live plannerdepth flow (trial)
+rust/ost/src/api/planner.rs::get_task_details_data | GET /planner/tasks/{id}/details | works | live plannerdepth flow (trial); scope Tasks.ReadWrite
+rust/ost/src/api/planner.rs::list_thread_posts_data | GET /groups/{id}/threads/{id}/posts | blocked | scope Group.ReadWrite.All not granted on the trial token (thread create 403 in plannerdepth flow; read unproven live)
+rust/ost/src/api/planner.rs::post_task_comment_data | POST /groups/{id}/threads/{id}/reply | blocked | scope Group.ReadWrite.All not granted on the trial token (thread create 403 in plannerdepth flow; reply unproven live)
 rust/ost/src/api/presence.rs::get_presence_data | GET /me/presence (ost TUI) | tui-only | not linked by ostmac-core; live probeA 403 — the app uses the Teams presence service
 rust/ost/src/api/presence.rs::set_presence | POST /me/presence/setUserPreferredPresence (ost TUI) | tui-only | not linked by ostmac-core; the app uses the Teams presence service
 rust/ost/src/api/recordings.rs::channel_drives | GET /teams/{t}/channels/{c}/filesFolder | works | live applog filesFolder 200

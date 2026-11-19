@@ -2,6 +2,7 @@
 // (UI-SPEC §6.7, R18). Pure values; the views and the provider share them.
 import Foundation
 import OstMacCore
+import SwiftUI
 
 /// `app/planner/<plan>/<task>`: the selected plan, then the task the
 /// inspector shows.
@@ -147,6 +148,23 @@ enum PlannerFormat {
     static func assigneeSummary(_ names: [String]) -> String? {
         guard let first = names.first else { return nil }
         return names.count > 1 ? "\(first) +\(names.count - 1)" : first
+    }
+
+    /// Fixed label palette by number (1...6, Planner order).
+    static func labelColor(_ n: Int) -> Color {
+        switch n {
+        case 1: .red
+        case 2: .orange
+        case 3: .green
+        case 4: .blue
+        case 5: .purple
+        default: .brown
+        }
+    }
+
+    /// Label dots summary for a task row ("Red, Blue" help text).
+    static func labelNames(_ task: PlannerTask, plan: PlannerPlan?) -> [String] {
+        task.labels.map { plan?.labelName($0) ?? "Label \($0)" }
     }
 
     static func progress(_ task: PlannerTask) -> String {

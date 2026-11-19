@@ -41,7 +41,7 @@ pub use calendar::{
 pub use files::{FileVersion, SharedFile};
 pub use me::UserInfo;
 pub use notes::{NotePage, NotebookInfo, PageInfo, SectionInfo};
-pub use planner::{BucketInfo, PlanInfo, PlannerTaskInfo};
+pub use planner::{BucketInfo, GroupPost, PlanInfo, PlannerChecklistItem, PlannerReference, PlannerTaskDetails, PlannerTaskInfo};
 pub use presence::PresenceInfo;
 pub use channel_moderation::{
     moderation_data, moderation_path, moderation_read_path,
@@ -192,10 +192,18 @@ pub use notes::{
     read_note_page_data,
 };
 pub use planner::{
-    buckets_path, create_task_body, create_task_data, list_buckets_data, list_plans_data,
-    list_tasks_data, parse_buckets, parse_plans, parse_task, parse_tasks, plans_path,
-    set_assignment_body, set_complete_body, set_task_assignee_data, set_task_complete_data,
-    task_path, tasks_path,
+    bucket_create_body, buckets_collection_path, buckets_path,
+    checklist_body, comment_body, create_bucket_data, create_plan_data, create_task_body,
+    create_task_data, create_thread_data, delete_plan_data, delete_task_data, delete_thread_data,
+    description_body, get_plan_data, get_task_details_data, list_buckets_data, list_plans_data,
+    list_tasks_data, list_thread_posts_data, parse_bucket, parse_buckets, parse_plan, parse_plans,
+    parse_task, parse_task_details, parse_tasks, parse_thread_posts, patch_task_details_data,
+    plan_categories_body, plan_create_body, plan_path, plans_collection_path, post_task_comment_data,
+    reference_body, reference_decode, reference_key,
+    set_assignment_body, set_complete_body, set_plan_categories_data, set_task_assignee_data,
+    set_task_checklist_data, set_task_complete_data, set_task_description_data, set_task_labels_data,
+    set_task_reference_data, task_details_path, task_labels_body, task_path, tasks_path,
+    thread_create_body, thread_path, thread_posts_path, thread_reply_path, threads_collection_path,
 };
 pub use presence::get_presence_data;
 pub use tabs::{list_chat_tabs_data, list_tabs_data};
