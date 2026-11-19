@@ -2214,4 +2214,4 @@ this pass), `rust/ostmac-core` lib 224/0. Older counts (lib 257, core
     and a failed beta read refuses the write. Key encoding
     live-pinned (1 allow, 0 block, independent).
     Tests: beta-seed body, absent-defaults allow.
-    UPSTREAM: pending
+    UPSTREAM: PR https://github.com/eisbaw/ost/pull/134 (fix/channel-moderation-bot-flags, stacks on #128; fake-transport e2e omitted with the never-ported harness, same precedent as #124)
