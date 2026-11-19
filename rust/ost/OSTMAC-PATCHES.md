@@ -2175,8 +2175,8 @@ this pass), `rust/ostmac-core` lib 224/0. Older counts (lib 257, core
     re-describe via `PATCH /groups/{id}`, same route as the visibility
     flip), `archive_team_data` / `unarchive_team_data` (`POST
     /teams/{id}/archive|unarchive`), `delete_team_data` (`DELETE
-    /teams/{id}`), `set_team_photo_data` (`PUT
-    /teams/{id}/photo/`, 4 MB cap, PNG/JPEG sniffed). Paths +
+    /groups/{id}`), `set_team_photo_data` (`PUT
+    /teams/{id}/photo/$value`, 4 MB cap, PNG/JPEG sniffed). Paths +
     bodies are pure fns pinned by
     `team_lifecycle_paths_and_bodies_pin_graph_shapes`. Live print
     wrappers (`update_team`, `archive_team`, `unarchive_team`,
@@ -2184,4 +2184,4 @@ this pass), `rust/ostmac-core` lib 224/0. Older counts (lib 257, core
     (`--rename/--description/--photo/--archive/--unarchive/--delete`)
     in `src/main.rs`. Tenant writes need owner-grade grants
     (Group.ReadWrite.All and friends) — 403s surface to the caller.
-    UPSTREAM: pending
+    UPSTREAM: PR https://github.com/eisbaw/ost/pull/129 (fix/team-lifecycle, stacks on #120)
