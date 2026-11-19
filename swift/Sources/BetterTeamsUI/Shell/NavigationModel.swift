@@ -14,7 +14,10 @@ public enum NativeAppID: String, CaseIterable, Codable, Sendable {
     // closed set predates this gap lane (gaphunt row 10); the Apps
     // library guard pins the new six-row count (OWNER OK PENDING —
     // see REPORT.md).
-    case planner, todo, shifts, recaps, onenote, approvals
+    // COPILOT-BUILD: the Copilot chat app joins the native apps (the
+    // ordered product change; guard 6→7, OWNER OK PENDING — see
+    // lanes/copilotbuild REPORT.md).
+    case planner, todo, shifts, recaps, onenote, approvals, copilot
 
     public var title: String {
         switch self {
@@ -24,6 +27,7 @@ public enum NativeAppID: String, CaseIterable, Codable, Sendable {
         case .recaps: "Recaps"
         case .onenote: "OneNote"
         case .approvals: "Approvals"
+        case .copilot: "Copilot"
         }
     }
 
@@ -35,6 +39,7 @@ public enum NativeAppID: String, CaseIterable, Codable, Sendable {
         case .recaps: "play.rectangle.on.rectangle"
         case .onenote: "note.text"
         case .approvals: "checkmark.seal"
+        case .copilot: "sparkles"
         }
     }
 

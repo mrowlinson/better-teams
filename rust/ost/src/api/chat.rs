@@ -1313,6 +1313,18 @@ async fn post_with_receipt(
     })
 }
 
+/// LOOPBUILD §126: post one pre-built body (e.g. a Loop E1 embed)
+/// carrying `clientmessageid`, with the standard receipt. Sibling
+/// modules (loopcomp) post shapes this module does not own.
+pub(crate) async fn send_raw_with_receipt(
+    client: &TeamsClient,
+    url: &str,
+    body: serde_json::Value,
+    client_message_id: &str,
+) -> Result<SentMessage> {
+    post_with_receipt(client, url, body, client_message_id).await
+}
+
 /// Send with a caller-owned `clientmessageid` (retries reuse it).
 pub async fn send_message_with_client_id(
     client: &TeamsClient,
@@ -2718,6 +2730,10 @@ pub struct MessageInfo {
     /// as fallback). Empty when the server strips them (1:1 broadcast
     /// strip per composeproof M3).
     pub mentions: Vec<EchoMention>,
+    /// LOOPBUILD §126: the server's `cards` field as compact JSON
+    /// (kept by [`crate::api::loopcomp::cards_json_of`]; None when
+    /// absent). Loop cards mine from here, never from `content`.
+    pub cards: Option<String>,
 }
 
 /// One server-echoed mention entity (COMPOSEPROOF2 read-back).
@@ -3977,7 +3993,11 @@ fn message_info_from_native(msg: &NativeMessage) -> Option<MessageInfo> {
     // OstMac om-botposts: same for RSS/bot/card posts — attachment and
     // card payloads strip to "" but the embedder renders them as
     // title+link rows (or a placeholder when unparseable).
-    if text.trim().is_empty() && !has_image(content) && !has_card_payload(content) {
+    // LOOPBUILD §126 keep-gate: same for messages carrying `cards` —
+    // a Loop embed's text may strip to "" while the cards JSON
+    // carries the component; dropping it would lose the message.
+    let cards = super::loopcomp::cards_json_of(&msg.extra);
+    if text.trim().is_empty() && !has_image(content) && !has_card_payload(content) && cards.is_none() {
         return None;
     }
 
@@ -4006,6 +4026,7 @@ fn message_info_from_native(msg: &NativeMessage) -> Option<MessageInfo> {
         importance: message_importance(msg),
         subject: message_subject(msg),
         mentions: message_mentions(msg),
+        cards,
     })
 }
 
@@ -5594,6 +5615,7 @@ src="x">"#));
             importance: None,
             subject: None,
             mentions: vec![],
+            cards: None,
         }
     }
 
@@ -7116,6 +7138,7 @@ mod sendfix_tests {
             importance: None,
             subject: None,
             mentions: vec![],
+            cards: None,
         };
         let rows = vec![row("1", None), row("2", Some("555"))];
         assert_eq!(find_by_client_id(&rows, "555").map(|m| m.id.as_str()), Some("2"));

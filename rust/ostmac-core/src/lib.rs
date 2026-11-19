@@ -31,17 +31,20 @@ use serde_json::json;
 
 pub mod apphost;
 pub mod av;
+pub mod breakout;
 pub mod browser_auth;
 pub mod call_roster;
 pub mod calls;
 pub mod calweek;
 pub mod catchup_tags;
+pub mod copilot;
 pub mod live;
 pub mod meetings_plus;
 pub mod planner;
 pub mod realtime;
 pub mod recordings;
 pub mod schedule;
+pub mod loopcomp;
 pub mod recap;
 pub mod transcripts;
 
@@ -864,6 +867,252 @@ pub fn chat_tabs_json(chat_id: &str) -> String {
     }
 }
 
+/// One legacy board as JSON: `{id,title,owner_id,
+/// owner_tenant_id,is_shared,fluid_file_id,meeting_id}`.
+/// WHITEBOARD-BUILD.
+fn whiteboard_to_json(b: &ost::api::WhiteboardInfo) -> serde_json::Value {
+    json!({
+        "id": b.id,
+        "title": b.title,
+        "owner_id": b.owner_id,
+        "owner_tenant_id": b.owner_tenant_id,
+        "is_shared": b.is_shared,
+        "fluid_file_id": b.fluid_file_id,
+        "meeting_id": b.meeting_id,
+    })
+}
+
+async fn whiteboard_client() -> Result<ost::api::client::TeamsClient, String> {
+    ost::api::client::TeamsClient::new().await.map_err(|e| format!("{:#}", e))
+}
+
+/// My Azure boards as JSON: `{ok, boards:[...]}`.
+/// WHITEBOARD-BUILD.
+pub fn whiteboard_list_json() -> String {
+    let run = || -> Result<String, String> {
+        let rt = rt()?;
+        rt.block_on(async {
+            let client = whiteboard_client().await?;
+            let boards = ost::api::list_whiteboards_data(&client).await.map_err(|e| format!("{:#}", e))?;
+            let items: Vec<_> = boards.iter().map(whiteboard_to_json).collect();
+            Ok(json!({"ok": true, "boards": items}).to_string())
+        })
+    };
+    match run() {
+        Ok(s) => s,
+        Err(e) => err_json("whiteboard_list", e),
+    }
+}
+
+/// Create one Azure board: `{ok, board}`. Null/blank titles create
+/// an untitled board. WHITEBOARD-BUILD.
+pub fn whiteboard_create_json(title: Option<&str>) -> String {
+    let run = || -> Result<String, String> {
+        let rt = rt()?;
+        rt.block_on(async {
+            let client = whiteboard_client().await?;
+            let board = ost::api::create_whiteboard_data(&client, title)
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            Ok(json!({"ok": true, "board": whiteboard_to_json(&board)}).to_string())
+        })
+    };
+    match run() {
+        Ok(s) => s,
+        Err(e) => err_json("whiteboard_create", e),
+    }
+}
+
+/// Open one Azure board: `{ok, board}`. Empty ids bail pre-network.
+/// WHITEBOARD-BUILD.
+pub fn whiteboard_show_json(board_id: &str) -> String {
+    if board_id.trim().is_empty() {
+        return err_json("arg", "empty board_id");
+    }
+    let run = || -> Result<String, String> {
+        let rt = rt()?;
+        rt.block_on(async {
+            let client = whiteboard_client().await?;
+            let board = ost::api::get_whiteboard_data(&client, board_id)
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            Ok(json!({"ok": true, "board": whiteboard_to_json(&board)}).to_string())
+        })
+    };
+    match run() {
+        Ok(s) => s,
+        Err(e) => err_json("whiteboard_show", e),
+    }
+}
+
+/// Mint a share link: `{ok, share:{share_uri,token}}`. Empty ids
+/// bail pre-network. WHITEBOARD-BUILD.
+pub fn whiteboard_share_json(board_id: &str) -> String {
+    if board_id.trim().is_empty() {
+        return err_json("arg", "empty board_id");
+    }
+    let run = || -> Result<String, String> {
+        let rt = rt()?;
+        rt.block_on(async {
+            let client = whiteboard_client().await?;
+            let share = ost::api::share_whiteboard_data(&client, board_id)
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            Ok(json!({"ok": true, "share": {"share_uri": share.share_uri, "token": share.token}}).to_string())
+        })
+    };
+    match run() {
+        Ok(s) => s,
+        Err(e) => err_json("whiteboard_share", e),
+    }
+}
+
+/// My permissions: `{ok, perms:{can_edit,can_read}}`. Empty ids
+/// bail pre-network. WHITEBOARD-BUILD.
+pub fn whiteboard_my_perms_json(board_id: &str) -> String {
+    if board_id.trim().is_empty() {
+        return err_json("arg", "empty board_id");
+    }
+    let run = || -> Result<String, String> {
+        let rt = rt()?;
+        rt.block_on(async {
+            let client = whiteboard_client().await?;
+            let perms = ost::api::whiteboard_my_permissions_data(&client, board_id)
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            Ok(json!({"ok": true, "perms": {"can_edit": perms.can_edit, "can_read": perms.can_read}}).to_string())
+        })
+    };
+    match run() {
+        Ok(s) => s,
+        Err(e) => err_json("whiteboard_perms", e),
+    }
+}
+
+/// One legacy content page (ink-sync READ): `{ok, ops, has_next,
+/// next_cursor?}`. `ops` counts the `gchs` array; full op bytes
+/// stay in core until the phase-2 P3 decode lands. Empty ids bail
+/// pre-network. WHITEBOARD-BUILD.
+pub fn whiteboard_content_json(board_id: &str, cursor: Option<&str>) -> String {
+    if board_id.trim().is_empty() {
+        return err_json("arg", "empty board_id");
+    }
+    let run = || -> Result<String, String> {
+        let rt = rt()?;
+        rt.block_on(async {
+            let client = whiteboard_client().await?;
+            let page = ost::api::whiteboard_content_data(&client, board_id, cursor)
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            let ops = page.gchs.as_array().map(|a| a.len()).unwrap_or(0);
+            let next = ost::api::whiteboard::wb_next_cursor(page.next.as_deref());
+            Ok(json!({"ok": true, "ops": ops, "has_next": next.is_some(), "next_cursor": next}).to_string())
+        })
+    };
+    match run() {
+        Ok(s) => s,
+        Err(e) => err_json("whiteboard_content", e),
+    }
+}
+
+/// Join one board file's delta session (ink-sync channel open):
+/// `{ok, socket_url, has_socket_token, refresh_secs?}`. The socket
+/// token itself never crosses the FFI (secrets stay in core); Swift
+/// only learns whether one was issued. Empty ids bail pre-network.
+/// WHITEBOARD-BUILD.
+pub fn whiteboard_join_json(
+    site_url: &str,
+    drive_id: &str,
+    item_id: &str,
+    auth_header: &str,
+    display_name: Option<&str>,
+) -> String {
+    for (v, what) in [(site_url, "site_url"), (drive_id, "drive_id"), (item_id, "item_id"), (auth_header, "auth_header")] {
+        if v.trim().is_empty() {
+            return err_json("arg", format!("empty {}", what));
+        }
+    }
+    let run = || -> Result<String, String> {
+        let rt = rt()?;
+        rt.block_on(async {
+            let client = whiteboard_client().await?;
+            let join = ost::api::wb_join_session_data(&client, site_url, drive_id, item_id, auth_header, display_name)
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            Ok(json!({"ok": true, "socket_url": join.socket_url,
+                      "has_socket_token": join.socket_token.is_some(),
+                      "refresh_secs": join.refresh_secs})
+                .to_string())
+        })
+    };
+    match run() {
+        Ok(s) => s,
+        Err(e) => err_json("whiteboard_join", e),
+    }
+}
+
+/// Teams tab-config URLs for a board (pure, no network):
+/// `{ok, azure:{content,website}?, fluid:{content,website}?}`.
+/// WHITEBOARD-BUILD.
+pub fn whiteboard_tab_urls_json(
+    board_id: Option<&str>,
+    token: Option<&str>,
+    board_web_url: Option<&str>,
+) -> String {
+    let mut out = serde_json::Map::new();
+    out.insert("ok".to_string(), serde_json::Value::Bool(true));
+    if let (Some(id), Some(t)) = (board_id, token) {
+        let content = ost::api::whiteboard::wb_tab_azure_content_url(id, t);
+        let website = ost::api::whiteboard::wb_tab_azure_website_url(id);
+        match (content, website) {
+            (Ok(c), Ok(w)) => {
+                out.insert("azure".to_string(), json!({"content": c, "website": w}));
+            }
+            _ => return err_json("arg", "bad Azure board id/token"),
+        }
+    }
+    if let Some(w) = board_web_url {
+        let content = ost::api::whiteboard::wb_tab_fluid_content_url(w);
+        let website = ost::api::whiteboard::wb_tab_fluid_website_url(w);
+        match (content, website) {
+            (Ok(c), Ok(w)) => {
+                out.insert("fluid".to_string(), json!({"content": c, "website": w}));
+            }
+            _ => return err_json("arg", "bad Fluid board web URL"),
+        }
+    }
+    if board_id.is_none() && board_web_url.is_none() {
+        return err_json("arg", "pass board + token (Azure) and/or web URL (Fluid)");
+    }
+    serde_json::Value::Object(out).to_string()
+}
+
+/// Tenant Fluid toggle probe: `{ok, enabled}` — the honest
+/// live-gate for ODSP sync. Empty ids bail pre-network.
+/// WHITEBOARD-BUILD.
+pub fn whiteboard_fluid_enabled_json(site_url: &str, drive_id: &str) -> String {
+    if site_url.trim().is_empty() {
+        return err_json("arg", "empty site_url");
+    }
+    if drive_id.trim().is_empty() {
+        return err_json("arg", "empty drive_id");
+    }
+    let run = || -> Result<String, String> {
+        let rt = rt()?;
+        rt.block_on(async {
+            let client = whiteboard_client().await?;
+            let enabled = ost::api::wb_spo_fluid_enabled_data(&client, site_url, drive_id)
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            Ok(json!({"ok": true, "enabled": enabled}).to_string())
+        })
+    };
+    match run() {
+        Ok(s) => s,
+        Err(e) => err_json("whiteboard_fluid", e),
+    }
+}
+
 /// Add a website/app tab to a channel (TABS-MGMT): `{ok, tab}` with the
 /// created tab in [`tab_to_json`] shape. Empty ids/names bail pre-network.
 pub fn channel_tab_add_json(
@@ -1493,6 +1742,7 @@ fn message_to_json(m: &ost::api::MessageInfo) -> serde_json::Value {
             .iter()
             .map(|e| json!({"id": e.id, "display": e.display, "kind": e.kind}))
             .collect::<Vec<_>>(),
+        "cards": m.cards,
     })
 }
 
@@ -1931,14 +2181,14 @@ pub fn send_json(chat_id: &str, text: &str) -> String {
 }
 
 /// §106: `{ok:true, chat_id, id?, client_message_id}` for one post.
-fn sent_json(chat_id: &str, sent: &ost::api::SentMessage) -> String {
+pub(crate) fn sent_json(chat_id: &str, sent: &ost::api::SentMessage) -> String {
     json!({"ok": true, "chat_id": chat_id, "id": sent.id,
            "client_message_id": sent.client_message_id})
     .to_string()
 }
 
 /// §106: blank → a fresh 19-digit client message id; else trimmed.
-fn cmid_or_new(client_message_id: &str) -> String {
+pub(crate) fn cmid_or_new(client_message_id: &str) -> String {
     let t = client_message_id.trim();
     if t.is_empty() {
         ost::api::new_client_message_id()
@@ -4696,6 +4946,150 @@ pub extern "C" fn ostmac_chat_tab_remove(
     string_to_c(chat_tab_remove_json(&chat, &tab))
 }
 
+/// My Azure boards JSON (legacy REST list). See
+/// [`whiteboard_list_json`]. WHITEBOARD-BUILD.
+#[no_mangle]
+pub extern "C" fn ostmac_whiteboard_list() -> *mut c_char {
+    string_to_c(whiteboard_list_json())
+}
+
+/// Create one Azure board. See [`whiteboard_create_json`]. Null
+/// `title` creates an untitled board. WHITEBOARD-BUILD.
+#[no_mangle]
+pub extern "C" fn ostmac_whiteboard_create(title: *const c_char) -> *mut c_char {
+    let t = match opt_cstr_to_string(title) {
+        Ok(o) => o,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    string_to_c(whiteboard_create_json(t.as_deref()))
+}
+
+/// Open one Azure board. See [`whiteboard_show_json`].
+/// WHITEBOARD-BUILD.
+#[no_mangle]
+pub extern "C" fn ostmac_whiteboard_show(board_id: *const c_char) -> *mut c_char {
+    match cstr_to_string(board_id) {
+        Ok(id) => string_to_c(whiteboard_show_json(&id)),
+        Err(e) => string_to_c(err_json("arg", e)),
+    }
+}
+
+/// Mint a share link on one Azure board. See
+/// [`whiteboard_share_json`]. WHITEBOARD-BUILD.
+#[no_mangle]
+pub extern "C" fn ostmac_whiteboard_share(board_id: *const c_char) -> *mut c_char {
+    match cstr_to_string(board_id) {
+        Ok(id) => string_to_c(whiteboard_share_json(&id)),
+        Err(e) => string_to_c(err_json("arg", e)),
+    }
+}
+
+/// My permissions on one Azure board. See
+/// [`whiteboard_my_perms_json`]. WHITEBOARD-BUILD.
+#[no_mangle]
+pub extern "C" fn ostmac_whiteboard_my_perms(board_id: *const c_char) -> *mut c_char {
+    match cstr_to_string(board_id) {
+        Ok(id) => string_to_c(whiteboard_my_perms_json(&id)),
+        Err(e) => string_to_c(err_json("arg", e)),
+    }
+}
+
+/// One legacy content page (ink-sync READ). See
+/// [`whiteboard_content_json`]. Null `cursor` reads the first page.
+/// WHITEBOARD-BUILD.
+#[no_mangle]
+pub extern "C" fn ostmac_whiteboard_content(
+    board_id: *const c_char,
+    cursor: *const c_char,
+) -> *mut c_char {
+    let id = match cstr_to_string(board_id) {
+        Ok(s) => s,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    let c = match opt_cstr_to_string(cursor) {
+        Ok(o) => o,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    string_to_c(whiteboard_content_json(&id, c.as_deref()))
+}
+
+/// Join one board file's delta session (ink-sync channel open; the
+/// socket token never crosses the FFI). See
+/// [`whiteboard_join_json`]. Null `display_name` sends no name.
+/// WHITEBOARD-BUILD.
+#[no_mangle]
+pub extern "C" fn ostmac_whiteboard_join(
+    site_url: *const c_char,
+    drive_id: *const c_char,
+    item_id: *const c_char,
+    auth_header: *const c_char,
+    display_name: *const c_char,
+) -> *mut c_char {
+    let site = match cstr_to_string(site_url) {
+        Ok(s) => s,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    let drive = match cstr_to_string(drive_id) {
+        Ok(s) => s,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    let item = match cstr_to_string(item_id) {
+        Ok(s) => s,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    let auth = match cstr_to_string(auth_header) {
+        Ok(s) => s,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    let name = match opt_cstr_to_string(display_name) {
+        Ok(o) => o,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    string_to_c(whiteboard_join_json(&site, &drive, &item, &auth, name.as_deref()))
+}
+
+/// Teams tab-config URLs for a board (pure, no network). See
+/// [`whiteboard_tab_urls_json`]. Nulls select the other board kind.
+/// WHITEBOARD-BUILD.
+#[no_mangle]
+pub extern "C" fn ostmac_whiteboard_tab_urls(
+    board_id: *const c_char,
+    token: *const c_char,
+    board_web_url: *const c_char,
+) -> *mut c_char {
+    let id = match opt_cstr_to_string(board_id) {
+        Ok(o) => o,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    let t = match opt_cstr_to_string(token) {
+        Ok(o) => o,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    let w = match opt_cstr_to_string(board_web_url) {
+        Ok(o) => o,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    string_to_c(whiteboard_tab_urls_json(id.as_deref(), t.as_deref(), w.as_deref()))
+}
+
+/// Tenant Fluid toggle probe (ODSP live-gate). See
+/// [`whiteboard_fluid_enabled_json`]. WHITEBOARD-BUILD.
+#[no_mangle]
+pub extern "C" fn ostmac_whiteboard_fluid_enabled(
+    site_url: *const c_char,
+    drive_id: *const c_char,
+) -> *mut c_char {
+    let site = match cstr_to_string(site_url) {
+        Ok(s) => s,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    let drive = match cstr_to_string(drive_id) {
+        Ok(s) => s,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    string_to_c(whiteboard_fluid_enabled_json(&site, &drive))
+}
+
 /// Add one user to a team. See [`team_member_add_json`].
 /// `owner` nonzero grants the owner role.
 #[no_mangle]
@@ -6526,6 +6920,7 @@ mod tests {
             importance: None,
             subject: None,
             mentions: vec![],
+            cards: None,
         };
         let v = message_to_json(&m);
         assert_eq!(v["id"], "m1");
@@ -6555,6 +6950,7 @@ mod tests {
             importance: None,
             subject: None,
             mentions: vec![],
+            cards: None,
         };
         let v = message_to_json(&m);
         assert_eq!(v["reply_to"], "m1");
@@ -7070,6 +7466,44 @@ mod tests {
     }
 
     #[test]
+    fn whiteboard_empty_args_is_error() {
+        for bad in ["", "   "] {
+            for v in [
+                whiteboard_show_json(bad),
+                whiteboard_share_json(bad),
+                whiteboard_my_perms_json(bad),
+                whiteboard_content_json(bad, None),
+                whiteboard_join_json(bad, "d", "i", "Bearer x", None),
+                whiteboard_join_json("s", bad, "i", "Bearer x", None),
+                whiteboard_join_json("s", "d", "i", bad, None),
+                whiteboard_fluid_enabled_json(bad, "d"),
+                whiteboard_fluid_enabled_json("s", bad),
+            ] {
+                let v: serde_json::Value = serde_json::from_str(&v).unwrap();
+                assert_eq!(v["ok"], false);
+                assert_eq!(v["error"], "arg");
+            }
+        }
+        // Pure tab-URL builders: both kinds, and the neither-kind bail.
+        let v: serde_json::Value =
+            serde_json::from_str(&whiteboard_tab_urls_json(Some("b1"), Some("tok"), None)).unwrap();
+        assert_eq!(v["ok"], true);
+        assert_eq!(
+            v["azure"]["content"],
+            "https://app.whiteboard.microsoft.com/me/whiteboards/b1?embed=1&token=tok&isOpenInTab=1"
+        );
+        assert!(v.get("fluid").is_none());
+        let v: serde_json::Value =
+            serde_json::from_str(&whiteboard_tab_urls_json(None, None, Some("https://example.com/w"))).unwrap();
+        assert_eq!(v["ok"], true);
+        assert!(v["fluid"]["content"].as_str().unwrap_or_default().contains("/tabappboard?encodedShareLink="));
+        let v: serde_json::Value =
+            serde_json::from_str(&whiteboard_tab_urls_json(None, None, None)).unwrap();
+        assert_eq!(v["ok"], false);
+        assert_eq!(v["error"], "arg");
+    }
+
+    #[test]
     fn ffi_team_join_null_is_arg_error() {
         unsafe {
             let p = ostmac_team_join(std::ptr::null());
@@ -7326,6 +7760,7 @@ mod tests {
                 importance: None,
                 subject: None,
                 mentions: vec![],
+                cards: None,
             }],
             backward_link: Some(
                 "https://h/v1/conversations/19:x/messages?page=2".to_string(),

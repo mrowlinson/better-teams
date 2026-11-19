@@ -50,6 +50,8 @@ struct ComposerPopoverContent: View {
             }
         case .praise:
             PraiseComposer(conv: conv, composer: composer)
+        case .loop:
+            LoopComposer(conv: conv, composer: composer)
         case .sticker:
             StickerPicker { pngPath, label in
                 conv.sendSticker(pngPath: pngPath, label: label)

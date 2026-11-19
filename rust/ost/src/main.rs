@@ -237,6 +237,141 @@ enum Commands {
         chat: bool,
     },
 
+    /// List my whiteboards (legacy Azure boards)
+    WbList,
+
+    /// Create one whiteboard (prints the created board)
+    WbCreate {
+        /// Board title (blank when omitted)
+        #[arg(long)]
+        title: Option<String>,
+    },
+
+    /// Open one whiteboard (prints the board)
+    WbShow {
+        /// Board id (from `wb-list` output)
+        board_id: String,
+    },
+
+    /// Rename one whiteboard (prints the updated board)
+    WbRename {
+        /// Board id (from `wb-list` output)
+        board_id: String,
+
+        /// New board title
+        #[arg(long)]
+        title: String,
+    },
+
+    /// Delete one whiteboard
+    WbDelete {
+        /// Board id (from `wb-list` output)
+        board_id: String,
+    },
+
+    /// Mint a share link on one whiteboard (prints the link)
+    WbShare {
+        /// Board id (from `wb-list` output)
+        board_id: String,
+    },
+
+    /// Fetch one whiteboard's share link (prints the link)
+    WbShareShow {
+        /// Board id (from `wb-list` output)
+        board_id: String,
+    },
+
+    /// Revoke one whiteboard's share link
+    WbUnshare {
+        /// Board id (from `wb-list` output)
+        board_id: String,
+    },
+
+    /// List one whiteboard's collaborators
+    WbCollaborators {
+        /// Board id (from `wb-list` output)
+        board_id: String,
+    },
+
+    /// Read my permissions on one whiteboard
+    WbMyPerms {
+        /// Board id (from `wb-list` output)
+        board_id: String,
+    },
+
+    /// Redeem a legacy whiteboard share token
+    WbRedeem {
+        /// Share token (from `wb-share` output)
+        token: String,
+    },
+
+    /// Read one whiteboard content page (ink-sync read path)
+    WbContent {
+        /// Board id (from `wb-list` output)
+        board_id: String,
+
+        /// Next-page cursor (from a previous `wb-content` run)
+        #[arg(long)]
+        cursor: Option<String>,
+    },
+
+    /// Join one board file's delta session (ink-sync channel open)
+    WbJoin {
+        /// SharePoint site URL (from the drive locator)
+        #[arg(long)]
+        site: String,
+
+        /// Drive id
+        #[arg(long)]
+        drive: String,
+
+        /// Board file item id
+        #[arg(long)]
+        item: String,
+
+        /// Full Authorization header value for the join body
+        #[arg(long)]
+        auth: String,
+    },
+
+    /// Print a board's Teams tab-config URLs (no network)
+    WbTabUrl {
+        /// Azure board id (with --token)
+        #[arg(long)]
+        board: Option<String>,
+
+        /// Azure share token (with --board)
+        #[arg(long)]
+        token: Option<String>,
+
+        /// Fluid board file web URL
+        #[arg(long)]
+        web_url: Option<String>,
+    },
+
+    /// Print a board's meeting participant URL (no network)
+    WbMeetingUrl {
+        /// Fluid board file web URL
+        #[arg(long)]
+        web_url: String,
+
+        /// Participant may edit (else view-only)
+        #[arg(long)]
+        can_edit: bool,
+
+        /// Proof token (ad-hoc access)
+        #[arg(long)]
+        proof_token: Option<String>,
+
+        /// Fluid file id
+        #[arg(long)]
+        fluid_file_id: Option<String>,
+
+        /// Annotation board
+        #[arg(long)]
+        annotation: bool,
+    },
+
     /// Team roster (Graph /teams/{id}/members).
     /// Bare: list members + owners. --owners: owners only.
     /// --add <user-id-or-upn> [--owner]: add. --remove <membership-id>: remove.
@@ -533,6 +668,230 @@ enum Commands {
         meeting_id: String,
     },
 
+    /// List a meeting's breakout rooms (MiddleTier, read-only)
+    BreakoutRooms {
+        /// Meeting coords JSON (tenant_id, organizer_id, thread_id,
+        /// message_id, additional_message_id?)
+        coords: String,
+    },
+
+    /// Create a meeting's breakout rooms (MiddleTier)
+    BreakoutCreate {
+        /// Meeting coords JSON (see breakout-rooms)
+        coords: String,
+
+        /// Room count (1..=50)
+        #[arg(short, long, default_value = "4")]
+        count: usize,
+
+        /// Preconfiguration JSON array (participants + room keys)
+        #[arg(long)]
+        preconfig: Option<String>,
+
+        /// Settings JSON (room_duration, allow_* flags, managers)
+        #[arg(long)]
+        settings: Option<String>,
+
+        /// MT requestVersion (capture pin; omit when unknown)
+        #[arg(long)]
+        version: Option<String>,
+    },
+
+    /// Add one breakout room (MiddleTier)
+    BreakoutAdd {
+        /// Meeting coords JSON (see breakout-rooms)
+        coords: String,
+
+        /// New room name
+        #[arg(short, long)]
+        name: String,
+
+        /// Participants JSON array
+        #[arg(short, long, default_value = "[]")]
+        participants: String,
+
+        /// MT requestVersion (capture pin; omit when unknown)
+        #[arg(long)]
+        version: Option<String>,
+    },
+
+    /// Read one breakout room (MiddleTier, read-only)
+    BreakoutGet {
+        /// Room coords JSON (see breakout-rooms)
+        coords: String,
+    },
+
+    /// Update one breakout room: rename + assign/move roster (MiddleTier)
+    BreakoutUpdate {
+        /// Room coords JSON (see breakout-rooms)
+        coords: String,
+
+        /// Room name
+        #[arg(short, long)]
+        name: String,
+
+        /// Participants JSON array (the room's full new roster)
+        #[arg(short, long, default_value = "[]")]
+        participants: String,
+
+        /// Restrict chat access in the room
+        #[arg(long)]
+        restrict_chat_access: bool,
+
+        /// MT requestVersion (capture pin; omit when unknown)
+        #[arg(long)]
+        version: Option<String>,
+    },
+
+    /// Delete one breakout room (MiddleTier)
+    BreakoutDelete {
+        /// Room coords JSON (see breakout-rooms)
+        coords: String,
+
+        /// MT requestVersion (capture pin; omit when unknown)
+        #[arg(long)]
+        version: Option<String>,
+    },
+
+    /// Delete all breakout rooms (MiddleTier)
+    BreakoutDeleteAll {
+        /// Meeting coords JSON (see breakout-rooms)
+        coords: String,
+
+        /// Rooms-references JSON body (omit for a bodyless delete)
+        #[arg(long)]
+        rooms_refs: Option<String>,
+
+        /// MT requestVersion (capture pin; omit when unknown)
+        #[arg(long)]
+        version: Option<String>,
+    },
+
+    /// Bulk assign/move participants across rooms (MiddleTier)
+    BreakoutAssign {
+        /// Meeting coords JSON (see breakout-rooms)
+        coords: String,
+
+        /// Rooms JSON array (coordinates, roomName, participants,
+        /// restrictChatAccess each)
+        #[arg(short, long)]
+        rooms: String,
+
+        /// Total participant count (switches to the v2 shape)
+        #[arg(long)]
+        total_participants: Option<u64>,
+
+        /// MT requestVersion (capture pin; omit when unknown)
+        #[arg(long)]
+        version: Option<String>,
+    },
+
+    /// Open 1..n breakout rooms (MiddleTier)
+    BreakoutOpen {
+        /// Meeting coords JSON (see breakout-rooms)
+        coords: String,
+
+        /// Room coordinates JSON array
+        #[arg(short, long)]
+        rooms: String,
+
+        /// Use the new timer flow
+        #[arg(long)]
+        new_timer_flow: bool,
+
+        /// Total participant count
+        #[arg(long)]
+        total_participants: Option<u64>,
+
+        /// MT requestVersion (capture pin; omit when unknown)
+        #[arg(long)]
+        version: Option<String>,
+    },
+
+    /// Close 1..n breakout rooms (MiddleTier)
+    BreakoutClose {
+        /// Meeting coords JSON (see breakout-rooms)
+        coords: String,
+
+        /// Room coordinates JSON array
+        #[arg(short, long)]
+        rooms: String,
+
+        /// Total participant count
+        #[arg(long)]
+        total_participants: Option<u64>,
+
+        /// MT requestVersion (capture pin; omit when unknown)
+        #[arg(long)]
+        version: Option<String>,
+    },
+
+    /// Read a meeting's breakout settings (MiddleTier, read-only)
+    BreakoutSettings {
+        /// Meeting coords JSON (see breakout-rooms)
+        coords: String,
+    },
+
+    /// Write a meeting's breakout settings (MiddleTier)
+    BreakoutSettingsSet {
+        /// Meeting coords JSON (see breakout-rooms)
+        coords: String,
+
+        /// Settings JSON (allow_users_to_select_breakout_room,
+        /// room_duration, managers, allow_join_back_to_main_meeting,
+        /// allow_move_participants_automatically)
+        #[arg(short, long)]
+        settings: String,
+
+        /// MT requestVersion (capture pin; omit when unknown)
+        #[arg(long)]
+        version: Option<String>,
+    },
+
+    /// Read a meeting's assignable breakout users (MiddleTier, read-only)
+    BreakoutAssignees {
+        /// Meeting coords JSON (see breakout-rooms)
+        coords: String,
+
+        /// Calendar event id filter
+        #[arg(long)]
+        calendar_event_id: Option<String>,
+
+        /// iCal UID filter
+        #[arg(long)]
+        ical_uid: Option<String>,
+
+        /// Event type filter
+        #[arg(long)]
+        event_type: Option<String>,
+
+        /// Team id filter
+        #[arg(long)]
+        team_id: Option<String>,
+
+        /// Max nest level
+        #[arg(long)]
+        max_nest_level: Option<String>,
+
+        /// User threshold
+        #[arg(long)]
+        user_threshold: Option<String>,
+    },
+
+    /// Announce a message into breakout rooms (MiddleTier)
+    BreakoutAnnounce {
+        /// Meeting coords JSON (see breakout-rooms)
+        coords: String,
+
+        /// Room thread ids, comma-separated
+        #[arg(short, long)]
+        rooms: String,
+
+        /// Message text
+        #[arg(short, long)]
+        message: String,
+    },
+
     /// Place a test call to yourself (self-call)
     CallTest {
         /// Duration in seconds to keep the call active
@@ -564,6 +923,43 @@ enum Commands {
         tone: bool,
     },
 
+    /// Copilot chat probe (ChatHub transport, free tier first).
+    /// `--print-frames`/`--replay` are offline; `--chat`/`--license-status`
+    /// need tenant recovery (phase-2 P0/P4) and are never run blind.
+    Copilot {
+        /// Print the built handshake/ping/invocation frames for PROMPT (offline)
+        #[arg(long)]
+        print_frames: Option<String>,
+
+        /// Parse one recorded server record and print the event (offline)
+        #[arg(long)]
+        replay: Option<String>,
+
+        /// Run one live chat turn (phase 2 only)
+        #[arg(long)]
+        chat: Option<String>,
+
+        /// Fetch the Taiger licence status (phase 2 only)
+        #[arg(long)]
+        license_status: bool,
+
+        /// Token family: sydney (mapped) or substrate (P4 probe)
+        #[arg(long, default_value = "sydney")]
+        token_family: String,
+
+        /// Model selector tone (capture-pin; default Magic = Auto)
+        #[arg(long, default_value = "Magic")]
+        tone: String,
+
+        /// Extra optionsSets flags, repeatable (default: none = free tier)
+        #[arg(long)]
+        option_set: Vec<String>,
+
+        /// Hub env: default, prod, sdf, msit, gcch, dod, teams2024
+        #[arg(long, default_value = "default")]
+        hub: String,
+    },
+
     /// Test microphone capture: record 3 seconds then play back
     #[cfg(feature = "audio")]
     MicTest,
@@ -571,6 +967,137 @@ enum Commands {
     /// Test camera capture: record 3 seconds then play back in SDL2 window
     #[cfg(feature = "video-capture")]
     CamTest,
+
+    /// Loop/Fluid components (RE-mapped private surface, §126)
+    Loop {
+        #[command(subcommand)]
+        action: LoopCommands,
+    },
+}
+
+/// Loop sub-verbs: create (C1), page (C4), send (E1), read (S1/S2/S3),
+/// sync (S4). Every verb takes --dry-run (prints the exact request,
+/// no network, no auth) — the offline verification vehicle.
+#[derive(Subcommand)]
+enum LoopCommands {
+    /// Create a Fluid file + container (C1)
+    Create {
+        /// SharePoint/OneDrive site origin (file's host)
+        #[arg(long)]
+        site: String,
+        /// Drive id
+        #[arg(long)]
+        drive: String,
+        /// Folder path in the drive
+        #[arg(long, default_value = "Loop")]
+        folder: String,
+        /// File name (*.loop)
+        #[arg(long)]
+        file: String,
+        /// Detached-container summary string (P2 captures the chat template)
+        #[arg(long)]
+        body: String,
+        /// Single-request share-link params (createLinkScope/Role query)
+        #[arg(long)]
+        share: Option<String>,
+        /// Print the request without sending it
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// Create a Loop page (C4 storage API)
+    Page {
+        /// Site URL for the storage id
+        #[arg(long)]
+        site: String,
+        /// Drive id for the storage id
+        #[arg(long)]
+        drive: String,
+        /// Page title
+        #[arg(long)]
+        title: String,
+        /// Content type (e.g. html)
+        #[arg(long)]
+        content_type: String,
+        /// Content value
+        #[arg(long)]
+        content: String,
+        /// Page path
+        #[arg(long, default_value = "/")]
+        path: String,
+        /// Print the request without sending it
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// Send a message carrying a Loop card (E1, cards-first)
+    Send {
+        /// Chat thread id
+        #[arg(long)]
+        to: String,
+        /// Component URL from C3
+        #[arg(long)]
+        component_url: String,
+        /// Accompanying text
+        #[arg(long, default_value = "")]
+        text: String,
+        /// Print the request without sending it
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// Read a Loop page snapshot (S1: --host) or an ODSP snapshot
+    /// (S2: --site) / ops range (S3: --site + --ops start:end)
+    Read {
+        /// Page host (S1)
+        #[arg(long)]
+        host: Option<String>,
+        /// Drive id (S1/S2/S3)
+        #[arg(long)]
+        drive: Option<String>,
+        /// Item id (S1/S2/S3)
+        #[arg(long)]
+        item: Option<String>,
+        /// ODSP file site origin (S2/S3)
+        #[arg(long)]
+        site: Option<String>,
+        /// Ops range start:end (S3; without it S2 loads)
+        #[arg(long)]
+        ops: Option<String>,
+        /// Redeem link for single-round-trip S2
+        #[arg(long)]
+        share_link: Option<String>,
+        /// Print the request without sending it
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// Join a collab session: socket creds for one file (S4)
+    Sync {
+        /// ODSP file site origin
+        #[arg(long)]
+        site: String,
+        /// Drive id
+        #[arg(long)]
+        drive: String,
+        /// Item id
+        #[arg(long)]
+        item: String,
+        /// Print the request without sending it
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
+
+/// Print one request exactly as it would go out (loop --dry-run):
+/// method + URL, headers, blank line, body. No network, no auth.
+fn print_dry_run(method: &str, url: &str, headers: &[(&str, &str)], body: &str) {
+    println!("{} {}", method, url);
+    for (k, v) in headers {
+        println!("{}: {}", k, v);
+    }
+    println!();
+    println!("{}", body);
 }
 
 #[tokio::main]
@@ -638,6 +1165,71 @@ async fn main() -> Result<()> {
             } else {
                 api::remove_channel_tab(&target, &tab).await?;
             }
+        }
+        Commands::WbList => {
+            tracing::info!("Fetching whiteboards...");
+            api::list_whiteboards().await?;
+        }
+        Commands::WbCreate { title } => {
+            tracing::info!("Creating whiteboard...");
+            api::create_whiteboard(title.as_deref()).await?;
+        }
+        Commands::WbShow { board_id } => {
+            tracing::info!("Fetching whiteboard...");
+            api::show_whiteboard(&board_id).await?;
+        }
+        Commands::WbRename { board_id, title } => {
+            tracing::info!("Renaming whiteboard...");
+            api::rename_whiteboard(&board_id, &title).await?;
+        }
+        Commands::WbDelete { board_id } => {
+            tracing::info!("Deleting whiteboard...");
+            api::delete_whiteboard(&board_id).await?;
+        }
+        Commands::WbShare { board_id } => {
+            tracing::info!("Sharing whiteboard...");
+            api::share_whiteboard(&board_id).await?;
+        }
+        Commands::WbShareShow { board_id } => {
+            tracing::info!("Fetching whiteboard share link...");
+            api::show_share_link(&board_id).await?;
+        }
+        Commands::WbUnshare { board_id } => {
+            tracing::info!("Revoking whiteboard share link...");
+            api::revoke_share_link(&board_id).await?;
+        }
+        Commands::WbCollaborators { board_id } => {
+            tracing::info!("Fetching whiteboard collaborators...");
+            api::show_collaborators(&board_id).await?;
+        }
+        Commands::WbMyPerms { board_id } => {
+            tracing::info!("Fetching whiteboard permissions...");
+            api::show_my_permissions(&board_id).await?;
+        }
+        Commands::WbRedeem { token } => {
+            tracing::info!("Redeeming whiteboard share token...");
+            api::redeem_whiteboard(&token).await?;
+        }
+        Commands::WbContent { board_id, cursor } => {
+            tracing::info!("Reading whiteboard content...");
+            api::show_content(&board_id, cursor.as_deref()).await?;
+        }
+        Commands::WbJoin { site, drive, item, auth } => {
+            tracing::info!("Joining whiteboard session...");
+            api::join_whiteboard(&site, &drive, &item, &auth).await?;
+        }
+        Commands::WbTabUrl { board, token, web_url } => {
+            api::show_tab_urls(board.as_deref(), token.as_deref(), web_url.as_deref()).await?;
+        }
+        Commands::WbMeetingUrl { web_url, can_edit, proof_token, fluid_file_id, annotation } => {
+            api::show_meeting_url(
+                &web_url,
+                can_edit,
+                proof_token.as_deref(),
+                fluid_file_id.as_deref(),
+                annotation,
+            )
+            .await?;
         }
         Commands::Members {
             team,
@@ -960,6 +1552,79 @@ async fn main() -> Result<()> {
         Commands::MeetingCapture { meeting_id } => {
             api::show_meeting_capture(&meeting_id).await?;
         }
+        Commands::BreakoutRooms { coords } => {
+            api::show_breakout_rooms(&coords).await?;
+        }
+        Commands::BreakoutCreate { coords, count, preconfig, settings, version } => {
+            api::show_breakout_create(&coords, count, preconfig.as_deref(), settings.as_deref(), version.as_deref())
+                .await?;
+        }
+        Commands::BreakoutAdd { coords, name, participants, version } => {
+            api::show_breakout_add(&coords, &name, &participants, version.as_deref()).await?;
+        }
+        Commands::BreakoutGet { coords } => {
+            api::show_breakout_get(&coords).await?;
+        }
+        Commands::BreakoutUpdate { coords, name, participants, restrict_chat_access, version } => {
+            api::show_breakout_update(&coords, &name, &participants, restrict_chat_access, version.as_deref()).await?;
+        }
+        Commands::BreakoutDelete { coords, version } => {
+            api::show_breakout_delete(&coords, version.as_deref()).await?;
+        }
+        Commands::BreakoutDeleteAll { coords, rooms_refs, version } => {
+            api::show_breakout_delete_all(&coords, rooms_refs.as_deref(), version.as_deref()).await?;
+        }
+        Commands::BreakoutAssign { coords, rooms, total_participants, version } => {
+            api::show_breakout_assign(&coords, &rooms, total_participants, version.as_deref()).await?;
+        }
+        Commands::BreakoutOpen { coords, rooms, new_timer_flow, total_participants, version } => {
+            api::show_breakout_open(&coords, &rooms, new_timer_flow, total_participants, version.as_deref()).await?;
+        }
+        Commands::BreakoutClose { coords, rooms, total_participants, version } => {
+            api::show_breakout_close(&coords, &rooms, total_participants, version.as_deref()).await?;
+        }
+        Commands::BreakoutSettings { coords } => {
+            api::show_breakout_settings(&coords).await?;
+        }
+        Commands::BreakoutSettingsSet { coords, settings, version } => {
+            api::show_breakout_settings_set(&coords, &settings, version.as_deref()).await?;
+        }
+        Commands::BreakoutAssignees {
+            coords,
+            calendar_event_id,
+            ical_uid,
+            event_type,
+            team_id,
+            max_nest_level,
+            user_threshold,
+        } => {
+            api::show_breakout_assignees(
+                &coords,
+                calendar_event_id.as_deref(),
+                ical_uid.as_deref(),
+                event_type.as_deref(),
+                team_id.as_deref(),
+                max_nest_level.as_deref(),
+                user_threshold.as_deref(),
+            )
+            .await?;
+        }
+        Commands::BreakoutAnnounce { coords, rooms, message } => {
+            api::show_breakout_announce(&coords, &rooms, &message).await?;
+        }
+        Commands::Copilot {
+            print_frames,
+            replay,
+            chat,
+            license_status,
+            token_family,
+            tone,
+            option_set,
+            hub,
+        } => {
+            copilot_probe(print_frames, replay, chat, license_status, &token_family, &tone, option_set, &hub)
+                .await?;
+        }
         Commands::Meetings { limit, parse } => {
             if let Some(raw) = parse {
                 let t = api::parse_join_url(&raw);
@@ -975,14 +1640,231 @@ async fn main() -> Result<()> {
                 api::list_upcoming_meetings(limit).await?;
             }
         }
+        Commands::Loop { action } => match action {
+            LoopCommands::Create {
+                site, drive, folder, file, body, share, dry_run,
+            } => {
+                let url = api::snapshot_create_url(&site, &drive, &folder, &file, share.as_deref());
+                if dry_run {
+                    print_dry_run("POST", &url, &[("Content-Type", "application/json")], &body);
+                } else {
+                    let c = api::create_snapshot(&site, &drive, &folder, &file, &body, share.as_deref()).await?;
+                    println!("{}", serde_json::to_string_pretty(&c)?);
+                }
+            }
+            LoopCommands::Page {
+                site, drive, title, content_type, content, path, dry_run,
+            } => {
+                let url = api::storage_pages_url(&site, &drive);
+                let body = api::page_create_body(&title, &content_type, &content, &path, None);
+                if dry_run {
+                    print_dry_run("POST", &url, &[("Content-Type", "application/json")], &body.to_string());
+                } else {
+                    let link = api::create_loop_page(&site, &drive, &title, &content_type, &content, &path).await?;
+                    println!("link: {}", link);
+                }
+            }
+            LoopCommands::Send { to, component_url, text, dry_run } => {
+                let cards = api::embed_cards_json(&component_url);
+                let body = api::embed_message_body(&text, &cards);
+                if dry_run {
+                    // No client here on purpose: dry-run never touches
+                    // auth; {chatSvc} is the account's chat-service host.
+                    let url = format!("{{chatSvc}}/v1/users/ME/conversations/{}/messages", to);
+                    print_dry_run("POST", &url, &[("Content-Type", "application/json")], &body.to_string());
+                } else {
+                    let client = api::client::TeamsClient::new().await?;
+                    let cmid = api::new_client_message_id();
+                    let sent = api::send_loop_embed(&client, &to, &text, &component_url, &cmid).await?;
+                    println!("id: {}", sent.id.as_deref().unwrap_or(""));
+                    println!("client_message_id: {}", sent.client_message_id);
+                }
+            }
+            LoopCommands::Read {
+                host, drive, item, site, ops, share_link, dry_run,
+            } => {
+                if let Some(h) = host {
+                    let (d, i) = (drive.unwrap_or_default(), item.unwrap_or_default());
+                    if d.trim().is_empty() || i.trim().is_empty() {
+                        anyhow::bail!("page read needs --drive and --item");
+                    }
+                    let url = api::page_read_url(&h, &d, &i);
+                    let body = api::page_read_body(None, None);
+                    if dry_run {
+                        print_dry_run("POST", &url, &[("Content-Type", "application/json")], &body.to_string());
+                    } else {
+                        println!("{}", api::read_loop_page(&h, &d, &i).await?);
+                    }
+                } else if let Some(s) = site {
+                    let (d, i) = (drive.unwrap_or_default(), item.unwrap_or_default());
+                    if d.trim().is_empty() || i.trim().is_empty() {
+                        anyhow::bail!("snapshot/ops read needs --drive and --item");
+                    }
+                    match ops {
+                        Some(range) => {
+                            let (a, b) = range.split_once(':').unwrap_or(("", ""));
+                            let (start, end): (u64, u64) =
+                                (a.trim().parse().unwrap_or(0), b.trim().parse().unwrap_or(0));
+                            let url = api::ops_fetch_url(&s, &d, &i, start, end);
+                            if dry_run {
+                                print_dry_run("GET", &url, &[("Accept", "application/json")], "");
+                            } else {
+                                let v = api::ops_fetch(&s, &d, &i, start, end).await?;
+                                println!("{}", serde_json::to_string_pretty(&v)?);
+                            }
+                        }
+                        None => {
+                            let url = api::snapshot_load_url(&s, &d, &i, share_link.as_deref());
+                            if dry_run {
+                                print_dry_run("GET", &url, &[("Accept", "application/json")], "");
+                            } else {
+                                let v = api::snapshot_load(&s, &d, &i, share_link.as_deref()).await?;
+                                println!("{}", serde_json::to_string_pretty(&v)?);
+                            }
+                        }
+                    }
+                } else {
+                    anyhow::bail!("read needs --host (S1) or --site (S2/S3)");
+                }
+            }
+            LoopCommands::Sync { site, drive, item, dry_run } => {
+                let url = api::join_session_url(&site, &drive, &item);
+                if dry_run {
+                    print_dry_run("GET", &url, &[("Accept", "application/json")], "");
+                } else {
+                    let v = api::join_session(&site, &drive, &item).await?;
+                    println!("{}", serde_json::to_string_pretty(&v)?);
+                }
+            }
+        },
     }
 
     Ok(())
 }
 
+/// COPILOT-BUILD probe. Offline modes (`--print-frames`, `--replay`)
+/// never touch the network; live modes (`--chat`, `--license-status`)
+/// are phase-2 only (tenant recovery + owner brief).
+#[allow(clippy::too_many_arguments)]
+async fn copilot_probe(
+    print_frames: Option<String>,
+    replay: Option<String>,
+    chat: Option<String>,
+    license_status: bool,
+    token_family: &str,
+    tone: &str,
+    option_set: Vec<String>,
+    hub: &str,
+) -> Result<()> {
+    let mut turn = api::ChatTurn::free_tier("");
+    turn.tone = tone.to_string();
+    turn.options_sets = option_set;
+    if let Some(prompt) = print_frames {
+        turn.text = prompt;
+        let inv = api::chat_invocation(&turn, "0");
+        println!("f0 handshake: {}", api::handshake_request().replace('\u{1e}', "␞"));
+        println!("f2 ping: {}", api::ping_frame().replace('\u{1e}', "␞"));
+        println!("f3 invocation: {}", api::frame(&inv).replace('\u{1e}', "␞"));
+        let q = api::HubQuery::default();
+        let url = api::hub_url_2026(api::HUB_DEFAULT, &turn.conversation_id, "REDACTED", "teamshub", "teamshub", &q);
+        println!("url: {}", url);
+        return Ok(());
+    }
+    if let Some(record) = replay {
+        for r in api::split_frames(&record) {
+            println!("{:?}", api::parse_server_record(r));
+        }
+        return Ok(());
+    }
+    let profile = config::active_profile();
+    if license_status {
+        let scope = format!("{}/.default", api::TAIGER_BASE);
+        let grant = auth::oauth::token_for_scope_for(&profile, &scope).await?;
+        let (oid, tid) = api::jwt_oid_tid(&grant.access_token)
+            .ok_or_else(|| anyhow::anyhow!("token has no oid/tid"))?;
+        let s = api::license_status(&grant.access_token, &oid, &tid).await;
+        println!("status: {}", s.status);
+        println!("licensed: {}", api::licensed(&s.status));
+        if let Some(r) = api::license_reason(&s.status) {
+            println!("reason: {}", r);
+        }
+        if let Some(e) = s.error_text() {
+            println!("error: {}", e);
+        }
+        return Ok(());
+    }
+    if let Some(prompt) = chat {
+        turn.text = prompt;
+        let token = match token_family {
+            "substrate" => api::substrate_token_for(&profile).await?,
+            _ => api::sydney_token_for(&profile).await?,
+        };
+        let url = if hub == "teams2024" {
+            let (oid, tid) =
+                api::jwt_oid_tid(&token).ok_or_else(|| anyhow::anyhow!("token has no oid/tid"))?;
+            api::hub_url_teams(&oid, &tid, &token)
+        } else {
+            let base = match hub {
+                "prod" => api::HUB_PROD,
+                "sdf" => api::HUB_SDF,
+                "msit" => api::HUB_MSIT,
+                "gcch" => api::HUB_GCCH,
+                "dod" => api::HUB_DOD,
+                _ => api::HUB_DEFAULT,
+            };
+            api::hub_url_2026(base, &turn.conversation_id, &token, "teamshub", "teamshub", &api::HubQuery::default())
+        };
+        let answer = api::run_turn(&url, &turn, |p| match p {
+            api::TurnProgress::Text(t) => {
+                print!("\r\x1b[2K{}", t.lines().last().unwrap_or(""));
+                use std::io::Write;
+                let _ = std::io::stdout().flush();
+            }
+            api::TurnProgress::Progress(p) => tracing::info!("progress: {}", p),
+            api::TurnProgress::Done(_) => {}
+        })
+        .await?;
+        println!("\r\x1b[2K{}", answer.text);
+        for s in &answer.suggestions {
+            println!("suggestion: {}", s);
+        }
+        return Ok(());
+    }
+    anyhow::bail!("pick one: --print-frames | --replay | --chat | --license-status");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn copilot_probe_parses_offline_and_live_modes() {
+        let cli = Cli::try_parse_from(["teams-cli", "copilot", "--print-frames", "hi"]).unwrap();
+        match cli.command {
+            Commands::Copilot { print_frames, tone, token_family, hub, .. } => {
+                assert_eq!(print_frames.as_deref(), Some("hi"));
+                assert_eq!(tone, "Magic");
+                assert_eq!(token_family, "sydney");
+                assert_eq!(hub, "default");
+            }
+            _ => panic!("wrong command parsed"),
+        }
+        let cli = Cli::try_parse_from([
+            "teams-cli", "copilot", "--chat", "hi", "--token-family", "substrate",
+            "--tone", "Chat", "--option-set", "a", "--option-set", "b", "--hub", "teams2024",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Copilot { chat, token_family, tone, option_set, hub, .. } => {
+                assert_eq!(chat.as_deref(), Some("hi"));
+                assert_eq!(token_family, "substrate");
+                assert_eq!(tone, "Chat");
+                assert_eq!(option_set, vec!["a".to_string(), "b".to_string()]);
+                assert_eq!(hub, "teams2024");
+            }
+            _ => panic!("wrong command parsed"),
+        }
+    }
 
     #[test]
     fn mark_read_parses_to_and_message_id() {
@@ -1011,6 +1893,57 @@ mod tests {
     }
 
     #[test]
+    fn breakout_verbs_parse() {
+        let coords = r#"{"tenant_id":"t","organizer_id":"o","thread_id":"19:x","message_id":"1"}"#;
+        match Cli::try_parse_from(["teams-cli", "breakout-rooms", coords]).expect("rooms parses").command {
+            Commands::BreakoutRooms { coords: c } => assert!(c.contains("tenant_id")),
+            _ => panic!("wrong command parsed"),
+        }
+        match Cli::try_parse_from([
+            "teams-cli", "breakout-create", coords, "--count", "6", "--version", "3",
+        ])
+        .expect("create parses")
+        .command
+        {
+            Commands::BreakoutCreate { count, version, preconfig, .. } => {
+                assert_eq!(count, 6);
+                assert_eq!(version.as_deref(), Some("3"));
+                assert_eq!(preconfig, None);
+            }
+            _ => panic!("wrong command parsed"),
+        }
+        match Cli::try_parse_from([
+            "teams-cli", "breakout-update", coords, "--name", "R", "--restrict-chat-access",
+        ])
+        .expect("update parses")
+        .command
+        {
+            Commands::BreakoutUpdate { name, restrict_chat_access, .. } => {
+                assert_eq!(name, "R");
+                assert!(restrict_chat_access);
+            }
+            _ => panic!("wrong command parsed"),
+        }
+        match Cli::try_parse_from(["teams-cli", "breakout-announce", coords, "--rooms", "a,b", "--message", "hi"])
+            .expect("announce parses")
+            .command
+        {
+            Commands::BreakoutAnnounce { rooms, message, .. } => {
+                assert_eq!(rooms, "a,b");
+                assert_eq!(message, "hi");
+            }
+            _ => panic!("wrong command parsed"),
+        }
+    }
+
+    #[test]
+    fn breakout_verbs_require_their_args() {
+        assert!(Cli::try_parse_from(["teams-cli", "breakout-rooms"]).is_err());
+        assert!(Cli::try_parse_from(["teams-cli", "breakout-add", "{}"]).is_err());
+        assert!(Cli::try_parse_from(["teams-cli", "breakout-assign", "{}", "--rooms", "[]"]).is_ok());
+    }
+
+    #[test]
     fn read_still_parses_unchanged() {
         let cli = Cli::try_parse_from(["teams-cli", "read", "19:abc", "--limit", "5"])
             .expect("read parses");
@@ -1020,6 +1953,42 @@ mod tests {
                 assert_eq!(limit, 5);
             }
             _ => panic!("wrong command parsed"),
+        }
+    }
+
+    #[test]
+    fn loop_nested_verbs_parse_with_dry_run() {
+        let cli = Cli::try_parse_from([
+            "teams-cli", "loop", "create", "--site", "https://s", "--drive", "d",
+            "--file", "x.loop", "--body", "{}", "--dry-run",
+        ])
+        .expect("loop create parses");
+        match cli.command {
+            Commands::Loop { action: LoopCommands::Create { folder, dry_run, .. } } => {
+                assert_eq!(folder, "Loop");
+                assert!(dry_run);
+            }
+            _ => panic!("wrong command parsed"),
+        }
+        let cli = Cli::try_parse_from([
+            "teams-cli", "loop", "send", "--to", "19:abc", "--component-url", "https://t/x",
+        ])
+        .expect("loop send parses");
+        match cli.command {
+            Commands::Loop { action: LoopCommands::Send { to, dry_run, .. } } => {
+                assert_eq!(to, "19:abc");
+                assert!(!dry_run);
+            }
+            _ => panic!("wrong command parsed"),
+        }
+        // All five sub-verbs exist.
+        for args in [
+            vec!["teams-cli", "loop", "page", "--site", "s", "--drive", "d", "--title", "t",
+                 "--content-type", "html", "--content", "c"],
+            vec!["teams-cli", "loop", "read", "--host", "h", "--drive", "d", "--item", "i"],
+            vec!["teams-cli", "loop", "sync", "--site", "s", "--drive", "d", "--item", "i"],
+        ] {
+            assert!(Cli::try_parse_from(args).is_ok());
         }
     }
 }

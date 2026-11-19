@@ -1,11 +1,10 @@
 // WhiteboardInk.swift — WHITEBOARD: local-only ink for the whiteboard
 // pane's sketch section.
 //
-// There is no public board-content API (Graph carries only the tab
-// shell: teamsAppId 95de633a-… + the board's content URL; board
-// creation lives behind the undocumented whiteboard.microsoft.com
-// service), so collaborative ink is impossible here. The shared board
-// itself renders through the tab's embed URL; this store holds only
+// The shared board behind the tab now has a mapped surface
+// (WHITEBOARD-BUILD: WhiteboardSharedStore over the RE-mapped
+// REST+ODSP calls, live-gated with the server's reason when
+// unreachable). This store stays the offline fallback: it holds only
 // the user's own sketch strokes, per board, in memory. Nothing here
 // is synced, saved to disk, or sent anywhere.
 import Combine

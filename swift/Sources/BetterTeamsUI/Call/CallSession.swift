@@ -49,6 +49,27 @@ public final class CallSession {
     @ObservationIgnored let devices: CallDevices
     /// Breakout rooms plan (BREAKOUT): per-call state, reset at teardown.
     @ObservationIgnored let breakoutRooms = BreakoutRoomsStore()
+    /// Live rooms coords (BREAKOUT-BUILD): nil until a join path that
+    /// knows the meeting's Teams coordinates fills it (evidence seeds
+    /// fill it for captures). Non-nil + signed in = the sheet's live
+    /// path enables against MiddleTier.
+    @ObservationIgnored var breakoutCoords: BreakoutCoords?
+    @ObservationIgnored private var liveRoomsStore: LiveBreakoutRoomsStore?
+    /// The live rooms store, created on first use while coords hold
+    /// (nil = the sheet shows disabled-with-reason). `demo` answers
+    /// from the in-memory transport (evidence only, never live).
+    func liveRooms(demo: Bool = false) -> LiveBreakoutRoomsStore? {
+        guard let c = breakoutCoords else {
+            liveRoomsStore = nil
+            return nil
+        }
+        if liveRoomsStore == nil {
+            liveRoomsStore = LiveBreakoutRoomsStore(
+                coords: c,
+                transport: demo ? DemoLiveBreakoutTransport.seeded() : CoreLiveBreakoutTransport())
+        }
+        return liveRoomsStore
+    }
     /// A video call. 1:1 (VIDEO1): the stage shows the remote video large
     /// with the self view as a picture-in-picture, and the camera starts
     /// on. Group chats and meetings (MEETVIDEO): the tile grid of
@@ -599,6 +620,8 @@ public final class CallSession {
         for v in remoteVideos.values { v.stop() }
         meetingVideo?.stop()
         breakoutRooms.reset()
+        liveRoomsStore = nil
+        breakoutCoords = nil
         devices.close()
         stage.detachFromHost()
         let w = window

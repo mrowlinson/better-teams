@@ -127,6 +127,7 @@ impl Fake {
             "graphBase": format!("{}/graph", self.base),
             "graphBetaBase": format!("{}/graph", self.base),
             "csaBase": format!("{}/csa", self.base),
+            "whiteboardBase": format!("{}/wb/", self.base),
         }));
         TeamsClient::for_test(c)
     }

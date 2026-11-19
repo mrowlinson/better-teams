@@ -743,6 +743,46 @@ public enum RustCore {
         }
     }
 
+    /// LOOPBUILD: E1 shapes for one component URL + text. Pure core
+    /// (no network): safe anywhere, powers the composer preview.
+    public static func loopShapes(componentURL: String, text: String) throws -> LoopShapesResponse {
+        try componentURL.withCString { uPtr in
+            try text.withCString { tPtr in
+                try call(ostmac_loop_shapes(uPtr, tPtr), as: LoopShapesResponse.self)
+            }
+        }
+    }
+
+    /// LOOPBUILD: post a message carrying a Loop card (E1).
+    /// Blocking FFI (network): call off the main thread.
+    public static func sendLoopIdem(
+        chatID: String, componentURL: String, text: String, clientMessageID: String
+    ) throws -> SendResponse {
+        try chatID.withCString { idPtr in
+            try componentURL.withCString { uPtr in
+                try text.withCString { tPtr in
+                    try clientMessageID.withCString { cPtr in
+                        try call(
+                            ostmac_loop_send_idem(idPtr, uPtr, tPtr, cPtr),
+                            as: SendResponse.self)
+                    }
+                }
+            }
+        }
+    }
+
+    /// LOOPBUILD: Loop page HTML snapshot (S1). Blocking FFI
+    /// (network): call off the main thread.
+    public static func loopPageRead(host: String, drive: String, item: String) throws -> LoopPageResponse {
+        try host.withCString { hPtr in
+            try drive.withCString { dPtr in
+                try item.withCString { iPtr in
+                    try call(ostmac_loop_page_read(hPtr, dPtr, iPtr), as: LoopPageResponse.self)
+                }
+            }
+        }
+    }
+
     /// §106 verify: the newest page of `chatID` searched for the client
     /// message id (nil message = not posted, as far as that page shows).
     public static func findClientMessage(chatID: String, clientMessageID: String) throws -> FindClientMessageResponse {
@@ -961,6 +1001,99 @@ public enum RustCore {
                 try call(
                     ostmac_chat_tab_remove(chatPtr, tabPtr),
                     as: TabRemoveResponse.self)
+            }
+        }
+    }
+
+    // MARK: - Whiteboard shared boards (whiteboardbuild lane)
+
+    /// My Azure boards (blocking FFI + network: call off main thread).
+    public static func whiteboardList() throws -> WhiteboardListResponse {
+        try call(ostmac_whiteboard_list(), as: WhiteboardListResponse.self)
+    }
+
+    /// Create one Azure board (blocking FFI + network: call off main thread).
+    public static func whiteboardCreate(title: String? = nil) throws -> WhiteboardBoardResponse {
+        try withOptionalCString(title) { ptr in
+            try call(ostmac_whiteboard_create(ptr), as: WhiteboardBoardResponse.self)
+        }
+    }
+
+    /// Open one Azure board (blocking FFI + network: call off main thread).
+    public static func whiteboardShow(boardID: String) throws -> WhiteboardBoardResponse {
+        try boardID.withCString { ptr in
+            try call(ostmac_whiteboard_show(ptr), as: WhiteboardBoardResponse.self)
+        }
+    }
+
+    /// Mint a share link on one Azure board (blocking FFI + network: call off main thread).
+    public static func whiteboardShare(boardID: String) throws -> WhiteboardShareResponse {
+        try boardID.withCString { ptr in
+            try call(ostmac_whiteboard_share(ptr), as: WhiteboardShareResponse.self)
+        }
+    }
+
+    /// My permissions on one Azure board (blocking FFI + network: call off main thread).
+    public static func whiteboardMyPerms(boardID: String) throws -> WhiteboardPermsResponse {
+        try boardID.withCString { ptr in
+            try call(ostmac_whiteboard_my_perms(ptr), as: WhiteboardPermsResponse.self)
+        }
+    }
+
+    /// One legacy content page, op counts only (blocking FFI + network: call off main thread).
+    public static func whiteboardContent(boardID: String, cursor: String? = nil) throws -> WhiteboardContentResponse {
+        try boardID.withCString { idPtr in
+            try withOptionalCString(cursor) { curPtr in
+                try call(
+                    ostmac_whiteboard_content(idPtr, curPtr),
+                    as: WhiteboardContentResponse.self)
+            }
+        }
+    }
+
+    /// Join one board file's delta session (blocking FFI + network: call off main thread).
+    /// The socket token never crosses the FFI; the answer only says whether one was issued.
+    public static func whiteboardJoin(
+        siteURL: String, driveID: String, itemID: String,
+        authHeader: String, displayName: String? = nil
+    ) throws -> WhiteboardJoinResponse {
+        try siteURL.withCString { sitePtr in
+            try driveID.withCString { drivePtr in
+                try itemID.withCString { itemPtr in
+                    try authHeader.withCString { authPtr in
+                        try withOptionalCString(displayName) { namePtr in
+                            try call(
+                                ostmac_whiteboard_join(sitePtr, drivePtr, itemPtr, authPtr, namePtr),
+                                as: WhiteboardJoinResponse.self)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Teams tab-config URLs for a board (pure core builders, no network, still blocking FFI).
+    public static func whiteboardTabURLs(
+        boardID: String? = nil, token: String? = nil, boardWebURL: String? = nil
+    ) throws -> WhiteboardTabURLsResponse {
+        try withOptionalCString(boardID) { idPtr in
+            try withOptionalCString(token) { tokPtr in
+                try withOptionalCString(boardWebURL) { webPtr in
+                    try call(
+                        ostmac_whiteboard_tab_urls(idPtr, tokPtr, webPtr),
+                        as: WhiteboardTabURLsResponse.self)
+                }
+            }
+        }
+    }
+
+    /// Tenant Fluid toggle probe (blocking FFI + network: call off main thread).
+    public static func whiteboardFluidEnabled(siteURL: String, driveID: String) throws -> WhiteboardFluidResponse {
+        try siteURL.withCString { sitePtr in
+            try driveID.withCString { drivePtr in
+                try call(
+                    ostmac_whiteboard_fluid_enabled(sitePtr, drivePtr),
+                    as: WhiteboardFluidResponse.self)
             }
         }
     }

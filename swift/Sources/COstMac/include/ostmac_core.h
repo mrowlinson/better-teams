@@ -121,6 +121,19 @@ char *ostmac_channel_tab_remove(const char *channel_id, const char *tab_id);
 char *ostmac_chat_tab_add(const char *chat_id, const char *display_name, const char *app_id, const char *url);
 char *ostmac_chat_tab_rename(const char *chat_id, const char *tab_id, const char *display_name);
 char *ostmac_chat_tab_remove(const char *chat_id, const char *tab_id);
+// WHITEBOARD-BUILD: Azure boards over the RE-mapped REST+ODSP surface.
+// list/show/share/perms/content/join/fluid_enabled need sign-in; tab_urls
+// is pure (no network). join never returns the socket token itself.
+// Caller frees every string.
+char *ostmac_whiteboard_list(void);
+char *ostmac_whiteboard_create(const char *title);
+char *ostmac_whiteboard_show(const char *board_id);
+char *ostmac_whiteboard_share(const char *board_id);
+char *ostmac_whiteboard_my_perms(const char *board_id);
+char *ostmac_whiteboard_content(const char *board_id, const char *cursor);
+char *ostmac_whiteboard_join(const char *site_url, const char *drive_id, const char *item_id, const char *auth_header, const char *display_name);
+char *ostmac_whiteboard_tab_urls(const char *board_id, const char *token, const char *board_web_url);
+char *ostmac_whiteboard_fluid_enabled(const char *site_url, const char *drive_id);
 /* APPHOST: app catalog + token broker. NULL profile = active. Tokens only
    inside the returned JSON; never log it. */
 char *ostmac_app_catalog_for(const char *profile);
@@ -242,6 +255,21 @@ char *ostmac_thread_reply_idem_opts(const char *channel_id, const char *root_id,
 // Caller frees.
 char *ostmac_send_praise_idem(const char *chat_id, const char *badge, const char *recipient,
                               const char *note, const char *sender, const char *client_message_id);
+// LOOPBUILD: Loop/Fluid components. shapes is pure (no network):
+// {ok, cards, body, body_string} for one component URL + text.
+// send posts the E1 embed (same idempotency contract as
+// ostmac_send_idem); create/page_create/page_read run C1/C4/S1.
+// Transports are live-unproven (phase-2 plan). Caller frees.
+char *ostmac_loop_shapes(const char *component_url, const char *text);
+char *ostmac_loop_send_idem(const char *chat_id, const char *component_url,
+                            const char *text, const char *client_message_id);
+char *ostmac_loop_create(const char *site, const char *drive_id, const char *folder,
+                         const char *file_name, const char *snapshot_body,
+                         const char *share_query);
+char *ostmac_loop_page_create(const char *site, const char *drive_id, const char *title,
+                              const char *content_type, const char *content_value,
+                              const char *path);
+char *ostmac_loop_page_read(const char *host, const char *drive_id, const char *item_id);
 // Stickers: send a local PNG as a sticker (AMS upload + sticker
 // message). `label` NULL/empty = "Sticker"; `client_message_id`
 // blank = fresh. Caller frees.
@@ -438,6 +466,20 @@ char *ostmac_meeting_recap_ai(const char *thread_id, const char *file_url);
 // Diagnostic (RECAP_FIELDS_LIVE probe): field NAMES, counts and status codes
 // of one meeting chat's recap sources; never values.
 char *ostmac_meeting_recap_field_shape(const char *thread_id);
+
+// COPILOT-BUILD: Copilot chat on the SignalR ChatHub transport (free tier).
+// Taiger licence read: {ok,status,is_eap,is_debug,licensed,reason?,error?}.
+// Caller frees.
+char *ostmac_copilot_license_status(void);
+// Start one chat turn; arg = {"prompt",conversation_id?} or a bare prompt:
+// {ok,turn_id} or {ok:false,error,code?} (code "auth" = sign in first).
+// Caller frees.
+char *ostmac_copilot_chat_start(const char *prompt);
+// Drain one turn: {ok,turn_id,text,done,progress?,answer?,error?} (text is
+// cumulative: replace, don't append). Caller frees.
+char *ostmac_copilot_chat_poll(const char *turn_id);
+// Cancel one turn (idempotent): {ok}. Caller frees.
+char *ostmac_copilot_chat_stop(const char *turn_id);
 
 // Create a view-only sharing link for one driveItem (Graph createLink).
 // scope NULL/empty = organization (org-only); "anonymous" = anyone link.
@@ -915,6 +957,19 @@ char *ostmac_meeting_capture_get(const char *meeting_id);
 // allowRecording/allowTranscription/recordAutomatically; at least one):
 // {ok,options} (the read-back) or {ok:false}. Caller frees.
 char *ostmac_meeting_capture_set(const char *meeting_id, const char *body);
+
+// Breakout rooms: pure request preview (op, coords JSON, args JSON):
+// {ok,op,method,url,body} or {ok:false}. No network. Caller frees.
+char *ostmac_breakout_request(const char *op, const char *coords, const char *args);
+
+// Breakout rooms: blocking executor (op, coords JSON, args JSON):
+// {ok,rooms?|room?|settings?|assignees?} or {ok:false}. Swift calls
+// off-main. Caller frees.
+char *ostmac_breakout_call(const char *op, const char *coords, const char *args);
+
+// Breakout rooms: pure coords encoder (coords JSON):
+// {ok,encoded} or {ok:false}. Caller frees.
+char *ostmac_breakout_encode_coords(const char *coords);
 
 // NOTE (R12 ffi-move-now B1): av_info moved to Swift (CoreLocal);
 // decl deleted.

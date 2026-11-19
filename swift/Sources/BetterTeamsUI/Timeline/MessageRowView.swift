@@ -376,9 +376,13 @@ struct MessageRowView: View {
             if !row.docs.isEmpty {
                 FileChips(docs: row.docs, actions: actions)
             }
-            // PRAISE: a mined Praise post renders natively (badge card),
-            // never as a generic card + fallback rows.
-            if let praise = PraiseCard.mine(fromRaw: message.raw ?? message.content) {
+            // LOOPBUILD: a mined Loop embed renders natively
+            // (component card), never as generic rows.
+            if let loop = LoopComponent.first(fromCards: message.loopCards) {
+                LoopComponentView(embed: loop)
+            } else if let praise = PraiseCard.mine(fromRaw: message.raw ?? message.content) {
+                // PRAISE: a mined Praise post renders natively (badge card),
+                // never as a generic card + fallback rows.
                 PraiseCardView(post: praise)
             } else {
                 let cards = MessageBubbleState.cards(for: message)

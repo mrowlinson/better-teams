@@ -40,6 +40,9 @@ public final class AppState: ObservableObject {
     /// Demo seeds fixtures offline; live fails closed with the consent
     /// message until the tenant consents ApprovalSolution.ReadWrite.
     public let approvals: ApprovalStore
+    /// COPILOT-BUILD: the one live Copilot conversation. Demo seeds
+    /// offline fixtures; live runs ChatHub turns through the core.
+    public let copilot: CopilotStore
     public let recordings: RecordingsViewModel
     public let transcripts: TranscriptsViewModel
     /// RECAP2: one recap per meeting for the unified viewer (chat Recap
@@ -533,6 +536,7 @@ public final class AppState: ObservableObject {
                 tasksFetcher: { DemoData.reminderTasksResponse(for: $0) },
                 localEdits: true)
             approvals = ApprovalStore.demo()
+            copilot = CopilotDemo.store()
             planner = PlannerViewModel(
                 teamsFetcher: { DemoData.teamsResponse() },
                 plansFetcher: { PlannerDemo.plansResponse(for: $0) },
@@ -600,6 +604,7 @@ public final class AppState: ObservableObject {
             reminders = RemindersViewModel()
             planner = PlannerViewModel(membersFetcher: { try RustCore.teamMembers(teamID: $0) })
             approvals = ApprovalStore.live()
+            copilot = CopilotStore.live()
             let liveRecordings = RecordingsViewModel()
             recordings = liveRecordings
             transcripts = TranscriptsViewModel(recordingLookup: { [weak liveRecordings] stem in

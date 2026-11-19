@@ -298,6 +298,8 @@ struct ChatPinnedTabPane: View {
     @Environment(\.windowModel) private var model
     /// Local ink for whiteboard tabs (in memory; never synced).
     @StateObject private var ink = WhiteboardInkStore()
+    /// Shared board behind a whiteboard tab (live-gated).
+    @StateObject private var shared = WhiteboardSharedStore()
 
     var body: some View {
         if let m = model {
@@ -305,6 +307,9 @@ struct ChatPinnedTabPane: View {
                 VStack(spacing: 0) {
                     Group { routeBody(m) }
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    Divider()
+                    WhiteboardSharedSection(
+                        boardID: tab.id, demo: m.frameHost.library.store.demo, shared: shared)
                     Divider()
                     WhiteboardSketchSection(boardID: tab.id, ink: ink)
                 }

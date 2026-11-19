@@ -9,6 +9,10 @@
 // APPROVALS lane: +3 lines (Approve/Reject Request, Refresh Approvals)
 // for the ordered approvals surface. OWNER OK PENDING — see
 // lanes/approvals REPORT.md.
+//
+// COPILOT-BUILD: +2 lines (New Copilot Chat, Stop Copilot) for the
+// ordered Copilot chat surface. OWNER OK PENDING — see
+// lanes/copilotbuild REPORT.md.
 import AppKit
 import XCTest
 
@@ -83,7 +87,9 @@ final class MenuShortcutCatalogGuardTests: XCTestCase {
         "File > Approve Request",
         "File > Reject Request",
         "File > Rename…",
+        "File > New Copilot Chat",
         "File > Move To…",
+        "File > Stop Copilot",
         "File > Copy To…",
         "File > Delete… [@⌫]",
         "File > Close Window [@W]",

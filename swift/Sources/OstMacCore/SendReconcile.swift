@@ -36,6 +36,8 @@ public struct OutgoingSend: Sendable, Equatable {
         case thread(rootID: String)
         /// PRAISE: a Praise card post (badge = wire token).
         case praise(badge: String, recipient: String, note: String, sender: String)
+        /// LOOPBUILD: a Loop embed post (E1, cards-first).
+        case loopComponent(componentURL: String, text: String)
     }
 
     public let chatID: String
@@ -122,6 +124,12 @@ public struct SendTransport: Sendable {
                 let id = try RustCore.sendPraiseIdem(
                     chatID: r.chatID, badge: badge, recipient: recipient, note: note,
                     sender: sender, clientMessageID: r.clientMessageID).id
+                MeetingChatUnmute.after(.send, chatID: r.chatID) // CHATSYNC3 R1
+                return id
+            case .loopComponent(let componentURL, let text):
+                let id = try RustCore.sendLoopIdem(
+                    chatID: r.chatID, componentURL: componentURL, text: text,
+                    clientMessageID: r.clientMessageID).id
                 MeetingChatUnmute.after(.send, chatID: r.chatID) // CHATSYNC3 R1
                 return id
             }

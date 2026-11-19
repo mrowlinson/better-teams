@@ -1,16 +1,19 @@
 //! API client module for Microsoft Teams
 
 pub mod apps;
+mod breakout;
 mod calendar;
 mod calweek;
 mod channel_moderation;
 mod chat;
 pub mod client;
+mod copilot;
 #[cfg(test)]
 pub(crate) mod fake_transport;
 mod files;
 mod filesearch;
 mod graph;
+mod loopcomp;
 mod me;
 pub mod media;
 mod meetings_plus;
@@ -26,6 +29,7 @@ mod team_settings;
 mod teams;
 mod todo;
 mod transcripts;
+pub mod whiteboard;
 #[cfg(test)]
 mod write_fakes;
 
@@ -86,7 +90,30 @@ pub use apps::{
     team_app_definitions_data, AppCatalog, AppEntitlement, AppManifest, AppStore, ConfigurableTab, SharePointSites,
     StaticTab, StoreSection, WebApplicationInfo,
 };
+pub use breakout::{
+    add_body, add_room_data, add_url, announce_body, announce_data, announce_url, assignees_data,
+    assignees_url, bulk_assign_data, bulk_body, bulk_url, close_body, close_rooms_data, close_url, coords_to_wire,
+    create_body, create_rooms_data, create_url, decode_thread_id, delete_all_rooms_data, delete_all_url,
+    delete_room_data, delete_url, encode_coords, encode_thread_id,
+    get_room_data, get_settings_data, get_url, list_rooms_data, list_url, mt_base_for, mt_join,
+    normalize_participant, denormalize_participant, open_body, open_rooms_data, open_url,
+    parse_announce_failure, parse_assignees, parse_room_detail, parse_rooms_list, parse_settings,
+    put_settings_data, settings_body, settings_url, show_breakout_add, show_breakout_announce,
+    show_breakout_assign, show_breakout_assignees, show_breakout_close, show_breakout_create,
+    show_breakout_delete, show_breakout_delete_all, show_breakout_get, show_breakout_open,
+    show_breakout_rooms, show_breakout_settings, show_breakout_settings_set, show_breakout_update,
+    update_body, update_room_data, update_url,
+    version_suffix, AnnounceFailure, Assignee, AssigneeQuery, BreakoutParticipant, BreakoutRoomInfo,
+    MeetingCoords, RoomSettings, BREAKOUT_FALLBACK_MT, MAX_ROOMS, TOTAL_PARTICIPANTS_LIMIT,
+};
 pub use tabs::TabInfo;
+pub use whiteboard::{
+    FluidFileInfo, WhiteboardCollaborator, WhiteboardContent, WhiteboardDrive,
+    WhiteboardDriveItem, WhiteboardFilesFolder, WhiteboardFluidLink, WhiteboardFluidMeta,
+    WhiteboardInfo, WhiteboardJoin, WhiteboardLicense, WhiteboardMyPerms,
+    WhiteboardRedeem, WhiteboardRedeemed, WhiteboardShare, WhiteboardSharePermission,
+    WhiteboardTreeInit,
+};
 pub use teams::TeamInfo;
 pub use teams::TeamMemberInfo;
 pub use todo::{TodoListInfo, TodoTaskInfo};
@@ -152,6 +179,22 @@ pub use chat::{
     pinned_items_remove, pinned_items_url, thread_pins_url,
     unpin_thread_message_with_client, PinSource, PinnedRef,
 };
+// OstMac COPILOT-BUILD: ChatHub transport + Taiger licence.
+pub use copilot::{
+    cancel_frame, chat_invocation, frame, handshake_request, hub_url_2026,
+    hub_url_teams, license_reason, license_status, licensed, parse_handshake,
+    parse_license_status, parse_server_record, parse_stream_item, ping_frame,
+    jwt_oid_tid, run_turn, split_frames, substrate_token_for, sydney_token_for,
+    turn_error_reason, Attribution, ChatTurn, CopilotAnswer, HubQuery,
+    LicenseStatus, ServerEvent, TurnProgress, ALLOWED_TEAMS, CONNECT_TIMEOUT_SECS,
+    ENTITIES_2026, ERR_AUTH, ERR_DISENGAGED, ERR_DLP_BLOCKED, ERR_MISSING_LICENSE,
+    ERR_OUT_OF_CREDITS, HUB_DEFAULT, HUB_DOD, HUB_GCCH, HUB_MSIT, HUB_PROD,
+    HUB_SDF, HUB_TEAMS_PATH, LICENSE_STATUSES, PLUGIN_WEB_ID, PLUGIN_WEB_SOURCE,
+    RS, SCENARIO_TEAMSHUB, SOURCE_TEAMSHUB, STREAMING_CONCISE, SUBSTRATE_RESOURCE,
+    SYDNEY_AUDIENCE, SYDNEY_SCOPE, TAIGER_BASE, TAIGER_CUSTOM, TONE_CHAT,
+    TONE_MAGIC, TONE_REASONING, TURN_TIMEOUT_SECS, VARIANTS_STATIC_PAIR,
+    VARIANTS_TEAMSHUB,
+};
 pub use chat::{
     alerts_body, alerts_muted, alerts_url, conversation_folder_move_with_client,
     conversation_folders_data, conversation_folders_url, folder_move_actions, folder_move_body,
@@ -170,6 +213,19 @@ pub use chat::{
     sticker_effective_label, sticker_label, sticker_message_body, sticker_view_url,
     upload_sticker_image_data, STICKER_DEFAULT_LABEL, STICKER_EDGE_MAX, STICKER_IMAGE_MAX_BYTES,
     STICKER_ITEMTYPE,
+};
+// OstMac §126 (LOOPBUILD): Loop/Fluid component builders + transports.
+pub use loopcomp::{
+    blob_content_url, cards_json_of, component_url, contains_fluid_marker, create_loop_page,
+    create_snapshot, created_page_link, createlink_body, createlink_graph, embed_cards_json,
+    embed_message_body, fluid_embeds_in, get_sharing_information, graph_createlink_path,
+    has_fluid_cards, join_session, join_session_url, meeting_notes_url, ops_fetch, ops_fetch_url,
+    page_content_of, page_create_body, page_id, page_read_body, page_read_url, parse_snapshot_answer,
+    read_loop_page, send_loop_embed, sharing_direct_url, sharing_info_url, snapshot_create_url,
+    snapshot_load, snapshot_load_url, storage_id, storage_pages_url, summary_upload_url,
+    vroom_createlink_url, COMPOSE_COMPONENTS, FLUID_CARD_CT, FLUID_CONTENT_MARKERS,
+    FLUID_EMBED_CARD_CT, LOOP_AUDIENCE, LOOP_FOLDER, LOOP_PAGE_API, MCPS_RESOURCE,
+    PUSHCHANNEL_RESOURCE, EmbedMode, FluidEmbed, SnapshotCreated,
 };
 pub use calendar::{
     calendar_view_path, list_upcoming_meetings_data, lobby_next, normalize_join_meeting_id,
@@ -220,6 +276,17 @@ pub use presence::get_presence_data;
 pub use tabs::{
     add_channel_tab_data, add_chat_tab_data, list_chat_tabs_data, list_tabs_data,
     remove_channel_tab_data, remove_chat_tab_data, rename_channel_tab_data, rename_chat_tab_data,
+};
+pub use whiteboard::{
+    create_whiteboard_data, delete_whiteboard_data, fetch_share_link_data,
+    get_whiteboard_data, list_whiteboards_data, redeem_share_token_data,
+    rename_whiteboard_data, revoke_share_link_data, share_whiteboard_data,
+    wb_create_fluid_share_link_data, wb_delete_board_file_data, wb_files_folder_data,
+    wb_fluid_metadata_data, wb_join_session_data, wb_license_plans_data, wb_my_drive_data,
+    wb_rename_board_file_data, wb_share_permission_data, wb_spo_children_data,
+    wb_spo_fluid_enabled_data, wb_spo_proof_token_data, wb_spo_redeem_data,
+    wb_spo_sharing_info_data, whiteboard_collaborators_data, whiteboard_content_data,
+    whiteboard_my_permissions_data, whiteboard_session_tree_data,
 };
 pub use teams::{
     add_channel_member_body, add_channel_member_data, add_member_body, add_team_member_data,
@@ -444,6 +511,96 @@ pub async fn rename_chat_tab(chat_id: &str, tab_id: &str, name: &str) -> Result<
 /// Remove a chat tab
 pub async fn remove_chat_tab(chat_id: &str, tab_id: &str) -> Result<()> {
     tabs::remove_chat_tab(chat_id, tab_id).await
+}
+
+/// List my whiteboards (legacy Azure boards)
+pub async fn list_whiteboards() -> Result<()> {
+    whiteboard::list_whiteboards().await
+}
+
+/// Create one whiteboard (prints the created board)
+pub async fn create_whiteboard(title: Option<&str>) -> Result<()> {
+    whiteboard::create_whiteboard(title).await
+}
+
+/// Open one whiteboard (prints the board)
+pub async fn show_whiteboard(board_id: &str) -> Result<()> {
+    whiteboard::show_whiteboard(board_id).await
+}
+
+/// Rename one whiteboard (prints the updated board)
+pub async fn rename_whiteboard(board_id: &str, title: &str) -> Result<()> {
+    whiteboard::rename_whiteboard(board_id, title).await
+}
+
+/// Delete one whiteboard
+pub async fn delete_whiteboard(board_id: &str) -> Result<()> {
+    whiteboard::delete_whiteboard(board_id).await
+}
+
+/// Mint a share link on one whiteboard (prints the link)
+pub async fn share_whiteboard(board_id: &str) -> Result<()> {
+    whiteboard::share_whiteboard(board_id).await
+}
+
+/// Fetch one whiteboard's share link (prints the link)
+pub async fn show_share_link(board_id: &str) -> Result<()> {
+    whiteboard::show_share_link(board_id).await
+}
+
+/// Revoke one whiteboard's share link
+pub async fn revoke_share_link(board_id: &str) -> Result<()> {
+    whiteboard::revoke_share_link(board_id).await
+}
+
+/// List one whiteboard's collaborators
+pub async fn show_collaborators(board_id: &str) -> Result<()> {
+    whiteboard::show_collaborators(board_id).await
+}
+
+/// Read my permissions on one whiteboard
+pub async fn show_my_permissions(board_id: &str) -> Result<()> {
+    whiteboard::show_my_permissions(board_id).await
+}
+
+/// Redeem a legacy whiteboard share token
+pub async fn redeem_whiteboard(token: &str) -> Result<()> {
+    whiteboard::redeem_whiteboard(token).await
+}
+
+/// Read one whiteboard content page (ink-sync read path)
+pub async fn show_content(board_id: &str, cursor: Option<&str>) -> Result<()> {
+    whiteboard::show_content(board_id, cursor).await
+}
+
+/// Join one board file's delta session (ink-sync channel open)
+pub async fn join_whiteboard(
+    site_url: &str,
+    drive_id: &str,
+    item_id: &str,
+    auth_header: &str,
+) -> Result<()> {
+    whiteboard::join_whiteboard(site_url, drive_id, item_id, auth_header).await
+}
+
+/// Print a board's Teams tab-config URLs (no network)
+pub async fn show_tab_urls(
+    board_id: Option<&str>,
+    token: Option<&str>,
+    board_web_url: Option<&str>,
+) -> Result<()> {
+    whiteboard::show_tab_urls(board_id, token, board_web_url).await
+}
+
+/// Print a board's meeting participant URL (no network)
+pub async fn show_meeting_url(
+    board_web_url: &str,
+    can_edit: bool,
+    proof_token: Option<&str>,
+    fluid_file_id: Option<&str>,
+    annotation: bool,
+) -> Result<()> {
+    whiteboard::show_meeting_url(board_web_url, can_edit, proof_token, fluid_file_id, annotation).await
 }
 
 /// Print one team's schedule week grid (shifts + time-off, read-only)

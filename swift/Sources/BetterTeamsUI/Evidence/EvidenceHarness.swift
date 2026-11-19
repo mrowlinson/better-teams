@@ -35,6 +35,11 @@ enum EvidenceHarness {
         // `drafts=1` (DRAFTS lane): seed the demo scheduled queue with
         // formatted samples so captures show WYSIWYG drafts.
         if query?["drafts"] == "1" { seedDrafts(wc) }
+        // `copilot=<state>` (COPILOT-BUILD): reseed the demo Copilot
+        // chat (empty|streaming|finished|unlicensed) for captures.
+        if let name = query?["copilot"], let demo = CopilotDemoState(rawValue: name) {
+            seedCopilot(wc, state: demo)
+        }
         let deadline = Date().addingTimeInterval(10)
         let earliest = Date().addingTimeInterval(0.8)
         var quiet = 0
@@ -169,6 +174,14 @@ enum EvidenceHarness {
                               text: "__Sign here__ and ~~old total~~",
                               fireAt: base.addingTimeInterval(7200))
         }
+    }
+
+    /// `copilot=<state>`: reseed the demo Copilot chat for captures.
+    private static func seedCopilot(_ wc: ShellWindowController, state: CopilotDemoState) {
+        guard wc.model.options.demo, let store = wc.model.app?.copilot else { return }
+        let seed = CopilotDemo.seed(state)
+        store.adoptDemo(messages: seed.messages, state: seed.chat, license: seed.license,
+                        progress: seed.progress)
     }
 
     /// `<route>?recents=1` (§5.5 recents, G1): focuses the empty search

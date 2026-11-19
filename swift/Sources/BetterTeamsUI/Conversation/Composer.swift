@@ -219,6 +219,9 @@ struct Composer: View {
             // PRAISE: badge picker + note (popover, same 24 pt targets).
             iconButton("medal", "Praise") { composer.show(.praise) }
                 .popover(item: popoverBinding(only: [.praise]), arrowEdge: .top) { p in popoverContent(p) }
+            // LOOPBUILD: component URL + gated send (popover, same targets).
+            iconButton("infinity", "Loop") { composer.show(.loop) }
+                .popover(item: popoverBinding(only: [.loop]), arrowEdge: .top) { p in popoverContent(p) }
             iconButton("star.bubble", "Sticker") { composer.show(.sticker) }
                 .popover(item: popoverBinding(only: [.sticker]), arrowEdge: .top) { p in popoverContent(p) }
             if let canned = model?.app?.canned {

@@ -2287,3 +2287,94 @@ this pass), `rust/ostmac-core` lib 224/0. Older counts (lib 257, core
     `read_state_unknown_without_frontier`,
     `read_state_display_lines_pin_shapes`.
     UPSTREAM: pending.
+
+126. [major] `src/api/loopcomp.rs` (new) + `src/api/chat.rs` +
+    `src/api/mod.rs` + `src/main.rs` — **Loop/Fluid component
+    create/embed/read (lanes/loopbuild)**. Pure request builders +
+    transports for the RE-mapped private surface (reloop/REPORT.md
+    §4: C1–C5, E1–E2, S1–S6): snapshot-create URL + `Qe` answer
+    parse, GetSharingInformation URL + directUrl parse, byte-exact
+    `componentUrl` (`?nav=` b64), Loop storage page create, meeting
+    notes URL, Graph/Vroom createLink, cards-first E1 embed body,
+    page-read URL/body, ODSP S2–S6 URLs. `MessageInfo` gains
+    `cards` (server field kept as compact JSON) + keep-gate
+    (cards carriers survive the empty-text filter);
+    `fluid_embeds_in` mines Embed/Collaborate modes per §2.6.
+    Transports are real but LIVE-UNPROVEN (phase-2 gates token
+    grants first). CLI: `teams-cli loop create|page|send|read|sync`,
+    each with `--dry-run` (exact request, no network/auth).
+    Tests: 13 builder/mining pins (`api::loopcomp::tests`) + CLI
+    nested-verb parse test.
+    UPSTREAM: pending.
+
+127. [major] `src/api/breakout.rs` (new) + `src/api/client.rs` +
+    `src/api/mod.rs` + `src/main.rs` — breakout rooms management on the
+    RE-mapped MiddleTier REST (lanes/breakoutbuild; shapes verbatim from
+    the frozen web bundle module 287905, lane rebreakout
+    STATIC-MAPPED). Coords encode/decode (`:`↔`_` thread rewrite,
+    5-part join), participant P()/I() normalization (guest/phone UPN
+    heuristics flagged; the bundle's `8:orgid:` mri composite is a
+    capture-time pin, not reproduced), all 14 ops as pure
+    path/body builders + response parsers + async executors
+    (list/create/add/get/update/delete/delete-all/bulk/open/close/
+    get-settings/put-settings/assignees/announce incl. the 502
+    FailedRoomThreadIds recovery). Executors use Discover `middleTier`
+    when present else the mapped `/part/dogfood` fallback literal
+    (capture-time pin: our live-proven MT calls carry no `/part/`);
+    auth reuses the proven MT auth (Bearer AAD + X-Skypetoken) until
+    the phase-2 capture pins the exact STM wire names. `client.rs`
+    gains `middle_tier_base_or` (existing `middle_tier_url` delegates,
+    no behavior change) + `mt_call` (optional-body MT verbs for the
+    bodyless DELETEs). `main.rs` gains 14 flat `breakout-*` verbs
+    (coords arrive as one JSON arg).
+    Tests: 23 `api::breakout` verbatim-shape pins + 2 CLI parse tests.
+    UPSTREAM: pending.
+
+128. [major] `src/api/whiteboard.rs` (new) + `src/api/client.rs` +
+    `src/api/mod.rs` + `src/main.rs` + `src/api/fake_transport.rs`
+    — whiteboard board create/share/open + ink-sync read + delta
+    channel join over the RE-mapped REST+ODSP surface
+    (lanes/whiteboardbuild; map: rewhiteboard REPORT, every shape
+    cited to bundle symbol + verbatim snippet). Legacy Azure REST
+    (base `.../api/`, Bearer [REDACTED] AAD attempt; the mapped whiteboard/SPO
+    scopes may be absent, so Swift live-gates on the server's
+    reason): create/list/get/rename/delete, share mint/fetch/
+    revoke, collaborators, my-permissions (`{CanEdit,CanRead}`),
+    legacy token redeem, content pages (`?batch=20` + verbatim
+    `X-MinimumReadVersion 1.0.0.0` / `X-MaximumReadVersion 1.1.0.0`
+    / `X-WriteVersion 1.0.0.0`, `next.substring(5)` cursor), session
+    tree init. Graph board files: my-drive, filesFolder, Fluid
+    metadata, createLink (`{type,scope,recipients,
+    sendNotification}`), shares permission, item delete/rename
+    (`{name:"${title}.whiteboard"}`), license plans (8 allowlist
+    entries, all unproven). SharePoint (`X-Partner-Id: WB`):
+    children, fluidEnabled toggle (the ODSP live-gate probe),
+    encoded-link redeem, preAuthorizedUrls proof token
+    (`tempauth`), sharing info (`canShare/canEdit` mining). ODSP:
+    joinSession POST with the hand-built body byte-verbatim from
+    `lz_socketModule` (boundary + `Authorization:` +
+    `X-HTTP-Method-Override: POST` + optional `prefer:
+    FluidRemoveCheckAccess` + `_post: 1` + `{requestSocketToken,
+    displayName?}`), snapshot/empty-file URL builders. Teams
+    bridges (pure): Azure + Fluid tab-config content/website URLs,
+    meeting participant URL. CLI: 15 `wb-*` verbs. Fake transport
+    gains the `whiteboardBase` seam; e2e tests assert method, path,
+    auth routing (AAD to whiteboard/SPO, Graph token only to
+    Graph) and bodies. Unproven live (0 tenant calls this lane);
+    op streaming + Prefer/beta-host variants ride the RE phase-2
+    plan (P1-P8). Tests: 6 verbatim-pin suites + 6 fake e2e.
+    UPSTREAM: pending.
+
+129. [major] `src/api/copilot.rs` (new) + `src/api/mod.rs` + `src/main.rs`
+    — **Copilot chat on the RE-mapped SignalR ChatHub transport, free
+    tier first (lanes/copilotbuild; entry written by coordinator — lane
+    omitted it)**. Hub env map (verbatim module-890288 URLs), Sydney
+    scope/aud, SignalR JSON codec (frame/split/handshake/ping/cancel),
+    free-tier `ChatTurn` + `chat_invocation` (optionsSets EMPTY =
+    work-grounding OFF, web plugin only), 2026 + Teams-2024 URL
+    builders, tolerant type:1/2/3 parser (cumulative replace), Taiger
+    licenseStatus + gate reasons, `run_turn` runner. CLI
+    `teams-cli copilot` (`--print-frames`/`--replay` offline-verified;
+    live verbs phase-2 only). Unproven live (0 tenant calls).
+    Tests: 10 transport + 5 FFI + 12 Swift.
+    UPSTREAM: pending.

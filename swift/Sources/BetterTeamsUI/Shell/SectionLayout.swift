@@ -112,6 +112,7 @@ open class PlaceholderSection: SectionProvider {
         case .native(.recaps): "Your meeting recaps appear here."
         case .native(.onenote): "Your notebooks appear here."
         case .native(.approvals): "Your approval requests appear here."
+        case .native(.copilot): "Your Copilot chat appears here."
         case .web: "This app opens here."
         case .call: "Your call appears here."
         }
@@ -133,6 +134,7 @@ open class PlaceholderSection: SectionProvider {
         case .native(.recaps): "No Recap Selected"
         case .native(.onenote): "No Page Selected"
         case .native(.approvals): "No Request Selected"
+        case .native(.copilot): "No Conversation Started"
         case .web, .call: "Nothing Selected"
         }
     }
@@ -156,6 +158,7 @@ enum SectionRegistry {
         case .native(.recaps): RecapsSection()
         case .native(.onenote): OneNoteSection()
         case .native(.approvals): ApprovalsSection()
+        case .native(.copilot): CopilotSection()
         case .web(let id): WebAppSection(appID: id)
         case .call: CallSection()
         }

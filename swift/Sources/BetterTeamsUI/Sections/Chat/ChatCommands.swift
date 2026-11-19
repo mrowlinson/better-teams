@@ -72,6 +72,7 @@ public enum ChatCommands {
     public static let stickerPopover = "sticker"
     public static let sendLaterPopover = "sendLater"
     public static let praisePopover = "praise"
+    public static let loopPopover = "loop"
 
     @MainActor
     public static let all: [Command] = [

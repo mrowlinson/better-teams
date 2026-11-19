@@ -16,6 +16,7 @@ enum ComposerPopover: Hashable, Identifiable {
     case sticker
     case sendLater
     case praise
+    case loop
 
     var id: String {
         switch self {
@@ -25,6 +26,7 @@ enum ComposerPopover: Hashable, Identifiable {
         case .sticker: "sticker"
         case .sendLater: "sendLater"
         case .praise: "praise"
+        case .loop: "loop"
         }
     }
 
@@ -36,6 +38,7 @@ enum ComposerPopover: Hashable, Identifiable {
         case ChatCommands.stickerPopover: self = .sticker
         case ChatCommands.sendLaterPopover: self = .sendLater
         case ChatCommands.praisePopover: self = .praise
+        case ChatCommands.loopPopover: self = .loop
         case ChatCommands.reactionPopover:
             guard let lastMessageID else { return nil }
             self = .reaction(messageID: lastMessageID)

@@ -1056,6 +1056,27 @@ public enum DemoData {
         ]
     }
 
+    /// Loop seed (LOOPBUILD, `?seed=loop`): one received component —
+    /// a checklist embed with a static card + the gated live row.
+    /// Fully offline; timestamps float off now (Today).
+    public static func loopSeeds(now: Date = DemoClock.now) -> [ChatMessage] {
+        func iso(_ d: Date) -> String { demoISO.string(from: d) }
+        func at(h: Int, m: Int) -> Date {
+            var cal = Calendar.current
+            cal.timeZone = TimeZone.current
+            return cal.date(bySettingHour: h, minute: m, second: 0, of: now) ?? now
+        }
+        let cards = LoopComponent.cardsJSON(componentURL:
+            "https://contoso-my.sharepoint.com/personal/megan_contoso_com/Documents/Standup.loop")
+        return [
+            ChatMessage(
+                id: "loop-1", sender: "Megan Harper",
+                timestamp: iso(at(h: 9, m: 12)),
+                content: "This week's standup checklist",
+                isOwn: false, loopCards: cards),
+        ]
+    }
+
     /// Inline-docs thread (om-inline-docs): a file-only PDF bubble (row
     /// only, placeholder suppressed), a captioned bubble with two refs
     /// (image + sheet rows under the text), and an own reply. Attachment

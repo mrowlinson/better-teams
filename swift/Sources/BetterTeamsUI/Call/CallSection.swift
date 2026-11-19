@@ -5,6 +5,7 @@
 // name, subtitle = duration. The call commands validate and perform
 // here wherever the call is hosted (the call window forwards menu
 // commands to the main window).
+import OstMacCore
 import SwiftUI
 
 @MainActor
@@ -69,16 +70,35 @@ final class CallSection: SectionProvider, InspectorCapable {
     }
 
     /// Breakout rooms sheet (BREAKOUT): the plan over the live roster.
-    /// Live sessions have no rooms API (Teams-client-only), so the
-    /// sheet disables every mutation there; demo stays interactive.
+    /// Live sessions manage real rooms over MiddleTier when the meeting
+    /// + token allow (coords on the session, signed in); otherwise the
+    /// sheet disables every mutation there with the reason; demo stays
+    /// interactive on the local planner.
     static func roomsLive(_ m: WindowModel) -> Bool {
         m.app != nil && !m.options.demo
     }
 
+    /// Live rooms enable exactly when the meeting + token allow: the
+    /// session holds the meeting's Teams coords AND the app is signed
+    /// in. Pure over the two flags, so tests pin it.
+    static func roomsLiveReady(coords: BreakoutCoords?, signedIn: Bool?) -> Bool {
+        coords != nil && signedIn == true
+    }
+
     func sheet(_ r: SheetRequest, _ m: WindowModel) -> AnyView? {
         guard r.name == CallCommands.roomsSheet, let app = m.app, let s = m.call, !s.ended else { return nil }
+        let live = Self.roomsLive(m) || CallEvidence.roomsForceLive
+        let signedIn: Bool? = m.app?.signedIn ?? nil
+        // Evidence bypasses only the sign-in leg (demo apps hold no
+        // token); the coords leg still applies, and the demo transport
+        // answers (zero network either way).
+        let ready = live && (CallEvidence.liveBreakoutDemo
+            ? s.breakoutCoords != nil
+            : Self.roomsLiveReady(coords: s.breakoutCoords, signedIn: signedIn))
         return AnyView(BreakoutRoomsSheet(rooms: s.breakoutRooms, roster: app.meeting,
-                                          live: Self.roomsLive(m) || CallEvidence.roomsForceLive))
+                                          live: live,
+                                          liveRooms: ready ? s.liveRooms(demo: CallEvidence.liveBreakoutDemo) : nil,
+                                          liveSignedIn: signedIn))
     }
 
     func validate(_ c: CommandID, arg: String?, _ m: WindowModel) -> CommandValidation {
@@ -111,8 +131,9 @@ final class CallSection: SectionProvider, InspectorCapable {
             case CallCommands.rooms:
                 // Group calls and meetings only (rooms need a roster).
                 // The menu stays enabled in live sessions: the sheet
-                // itself disables every mutation there (no rooms API)
-                // and says so, so live users see why, not a dead menu.
+                // itself manages live rooms when the meeting + token
+                // allow, else disables every mutation there with the
+                // reason, so live users see why, not a dead menu.
                 return CommandValidation(enabled: s.joined && s.group)
             default:
                 return .disabled

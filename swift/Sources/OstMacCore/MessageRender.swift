@@ -1244,6 +1244,9 @@ public enum MessageRender {
         // a string, which parses no generic cards — without this the
         // timeline shows the praise card AND the placeholder.
         if PraiseCard.mine(fromRaw: message.raw ?? message.content) != nil { return false }
+        // LOOPBUILD: mined Loop embeds own the bubble too (native
+        // component card, never the generic path).
+        if LoopComponent.first(fromCards: message.loopCards) != nil { return false }
         let posts = botPosts(fromRaw: message.raw ?? message.content)
         if !posts.isEmpty { return false }
         if !bubbleText(for: message).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {

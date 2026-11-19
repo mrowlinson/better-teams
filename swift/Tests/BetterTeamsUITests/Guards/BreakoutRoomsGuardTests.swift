@@ -117,4 +117,49 @@ final class BreakoutRoomsGuardTests: XCTestCase {
         session.leave()
         XCTAssertFalse(session.breakoutRooms.isActive)
     }
+
+    // MARK: BREAKOUT-BUILD live-ready gate (added, none edited)
+
+    func testRoomsLiveReadyNeedsCoordsAndSignIn() {
+        XCTAssertTrue(CallSection.roomsLiveReady(coords: .demo, signedIn: true))
+        XCTAssertFalse(CallSection.roomsLiveReady(coords: nil, signedIn: true))
+        XCTAssertFalse(CallSection.roomsLiveReady(coords: .demo, signedIn: false))
+        XCTAssertFalse(CallSection.roomsLiveReady(coords: .demo, signedIn: nil))
+        XCTAssertFalse(CallSection.roomsLiveReady(coords: nil, signedIn: nil))
+    }
+
+    func testRoomsMutationsEnabledWhenLiveReady() {
+        let ready = BreakoutRoomsSheet(
+            rooms: BreakoutRoomsStore(), roster: MeetingRosterStore(), live: true,
+            liveRooms: LiveBreakoutRoomsStore(coords: .demo, transport: DemoLiveBreakoutTransport()))
+        XCTAssertFalse(ready.mutationsDisabled)
+    }
+
+    func testRoomsDisabledReasonPicksSignInOverCoords() {
+        let signedOut = BreakoutRoomsSheet(
+            rooms: BreakoutRoomsStore(), roster: MeetingRosterStore(), live: true, liveSignedIn: false)
+        XCTAssertEqual(signedOut.disabledReason, BreakoutRoomsSheet.liveSignInReason)
+        let noCoords = BreakoutRoomsSheet(
+            rooms: BreakoutRoomsStore(), roster: MeetingRosterStore(), live: true, liveSignedIn: true)
+        XCTAssertEqual(noCoords.disabledReason, BreakoutRoomsSheet.liveDisabledReason)
+        XCTAssertFalse(BreakoutRoomsSheet.liveSignInReason.isEmpty)
+        XCTAssertNotEqual(BreakoutRoomsSheet.liveSignInReason, BreakoutRoomsSheet.liveDisabledReason)
+        XCTAssertFalse(BreakoutRoomsSheet.liveBanner.isEmpty)
+    }
+
+    func testRoomsEvidenceLiveDemoDefaultsOff() {
+        XCTAssertFalse(CallEvidence.liveBreakoutDemo,
+                       "demo transport never answers unless a roomsLiveReady=1 route says so")
+    }
+
+    func testLiveRoomsStoreBornWithCoordsDiesWithCall() {
+        let session = CallSession(kind: .meeting(id: "mtg", subject: "Weekly Sync"),
+                                  presentation: .mainWindow, model: nil)
+        XCTAssertNil(session.liveRooms())
+        session.breakoutCoords = .demo
+        XCTAssertNotNil(session.liveRooms(demo: true))
+        session.leave()
+        XCTAssertNil(session.breakoutCoords)
+        XCTAssertNil(session.liveRooms())
+    }
 }

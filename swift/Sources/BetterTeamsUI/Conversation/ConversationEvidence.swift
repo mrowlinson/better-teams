@@ -2,7 +2,7 @@
 // conversation (UI-SPEC §11.3 `state=`-style modifiers, P2a):
 //
 //   chat/<id>?conv=error|loading|reauth
-//   chat/<id>?seed=reply,edit,attach,typing,pending,scheduled,delete,pins,rich,share,praise,poll
+//   chat/<id>?seed=reply,edit,attach,typing,pending,scheduled,delete,pins,rich,share,praise,poll,loop
 //   chat/<id>?seed=deletefail        (own last bubble shows failed delete + Retry)
 //   (+ `pollsheet=1` opens the poll create sheet — Composer evidence)
 //   chat/<id>?jump=pinned            (after seed=pins: jump to the first pin)
@@ -146,6 +146,13 @@ enum ConversationEvidence {
             // ADAPTIVE-ACTIONS: one submit card, one showcard+toggle
             // card, one approval card — the R3 capture set.
             for m in DemoData.actionCardSeeds() {
+                conv.ingest(m, keepOwnership: true)
+            }
+        }
+        if seeds.contains("loop") {
+            // LOOPBUILD: one received Loop component — the static
+            // card + gated live row (R3 capture set).
+            for m in DemoData.loopSeeds() {
                 conv.ingest(m, keepOwnership: true)
             }
         }

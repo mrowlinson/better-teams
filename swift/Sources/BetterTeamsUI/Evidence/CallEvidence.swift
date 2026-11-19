@@ -99,6 +99,7 @@ enum CallEvidence {
             if route.query["accept"] == "1" { m.app?.call.accept() }
         case "call":
             roomsForceLive = route.query["roomsLive"] == "1"
+            liveBreakoutDemo = route.query["roomsLiveReady"] == "1"
             let p = presentation(route.query["presentation"]) ?? .current
             let session = begin(route.query["state"] ?? "prejoin", presentation: p, show: true, wc,
                                 query: route.query)
@@ -137,6 +138,13 @@ enum CallEvidence {
     /// live gate for the capture (same disabled UI live users see).
     /// Reset per route in apply; single route per launch.
     static var roomsForceLive = false
+
+    /// BREAKOUT-BUILD evidence: `&roomsLiveReady=1` (with `&roomsLive=1`)
+    /// seeds the session's live coords so the sheet's live path enables
+    /// against the in-memory demo transport (same enabled UI a
+    /// coords-holding live meeting sees; zero network either way).
+    /// Reset per route in apply; single route per launch.
+    static var liveBreakoutDemo = false
 
     static let standup = MeetingItem(
         meetingId: CalendarSelection.demoMeetingID, subject: "Engineering standup",
@@ -179,6 +187,11 @@ enum CallEvidence {
             s.breakoutRooms.create(count: 4, mode: .automatic,
                                     rosterIDs: app.meeting.participants.map({ $0.id }))
             s.breakoutRooms.openAll()
+        }
+        // BREAKOUT-BUILD evidence: `&roomsLiveReady=1` seeds live coords
+        // so the sheet's live path enables on the demo transport.
+        if query["roomsLiveReady"] == "1", let s {
+            s.breakoutCoords = BreakoutCoords.demo
         }
         // C2a local-only controls (no signaling, no server writes).
         if let raw = query["layout"], let mode = MeetingLayoutMode(rawValue: raw) { s?.setLayout(mode) }

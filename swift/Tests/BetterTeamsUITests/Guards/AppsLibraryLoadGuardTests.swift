@@ -9,6 +9,9 @@
 // APPROVALS lane: the 5→6 pin below is the ordered product change (a
 // sixth built-in: the approvals hub), not a weakened assertion.
 // OWNER OK PENDING — see lanes/approvals REPORT.md.
+// COPILOT-BUILD: the 6→7 pin is the ordered product change (a seventh
+// built-in: the Copilot chat app), not a weakened assertion.
+// OWNER OK PENDING — see lanes/copilotbuild REPORT.md.
 import XCTest
 
 import OstMacCore
@@ -16,12 +19,12 @@ import OstMacCore
 
 @MainActor
 final class AppsLibraryLoadGuardTests: XCTestCase {
-    /// The never-blank invariant: Built-in is six rows for every
+    /// The never-blank invariant: Built-in is seven rows for every
     /// library state, and an empty filter never hides them.
     func testBuiltInsAlwaysPresent() {
         let lib = AppsLibrary(accountKey: "demo")
         XCTAssertEqual(lib.builtIns.count, NativeAppID.allCases.count)
-        XCTAssertEqual(lib.builtIns.count, 6)
+        XCTAssertEqual(lib.builtIns.count, 7)
         for item in lib.builtIns {
             XCTAssertFalse(item.title.isEmpty)
             XCTAssertTrue(item.matches(""))
@@ -97,7 +100,7 @@ final class AppsLibraryLoadGuardTests: XCTestCase {
         let empty = TeamsAppCatalogCache.Entry(pinned: [], apps: [])
         XCTAssertEqual(AppsLibrary.apps(from: empty), [])
         XCTAssertEqual(AppsLibrary.pinnedIDs(empty), [])
-        XCTAssertEqual(lib.builtIns.count, 6)
+        XCTAssertEqual(lib.builtIns.count, 7)
     }
 
     /// The catalog cache round-trips (pins + manifests): what feeds

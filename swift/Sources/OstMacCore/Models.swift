@@ -523,6 +523,201 @@ public struct TabRemoveResponse: Decodable, Sendable {
     }
 }
 
+// MARK: - Whiteboard shared boards (whiteboardbuild lane)
+
+/// One legacy Azure board from core `ostmac_whiteboard_*`.
+public struct WhiteboardBoard: Decodable, Sendable, Identifiable, Equatable {
+    public let id: String
+    public let title: String
+    public let ownerID: String?
+    public let ownerTenantID: String?
+    public let isShared: Bool
+    public let fluidFileID: String?
+    public let meetingID: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id, title
+        case ownerID = "owner_id"
+        case ownerTenantID = "owner_tenant_id"
+        case isShared = "is_shared"
+        case fluidFileID = "fluid_file_id"
+        case meetingID = "meeting_id"
+    }
+
+    /// Host-side construction (demo data, previews, mock fetchers).
+    /// Wire decoding is untouched.
+    public init(
+        id: String, title: String, ownerID: String? = nil, ownerTenantID: String? = nil,
+        isShared: Bool = false, fluidFileID: String? = nil, meetingID: String? = nil
+    ) {
+        self.id = id
+        self.title = title
+        self.ownerID = ownerID
+        self.ownerTenantID = ownerTenantID
+        self.isShared = isShared
+        self.fluidFileID = fluidFileID
+        self.meetingID = meetingID
+    }
+}
+
+/// Board list from core `ostmac_whiteboard_list`: `{ok, boards}`.
+public struct WhiteboardListResponse: Decodable, Sendable {
+    public let ok: Bool
+    public let boards: [WhiteboardBoard]
+
+    public init(ok: Bool, boards: [WhiteboardBoard]) {
+        self.ok = ok
+        self.boards = boards
+    }
+}
+
+/// Single board from core `ostmac_whiteboard_create/show`: `{ok, board}`.
+public struct WhiteboardBoardResponse: Decodable, Sendable {
+    public let ok: Bool
+    public let board: WhiteboardBoard
+
+    public init(ok: Bool, board: WhiteboardBoard) {
+        self.ok = ok
+        self.board = board
+    }
+}
+
+/// Share link from core `ostmac_whiteboard_share`:
+/// `{ok, share:{share_uri,token}}`.
+public struct WhiteboardShareLink: Decodable, Sendable, Equatable {
+    public let shareURI: String?
+    public let token: String?
+
+    enum CodingKeys: String, CodingKey {
+        case shareURI = "share_uri"
+        case token
+    }
+
+    public init(shareURI: String? = nil, token: String? = nil) {
+        self.shareURI = shareURI
+        self.token = token
+    }
+}
+
+public struct WhiteboardShareResponse: Decodable, Sendable {
+    public let ok: Bool
+    public let share: WhiteboardShareLink
+
+    public init(ok: Bool, share: WhiteboardShareLink) {
+        self.ok = ok
+        self.share = share
+    }
+}
+
+/// Permissions from core `ostmac_whiteboard_my_perms`:
+/// `{ok, perms:{can_edit,can_read}}`.
+public struct WhiteboardPerms: Decodable, Sendable, Equatable {
+    public let canEdit: Bool
+    public let canRead: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case canEdit = "can_edit"
+        case canRead = "can_read"
+    }
+
+    public init(canEdit: Bool, canRead: Bool) {
+        self.canEdit = canEdit
+        self.canRead = canRead
+    }
+}
+
+public struct WhiteboardPermsResponse: Decodable, Sendable {
+    public let ok: Bool
+    public let perms: WhiteboardPerms
+
+    public init(ok: Bool, perms: WhiteboardPerms) {
+        self.ok = ok
+        self.perms = perms
+    }
+}
+
+/// Content page from core `ostmac_whiteboard_content`:
+/// `{ok, ops, has_next, next_cursor?}`.
+public struct WhiteboardContentResponse: Decodable, Sendable {
+    public let ok: Bool
+    public let ops: Int
+    public let hasNext: Bool
+    public let nextCursor: String?
+
+    enum CodingKeys: String, CodingKey {
+        case ok, ops
+        case hasNext = "has_next"
+        case nextCursor = "next_cursor"
+    }
+
+    public init(ok: Bool, ops: Int, hasNext: Bool, nextCursor: String? = nil) {
+        self.ok = ok
+        self.ops = ops
+        self.hasNext = hasNext
+        self.nextCursor = nextCursor
+    }
+}
+
+/// Join answer from core `ostmac_whiteboard_join`:
+/// `{ok, socket_url, has_socket_token, refresh_secs?}`. The socket
+/// token itself never crosses the FFI.
+public struct WhiteboardJoinResponse: Decodable, Sendable {
+    public let ok: Bool
+    public let socketURL: String
+    public let hasSocketToken: Bool
+    public let refreshSecs: UInt64?
+
+    enum CodingKeys: String, CodingKey {
+        case ok
+        case socketURL = "socket_url"
+        case hasSocketToken = "has_socket_token"
+        case refreshSecs = "refresh_secs"
+    }
+
+    public init(ok: Bool, socketURL: String, hasSocketToken: Bool, refreshSecs: UInt64? = nil) {
+        self.ok = ok
+        self.socketURL = socketURL
+        self.hasSocketToken = hasSocketToken
+        self.refreshSecs = refreshSecs
+    }
+}
+
+/// Tab-config URLs from core `ostmac_whiteboard_tab_urls` (pure):
+/// `{ok, azure:{content,website}?, fluid:{content,website}?}`.
+public struct WhiteboardTabURLPair: Decodable, Sendable, Equatable {
+    public let content: String
+    public let website: String
+
+    public init(content: String, website: String) {
+        self.content = content
+        self.website = website
+    }
+}
+
+public struct WhiteboardTabURLsResponse: Decodable, Sendable {
+    public let ok: Bool
+    public let azure: WhiteboardTabURLPair?
+    public let fluid: WhiteboardTabURLPair?
+
+    public init(ok: Bool, azure: WhiteboardTabURLPair? = nil, fluid: WhiteboardTabURLPair? = nil) {
+        self.ok = ok
+        self.azure = azure
+        self.fluid = fluid
+    }
+}
+
+/// Fluid toggle from core `ostmac_whiteboard_fluid_enabled`:
+/// `{ok, enabled}`.
+public struct WhiteboardFluidResponse: Decodable, Sendable {
+    public let ok: Bool
+    public let enabled: Bool
+
+    public init(ok: Bool, enabled: Bool) {
+        self.ok = ok
+        self.enabled = enabled
+    }
+}
+
 // MARK: - Team roster (om-h5-members lane)
 
 /// One roster entry from core `ostmac_team_members`.
@@ -1030,12 +1225,16 @@ public struct ChatMessage: Codable, Sendable, Identifiable, Equatable {
     /// the server stripped them). `mentions` (extension) prefers these
     /// over raw-mining; bubble tint still mines `raw`.
     public var mentionEntities: [ChatMention]?
+    /// Server `cards` JSON (LOOPBUILD: nil on old payloads and
+    /// cardless messages). Loop components mine from here.
+    public var loopCards: String?
 
     enum CodingKeys: String, CodingKey {
         case id, sender, timestamp, content, raw, reactions, reply_to
         case clientMessageID = "client_message_id"
         case importance, subject
         case mentionEntities = "mentions"
+        case loopCards = "cards"
     }
 
     public init(
@@ -1046,7 +1245,8 @@ public struct ChatMessage: Codable, Sendable, Identifiable, Equatable {
         reply_to: String? = nil, deleted: Bool = false,
         clientMessageID: String? = nil,
         importance: String? = nil, subject: String? = nil,
-        mentionEntities: [ChatMention]? = nil
+        mentionEntities: [ChatMention]? = nil,
+        loopCards: String? = nil
     ) {
         self.id = id
         self.sender = sender
@@ -1062,6 +1262,7 @@ public struct ChatMessage: Codable, Sendable, Identifiable, Equatable {
         self.importance = importance
         self.subject = subject
         self.mentionEntities = mentionEntities
+        self.loopCards = loopCards
     }
 
     public init(from decoder: Decoder) throws {
@@ -1077,6 +1278,7 @@ public struct ChatMessage: Codable, Sendable, Identifiable, Equatable {
         importance = try c.decodeIfPresent(String.self, forKey: .importance)
         subject = try c.decodeIfPresent(String.self, forKey: .subject)
         mentionEntities = try c.decodeIfPresent([ChatMention].self, forKey: .mentionEntities)
+        loopCards = try c.decodeIfPresent(String.self, forKey: .loopCards)
         isOwn = false
         edited = false
         deleted = false
@@ -1196,6 +1398,20 @@ public struct SendResponse: Decodable, Sendable {
         self.id = id
         self.client_message_id = client_message_id
     }
+}
+
+/// E1 shapes answer (`ostmac_loop_shapes`): the cards string plus
+/// the message body (object + its JSON string for preview).
+public struct LoopShapesResponse: Decodable, Sendable {
+    public let ok: Bool
+    public let cards: String?
+    public let body_string: String?
+}
+
+/// S1 page-read answer (`ostmac_loop_page_read`).
+public struct LoopPageResponse: Decodable, Sendable {
+    public let ok: Bool
+    public let html: String?
 }
 
 /// `{ok,chat_id,message_id}` from `ostmac_edit`.

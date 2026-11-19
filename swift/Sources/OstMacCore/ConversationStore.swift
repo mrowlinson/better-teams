@@ -970,6 +970,42 @@ public final class ConversationStore: ObservableObject {
         deliver(localID: pendingID, request: request, verifyFirst: false)
     }
 
+    /// Post a Loop component (E1 embed of an existing component URL).
+    /// Always a plain (top-level) post: an armed reply is dropped
+    /// with it. The optimistic bubble carries the cards JSON, so the
+    /// timeline renders the component immediately; core failure marks
+    /// the bubble failed like any own send. The composer gates this
+    /// on LoopGate (live) or demo mode — never call it gated-off.
+    public func sendLoop(componentURL: String, text: String) {
+        let url = componentURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !url.isEmpty else { return }
+        replyTarget = nil
+        let cards = LoopComponent.cardsJSON(componentURL: url)
+        if isDemo {
+            let bubble = ChatMessage(
+                id: "demo-local-\(messages.count + 1)",
+                sender: "Me", timestamp: Self.nowISO(), content: text,
+                isOwn: true, loopCards: cards)
+            messages.append(bubble)
+            onLocalSend?(bubble)
+            return
+        }
+        guard let id = chatID else { return }
+        let cmid = SendReconcile.newClientMessageID()
+        let pendingID = SendReconcile.pendingID(for: cmid)
+        let bubble = ChatMessage(
+            id: pendingID,
+            sender: "Me", timestamp: Self.nowISO(), content: text,
+            isOwn: true, clientMessageID: cmid, loopCards: cards)
+        messages.append(bubble)
+        onLocalSend?(bubble)
+        let request = OutgoingSend(chatID: id, text: text,
+                                   route: .loopComponent(componentURL: url, text: text),
+                                   clientMessageID: cmid)
+        outgoing[pendingID] = request
+        deliver(localID: pendingID, request: request, verifyFirst: false)
+    }
+
     /// Post a sticker: optimistic "[Sticker: label]" bubble, then the AMS
     /// upload + sticker message through the normal §106 settle path, so
     /// Retry reuses the client message id and the server echo settles the
