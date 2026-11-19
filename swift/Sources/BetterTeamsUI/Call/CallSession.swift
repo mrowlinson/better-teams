@@ -79,6 +79,9 @@ public final class CallSession {
     public private(set) var muted = false
     public private(set) var cameraOn = false
     public private(set) var sharing = false
+    /// Server-side capture legs (meetrecord), mirrored from the store.
+    public private(set) var recording = false
+    public private(set) var transcribing = false
     /// Pre-join toggles (§8 pre-join): applied at Join Now.
     public private(set) var preMicOn = true
     public private(set) var preCameraOn = false
@@ -151,9 +154,14 @@ public final class CallSession {
     // MARK: C2a local-only meeting controls (no signaling, no server writes)
     /// The stage layout choice (meetings; 1:1 ignores it).
     public private(set) var layout: MeetingLayoutMode = .automatic
-    /// Own-video background blur (Vision, on-device; demo blurs the
-    /// rendered self scene, live needs a frame tap — still unblurred).
-    public private(set) var selfBlur = false
+    /// Local self-view background effect (demo renders it synthetically;
+    /// live processes camera frames on `CameraCapture`'s effect queue).
+    public private(set) var backgroundEffect = BackgroundEffect.off
+    /// Custom replacement image (Choose Custom; nil = none chosen).
+    /// Main-actor; mirrored into the camera tap on every change.
+    public private(set) var customBackground: CGImage?
+    /// Own-video background effect on (blur, replace, or custom).
+    public var selfBlur: Bool { backgroundEffect.isOn }
     /// Local live captions (on-device Speech in live calls).
     public private(set) var captionsEnabled = false
     public private(set) var captions = LiveCaptionsLog()
@@ -240,10 +248,11 @@ public final class CallSession {
     public var indicatorText: String { connected ? CallDuration.text(elapsed) : "Call" }
 
     /// Window subtitle (§8: duration), or the call state in words
-    /// before the call connects (§10: never color alone).
+    /// before the call connects (§10: never color alone). A live
+    /// capture leg appends in words (meetrecord).
     public var statusLine: String {
         if ended { return endedRemotely ? "Call ended" : "" }
-        if connected { return CallDuration.text(elapsed) }
+        if connected { return Self.captureSuffix(CallDuration.text(elapsed), recording: recording, transcribing: transcribing) }
         if !joined { return "Ready to join" }
         if isMeeting {
             switch lobby {
@@ -258,7 +267,18 @@ public final class CallSession {
 
     public var controls: CallControlsState {
         CallControlsState(joined: joined, muted: joined ? muted : !preMicOn,
-                          cameraOn: joined ? cameraOn : preCameraOn, sharing: sharing)
+                          cameraOn: joined ? cameraOn : preCameraOn, sharing: sharing,
+                          recording: recording, transcribing: transcribing)
+    }
+
+    /// Status-line capture suffix (meetrecord): words, never color alone.
+    static func captureSuffix(_ base: String, recording: Bool, transcribing: Bool) -> String {
+        switch (recording, transcribing) {
+        case (true, true): return "\(base) • Recording + Transcribing"
+        case (true, false): return "\(base) • Recording"
+        case (false, true): return "\(base) • Transcribing"
+        case (false, false): return base
+        }
     }
 
     // MARK: presentation
@@ -371,14 +391,50 @@ public final class CallSession {
         layout = mode
     }
 
-    /// C2a: own-video background blur. Live camera frames have no tap
-    /// yet, so the toggle shows on the demo self scene only.
+    /// C2a: own-video background blur (local only; demo renders the
+    /// blurred self scene, live processes camera frames on the effect
+    /// tap). The toggle is exactly blur-vs-off; the gallery/custom
+    /// choice is untouched unless the toggle turns the effect off.
     public func setSelfBlur(_ on: Bool) {
-        guard !ended, selfBlur != on else { return }
-        selfBlur = on
+        guard !ended else { return }
+        setBackgroundEffect(on ? .blur : .off)
     }
 
     public func toggleSelfBlur() { setSelfBlur(!selfBlur) }
+
+    /// Self-view background effect (blur, gallery replace, or custom).
+    /// Mirrored into the live camera tap; demo reads it from the session.
+    public func setBackgroundEffect(_ effect: BackgroundEffect) {
+        guard !ended, backgroundEffect != effect else { return }
+        backgroundEffect = effect
+        camera?.setPreviewEffect(effect, custom: customBackground)
+    }
+
+    /// Custom replacement image (nil clears the choice back to blur when
+    /// custom is current; other effects keep running untouched).
+    public func setCustomBackground(_ image: CGImage?) {
+        guard !ended else { return }
+        customBackground = image
+        if image != nil {
+            setBackgroundEffect(.custom)
+        } else if backgroundEffect == .custom {
+            setBackgroundEffect(.blur)
+        } else {
+            camera?.setPreviewEffect(backgroundEffect, custom: nil)
+        }
+    }
+
+    /// Evidence/capture helper: `off`, `blur`, a gallery raw value, or
+    /// `custom` (a deterministic synthetic stand-in — never user data).
+    func applyEvidenceBackground(_ raw: String) {
+        if raw == "off" { setBackgroundEffect(.off); return }
+        if raw == "blur" { setBackgroundEffect(.blur); return }
+        if raw == "custom" {
+            setCustomBackground(PersonBackgroundBlur.solidImage(red: 0.15, green: 0.45, blue: 0.55))
+            return
+        }
+        if let bg = BuiltInBackground(rawValue: raw) { setBackgroundEffect(.replace(bg)) }
+    }
 
     /// C2a: local live captions. Live starts the on-device recognizer;
     /// demo and evidence seed lines instead (never the mic).
@@ -449,6 +505,24 @@ public final class CallSession {
     private func stopCaptionsEngine() {
         captionsEngine?.stop()
         captionsEngine = nil
+    }
+
+    /// Record toggle (meetrecord): needs a joined call; the core
+    /// refutes anything earlier and stays the authority on the legs.
+    public func toggleRecording() {
+        guard joined, !ended else { return }
+        store?.setRecording(!recording)
+        pushControls()
+        pushTick()
+    }
+
+    /// Transcribe toggle (meetrecord): transcription only; stopping
+    /// leaves a running recording untouched.
+    public func toggleTranscribing() {
+        guard joined, !ended else { return }
+        store?.setTranscribing(!transcribing)
+        pushControls()
+        pushTick()
     }
 
     /// Share Screen (⇧⌘E): the system `SCContentSharingPicker` through
@@ -540,6 +614,8 @@ public final class CallSession {
         store.$phase.sink { [weak self] p in self?.mirror(phase: p) }.store(in: &subs)
         store.$muted.sink { [weak self] v in self?.mirror(muted: v) }.store(in: &subs)
         store.$cameraOn.sink { [weak self] v in self?.mirror(cameraOn: v) }.store(in: &subs)
+        store.$recording.sink { [weak self] v in self?.mirror(recording: v) }.store(in: &subs)
+        store.$transcribing.sink { [weak self] v in self?.mirror(transcribing: v) }.store(in: &subs)
         if isMeeting, let meetings = model?.app?.meetings {
             meetings.$lobby.sink { [weak self] l in self?.mirror(lobby: l) }.store(in: &subs)
         }
@@ -600,6 +676,20 @@ public final class CallSession {
     private func mirror(muted v: Bool) {
         muted = v
         pushControls()
+    }
+
+    private func mirror(recording v: Bool) {
+        guard recording != v else { return }
+        recording = v
+        pushControls()
+        pushTick()
+    }
+
+    private func mirror(transcribing v: Bool) {
+        guard transcribing != v else { return }
+        transcribing = v
+        pushControls()
+        pushTick()
     }
 
     private func mirror(cameraOn v: Bool) {

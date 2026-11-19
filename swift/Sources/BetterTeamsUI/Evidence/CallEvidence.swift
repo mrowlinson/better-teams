@@ -9,12 +9,14 @@
 //       an incoming ring (no system banner in demo: the geometry line
 //       reports the CALL notification it would carry); accept=1 accepts
 //       through the core slot and the DL1 host shows the call
-//   call?state=prejoin|active|muted|sharing|ended|meetingvideo|presenting&presentation=main|window
+//   call?state=prejoin|active|muted|sharing|ended|meetingvideo|presenting|recording|transcribing&presentation=main|window
 //       [&inspector=1|people|chat][&popover=devices]
-//       [&layout=automatic|grid|spotlight][&captions=1][&blur=1] (C2a local only)
+//       [&layout=automatic|grid|spotlight][&captions=1][&blur=1][&bg=off|blur|office|cove|dune|atrium|custom] (C2a local only)
 //       (meetingvideo: the meeting joined with video, the tile grid;
 //       presenting: the same meeting with a colleague sharing a slide,
-//       everyone camera-off)
+//       everyone camera-off; recording: the active meeting with the
+//       server-side recording leg up (transcription rides along);
+//       transcribing: transcription only, recording down)
 //   <any route>?call=prejoin|active&presentation=main|window
 //       a demo call behind the route (rail + toolbar call items)
 //
@@ -125,7 +127,7 @@ enum CallEvidence {
         organizer: "Doe, Jane", isOnline: true)
 
     /// Starts the demo call for `state` (prejoin, active, muted,
-    /// sharing, ended; video: 1:1 video call).
+    /// sharing, ended, recording, transcribing; video: 1:1 video call).
     @discardableResult
     private static func begin(_ state: String, presentation p: CallPresentation, show: Bool,
                               _ wc: ShellWindowController, query: [String: String] = [:]) -> CallSession? {
@@ -142,6 +144,9 @@ enum CallEvidence {
         guard state != "prejoin" else {
             let s = m.beginCall(kind, presentation: p, show: show)
             app.meetings.joinMeeting(standup)
+            // C2a local-only controls apply on the pre-join step too.
+            if query["blur"] == "1" { s?.setSelfBlur(true) }
+            if let bg = query["bg"] { s?.applyEvidenceBackground(bg) }
             return s
         }
         app.call.seedDemo(state: "active")
@@ -157,6 +162,7 @@ enum CallEvidence {
             s?.seedDemoCaptions()
         }
         if query["blur"] == "1" { s?.setSelfBlur(true) }
+        if let bg = query["bg"] { s?.applyEvidenceBackground(bg) }
         // C2b roster signals (raised hand, presenter, reactions).
         if query["signals"] == "1" { s?.seedDemoSignals() }
         switch state {
@@ -165,6 +171,8 @@ enum CallEvidence {
             app.call.setCameraOn(false)
         case "muted": app.call.setMuted(true)
         case "sharing": s?.toggleShare()
+        case "recording": s?.toggleRecording()
+        case "transcribing": s?.toggleTranscribing()
         case "ended": app.call.seedDemo(state: "ended")
         default: break
         }

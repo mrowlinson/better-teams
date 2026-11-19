@@ -1994,6 +1994,31 @@ Notes:
     `PRAISE_APP_ID` / `ADAPTIVE_CARD_CONTENT_TYPE`. Tests:
     `api::chat::tests::praise_body_attachment_shape`.
     UPSTREAM: pending
+109. [feat] `src/calling/recording.rs` — **embedder recording-flow
+    primitives (meetrecord lane)**. New `start_recording_http`
+    (add-bot → extract-from-HTTP-response → transcription → recording;
+    bails when the response lacks recorder info — no Trouter socket is
+    kept over FFI), `transcription_only` variants, plus
+    `start_transcription_http` / `start_recording_only_http` (resume one
+    leg on an existing recorder session) and `stop_transcription_http`
+    (transcription-only stop). `stop_call_recording` reuses the shared
+    transcription-stop. Behavior of the existing CLI flow
+    (`start_call_recording`, inject-only callers) is unchanged.
+110. [feat] `src/api/chat.rs` (+ `src/api/mod.rs` re-export,
+    `rust/ostmac-core` JSON) — **echo-matrix read-back
+    (COMPOSEPROOF2)**. `MessageInfo` gains `importance: Option<String>`
+    (lowercased, top-level then `properties.*`), `subject:
+    Option<String>`, and `mentions: Vec<EchoMention>` (`{id, display,
+    kind}` from `properties.mentions[]` with tolerant case/key
+    variants, `<at id>` tags mined from content as fallback, deduped).
+    Absent/blank wire values yield `None`/empty, never fatal — the
+    composeproof 1:1 outcome (importance stripped, broadcast entity
+    stripped) parses cleanly. `read_messages_page` mapping factored
+    into `message_info_from_native` (no behavior change); ostmac-core
+    `message_to_json` adds the three keys (additive). Tests: 5 new
+    `composeproof2_*` fixture/roundtrip tests.
+    UPSTREAM: pending
+    UPSTREAM: pending
 
 ## Upstream PRs, wave 9 (2026-09-25 R10 audit; base 0892144; origin/main still 0892144)
 

@@ -19,6 +19,11 @@ public final class CallStore: ObservableObject {
     // -- in-call controls (om-call-ux; the InCallView window binds these)
     @Published public private(set) var muted = false
     @Published public private(set) var cameraOn = false
+    /// Server-side capture legs (meetrecord): adopted from the core slot
+    /// (`call?.recState/trxState`); the Record/Transcribe controls flip
+    /// these through the core, demo flips them locally.
+    @Published public private(set) var recording = false
+    @Published public private(set) var transcribing = false
     /// Selected speaker route (nil = system default). Persisted under
     /// the A/V panel's key so both surfaces agree.
     @Published public private(set) var speaker: String?
@@ -167,6 +172,7 @@ public final class CallStore: ObservableObject {
         guard let slot else {
             cancelTimeout()
             if call != nil { call = nil }
+            adoptRecordingLegs(nil)
             if phase == .ended { phase = .idle }
             // Event-adopted inviting with no slot yet (the feed beat the
             // read): keep the phase; the next refresh adopts the slot.
@@ -176,12 +182,14 @@ public final class CallStore: ObservableObject {
         if retiredIDs.contains(slot.id) {
             // Cleared locally: stay idle until a new call id arrives.
             call = nil
+            adoptRecordingLegs(nil)
             phase = .idle
             cancelTimeout()
             syncMediaPoll()
             return
         }
         if call != slot { call = slot }
+        adoptRecordingLegs(slot)
         if dismissedIDs.contains(slot.id) {
             // Hidden by dismiss/timeout: track terminal truth but never
             // re-raise the banner for this id.
@@ -200,6 +208,15 @@ public final class CallStore: ObservableObject {
         if mapped == .inviting { armTimeout(for: slot.id) } else { cancelTimeout() }
         if phase != mapped { phase = mapped }
         syncMediaPoll()
+    }
+
+    /// Adopt the server-side capture legs from the slot (meetrecord).
+    /// A call with no faces reads back idle — never a stuck indicator.
+    private func adoptRecordingLegs(_ slot: CallInfo?) {
+        let rec = slot?.isRecording == true
+        let trx = slot?.isTranscribing == true
+        if recording != rec { recording = rec }
+        if transcribing != trx { transcribing = trx }
     }
 
     /// Mirror of core `reset_call_mute`: an active call that ends/fails
@@ -342,6 +359,63 @@ public final class CallStore: ObservableObject {
             } catch {
                 await MainActor.run {
                     self.controlsError = "Mute failed: \(error)"
+                }
+            }
+        }
+    }
+
+    /// Start/stop the server-side recording leg (meetrecord): the full
+    /// flow (recorder bot + transcription + recording). Stopping ends
+    /// both legs. The core is the authority — success re-reads the slot.
+    public func setRecording(_ on: Bool) {
+        setCaptureLeg(recording: on, transcribing: on ? true : nil)
+    }
+
+    /// Start/stop the server-side transcription leg only (meetrecord).
+    /// Starting while recording runs adds transcription to the live
+    /// session; stopping leaves a running recording untouched.
+    public func setTranscribing(_ on: Bool) {
+        setCaptureLeg(recording: nil, transcribing: on)
+    }
+
+    /// One capture-leg change through the core. A nil leg is untouched
+    /// (record-stop passes recording:false + transcribing:false; the bare
+    /// transcription toggle passes transcribing only).
+    private func setCaptureLeg(recording rec: Bool?, transcribing trx: Bool?) {
+        if demo {
+            if let rec { recording = rec }
+            if let trx { transcribing = trx }
+            // Record always carries transcription (the full flow starts it).
+            if rec == true { transcribing = true }
+            if rec == false { transcribing = trx ?? false }
+            lastAction = "demo:capture"
+            return
+        }
+        guard call?.isActive == true, call?.state == "connected" else {
+            controlsError = "Recording needs a connected call"
+            return
+        }
+        Task {
+            do {
+                if let rec {
+                    if rec {
+                        _ = try await Task.blocking { try RustCore.callRecordStart() }.value
+                    } else {
+                        _ = try await Task.blocking { try RustCore.callRecordStop() }.value
+                    }
+                } else if let trx = trx {
+                    _ = try await Task.blocking {
+                        try trx ? RustCore.callRecordStart(transcriptionOnly: true)
+                            : RustCore.callRecordStop(transcriptionOnly: true)
+                    }.value
+                }
+                await MainActor.run { [weak self] in
+                    self?.controlsError = nil
+                    self?.refresh()
+                }
+            } catch {
+                await MainActor.run { [weak self] in
+                    self?.controlsError = "Capture failed: \(error)"
                 }
             }
         }

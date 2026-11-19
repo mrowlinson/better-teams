@@ -150,7 +150,9 @@ struct CallStageView: View {
             TileGridLayout(spacing: 8) {
                 ForEach(tiles) { t in
                     CallTileView(tile: t, camera: session.camera, blurred: session.selfBlur,
-                                 onToggleBlur: { session.toggleSelfBlur() })
+                                 effect: session.backgroundEffect,
+                                 onToggleBlur: { session.toggleSelfBlur() },
+                                 onBackgroundEffect: { session.setBackgroundEffect($0) })
                 }
             }
         }
@@ -169,7 +171,9 @@ struct CallStageView: View {
                             animated: !session.isEvidence, status: session.connected ? nil : status)
             if let own {
                 CallTileView(tile: own, camera: session.camera, blurred: session.selfBlur,
-                             onToggleBlur: { session.toggleSelfBlur() })
+                             effect: session.backgroundEffect,
+                             onToggleBlur: { session.toggleSelfBlur() },
+                             onBackgroundEffect: { session.setBackgroundEffect($0) })
                     .frame(width: 192, height: 108)
                     .shadow(radius: 4)
                     .padding(12)
@@ -205,13 +209,19 @@ struct CallStageView: View {
 
 /// One tile: camera (self view), screen share, or avatar with a
 /// speaking ring (audio). Name + muted glyph on a label chip. `blurred`
-/// blurs the self-view background (C2a, on-device); `onToggleBlur`
-/// adds the self tile's Blur Background context-menu item.
+/// effects the self-view background (C2a, on-device: blur, gallery
+/// replace, or a custom image); `onToggleBlur` adds the self tile's
+/// Blur Background context-menu item, `onBackgroundEffect` the
+/// Background menu. Live camera frames process on the camera's effect
+/// tap; the raw preview layer stays up until the first processed frame
+/// (never a blank tile).
 struct CallTileView: View {
     let tile: CallTile
     let camera: CameraCapture?
     var blurred = false
+    var effect = BackgroundEffect.off
     var onToggleBlur: (() -> Void)? = nil
+    var onBackgroundEffect: ((BackgroundEffect) -> Void)? = nil
     @Environment(\.contentTextScale) private var scale
 
     var body: some View {
@@ -225,6 +235,15 @@ struct CallTileView: View {
             if tile.kind == .selfView, let toggle = onToggleBlur {
                 Toggle("Blur Background", isOn: Binding(get: { blurred }, set: { _ in toggle() }))
             }
+            if tile.kind == .selfView, let apply = onBackgroundEffect {
+                Menu("Background") {
+                    Button("Off") { apply(.off) }
+                    Button("Blur") { apply(.blur) }
+                    ForEach(BuiltInBackground.allCases) { bg in
+                        Button(bg.title) { apply(.replace(bg)) }
+                    }
+                }
+            }
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibility)
@@ -235,9 +254,9 @@ struct CallTileView: View {
         switch tile.kind {
         case .selfView where tile.cameraOn:
             if let camera {
-                CameraPreview(camera: camera)
+                LiveSelfTile(camera: camera, blurred: blurred, effect: effect)
             } else if blurred {
-                BlurredSelfView()
+                BlurredSelfView(effect: effect.isOn ? effect : .blur)
             } else {
                 PlaceholderFeed()
             }
@@ -286,24 +305,92 @@ struct CallTileView: View {
         if tile.muted { parts.append("muted") }
         if tile.kind == .selfView {
             parts.append(tile.cameraOn ? "camera on" : "camera off")
-            if blurred, tile.cameraOn { parts.append("background blurred") }
+            if blurred, tile.cameraOn {
+                parts.append(effect.isReplace ? "background replaced" : "background blurred")
+            }
         }
         return parts.joined(separator: ", ")
     }
 }
 
-/// Demo self view with background blur (C2a): the synthetic scene
-/// with a heavily blurred, dimmed room and the person sharp. The demo
-/// scene is drawn in layers, so this is ground-truth background-only
-/// blur (Vision cannot segment cartoons — see `PersonBackgroundBlur`).
-/// The Vision + Core Image pipeline in OstMacCore is the live-camera
-/// path (unit-proven on synthetic frames; the live camera has no frame
-/// tap yet, so a live preview stays unblurred — see `CallSession`
-/// `selfBlur`).
+/// Demo self view with a background effect (C2a): blur is the synthetic
+/// scene with a heavily blurred, dimmed room and the person sharp; replace
+/// is the same person over a sharp gallery room (or the flat custom
+/// stand-in). The demo scene is drawn in layers, so these are ground-truth
+/// effect renders (Vision cannot segment cartoons — see
+/// `PersonBackgroundBlur`). The Vision + Core Image pipeline in OstMacCore
+/// is the live-camera path (unit-proven on synthetic frames; the live
+/// preview processes on the camera's effect tap — see `CallSession`
+/// `backgroundEffect`).
 struct BlurredSelfView: View {
+    var effect: BackgroundEffect = .blur
+
     var body: some View {
-        DemoRemoteVideo(animated: false, seed: 3, backgroundBlur: true)
+        switch effect {
+        case .replace(let bg):
+            DemoReplaceView(wall: bg.palette.wall, floor: bg.palette.floor, accent: bg.palette.accent)
+        case .custom:
+            DemoReplaceView(wall: (0.15, 0.45, 0.55), floor: (0.10, 0.32, 0.42), accent: (0.35, 0.80, 0.72))
+        case .off, .blur:
+            DemoRemoteVideo(animated: false, seed: 3, backgroundBlur: true)
+        }
     }
+}
+
+/// Demo self view with a replaced background: the same demo person over
+/// a sharp room (gallery palette, or the flat custom stand-in).
+struct DemoReplaceView: View {
+    let wall: (Double, Double, Double)
+    let floor: (Double, Double, Double)
+    let accent: (Double, Double, Double)
+
+    var body: some View {
+        Canvas { ctx, size in
+            let w = size.width, h = size.height
+            guard w > 0, h > 0 else { return }
+            ctx.fill(Path(CGRect(origin: .zero, size: size)), with: .color(.black))
+            ctx.fill(Path(CGRect(origin: .zero, size: size)),
+                     with: .linearGradient(Gradient(colors: [replaceColor(wall).opacity(0.85),
+                                                             replaceColor(floor).opacity(0.75)]),
+                                           startPoint: .zero, endPoint: CGPoint(x: w, y: h)))
+            // Sharp room (never blurred: this IS the replacement).
+            let window = CGRect(x: w * 0.12, y: h * 0.12, width: w * 0.24, height: h * 0.34)
+            ctx.fill(Path(roundedRect: window, cornerRadius: w * 0.012), with: .color(.white.opacity(0.3)))
+            let shelf = CGRect(x: w * 0.64, y: h * 0.36, width: w * 0.24, height: h * 0.045)
+            ctx.fill(Path(roundedRect: shelf, cornerRadius: 2), with: .color(.black.opacity(0.28)))
+            ctx.fill(Path(ellipseIn: CGRect(x: w * 0.66, y: h * 0.22, width: w * 0.07, height: h * 0.13)),
+                     with: .color(replaceColor(accent).opacity(0.55)))
+            drawDemoPerson(&ctx, size: size, seed: 3, time: 0, top: .teal)
+        }
+    }
+
+    private func replaceColor(_ c: (Double, Double, Double)) -> Color {
+        Color(red: c.0, green: c.1, blue: c.2)
+    }
+}
+
+/// The demo person (shared by the blurred and replaced self views so the
+/// subject matches across captures). Backlit, slight sway; `top` is the
+/// torso gradient head color.
+private func drawDemoPerson(_ ctx: inout GraphicsContext, size: CGSize, seed: Int, time: Double, top: Color) {
+    let w = size.width, h = size.height
+    let left = seed % 2 == 0
+    let sway = sin(time * 0.8 + Double(seed)) * w * 0.006
+    let bob = sin(time * 1.3 + Double(seed) * 0.7) * h * 0.004
+    let cx = w * 0.5 + sway
+    let torso = CGRect(x: cx - h * 0.4, y: h * 0.66 + bob, width: h * 0.8, height: h * 0.6)
+    ctx.fill(Path(ellipseIn: torso),
+             with: .linearGradient(Gradient(colors: [top.opacity(0.85), .black.opacity(0.85)]),
+                                   startPoint: CGPoint(x: cx, y: torso.minY),
+                                   endPoint: CGPoint(x: cx, y: h)))
+    let neck = CGRect(x: cx - h * 0.055, y: h * 0.52 + bob, width: h * 0.11, height: h * 0.18)
+    ctx.fill(Path(roundedRect: neck, cornerRadius: h * 0.03), with: .color(.black.opacity(0.6)))
+    let head = CGRect(x: cx - h * 0.125, y: h * 0.25 + bob, width: h * 0.25, height: h * 0.31)
+    ctx.fill(Path(ellipseIn: head),
+             with: .radialGradient(Gradient(colors: [.brown.opacity(0.75), .black.opacity(0.8)]),
+                                   center: CGPoint(x: head.midX + (left ? -1 : 1) * h * 0.04,
+                                                   y: head.midY - h * 0.03),
+                                   startRadius: 0, endRadius: h * 0.2))
 }
 
 /// The remote side of a 1:1 video call: decoded frames (live) or the
@@ -440,23 +527,8 @@ private struct DemoCameraScene: View {
                 // stays sharp (ground-truth background-only blur).
                 ctx.fill(Path(CGRect(origin: .zero, size: size)), with: .color(.black.opacity(0.22)))
             }
-            // The person, backlit, with a slight sway.
-            let sway = sin(time * 0.8 + Double(seed)) * w * 0.006
-            let bob = sin(time * 1.3 + Double(seed) * 0.7) * h * 0.004
-            let cx = w * 0.5 + sway
-            let torso = CGRect(x: cx - h * 0.4, y: h * 0.66 + bob, width: h * 0.8, height: h * 0.6)
-            ctx.fill(Path(ellipseIn: torso),
-                     with: .linearGradient(Gradient(colors: [room.top.opacity(0.85), .black.opacity(0.85)]),
-                                           startPoint: CGPoint(x: cx, y: torso.minY),
-                                           endPoint: CGPoint(x: cx, y: h)))
-            let neck = CGRect(x: cx - h * 0.055, y: h * 0.52 + bob, width: h * 0.11, height: h * 0.18)
-            ctx.fill(Path(roundedRect: neck, cornerRadius: h * 0.03), with: .color(.black.opacity(0.6)))
-            let head = CGRect(x: cx - h * 0.125, y: h * 0.25 + bob, width: h * 0.25, height: h * 0.31)
-            ctx.fill(Path(ellipseIn: head),
-                     with: .radialGradient(Gradient(colors: [.brown.opacity(0.75), .black.opacity(0.8)]),
-                                           center: CGPoint(x: head.midX + (left ? -1 : 1) * h * 0.04,
-                                                           y: head.midY - h * 0.03),
-                                           startRadius: 0, endRadius: h * 0.2))
+            // The person (shared helper, same subject as the replace view).
+            drawDemoPerson(&ctx, size: size, seed: seed, time: time, top: room.top)
         }
     }
 }
@@ -465,6 +537,29 @@ private struct DemoCameraScene: View {
 struct PlaceholderFeed: View {
     var body: some View {
         DemoRemoteVideo(animated: false, seed: 3)
+    }
+}
+
+/// Live self view: the capture session's preview layer while the effect
+/// tap warms up, then the processed frame (blur / replace / custom).
+/// Falls back to the raw preview whenever a pass yields nothing — the
+/// tile never blanks. Observes the camera so each processed frame
+/// repaints just this tile.
+struct LiveSelfTile: View {
+    @ObservedObject var camera: CameraCapture
+    var blurred = false
+    var effect = BackgroundEffect.off
+
+    var body: some View {
+        Group {
+            if blurred, let fx = camera.effectImage {
+                Image(decorative: fx, scale: 1)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+            } else {
+                CameraPreview(camera: camera)
+            }
+        }
     }
 }
 

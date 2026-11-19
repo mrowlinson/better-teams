@@ -32,8 +32,8 @@ use anyhow::Result;
 
 // Re-export data types for TUI integration
 pub use chat::{
-    ChatInfo, ChatMemberInfo, MessageInfo, MessagesPage, ReactionCount, Reactor, ReadReceipt,
-    RosterSource, REACTION_EMOJI,
+    ChatInfo, ChatMemberInfo, EchoMention, MessageInfo, MessagesPage, ReactionCount, Reactor,
+    ReadReceipt, RosterSource, REACTION_EMOJI,
 };
 pub use calendar::{
     JoinIdResolve, JoinTarget, LobbyEvent, LobbyState, MeetingInfo, ResolvedJoinId,

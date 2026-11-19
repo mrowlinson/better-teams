@@ -1243,6 +1243,16 @@ public enum RustCore {
         try call(ostmac_call_record_inject(), as: CallResult.self)
     }
 
+    /// Start recording (full flow) or transcription only on the connected call.
+    public static func callRecordStart(transcriptionOnly: Bool = false) throws -> CallResult {
+        try call(ostmac_call_record_start(transcriptionOnly ? 1 : 0), as: CallResult.self)
+    }
+
+    /// Stop recording (both legs) or transcription only.
+    public static func callRecordStop(transcriptionOnly: Bool = false) throws -> CallResult {
+        try call(ostmac_call_record_stop(transcriptionOnly ? 1 : 0), as: CallResult.self)
+    }
+
     // Take ownership of a Rust-allocated C string, decode, free.
     // Bytes-direct (om-perf-poll-timers): one length-delimited copy
     // straight into Data. The old String(cString:)+data(using:.utf8)

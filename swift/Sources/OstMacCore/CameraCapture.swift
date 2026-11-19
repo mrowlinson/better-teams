@@ -3,7 +3,9 @@
 // exposes the session for a SwiftUI preview layer. No V4L2.
 import AVFoundation
 import Combine
+import CoreImage
 import Foundation
+import Vision
 
 /// AVCapture owner: BGRA frame output -> RustCore.cameraPush. Main-actor
 /// published state; delegate callbacks arrive on a private queue.
@@ -61,6 +63,25 @@ public final class CameraCapture: NSObject, ObservableObject {
     private nonisolated let pushGate = InFlightGate()
     /// Stats publish at most 1/s (was: every frame to main).
     private nonisolated let statsGate = StatsGate()
+    /// Self-view background effect for the live preview (local only).
+    /// Processed frames publish to `effectImage` at most every
+    /// `effectMinIntervalMs`, one in flight, on `effectQueue` — never on
+    /// the push worker, so a slow Vision pass sheds preview frames
+    /// without delaying the core push or live send.
+    @Published public private(set) var effectImage: CGImage?
+    private nonisolated let effectBox = EffectConfigBox()
+    private nonisolated let effectQueue = DispatchQueue(label: "dev.ostmac.camera-effect")
+    private nonisolated let effectInFlight = LockedFlag()
+    private nonisolated let effectGate = IntervalGate()
+    static let effectMinIntervalMs: UInt64 = 150
+
+    /// Sets the live-preview background effect (main; takes effect on
+    /// the next processed frame). Clearing to `.off` drops the last
+    /// processed frame so the tile returns to the raw preview at once.
+    public func setPreviewEffect(_ effect: BackgroundEffect, custom: CGImage?) {
+        effectBox.set(effect: effect, custom: custom)
+        if !effect.isOn { effectImage = nil }
+    }
 
     /// Enable/disable live-send encoding (call when a live call connects).
     public func setLiveSend(_ on: Bool) {
@@ -251,6 +272,48 @@ public final class CameraCapture: NSObject, ObservableObject {
         }
         return out
     }
+
+    /// One throttled effect pass (effect queue): Vision mask on the pixel
+    /// buffer, then the tested composite path, published to main. Silent
+    /// drops throughout — the tile keeps the last processed frame (or the
+    /// raw preview before the first) whenever a pass yields nothing.
+    private nonisolated func renderEffect(_ effect: BackgroundEffect, custom: CGImage?,
+                                          width w: Int, height h: Int, buffer: CVPixelBuffer) {
+        guard effect.isOn else { return }
+        let request = VNGeneratePersonSegmentationRequest()
+        request.qualityLevel = .balanced
+        let handler = VNImageRequestHandler(cvPixelBuffer: buffer, options: [:])
+        guard (try? handler.perform([request])) != nil,
+              let px = request.results?.first?.pixelBuffer else { return }
+        var mask = CIImage(cvPixelBuffer: px)
+        let extent = CGRect(origin: .zero, size: CGSize(width: w, height: h))
+        let sx = extent.width / max(1, mask.extent.width)
+        let sy = extent.height / max(1, mask.extent.height)
+        mask = mask.transformed(by: CGAffineTransform(scaleX: sx, y: sy))
+        guard PersonBackgroundBlur.coverage(of: mask) >= PersonBackgroundBlur.minPersonCoverage else { return }
+        let frame = CIImage(cvPixelBuffer: buffer)
+        guard let cg = PersonBackgroundBlur.sharedContext.createCGImage(frame, from: extent) else { return }
+        let out: CGImage?
+        switch effect {
+        case .off:
+            return
+        case .blur:
+            out = PersonBackgroundBlur.composite(cg, mask: mask, radius: 18)
+        case .replace(let bg):
+            guard let bgImage = PersonBackgroundBlur.backgroundImage(for: bg,
+                                                                     size: CGSize(width: 480, height: 360)) else { return }
+            out = PersonBackgroundBlur.compositeReplace(cg, mask: mask, background: bgImage)
+        case .custom:
+            if let custom {
+                out = PersonBackgroundBlur.compositeReplace(cg, mask: mask, background: custom)
+            } else {
+                // Custom chosen but the image is gone: blur still hides the room.
+                out = PersonBackgroundBlur.composite(cg, mask: mask, radius: 18)
+            }
+        }
+        guard let out else { return }
+        Task { @MainActor [weak self] in self?.effectImage = out }
+    }
 }
 
 /// Session-queue decision for a start request (pure; unit-tested).
@@ -303,6 +366,34 @@ private final class LockedInt: @unchecked Sendable {
     }
     var current: Int {
         lock.lock(); defer { lock.unlock() }; return value
+    }
+}
+
+/// Lock-guarded preview-effect config (main sets, delegate queue reads).
+private final class EffectConfigBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var effect = BackgroundEffect.off
+    private var custom: CGImage?
+    func set(effect: BackgroundEffect, custom: CGImage?) {
+        lock.lock(); defer { lock.unlock() }
+        self.effect = effect
+        self.custom = custom
+    }
+    func current() -> (BackgroundEffect, CGImage?) {
+        lock.lock(); defer { lock.unlock() }
+        return (effect, custom)
+    }
+}
+
+/// Minimum-interval gate (worker-side use): at most one pass per interval.
+private final class IntervalGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var lastMs: UInt64?
+    func take(nowMs: UInt64, minIntervalMs: UInt64) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        if let last = lastMs, nowMs < last + minIntervalMs { return false }
+        lastMs = nowMs
+        return true
     }
 }
 
@@ -456,6 +547,21 @@ extension CameraCapture: AVCaptureVideoDataOutputSampleBufferDelegate {
         // The capture surface rides to the encoder (read-only; the gate
         // bounds how many are held, AVFoundation recycles them after).
         nonisolated(unsafe) let frame = pixels
+        // Self-view effect preview (local only): throttled + one in
+        // flight on its own queue, so Vision never slows the push path.
+        // No frame is allocated here — the pixel buffer rides read-only.
+        let (fxEffect, fxCustom) = effectBox.current()
+        if fxEffect.isOn, effectInFlight.get() == false,
+           effectGate.take(nowMs: CameraStatsGate.nowMs(), minIntervalMs: Self.effectMinIntervalMs) {
+            effectInFlight.set(true)
+            let fxQueue = effectQueue
+            let fxFlight = effectInFlight
+            nonisolated(unsafe) let fxPixels = pixels
+            fxQueue.async { [weak self] in
+                defer { fxFlight.set(false) }
+                self?.renderEffect(fxEffect, custom: fxCustom, width: w, height: h, buffer: fxPixels)
+            }
+        }
         worker.async { [weak self] in
             defer {
                 pool.checkin(packed)

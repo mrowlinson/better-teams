@@ -132,4 +132,92 @@ final class P4aCallTests: XCTestCase {
         XCTAssertEqual(g.columns, 2)
         XCTAssertEqual(g.rows, 2)
     }
+
+    /// meetrecord faces: idle names the start action, active names the
+    /// stop; both need a joined call. The status line carries the legs
+    /// in words (never color alone).
+    func testRecordTranscribeFaces() {
+        let idle = CallControlsState(joined: false, muted: false, cameraOn: false, sharing: false)
+        XCTAssertEqual(idle.record.symbol, "record.circle")
+        XCTAssertEqual(idle.record.menuTitle, "Start Recording")
+        XCTAssertFalse(idle.record.enabled)
+        XCTAssertEqual(idle.transcribe.symbol, "captions.bubble")
+        XCTAssertEqual(idle.transcribe.menuTitle, "Start Transcription")
+        XCTAssertFalse(idle.transcribe.enabled)
+        XCTAssertNil(idle.control("call.nope"))
+
+        let joined = CallControlsState(joined: true, muted: false, cameraOn: false, sharing: false)
+        XCTAssertTrue(joined.record.enabled)
+        XCTAssertTrue(joined.transcribe.enabled)
+        XCTAssertEqual(joined.control(CallCommands.record)?.menuTitle, "Start Recording")
+        XCTAssertEqual(joined.control(CallCommands.transcribe)?.menuTitle, "Start Transcription")
+
+        let active = CallControlsState(joined: true, muted: false, cameraOn: false, sharing: false,
+                                       recording: true, transcribing: true)
+        XCTAssertEqual(active.record.symbol, "stop.circle")
+        XCTAssertEqual(active.record.menuTitle, "Stop Recording")
+        XCTAssertTrue(active.record.enabled)
+        XCTAssertEqual(active.transcribe.menuTitle, "Stop Transcription")
+
+        XCTAssertEqual(CallSession.captureSuffix("12:34", recording: false, transcribing: false), "12:34")
+        XCTAssertEqual(CallSession.captureSuffix("12:34", recording: true, transcribing: false),
+                       "12:34 • Recording")
+        XCTAssertEqual(CallSession.captureSuffix("12:34", recording: false, transcribing: true),
+                       "12:34 • Transcribing")
+        XCTAssertEqual(CallSession.captureSuffix("12:34", recording: true, transcribing: true),
+                       "12:34 • Recording + Transcribing")
+    }
+
+    /// meetrecord guards: Record/Transcribe validate off before Join Now
+    /// and flip Start/Stop with the legs; the session toggles drive the
+    /// demo store and mirror back; stopping transcription leaves a
+    /// running recording untouched.
+    func testRecordTranscribeToggles() {
+        let model = makeModel()
+        let store = CallStore(demo: true)
+        let s = model.beginCall(.meeting(id: "m1", subject: "Standup"), presentation: .mainWindow, show: false,
+                                store: store)
+        XCTAssertEqual(CallSection().validate(CallCommands.record, arg: nil, model).title, "Start Recording")
+        XCTAssertFalse(CallSection().validate(CallCommands.record, arg: nil, model).enabled)
+        XCTAssertFalse(CallSection().validate(CallCommands.transcribe, arg: nil, model).enabled)
+        // Pre-join toggles are no-ops (nothing captured before Join Now).
+        s?.toggleRecording()
+        XCTAssertFalse(store.recording)
+        s?.joinNow()
+        XCTAssertTrue(CallSection().validate(CallCommands.record, arg: nil, model).enabled)
+
+        s?.toggleRecording()
+        XCTAssertTrue(store.recording)
+        XCTAssertTrue(store.transcribing)
+        XCTAssertEqual(s?.recording, true)
+        XCTAssertEqual(CallSection().validate(CallCommands.record, arg: nil, model).title, "Stop Recording")
+        XCTAssertEqual(CallSection().validate(CallCommands.transcribe, arg: nil, model).title, "Stop Transcription")
+
+        // Transcribe-stop drops transcription only (recording carries on).
+        s?.toggleTranscribing()
+        XCTAssertFalse(store.transcribing)
+        XCTAssertTrue(store.recording)
+        XCTAssertEqual(s?.transcribing, false)
+        XCTAssertEqual(CallSection().validate(CallCommands.transcribe, arg: nil, model).title, "Start Transcription")
+
+        // Record-stop ends both legs.
+        s?.toggleRecording()
+        XCTAssertFalse(store.recording)
+        XCTAssertFalse(store.transcribing)
+        s?.leave()
+    }
+
+    /// meetrecord store guard: without a connected call the live store
+    /// refutes capture changes (no core call) and surfaces the reason.
+    func testRecordStoreGuardsWithoutCall() {
+        let store = CallStore(demo: false)
+        XCTAssertNil(store.call)
+        store.setRecording(true)
+        XCTAssertFalse(store.recording)
+        XCTAssertEqual(store.controlsError, "Recording needs a connected call")
+        store.dismissControlsError()
+        store.setTranscribing(true)
+        XCTAssertFalse(store.transcribing)
+        XCTAssertEqual(store.controlsError, "Recording needs a connected call")
+    }
 }

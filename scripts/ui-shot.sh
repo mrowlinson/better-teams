@@ -97,6 +97,8 @@
 #   call?state=muted&presentation=window
 #   call?state=sharing&presentation=main       share tile + Stop Sharing
 #   call?state=sharing&presentation=window
+#   call?state=recording&presentation=main     recording leg up (toolbar Stop, subtitle + Recording)
+#   call?state=transcribing&presentation=main  transcription only (toolbar Stop, subtitle + Transcribing)
 #   call?state=ended&presentation=main         remote end: back to previous section
 #   call?state=ended&presentation=window       remote end: call window closed
 #   call?state=active&presentation=main&popover=devices    Devices popover (pickers + level)

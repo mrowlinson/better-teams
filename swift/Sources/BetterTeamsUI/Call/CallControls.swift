@@ -21,12 +21,19 @@ public struct CallControlsState: Equatable, Sendable {
     public var muted: Bool
     public var cameraOn: Bool
     public var sharing: Bool
+    /// Server-side capture legs (meetrecord): the Record/Transcribe
+    /// controls flip these through the core; the faces follow them.
+    public var recording: Bool
+    public var transcribing: Bool
 
-    public init(joined: Bool, muted: Bool, cameraOn: Bool, sharing: Bool) {
+    public init(joined: Bool, muted: Bool, cameraOn: Bool, sharing: Bool,
+               recording: Bool = false, transcribing: Bool = false) {
         self.joined = joined
         self.muted = muted
         self.cameraOn = cameraOn
         self.sharing = sharing
+        self.recording = recording
+        self.transcribing = transcribing
     }
 
     public var mute: CallControl {
@@ -50,11 +57,31 @@ public struct CallControlsState: Equatable, Sendable {
                           enabled: joined)
     }
 
+    /// Server-side recording (meetrecord): starting also starts
+    /// transcription (the full flow); stopping ends both legs. Needs a
+    /// joined call — the core refutes anything earlier.
+    public var record: CallControl {
+        recording
+            ? CallControl(symbol: "stop.circle", label: "Stop", menuTitle: "Stop Recording", enabled: joined)
+            : CallControl(symbol: "record.circle", label: "Record", menuTitle: "Start Recording", enabled: joined)
+    }
+
+    /// Server-side transcription only (meetrecord): may start alongside
+    /// a running recording and stops without touching it.
+    public var transcribe: CallControl {
+        transcribing
+            ? CallControl(symbol: "stop.circle", label: "Stop", menuTitle: "Stop Transcription", enabled: joined)
+            : CallControl(symbol: "captions.bubble", label: "Transcribe", menuTitle: "Start Transcription",
+                          enabled: joined)
+    }
+
     func control(_ id: CommandID) -> CallControl? {
         switch id {
         case CallCommands.mute: mute
         case CallCommands.camera: camera
         case CallCommands.share: share
+        case CallCommands.record: record
+        case CallCommands.transcribe: transcribe
         default: nil
         }
     }

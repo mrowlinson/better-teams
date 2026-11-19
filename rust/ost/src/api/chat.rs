@@ -63,6 +63,10 @@ struct NativeMessage {
 #[derive(Debug, Deserialize)]
 struct MessageProperties {
     reactions: Option<serde_json::Value>,
+    /// COMPOSEPROOF2: server-echoed mention entities live here
+    /// (`properties.mentions[]`). Raw value: shapes vary, parsed
+    /// tolerantly by [`message_mentions`]. Absent → no entities.
+    mentions: Option<serde_json::Value>,
     /// Unknown `properties.*` fields (om-lt2-quotelink): same parent
     /// mining as top-level, for nested channel shapes.
     #[serde(default, flatten)]
@@ -1497,6 +1501,197 @@ fn wire_parent_from_map(map: &HashMap<String, serde_json::Value>) -> Option<Stri
     None
 }
 
+/// COMPOSEPROOF2: case-insensitive trimmed string lookup over one
+/// flattened wire map (top-level or `properties.*`). Numbers stringify,
+/// blanks drop, everything else drops — never fatal.
+fn wire_str_ci(map: &HashMap<String, serde_json::Value>, key: &str) -> Option<String> {
+    let v = map
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case(key))
+        .map(|(_, v)| v)?;
+    match v {
+        serde_json::Value::String(s) => {
+            let t = s.trim();
+            if t.is_empty() {
+                None
+            } else {
+                Some(t.to_string())
+            }
+        }
+        serde_json::Value::Number(n) => Some(n.to_string()),
+        _ => None,
+    }
+}
+
+/// COMPOSEPROOF2 echo matrix: server-echoed importance. Top-level
+/// `importance` wins, then `properties.importance`. Lowercased;
+/// None when absent/blank (1:1 strips it — composeproof M2).
+fn message_importance(msg: &NativeMessage) -> Option<String> {
+    if let Some(s) = wire_str_ci(&msg.extra, "importance") {
+        return Some(s.to_lowercase());
+    }
+    msg.properties
+        .as_ref()
+        .and_then(|p| wire_str_ci(&p.extra, "importance"))
+        .map(|s| s.to_lowercase())
+}
+
+/// COMPOSEPROOF2 echo matrix: server-echoed announcement subject
+/// (channel posts). Top-level wins, then `properties.subject`.
+/// None when absent/blank.
+fn message_subject(msg: &NativeMessage) -> Option<String> {
+    if let Some(s) = wire_str_ci(&msg.extra, "subject") {
+        return Some(s);
+    }
+    msg.properties
+        .as_ref()
+        .and_then(|p| wire_str_ci(&p.extra, "subject"))
+}
+
+/// COMPOSEPROOF2 echo matrix: server-echoed mention entities.
+/// `properties.mentions[]` first (wire shape `{itemid, mentionType,
+/// displayName}`, tolerant to case/key variants `id`/`type`/`kind` /
+/// `display`/`name`); `<at id="…">display</at>` tags mined from the
+/// content as fallback. Dedupes by (id, display); empty when the
+/// server strips them (1:1 broadcast strip — composeproof M3).
+/// Never fatal.
+fn push_mention(out: &mut Vec<EchoMention>, id: &str, display: &str, kind: &str) {
+    let id = id.trim();
+    if id.is_empty() {
+        return;
+    }
+    let m = EchoMention {
+        id: id.to_string(),
+        display: display.trim().to_string(),
+        kind: kind.trim().to_string(),
+    };
+    if !out.contains(&m) {
+        out.push(m);
+    }
+}
+
+fn message_mentions(msg: &NativeMessage) -> Vec<EchoMention> {
+    let mut out: Vec<EchoMention> = Vec::new();
+    if let Some(props) = msg.properties.as_ref() {
+        if let Some(arr) = props.mentions.as_ref().and_then(|v| v.as_array()) {
+            for e in arr {
+                let Some(o) = e.as_object() else {
+                    continue;
+                };
+                let first = |keys: &[&str]| {
+                    keys.iter()
+                        .filter_map(|k| obj_get_ci(o, k))
+                        .filter_map(|v| v.as_str())
+                        .map(|s| s.trim())
+                        .filter(|s| !s.is_empty())
+                        .next()
+                        .unwrap_or("")
+                };
+                push_mention(
+                    &mut out,
+                    first(&["itemid", "id"]),
+                    first(&["displayname", "display", "name"]),
+                    first(&["mentiontype", "type", "kind"]),
+                );
+            }
+        }
+    }
+    if out.is_empty() {
+        if let Some(content) = msg.content.as_deref() {
+            for m in mine_at_tags(content) {
+                push_mention(&mut out, &m.id, &m.display, &m.kind);
+            }
+        }
+    }
+    out
+}
+
+/// `<at…` opener index with a tag boundary (skips `<attachment>` etc).
+fn find_at_open(s: &str) -> Option<usize> {
+    let mut rest = s;
+    let mut offset = 0;
+    loop {
+        let rel = rest.find("<at")?;
+        if rest[rel + 3..].starts_with(|c: char| c.is_ascii_alphanumeric()) {
+            rest = &rest[rel + 3..];
+            offset += rel + 3;
+            continue;
+        }
+        return Some(offset + rel);
+    }
+}
+
+/// Mine `<at id="…">display</at>` tags from raw HTML (case-insensitive
+/// tag/attr names, either quote). Unterminated tags drop; a nested
+/// `<at` opener before the close means the outer tag is malformed, so
+/// the outer drops and scanning resumes at the inner opener.
+fn mine_at_tags(html: &str) -> Vec<EchoMention> {
+    let mut out = Vec::new();
+    let mut rest = html;
+    loop {
+        let Some(open) = find_at_open(rest) else {
+            break;
+        };
+        let tag_rest = &rest[open..];
+        let Some(tag_end) = tag_rest.find('>') else {
+            break;
+        };
+        let tag = &tag_rest[..tag_end];
+        let id = attr_ci(tag, "id").unwrap_or_default();
+        let after = &tag_rest[tag_end + 1..];
+        let Some(close) = after.find("</at>") else {
+            break;
+        };
+        if let Some(nested) = find_at_open(&after[..close]) {
+            rest = &after[nested..];
+            continue;
+        }
+        let display = after[..close].trim();
+        if !id.trim().is_empty() {
+            out.push(EchoMention {
+                id: id.trim().to_string(),
+                display: display.to_string(),
+                kind: String::new(),
+            });
+        }
+        rest = &after[close + "</at>".len()..];
+    }
+    out
+}
+
+/// `name="…"` (double or single quotes, case-insensitive name) from one
+/// open tag. Blank values drop.
+fn attr_ci(tag: &str, name: &str) -> Option<String> {
+    let lower = tag.to_ascii_lowercase();
+    let needle = format!("{}=", name.to_ascii_lowercase());
+    let mut search = lower.as_str();
+    let mut offset = 0;
+    loop {
+        let Some(i) = search.find(&needle) else {
+            return None;
+        };
+        let boundary = i == 0 || !search.as_bytes()[i - 1].is_ascii_alphanumeric();
+        let abs = offset + i;
+        if boundary {
+            let after = &tag[abs + needle.len()..];
+            let q = after.chars().next()?;
+            if q == '"' || q == '\'' {
+                let val = &after[q.len_utf8()..];
+                if let Some(end) = val.find(q) {
+                    let s = val[..end].trim();
+                    if !s.is_empty() {
+                        return Some(s.to_string());
+                    }
+                    return None;
+                }
+                return None;
+            }
+        }
+        search = &search[i + needle.len()..];
+        offset = abs + needle.len();
+    }
+}
+
 /// Scan raw content for embedded `rootMessageId` / `replyToId` forms:
 /// `"key":"val"`, `key="val"`, `key:123` (any quote/sep mix).
 /// Case-insensitive key, first non-empty wins. Byte-wise so Unicode
@@ -2098,6 +2293,28 @@ pub struct MessageInfo {
     /// OstMac §106: the `clientmessageid` the sender posted with (the
     /// idempotency key; an own send's pending bubble reconciles by it).
     pub client_message_id: Option<String>,
+    /// COMPOSEPROOF2 echo matrix: server-echoed importance (`high` /
+    /// `urgent`; None when the server strips it, as 1:1 does per
+    /// composeproof M2). Lowercased, trimmed; None when absent/blank.
+    pub importance: Option<String>,
+    /// COMPOSEPROOF2 echo matrix: server-echoed announcement subject
+    /// (channel posts). None when absent/blank.
+    pub subject: Option<String>,
+    /// COMPOSEPROOF2 echo matrix: server-echoed mention entities
+    /// (`properties.mentions[]` first, `<at id>` tags mined from `raw`
+    /// as fallback). Empty when the server strips them (1:1 broadcast
+    /// strip per composeproof M3).
+    pub mentions: Vec<EchoMention>,
+}
+
+/// One server-echoed mention entity (COMPOSEPROOF2 read-back).
+/// `id` is the wire identity (`0` for broadcasts); `kind` the wire
+/// `mentionType` (`Channel`, `Tag`, …); `display` the rendered name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EchoMention {
+    pub id: String,
+    pub display: String,
+    pub kind: String,
 }
 
 /// One grouped reaction count: picker emoji + number of reactors.
@@ -3292,6 +3509,76 @@ pub async fn list_chats_data(client: &TeamsClient, limit: usize) -> Result<Vec<C
     Ok(chats)
 }
 
+/// Map one wire message to a read-model row. `None` drops the message
+/// (unknown type, or empty text with no image/card payload) — same rules
+/// [`read_messages_page`] always applied, factored for fixture tests
+/// (COMPOSEPROOF2 echo matrix: no network needed to prove read-back).
+fn message_info_from_native(msg: &NativeMessage) -> Option<MessageInfo> {
+    let msgtype = msg.messagetype.as_deref().unwrap_or("");
+    if !message_type_kept(msgtype) {
+        return None;
+    }
+
+    let sender = msg
+        .im_display_name
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or("?")
+        .to_string();
+    let sender_mri = mri_from_user_link(msg.from.as_deref());
+    let time = msg
+        .original_arrival_time
+        .as_deref()
+        .or(msg.compose_time.as_deref())
+        .unwrap_or("")
+        .to_string();
+    let content = msg.content.as_deref().unwrap_or("");
+    // OstMac om-replies: split the quote block first so `content` is
+    // the reply body only; the parent id rides `reply_to`.
+    // OstMac om-lt2-quotelink: channel threads carry no quote block —
+    // fall back to the wire parent (`rootMessageId` / `replyToId`).
+    let (quote_parent, body_html) = split_reply_quote(content);
+    let wire_parent = message_parent_id(msg);
+    let mut reply_to = quote_parent.or(wire_parent);
+    let text = strip_html(&body_html);
+
+    // OstMac om-richmedia: image-only bubbles strip to "" but are
+    // real messages — keep them (the embedder mines `<img>` from raw).
+    // OstMac om-botposts: same for RSS/bot/card posts — attachment and
+    // card payloads strip to "" but the embedder renders them as
+    // title+link rows (or a placeholder when unparseable).
+    if text.trim().is_empty() && !has_image(content) && !has_card_payload(content) {
+        return None;
+    }
+
+    // OstMac: keep the server id so embedders can match realtime edits.
+    let id = msg.id.as_deref().filter(|s| !s.is_empty()).map(String::from);
+    let id = id.unwrap_or_else(|| format!("{}@{}", time, sender));
+    // Self/blank parents never link (corrupt wire id guard).
+    if reply_to
+        .as_deref()
+        .map(|p| p.trim().is_empty() || p == id)
+        .unwrap_or(false)
+    {
+        reply_to = None;
+    }
+    let reactions = message_reactions(msg);
+    Some(MessageInfo {
+        id,
+        sender_mri,
+        sender,
+        timestamp: time,
+        content: text.trim().to_string(),
+        raw: content.to_string(),
+        reactions,
+        reply_to,
+        client_message_id: client_message_id_of(&msg.extra),
+        importance: message_importance(msg),
+        subject: message_subject(msg),
+        mentions: message_mentions(msg),
+    })
+}
+
 /// Read messages from a specific chat thread and return structured data.
 ///
 /// Newest page only; use [`read_messages_page`] with the returned
@@ -3341,66 +3628,9 @@ pub async fn read_messages_page(
 
     let mut result = Vec::new();
     for msg in &msgs {
-        let msgtype = msg.messagetype.as_deref().unwrap_or("");
-        if !message_type_kept(msgtype) {
-            continue;
+        if let Some(row) = message_info_from_native(msg) {
+            result.push(row);
         }
-
-        let sender = msg
-            .im_display_name
-            .as_deref()
-            .filter(|s| !s.trim().is_empty())
-            .unwrap_or("?")
-            .to_string();
-        let sender_mri = mri_from_user_link(msg.from.as_deref());
-        let time = msg
-            .original_arrival_time
-            .as_deref()
-            .or(msg.compose_time.as_deref())
-            .unwrap_or("")
-            .to_string();
-        let content = msg.content.as_deref().unwrap_or("");
-        // OstMac om-replies: split the quote block first so `content` is
-        // the reply body only; the parent id rides `reply_to`.
-        // OstMac om-lt2-quotelink: channel threads carry no quote block —
-        // fall back to the wire parent (`rootMessageId` / `replyToId`).
-        let (quote_parent, body_html) = split_reply_quote(content);
-        let wire_parent = message_parent_id(msg);
-        let mut reply_to = quote_parent.or(wire_parent);
-        let text = strip_html(&body_html);
-
-        // OstMac om-richmedia: image-only bubbles strip to "" but are
-        // real messages — keep them (the embedder mines `<img>` from raw).
-        // OstMac om-botposts: same for RSS/bot/card posts — attachment and
-        // card payloads strip to "" but the embedder renders them as
-        // title+link rows (or a placeholder when unparseable).
-        if text.trim().is_empty() && !has_image(content) && !has_card_payload(content) {
-            continue;
-        }
-
-        // OstMac: keep the server id so embedders can match realtime edits.
-        let id = msg.id.as_deref().filter(|s| !s.is_empty()).map(String::from);
-        let id = id.unwrap_or_else(|| format!("{}@{}", time, sender));
-        // Self/blank parents never link (corrupt wire id guard).
-        if reply_to
-            .as_deref()
-            .map(|p| p.trim().is_empty() || p == id)
-            .unwrap_or(false)
-        {
-            reply_to = None;
-        }
-        let reactions = message_reactions(msg);
-        result.push(MessageInfo {
-            id,
-            sender_mri,
-            sender,
-            timestamp: time,
-            content: text.trim().to_string(),
-            raw: content.to_string(),
-            reactions,
-            reply_to,
-            client_message_id: client_message_id_of(&msg.extra),
-        });
     }
 
     let backward_link = body.metadata.and_then(|m| m.backward_link);
@@ -4841,6 +5071,137 @@ src="x">"#));
         );
     }
 
+    // COMPOSEPROOF2 echo matrix: fixture read-back. Payloads mirror the
+    // observed 1:1 receipts (composeproof M1/M2/M3: M1 emphasis PROVEN in
+    // content, M2 importance ABSENT, M3 broadcast entity STRIPPED) plus
+    // the channel-echo variants the trial gate verifies live. 1:1
+    // stripping is NOT re-proven here — only that the read model
+    // surfaces an echo when the server sends one.
+    fn echo_row(json: &str) -> MessageInfo {
+        let msg: NativeMessage = serde_json::from_str(json).unwrap();
+        message_info_from_native(&msg).expect("fixture must map to a row")
+    }
+
+    #[test]
+    fn composeproof2_importance_echoback() {
+        // M2 1:1 shape: no importance anywhere → None (server stripped).
+        let stripped = echo_row(
+            r#"{"id":"1794956928435","messagetype":"RichText/Html","content":"<p>test</p>",
+                "clientmessageid":"9555200000000000000",
+                "properties":{"languageStamp":"2026-11-17T00:00:00.000Z"}}"#,
+        );
+        assert_eq!(stripped.importance, None);
+        // Channel echo: top-level importance survives, lowercased.
+        let high = echo_row(
+            r#"{"id":"1","messagetype":"RichText/Html","content":"<p>test</p>","importance":"high"}"#,
+        );
+        assert_eq!(high.importance.as_deref(), Some("high"));
+        let urgent = echo_row(
+            r#"{"id":"2","messagetype":"RichText/Html","content":"<p>test</p>","Importance":"URGENT"}"#,
+        );
+        assert_eq!(urgent.importance.as_deref(), Some("urgent"));
+        // properties-level fallback + blank drops.
+        let nested = echo_row(
+            r#"{"id":"3","messagetype":"RichText/Html","content":"<p>t</p>",
+                "properties":{"importance":"high"}}"#,
+        );
+        assert_eq!(nested.importance.as_deref(), Some("high"));
+        let blank = echo_row(
+            r#"{"id":"4","messagetype":"RichText/Html","content":"<p>t</p>","importance":"  "}"#,
+        );
+        assert_eq!(blank.importance, None);
+    }
+
+    #[test]
+    fn composeproof2_subject_echoback() {
+        let with = echo_row(
+            r#"{"id":"10","messagetype":"RichText/Html","content":"<p>body</p>",
+                "subject":"Weekly sync"}"#,
+        );
+        assert_eq!(with.subject.as_deref(), Some("Weekly sync"));
+        let without = echo_row(
+            r#"{"id":"11","messagetype":"RichText/Html","content":"<p>body</p>"}"#,
+        );
+        assert_eq!(without.subject, None);
+    }
+
+    #[test]
+    fn composeproof2_mentions_echoback() {
+        // Channel echo: properties.mentions[] entity surfaces.
+        let echoed = echo_row(
+            r#"{"id":"20","messagetype":"RichText/Html",
+                "content":"<p>hey <at id=\"0\">channel</at></p>",
+                "properties":{"mentions":[{"itemid":"0","mentionType":"Channel","displayName":"channel"}]}}"#,
+        );
+        assert_eq!(
+            echoed.mentions,
+            vec![EchoMention {
+                id: "0".to_string(),
+                display: "channel".to_string(),
+                kind: "Channel".to_string(),
+            }]
+        );
+        // M3 1:1 shape: no entities, no <at> tag → empty (stripped).
+        let stripped = echo_row(
+            r#"{"id":"1033600000000000000","messagetype":"RichText/Html",
+                "content":"<p>test @channel</p>"}"#,
+        );
+        assert!(stripped.mentions.is_empty());
+        // Fallback: entities stripped but <at> tag survives in content.
+        let mined = echo_row(
+            r#"{"id":"21","messagetype":"RichText/Html",
+                "content":"<p>hey <at id=\"0\">channel</at></p>"}"#,
+        );
+        assert_eq!(mined.mentions.len(), 1);
+        assert_eq!(mined.mentions[0].id, "0");
+        assert_eq!(mined.mentions[0].display, "channel");
+    }
+
+    #[test]
+    fn composeproof2_at_tag_mining_bounds() {
+        // <attachment> blocks never mine (card payload, not a mention).
+        assert!(mine_at_tags("<attachment id=\"a\">x</attachment>").is_empty());
+        // Unterminated tags drop, later valid tags still mine.
+        let tags = mine_at_tags("<p><at id=\"0\">oops</p><p><at id='7'>ok</at></p>");
+        assert_eq!(tags.len(), 1);
+        assert_eq!(tags[0].id, "7");
+        assert_eq!(tags[0].display, "ok");
+        // Missing/blank id drops the tag.
+        assert!(mine_at_tags("<p><at>noname</at></p>").is_empty());
+        assert!(mine_at_tags("<p><at id=\"  \">blank</at></p>").is_empty());
+        assert_eq!(attr_ci("<at ID=\"0\">", "id").as_deref(), Some("0"));
+        assert_eq!(attr_ci("<at id='x'>", "id").as_deref(), Some("x"));
+        assert_eq!(attr_ci("<at noid=\"0\">", "id"), None);
+    }
+
+    // COMPOSEPROOF2 echo probe: the exact POST body the send path emits,
+    // replayed as a server read receipt, must surface all three echo
+    // cells (importance, subject, entities) through the read model.
+    // A live server that echoes what it received therefore proves the
+    // full matrix through this path; a server that strips proves the
+    // strip (composeproof M2/M3 1:1 outcome) with zero code ambiguity.
+    #[test]
+    fn composeproof2_send_echo_roundtrip() {
+        let body = send_message_body_opts(
+            "hey @channel",
+            &SendOpts {
+                importance: WireImportance::Important,
+                subject: Some("Weekly sync".to_string()),
+                mentions: vec![composer_b_mention()],
+            },
+        );
+        let mut receipt = body.clone();
+        receipt["id"] = serde_json::json!("1794957000000");
+        receipt["messagetype"] = serde_json::json!("RichText/Html");
+        let msg: NativeMessage = serde_json::from_value(receipt).unwrap();
+        let row = message_info_from_native(&msg).expect("echo must map");
+        assert_eq!(row.importance.as_deref(), Some("high"));
+        assert_eq!(row.subject.as_deref(), Some("Weekly sync"));
+        assert_eq!(row.mentions.len(), 1);
+        assert_eq!(row.mentions[0].id, "0");
+        assert_eq!(row.content, "hey channel");
+    }
+
     #[test]
     fn wire_prose_unchanged_single_p() {
         assert_eq!(build_message_html("hi"), "<p>hi</p>");
@@ -5734,6 +6095,9 @@ mod sendfix_tests {
             reactions: vec![],
             reply_to: None,
             client_message_id: c.map(String::from),
+            importance: None,
+            subject: None,
+            mentions: vec![],
         };
         let rows = vec![row("1", None), row("2", Some("555"))];
         assert_eq!(find_by_client_id(&rows, "555").map(|m| m.id.as_str()), Some("2"));

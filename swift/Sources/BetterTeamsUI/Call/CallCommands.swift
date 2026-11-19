@@ -17,6 +17,10 @@ public enum CallCommands {
     public static let devices: CommandID = "call.devices"
     public static let showPeople: CommandID = "call.showPeople"
     public static let showChat: CommandID = "call.showChat"
+    /// Server-side capture (meetrecord): Record (full flow) and
+    /// Transcribe (transcription only), Call menu + call toolbars.
+    public static let record: CommandID = "call.record"
+    public static let transcribe: CommandID = "call.transcribe"
     /// Teams parity (C8b): a ringing call's answer/decline, the
     /// in-call hand, and opt-in push-to-talk (all confined to the Call
     /// menu, like the D2 call keys).
@@ -40,6 +44,10 @@ public enum CallCommands {
                 menu: .init(.call, group: 2, order: 2), toolbar: .detail, owner: .call),
         Command(devices, "Devices…", symbol: "slider.horizontal.3",
                 menu: .init(.call, group: 2, order: 3), toolbar: .detail, owner: .call),
+        Command(record, "Start Recording", symbol: "record.circle",
+                menu: .init(.call, group: 2, order: 6), toolbar: .detail, owner: .call),
+        Command(transcribe, "Start Transcription", symbol: "captions.bubble",
+                menu: .init(.call, group: 2, order: 7), toolbar: .detail, owner: .call),
         Command(leave, "Leave Call", symbol: "phone.down.fill", key: "h", modifiers: [.command, .shift],
                 menu: .init(.call, group: 0, order: 9), toolbar: .trailing, owner: .call),
         // The call's People | Chat inspector (SPECFIX-P2 #13): titles

@@ -741,6 +741,14 @@ char *ostmac_call_end(void);
 // {ok,injected,response_bytes}. Caller frees.
 char *ostmac_call_record_inject(void);
 
+// Start recording (full flow) or transcription only (nonzero):
+// {ok,started,recording,transcribing,call}. Caller frees.
+char *ostmac_call_record_start(int transcription_only);
+
+// Stop recording (both legs) or transcription only (nonzero):
+// {ok,stopped,transcription_only,call}. Caller frees.
+char *ostmac_call_record_stop(int transcription_only);
+
 // NOTE (R12 ffi-move-now B1): av_info moved to Swift (CoreLocal);
 // decl deleted.
 

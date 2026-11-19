@@ -26,7 +26,8 @@ final class CallSection: SectionProvider, InspectorCapable {
     func inspector(_ m: WindowModel) -> AnyView? { AnyView(CallInspectorPane()) }
 
     var allToolbarItems: [CommandID] {
-        [CallCommands.mute, CallCommands.camera, CallCommands.share, CallCommands.devices, CallCommands.leave]
+        [CallCommands.mute, CallCommands.camera, CallCommands.share, CallCommands.record, CallCommands.transcribe,
+         CallCommands.devices, CallCommands.leave]
     }
 
     func toolbarItems(_ sel: SectionSelection?) -> [CommandID] { allToolbarItems }
@@ -47,6 +48,8 @@ final class CallSection: SectionProvider, InspectorCapable {
             case CallCommands.mute: s.toggleMute()
             case CallCommands.camera: s.toggleCamera()
             case CallCommands.share: s.toggleShare()
+            case CallCommands.record: s.toggleRecording()
+            case CallCommands.transcribe: s.toggleTranscribing()
             case CallCommands.devices: s.showDevices()
             case CallCommands.showPeople: Self.toggleInspector(segment: "people", m)
             case CallCommands.showChat: Self.toggleInspector(segment: "chat", m)
@@ -80,7 +83,8 @@ final class CallSection: SectionProvider, InspectorCapable {
                 let verb = shown ? "Hide" : "Show"
                 let what = segment == "people" ? "People" : "Chat"
                 return CommandValidation(enabled: true, title: "\(verb) \(what)")
-            case CallCommands.mute, CallCommands.camera, CallCommands.share:
+            case CallCommands.mute, CallCommands.camera, CallCommands.share,
+                 CallCommands.record, CallCommands.transcribe:
                 guard let ctl = s.controls.control(c) else { return .disabled }
                 return CommandValidation(enabled: ctl.enabled, title: ctl.menuTitle)
             case CallCommands.hand:

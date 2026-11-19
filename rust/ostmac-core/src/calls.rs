@@ -53,6 +53,12 @@ pub struct CallInfo {
     pub started_at: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+    /// Recording leg state: None (idle) or "recording".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rec_state: Option<String>,
+    /// Transcription leg state: None (idle) or "transcribing".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trx_state: Option<String>,
     /// True once the live media engine (ICE/SRTP/RTP) is attached.
     #[serde(default)]
     pub live_media: bool,
@@ -94,6 +100,33 @@ struct StoredCall {
     trouter_surl: String,
     // Meeting lobby control links from the phase-2 join response.
     lobby_links: signaling::LobbyLinks,
+    // Recording/transcription legs (meetrecord). Both start idle; the
+    // stop calls need the recorder endpoint, so it is kept here (tokens
+    // are re-read from config at stop time, never stored). A dropped
+    // session always reads back as idle (see `sync_rec_info`).
+    recording: bool,
+    transcribing: bool,
+    rec_session: Option<StoredRecording>,
+}
+
+/// Recorder endpoint for an in-progress recording/transcription leg.
+#[derive(Debug, Clone)]
+struct StoredRecording {
+    recorder_base: String,
+    conversation_id: String,
+}
+
+impl StoredCall {
+    /// Adopt the leg flags into the UI-facing record. No session means
+    /// no legs: a dropped session can never surface a stuck face.
+    fn sync_rec_info(&mut self) {
+        if self.rec_session.is_none() {
+            self.recording = false;
+            self.transcribing = false;
+        }
+        self.info.rec_state = self.recording.then(|| "recording".to_string());
+        self.info.trx_state = self.transcribing.then(|| "transcribing".to_string());
+    }
 }
 
 fn current() -> &'static Mutex<Option<StoredCall>> {
@@ -367,6 +400,8 @@ fn note_incoming(n: CallNotification) -> (CallInfo, bool) {
         } else {
             Some(format!("modalities: {}", modalities.join(",")))
         },
+        rec_state: None,
+        trx_state: None,
     };
     *guard = Some(StoredCall {
         info: info.clone(),
@@ -383,6 +418,9 @@ fn note_incoming(n: CallNotification) -> (CallInfo, bool) {
         display_name: String::new(),
         trouter_surl: String::new(),
         lobby_links: signaling::LobbyLinks::default(),
+        recording: false,
+        transcribing: false,
+        rec_session: None,
     });
     (info, true)
 }
@@ -921,6 +959,257 @@ pub fn call_record_inject_json() -> String {
                 s.info.detail = Some("recorder injected".to_string());
             }
             serde_json::json!({"ok": true, "injected": true, "response_bytes": n}).to_string()
+        }
+        Err(e) => err_json("record", e),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Recording + transcription controls (meetrecord)
+// ---------------------------------------------------------------------------
+
+/// Slot snapshot for the recording controls. Same connected-call gate as
+/// the recorder inject (outgoing leg we placed or joined: the flow needs
+/// our caller/participant ids).
+struct RecordSlot {
+    id: String,
+    controller: String,
+    caller_mri: String,
+    participant_id: String,
+    endpoint_id: String,
+    thread_id: String,
+    display_name: String,
+    surl: String,
+    recording: bool,
+    transcribing: bool,
+    session: Option<StoredRecording>,
+}
+
+fn record_slot() -> Result<RecordSlot, (String, String)> {
+    let guard = lock_current();
+    match guard.as_ref() {
+        Some(s)
+            if s.info.dir == "out"
+                && s.info.state == "connected"
+                && s.info.controller.is_some() =>
+        {
+            Ok(RecordSlot {
+                id: s.info.id.clone(),
+                controller: s.info.controller.clone().unwrap_or_default(),
+                caller_mri: s.caller_mri.clone(),
+                participant_id: s.participant_id.clone(),
+                endpoint_id: s.endpoint_id.clone(),
+                thread_id: s.thread_id.clone(),
+                display_name: s.display_name.clone(),
+                surl: s.trouter_surl.clone(),
+                recording: s.recording,
+                transcribing: s.transcribing,
+                session: s.rec_session.clone(),
+            })
+        }
+        Some(s) => Err((
+            "state".to_string(),
+            format!(
+                "recording controls need a connected outgoing call (slot: {} {})",
+                s.info.dir, s.info.state
+            ),
+        )),
+        None => Err(("no_call".to_string(), "no active call".to_string())),
+    }
+}
+
+fn record_tokens() -> Result<(String, String, String), String> {
+    let cfg = Config::load_cached().map_err(|e| e.to_string())?;
+    let get = |t: Option<ost::auth::StoredToken>| t.filter(|x| !x.is_expired()).map(|x| x.token);
+    match (
+        get(cfg.get_ic3_token()),
+        get(cfg.get_recorder_token()),
+        get(cfg.get_skype_token()),
+    ) {
+        (Some(a), Some(b), Some(c)) => Ok((a, b, c)),
+        _ => Err("need usable ic3 + recorder + skype tokens".to_string()),
+    }
+}
+
+/// Start recording (full flow: bot + transcription + recording) or
+/// transcription only. Idempotent guards run before any network: a leg
+/// that is already up refuses with `already`.
+pub fn call_record_start_json(transcription_only: bool) -> String {
+    let slot = match record_slot() {
+        Ok(s) => s,
+        Err((k, m)) => return err_json(&k, m),
+    };
+    if !transcription_only && slot.recording {
+        return err_json("already", "recording already running");
+    }
+    if transcription_only && slot.transcribing {
+        return err_json("already", "transcription already running");
+    }
+    let (ic3, recorder_tok, skype) = match record_tokens() {
+        Ok(t) => t,
+        Err(e) => return err_json("auth", e),
+    };
+    let conv_id = extract_conversation_id(&slot.controller);
+    let add_url = derive_add_url(&slot.controller, "addParticipant");
+    let chain_id = gen_id();
+    let message_id = gen_id();
+    let region_cfg = Config::load_cached().map_err(|e| e.to_string());
+    let region_cfg = match region_cfg {
+        Ok(c) => c,
+        Err(e) => return err_json("auth", e),
+    };
+    let run = || -> Result<(String, String, bool), String> {
+        let rt = rt()?;
+        rt.block_on(async {
+            let http = http();
+            let region = signaling::TeamsRegion::from_config_or_env(&region_cfg);
+            let params = recording::RecordingParams {
+                caller_mri: &slot.caller_mri,
+                participant_id: &slot.participant_id,
+                endpoint_id: &slot.endpoint_id,
+                chain_id: &chain_id,
+                message_id: &message_id,
+                thread_id: &slot.thread_id,
+                display_name: &slot.display_name,
+                trouter_surl: &slot.surl,
+                ic3_token: &ic3,
+                recorder_token: &recorder_tok,
+                skype_token: &skype,
+                conversation_id: &conv_id,
+                add_participant_url: &add_url,
+                region: &region,
+            };
+            match &slot.session {
+                None => {
+                    let (base, cid) = recording::start_recording_http(&http, &params, transcription_only)
+                        .await
+                        .map_err(|e| format!("start: {:#}", e))?;
+                    Ok((base, cid, true))
+                }
+                Some(existing) => {
+                    // Bot already in the call: start only the legs still down.
+                    let params = recording::RecordingParams {
+                        conversation_id: &existing.conversation_id,
+                        ..params
+                    };
+                    if !transcription_only && !slot.recording {
+                        recording::start_recording_only_http(&http, &params, &existing.recorder_base)
+                            .await
+                            .map_err(|e| format!("start recording: {:#}", e))?;
+                    }
+                    if transcription_only && !slot.transcribing {
+                        recording::start_transcription_http(&http, &params, &existing.recorder_base)
+                            .await
+                            .map_err(|e| format!("start transcription: {:#}", e))?;
+                    }
+                    Ok((existing.recorder_base.clone(), existing.conversation_id.clone(), false))
+                }
+            }
+        })
+    };
+    match run() {
+        Ok((recorder_base, conversation_id, _fresh)) => {
+            let mut guard = lock_current();
+            if let Some(s) = guard.as_mut().filter(|s| s.info.id == slot.id) {
+                if s.rec_session.is_none() {
+                    s.rec_session = Some(StoredRecording {
+                        recorder_base,
+                        conversation_id,
+                    });
+                }
+                if !transcription_only {
+                    s.recording = true;
+                    s.transcribing = true;
+                } else {
+                    s.transcribing = true;
+                }
+                s.sync_rec_info();
+            }
+            let call = lock_current().as_ref().map(|s| s.info.clone());
+            serde_json::json!({
+                "ok": true,
+                "started": true,
+                "recording": !transcription_only,
+                "transcribing": true,
+                "call": call,
+            })
+            .to_string()
+        }
+        Err(e) => err_json("record", e),
+    }
+}
+
+/// Stop recording (both legs) or transcription only. Refuses with `idle`
+/// when there is nothing to stop; no network is touched on refusal.
+pub fn call_record_stop_json(transcription_only: bool) -> String {
+    let slot = match record_slot() {
+        Ok(s) => s,
+        Err((k, m)) => return err_json(&k, m),
+    };
+    if !slot.recording && !slot.transcribing {
+        return err_json("idle", "nothing to stop: recording and transcription are idle");
+    }
+    if transcription_only && !slot.transcribing {
+        return err_json("idle", "nothing to stop: transcription is idle");
+    }
+    let session = match slot.session {
+        Some(s) => s,
+        None => return err_json("idle", "recording state without a recorder session"),
+    };
+    let (ic3, recorder_tok, skype) = match record_tokens() {
+        Ok(t) => t,
+        Err(e) => return err_json("auth", e),
+    };
+    let _ = ic3;
+    let chain_id = gen_id();
+    let run = || -> Result<(), String> {
+        let rt = rt()?;
+        rt.block_on(async {
+            let http = http();
+            let ost_session = recording::RecordingSession {
+                recorder_base: session.recorder_base.clone(),
+                conversation_id: session.conversation_id.clone(),
+                recorder_token: recorder_tok.clone(),
+                skype_token: skype.clone(),
+                chain_id: chain_id.clone(),
+                caller_mri: slot.caller_mri.clone(),
+                participant_id: slot.participant_id.clone(),
+            };
+            if transcription_only {
+                recording::stop_transcription_http(&http, &ost_session)
+                    .await
+                    .map_err(|e| format!("stop transcription: {:#}", e))
+            } else {
+                recording::stop_call_recording(&http, &ost_session)
+                    .await
+                    .map_err(|e| format!("stop: {:#}", e))
+            }
+        })
+    };
+    match run() {
+        Ok(()) => {
+            let mut guard = lock_current();
+            if let Some(s) = guard.as_mut().filter(|s| s.info.id == slot.id) {
+                if transcription_only {
+                    s.transcribing = false;
+                    if !s.recording {
+                        s.rec_session = None;
+                    }
+                } else {
+                    s.recording = false;
+                    s.transcribing = false;
+                    s.rec_session = None;
+                }
+                s.sync_rec_info();
+            }
+            let call = lock_current().as_ref().map(|s| s.info.clone());
+            serde_json::json!({
+                "ok": true,
+                "stopped": true,
+                "transcription_only": transcription_only,
+                "call": call,
+            })
+            .to_string()
         }
         Err(e) => err_json("record", e),
     }
@@ -1545,6 +1834,8 @@ fn place_inner(
                 detail: None,
                 live_media: false,
                 connected_at: None,
+                rec_state: None,
+                trx_state: None,
             },
             end_url: None,
             notification: None,
@@ -1555,6 +1846,9 @@ fn place_inner(
             display_name: display_name.clone(),
             trouter_surl: String::new(),
             lobby_links: signaling::LobbyLinks::default(),
+            recording: false,
+            transcribing: false,
+            rec_session: None,
         });
     }
 
@@ -2340,6 +2634,139 @@ mod tests {
 
     /// Lobby control needs a joined call that got the link; no network
     /// is touched on any refusal.
+    /// Seed a connected outgoing slot (meetings join this way) with the
+    /// given recording legs. Network is never touched by the guards.
+    fn seed_rec_slot(recording: bool, transcribing: bool, session: bool) {
+        *lock_current() = Some(StoredCall {
+            info: CallInfo {
+                id: "rec1".into(),
+                dir: "out".into(),
+                peer: "19:meeting_x@thread.v2".into(),
+                peer_name: String::new(),
+                thread: "19:meeting_x@thread.v2".into(),
+                state: "connected".into(),
+                controller: Some("https://amer.conv.skype.com/conv/abc123".into()),
+                started_at: 0,
+                detail: None,
+                live_media: true,
+                connected_at: Some(1),
+                rec_state: None,
+                trx_state: None,
+            },
+            end_url: None,
+            notification: None,
+            caller_mri: "8:orgid:me".into(),
+            participant_id: "pid".into(),
+            endpoint_id: "ep".into(),
+            thread_id: "19:meeting_x@thread.v2".into(),
+            display_name: "Me".into(),
+            trouter_surl: "https://t/".into(),
+            lobby_links: signaling::LobbyLinks::default(),
+            recording,
+            transcribing,
+            rec_session: session.then(|| StoredRecording {
+                recorder_base: "https://rec.example".into(),
+                conversation_id: "conv1".into(),
+            }),
+        });
+        if let Some(s) = lock_current().as_mut() {
+            s.sync_rec_info();
+        }
+    }
+
+    /// meetrecord: start/stop refuse before any network when no call or
+    /// no connected leg exists; already-up legs refuse as `already` and
+    /// idle legs as `idle`.
+    #[test]
+    fn record_controls_refuse_without_call_or_legs() {
+        let _g = test_lock();
+        clear_current();
+        let e: serde_json::Value = serde_json::from_str(&call_record_start_json(false)).unwrap();
+        assert_eq!(e["error"], "no_call");
+        let e: serde_json::Value = serde_json::from_str(&call_record_stop_json(false)).unwrap();
+        assert_eq!(e["error"], "no_call");
+
+        // Placing (not connected): state refusal, no network.
+        *lock_current() = Some(StoredCall {
+            info: CallInfo {
+                id: "placing1".into(),
+                dir: "out".into(),
+                peer: String::new(),
+                peer_name: String::new(),
+                thread: "19:meeting_x@thread.v2".into(),
+                state: "placing".into(),
+                controller: None,
+                started_at: 0,
+                detail: None,
+                live_media: false,
+                connected_at: None,
+                rec_state: None,
+                trx_state: None,
+            },
+            end_url: None,
+            notification: None,
+            caller_mri: String::new(),
+            participant_id: String::new(),
+            endpoint_id: String::new(),
+            thread_id: String::new(),
+            display_name: String::new(),
+            trouter_surl: String::new(),
+            lobby_links: signaling::LobbyLinks::default(),
+            recording: false,
+            transcribing: false,
+            rec_session: None,
+        });
+        let e: serde_json::Value = serde_json::from_str(&call_record_start_json(false)).unwrap();
+        assert_eq!(e["error"], "state");
+
+        // Already-up legs refuse without network.
+        seed_rec_slot(true, true, true);
+        let e: serde_json::Value = serde_json::from_str(&call_record_start_json(false)).unwrap();
+        assert_eq!(e["error"], "already");
+        let e: serde_json::Value = serde_json::from_str(&call_record_start_json(true)).unwrap();
+        assert_eq!(e["error"], "already");
+
+        // Idle legs: stop refuses as idle.
+        seed_rec_slot(false, false, false);
+        let e: serde_json::Value = serde_json::from_str(&call_record_stop_json(false)).unwrap();
+        assert_eq!(e["error"], "idle");
+        let e: serde_json::Value = serde_json::from_str(&call_record_stop_json(true)).unwrap();
+        assert_eq!(e["error"], "idle");
+
+        // Recording up, transcription down: transcribe-only stop is idle.
+        seed_rec_slot(true, false, true);
+        let e: serde_json::Value = serde_json::from_str(&call_record_stop_json(true)).unwrap();
+        assert_eq!(e["error"], "idle");
+        clear_current();
+    }
+
+    /// meetrecord: the UI-facing record carries the leg faces, and a
+    /// dropped session always reads back as idle (no stuck faces).
+    #[test]
+    fn record_state_adopts_into_call_info() {
+        let _g = test_lock();
+        seed_rec_slot(true, true, true);
+        let info = lock_current().as_ref().map(|s| s.info.clone()).unwrap();
+        assert_eq!(info.rec_state.as_deref(), Some("recording"));
+        assert_eq!(info.trx_state.as_deref(), Some("transcribing"));
+        let v = serde_json::to_value(&info).unwrap();
+        assert_eq!(v["rec_state"], "recording");
+        assert_eq!(v["trx_state"], "transcribing");
+
+        // Dropping the session clears the faces on next sync.
+        if let Some(s) = lock_current().as_mut() {
+            s.rec_session = None;
+            s.sync_rec_info();
+        }
+        let info = lock_current().as_ref().map(|s| s.info.clone()).unwrap();
+        assert!(info.rec_state.is_none());
+        assert!(info.trx_state.is_none());
+        let v = serde_json::to_value(&info).unwrap();
+        assert!(v.get("rec_state").is_none());
+        assert!(v.get("trx_state").is_none());
+        clear_current();
+    }
+
     #[test]
     fn lobby_control_refuses_without_call_or_link() {
         let _g = test_lock();
@@ -2361,6 +2788,8 @@ mod tests {
                 detail: None,
                 live_media: false,
                 connected_at: None,
+                rec_state: None,
+                trx_state: None,
             },
             end_url: None,
             notification: None,
@@ -2371,6 +2800,9 @@ mod tests {
             display_name: "Me".into(),
             trouter_surl: "https://t/".into(),
             lobby_links: signaling::LobbyLinks::default(),
+            recording: false,
+            transcribing: false,
+            rec_session: None,
         });
         let e: serde_json::Value = serde_json::from_str(&call_lobby_admit_all_json()).unwrap();
         assert_eq!(e["error"], "no_link", "attendee join has no admitAll link");

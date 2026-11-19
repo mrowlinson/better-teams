@@ -1937,6 +1937,10 @@ public struct CallInfo: Decodable, Sendable, Equatable {
     /// callee answer). The call-duration origin; `startedAt` is ring or
     /// placement time. Nil until connected.
     public let connectedAt: UInt64?
+    /// Server-side capture legs (meetrecord): "recording" / "transcribing"
+    /// while up, nil while idle (core omits idle legs).
+    public let recState: String?
+    public let trxState: String?
 
     enum CodingKeys: String, CodingKey {
         case id, dir, peer, thread, state, controller, detail
@@ -1944,6 +1948,8 @@ public struct CallInfo: Decodable, Sendable, Equatable {
         case startedAt = "started_at"
         case liveMedia = "live_media"
         case connectedAt = "connected_at"
+        case recState = "rec_state"
+        case trxState = "trx_state"
     }
 
     /// Duration origin: `connectedAt` as a Date (nil until connected).
@@ -1955,6 +1961,10 @@ public struct CallInfo: Decodable, Sendable, Equatable {
         state == "placing" || state == "ringing" || state == "connected"
     }
 
+    /// Server-side capture legs (meetrecord).
+    public var isRecording: Bool { recState == "recording" }
+    public var isTranscribing: Bool { trxState == "transcribing" }
+
     public var displayPeer: String {
         peerName.isEmpty ? (peer.isEmpty ? thread : peer) : peerName
     }
@@ -1963,7 +1973,7 @@ public struct CallInfo: Decodable, Sendable, Equatable {
         id: String, dir: String, peer: String, peerName: String = "",
         thread: String = "", state: String, controller: String? = nil,
         startedAt: UInt64 = 0, detail: String? = nil, liveMedia: Bool? = nil,
-        connectedAt: UInt64? = nil
+        connectedAt: UInt64? = nil, recState: String? = nil, trxState: String? = nil
     ) {
         self.id = id
         self.dir = dir
@@ -1976,6 +1986,8 @@ public struct CallInfo: Decodable, Sendable, Equatable {
         self.detail = detail
         self.liveMedia = liveMedia
         self.connectedAt = connectedAt
+        self.recState = recState
+        self.trxState = trxState
     }
 }
 
@@ -1997,6 +2009,11 @@ public struct CallResult: Decodable, Sendable {
     public let liveMedia: Bool?
     public let rejection: String?
     public let responseBytes: Int?
+    public let started: Bool?
+    public let stopped: Bool?
+    public let recording: Bool?
+    public let transcribing: Bool?
+    public let transcriptionOnly: Bool?
     public let call: CallInfo?
 
     enum CodingKeys: String, CodingKey {
@@ -2004,6 +2021,8 @@ public struct CallResult: Decodable, Sendable {
         case mediaAnswered = "media_answered"
         case liveMedia = "live_media"
         case responseBytes = "response_bytes"
+        case started, stopped, recording, transcribing
+        case transcriptionOnly = "transcription_only"
     }
 
     /// Host-side construction (demo joins, mock runners). Wire decoding is untouched.
@@ -2012,6 +2031,9 @@ public struct CallResult: Decodable, Sendable {
         ended: Bool? = nil, injected: Bool? = nil,
         mediaAnswered: Bool? = nil, liveMedia: Bool? = nil,
         rejection: String? = nil, responseBytes: Int? = nil,
+        started: Bool? = nil, stopped: Bool? = nil,
+        recording: Bool? = nil, transcribing: Bool? = nil,
+        transcriptionOnly: Bool? = nil,
         call: CallInfo? = nil
     ) {
         self.ok = ok
@@ -2023,6 +2045,11 @@ public struct CallResult: Decodable, Sendable {
         self.liveMedia = liveMedia
         self.rejection = rejection
         self.responseBytes = responseBytes
+        self.started = started
+        self.stopped = stopped
+        self.recording = recording
+        self.transcribing = transcribing
+        self.transcriptionOnly = transcriptionOnly
         self.call = call
     }
 }

@@ -21,7 +21,7 @@ public final class CallWindowController: NSWindowController, NSWindowDelegate, N
 
     static let leaveItem = NSToolbarItem.Identifier(CallCommands.leave.rawValue)
     static let controlItems: [CommandID] = [CallCommands.mute, CallCommands.camera, CallCommands.share,
-                                            CallCommands.devices]
+                                            CallCommands.record, CallCommands.transcribe, CallCommands.devices]
 
     init(session: CallSession) {
         self.session = session
@@ -135,6 +135,10 @@ public final class CallWindowController: NSWindowController, NSWindowDelegate, N
             item.action = #selector(toggleCamera(_:))
         case CallCommands.share:
             item.action = #selector(toggleShare(_:))
+        case CallCommands.record:
+            item.action = #selector(toggleRecording(_:))
+        case CallCommands.transcribe:
+            item.action = #selector(toggleTranscribing(_:))
         case CallCommands.devices:
             if let session { item.view = CallDevicesButton(session: session) }
         default:
@@ -153,6 +157,8 @@ public final class CallWindowController: NSWindowController, NSWindowDelegate, N
     @objc func toggleMute(_ sender: Any?) { session?.toggleMute() }
     @objc func toggleCamera(_ sender: Any?) { session?.toggleCamera() }
     @objc func toggleShare(_ sender: Any?) { session?.toggleShare() }
+    @objc func toggleRecording(_ sender: Any?) { session?.toggleRecording() }
+    @objc func toggleTranscribing(_ sender: Any?) { session?.toggleTranscribing() }
 
     public func validateToolbarItem(_ item: NSToolbarItem) -> Bool {
         guard let session, !session.ended else { return false }

@@ -1178,6 +1178,13 @@ fn message_to_json(m: &ost::api::MessageInfo) -> serde_json::Value {
         "reactions": reactions,
         "reply_to": m.reply_to,
         "client_message_id": m.client_message_id,
+        "importance": m.importance,
+        "subject": m.subject,
+        "mentions": m
+            .mentions
+            .iter()
+            .map(|e| json!({"id": e.id, "display": e.display, "kind": e.kind}))
+            .collect::<Vec<_>>(),
     })
 }
 
@@ -5465,6 +5472,21 @@ pub extern "C" fn ostmac_call_record_inject() -> *mut c_char {
     string_to_c(calls::call_record_inject_json())
 }
 
+/// Start recording (full flow: bot + transcription + recording) or
+/// transcription only (`transcription_only` nonzero) on the connected
+/// outgoing call: {ok,started,recording,transcribing,call}. Caller frees.
+#[no_mangle]
+pub extern "C" fn ostmac_call_record_start(transcription_only: c_int) -> *mut c_char {
+    string_to_c(calls::call_record_start_json(transcription_only != 0))
+}
+
+/// Stop recording (both legs) or transcription only (`transcription_only`
+/// nonzero): {ok,stopped,transcription_only,call}. Caller frees.
+#[no_mangle]
+pub extern "C" fn ostmac_call_record_stop(transcription_only: c_int) -> *mut c_char {
+    string_to_c(calls::call_record_stop_json(transcription_only != 0))
+}
+
 // ---------------------------------------------------------------------------
 // NOLOAD: per-request log hook (ost §77 observer → host unified log)
 // ---------------------------------------------------------------------------
@@ -5917,6 +5939,9 @@ mod tests {
             reactions: vec![],
             reply_to: None,
             client_message_id: None,
+            importance: None,
+            subject: None,
+            mentions: vec![],
         };
         let v = message_to_json(&m);
         assert_eq!(v["id"], "m1");
@@ -5926,6 +5951,9 @@ mod tests {
         assert_eq!(v["raw"], "<p>hi</p>");
         assert_eq!(v["reactions"].as_array().unwrap().len(), 0);
         assert!(v["reply_to"].is_null());
+        assert!(v["importance"].is_null());
+        assert!(v["subject"].is_null());
+        assert_eq!(v["mentions"].as_array().unwrap().len(), 0);
     }
 
     #[test]
@@ -5940,6 +5968,9 @@ mod tests {
             reactions: vec![],
             reply_to: Some("m1".to_string()),
             client_message_id: None,
+            importance: None,
+            subject: None,
+            mentions: vec![],
         };
         let v = message_to_json(&m);
         assert_eq!(v["reply_to"], "m1");
@@ -6687,6 +6718,9 @@ mod tests {
                 }],
                 reply_to: None,
                 client_message_id: None,
+                importance: None,
+                subject: None,
+                mentions: vec![],
             }],
             backward_link: Some(
                 "https://h/v1/conversations/19:x/messages?page=2".to_string(),

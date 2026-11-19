@@ -60,7 +60,9 @@ struct MeetingVideoStage: View {
                         DemoShareView(presenter: video.presenter?.name)
                     case .local(let t):
                         CallTileView(tile: t, camera: session.camera, blurred: session.selfBlur,
-                                     onToggleBlur: { session.toggleSelfBlur() })
+                                     effect: session.backgroundEffect,
+                                     onToggleBlur: { session.toggleSelfBlur() },
+                                     onBackgroundEffect: { session.setBackgroundEffect($0) })
                     }
                 }
             }
