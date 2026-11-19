@@ -82,6 +82,8 @@ enum ConversationEvidence {
         // Polls lane: open the create sheet from the route (bound to
         // shared composer state, so it is up on first appear).
         if route.query["pollsheet"] == "1" { services.composer.showPollSheet = true }
+        // ADAPTIVE-ACTIONS: ShowCards start expanded for captures.
+        if route.query["cards"] == "expanded" { CardDemo.expandShowCards = true }
         let seeds = Set((route.query["seed"] ?? "").split(separator: ",").map(String.init))
         guard !seeds.isEmpty else { return }
         let others = conv.messages.filter { !$0.isOwn && !$0.deleted }
@@ -139,6 +141,13 @@ enum ConversationEvidence {
                                     isOwn: false,
                                     raw: "<p><readonly aria-label=\"Party!\" contenteditable=\"false\" itemtype=\"http://schema.skype.com/Sticker\" title=\"Party!\"><img src=\"demo://photo-1\" width=\"480\" height=\"320\" itemscope=\"image/png\" itemtype=\"http://schema.skype.com/AMSImage\" alt=\"Party!\" id=\"demo-sticker-1\" itemid=\"demo-sticker-1\" href=\"demo://photo-1\" target-src=\"demo://photo-1\"></readonly></p>"),
                         keepOwnership: true)
+        }
+        if seeds.contains("cards") {
+            // ADAPTIVE-ACTIONS: one submit card, one showcard+toggle
+            // card, one approval card — the R3 capture set.
+            for m in DemoData.actionCardSeeds() {
+                conv.ingest(m, keepOwnership: true)
+            }
         }
         if seeds.contains("reply"), let target = others.last { conv.beginReply(to: target) }
         if seeds.contains("share"), let target = others.last {

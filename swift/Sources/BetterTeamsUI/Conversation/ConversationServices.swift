@@ -185,8 +185,8 @@ final class MediaLoader {
         elements.flatMap { e -> [String] in
             switch e {
             case .image(let i): [i.url]
-            case .container(let items): imageURLs(items)
-            case .columns(let cols): cols.flatMap { imageURLs($0) }
+            case .container(let c): imageURLs(c.items)
+            case .columns(let c): c.columns.flatMap { imageURLs($0) }
             case .text, .facts: []
             }
         }

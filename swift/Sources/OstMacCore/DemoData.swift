@@ -994,6 +994,68 @@ public enum DemoData {
         ]
     }
 
+    /// Actionable-cards seed (ADAPTIVE-ACTIONS, `?seed=cards`): one
+    /// Submit card (disabled buttons + honest reason), one
+    /// ShowCard+ToggleVisibility card (inline expansion, hideable
+    /// notes), one approval card (Submit data carries approvalId
+    /// demo-appr-1, so Review in Approvals lands on a real demo item).
+    /// Fully offline; timestamps float off now (Today). `content`
+    /// mirrors the raw card JSON (bot-2 precedent).
+    public static func actionCardSeeds(now: Date = DemoClock.now) -> [ChatMessage] {
+        func iso(_ d: Date) -> String { demoISO.string(from: d) }
+        func at(h: Int, m: Int) -> Date {
+            var cal = Calendar.current
+            cal.timeZone = TimeZone.current
+            return cal.date(bySettingHour: h, minute: m, second: 0, of: now) ?? now
+        }
+        let submit = """
+            {"type":"AdaptiveCard","version":"1.4","body":[\
+            {"type":"TextBlock","text":"Book a 1:1 slot","size":"Large","weight":"Bolder"},\
+            {"type":"TextBlock","text":"Megan Harper has two openings Thursday.","wrap":true}],\
+            "actions":[\
+            {"type":"Action.Submit","title":"Book 10:00","data":{"slot":"10:00"}},\
+            {"type":"Action.Submit","title":"Book 14:30","data":{"slot":"14:30"}}]}
+            """
+        let interactive = """
+            {"type":"AdaptiveCard","version":"1.4","body":[\
+            {"type":"TextBlock","text":"Deploy checklist","size":"Large","weight":"Bolder"},\
+            {"type":"TextBlock","text":"Migrations verified on staging.","id":"notes","wrap":true},\
+            {"type":"TextBlock","text":"2 of 5 steps done.","isSubtle":true}],\
+            "actions":[\
+            {"type":"Action.ShowCard","title":"Details","card":{"type":"AdaptiveCard","version":"1.4",\
+            "body":[{"type":"FactSet","facts":[\
+            {"title":"Staging","value":"green"},\
+            {"title":"Migrations","value":"12 applied"}]}]}},\
+            {"type":"Action.ToggleVisibility","title":"Hide notes","targetElements":["notes"]},\
+            {"type":"Action.OpenUrl","title":"Runbook","url":"https://example.com/runbook"}]}
+            """
+        let approval = """
+            {"type":"AdaptiveCard","version":"1.4","body":[\
+            {"type":"TextBlock","text":"Travel request — Chicago client onsite",\
+            "size":"Large","weight":"Bolder","wrap":true},\
+            {"type":"TextBlock","text":"Megan Harper · $1,240 · Apr 12–14","isSubtle":true,"wrap":true}],\
+            "actions":[\
+            {"type":"Action.Submit","title":"Approve",\
+            "data":{"approvalId":"demo-appr-1","decision":"approve"}},\
+            {"type":"Action.Submit","title":"Reject",\
+            "data":{"approvalId":"demo-appr-1","decision":"reject"}}]}
+            """
+        return [
+            ChatMessage(
+                id: "cards-1", sender: "Forms Bot",
+                timestamp: iso(at(h: 9, m: 2)),
+                content: submit, raw: submit),
+            ChatMessage(
+                id: "cards-2", sender: "Task Bot",
+                timestamp: iso(at(h: 9, m: 5)),
+                content: interactive, raw: interactive),
+            ChatMessage(
+                id: "cards-3", sender: "Approvals",
+                timestamp: iso(at(h: 9, m: 9)),
+                content: approval, raw: approval),
+        ]
+    }
+
     /// Inline-docs thread (om-inline-docs): a file-only PDF bubble (row
     /// only, placeholder suppressed), a captioned bubble with two refs
     /// (image + sheet rows under the text), and an own reply. Attachment

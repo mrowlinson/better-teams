@@ -384,7 +384,8 @@ struct MessageRowView: View {
                 let cards = MessageBubbleState.cards(for: message)
                 ForEach(Indexed.wrap(cards)) { c in
                     AdaptiveCardView(card: c.value, media: actions?.media, messageID: message.id,
-                                     open: actions.map { a in { a.preview(image: $0) } })
+                                     open: actions.map { a in { a.preview(image: $0) } },
+                                     openApproval: actions.map { a in { a.openApproval(id: $0) } })
                 }
                 // Identity per message: the ballot model is row state, so a
                 // recycled cell or the shared measure host must not reuse

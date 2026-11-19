@@ -363,7 +363,10 @@ public enum PollInfo {
 
     /// Forms shape: any Input.ChoiceSet choices[] + a question TextBlock.
     /// Our own cardJSON matches too: per-option Action.Submit titles
-    /// read back as choices, with the poll id from data.btPoll.
+    /// read back as choices, with the poll id from data.btPoll — but
+    /// ONLY when the marker is present (ADAPTIVE-ACTIONS: unmarked
+    /// Submit cards are booking/approval/etc. cards, never polls; the
+    /// unmarked path rendered phantom ballots on every 2-submit card).
     static func formsPoll(from json: Any, messageID: String) -> Poll? {
         var questions: [String] = []
         var choices: [[String]] = []
@@ -372,7 +375,7 @@ public enum PollInfo {
         scan(
             json, depth: 8, questions: &questions, choices: &choices,
             markedIDs: &markedIDs, submits: &submits)
-        if choices.isEmpty {
+        if choices.isEmpty, !markedIDs.isEmpty {
             let titles = submits.map { $0.title }.filter { !$0.isEmpty }
             if titles.count >= 2 { choices.append(titles) }
         }

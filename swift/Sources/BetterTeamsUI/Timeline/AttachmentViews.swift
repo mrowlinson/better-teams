@@ -200,6 +200,13 @@ struct GifBubblePlayer: View {
     }
 }
 
+/// Evidence/capture flags for card renders (set by route seeds; one
+/// fresh process per capture, so no reset path is needed).
+enum CardDemo {
+    /// `chat/<id>?cards=expanded`: ShowCards start expanded.
+    static var expandShowCards = false
+}
+
 struct AdaptiveCardView: View {
     let card: AdaptiveCard
     let media: MediaLoader?
@@ -207,20 +214,66 @@ struct AdaptiveCardView: View {
     /// Click on a card image: the full-resolution viewer (shown alone,
     /// card images are not in the chat's inline-image run).
     var open: ((RemoteImageModel) -> Void)?
+    /// Approval deep-link (nil in read-only renders: the Review button
+    /// omits itself rather than going nowhere).
+    var openApproval: ((String) -> Void)?
     @Environment(\.contentTextScale) private var scale
+    /// Expanded ShowCard action indices.
+    @State private var expanded: Set<Int>
+    /// Hidden element ids (ToggleVisibility).
+    @State private var hiddenIDs: Set<String> = []
+
+    init(
+        card: AdaptiveCard, media: MediaLoader?, messageID: String,
+        open: ((RemoteImageModel) -> Void)? = nil,
+        openApproval: ((String) -> Void)? = nil
+    ) {
+        self.card = card
+        self.media = media
+        self.messageID = messageID
+        self.open = open
+        self.openApproval = openApproval
+        var pre: Set<Int> = []
+        if CardDemo.expandShowCards {
+            for (i, a) in card.actions.enumerated() {
+                if case .showCard = a { pre.insert(i) }
+            }
+        }
+        _expanded = State(initialValue: pre)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             ForEach(Indexed.wrap(card.body)) { e in element(e.value) }
+            if let approval = card.approval, let openApproval {
+                Button { openApproval(approval.id) } label: {
+                    Label("Review in Approvals", systemImage: "checkmark.seal")
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .padding(.top, 2)
+                .help("Open this request in the Approvals hub")
+            }
             if !card.actions.isEmpty {
                 HStack(spacing: 6) {
                     ForEach(Indexed.wrap(card.actions)) { a in
-                        Button(a.value.title) { CardLinks.open(a.value.url) }
-                            .buttonStyle(.bordered)
-                            .controlSize(.small)
+                        actionButton(a.value, index: a.id)
                     }
                 }
                 .padding(.top, 2)
+                ForEach(Indexed.wrap(card.actions)) { a in
+                    if case .showCard(let s) = a.value, expanded.contains(a.id) {
+                        AdaptiveCardView(
+                            card: s.card, media: media, messageID: messageID,
+                            open: open, openApproval: openApproval)
+                    }
+                }
+            }
+            if card.actions.contains(where: \.isSubmit) {
+                Text(AdaptiveCard.submitDisabledReason)
+                    .font(AppFont.caption(scale))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .padding(10)
@@ -231,7 +284,65 @@ struct AdaptiveCardView: View {
         }
     }
 
+    @ViewBuilder
+    private func actionButton(_ action: AdaptiveCard.CardAction, index: Int) -> some View {
+        switch action {
+        case .openURL(let a):
+            Button(a.title) { CardLinks.open(a.url) }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+        case .submit(let s):
+            // No bot reply channel: visibly disabled + reason, never a
+            // live button that drops the payload on the floor.
+            Button(s.title) {}
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(true)
+                .help(AdaptiveCard.submitDisabledReason)
+        case .showCard(let s):
+            Button(s.title) {
+                if expanded.contains(index) { expanded.remove(index) }
+                else { expanded.insert(index) }
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .help(expanded.contains(index) ? "Hide \(s.title)" : "Show \(s.title)")
+        case .toggle(let t):
+            Button(t.title) { apply(t) }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+        }
+    }
+
+    /// One ToggleVisibility press: absolute `isVisible` wins, nil flips.
+    private func apply(_ t: AdaptiveCard.ToggleVisibilityAction) {
+        for target in t.targets {
+            if let v = target.isVisible {
+                if v { hiddenIDs.remove(target.elementId) }
+                else { hiddenIDs.insert(target.elementId) }
+            } else if hiddenIDs.contains(target.elementId) {
+                hiddenIDs.remove(target.elementId)
+            } else {
+                hiddenIDs.insert(target.elementId)
+            }
+        }
+    }
+
+    private func elementID(_ e: AdaptiveCard.Element) -> String {
+        switch e {
+        case .text(let t): return t.id
+        case .facts(let s): return s.id
+        case .image(let i): return i.id
+        case .container(let c): return c.id
+        case .columns(let c): return c.id
+        }
+    }
+
     private func element(_ e: AdaptiveCard.Element) -> AnyView {
+        // Hidden ids collapse (ToggleVisibility), never leave a gap.
+        if !elementID(e).isEmpty, hiddenIDs.contains(elementID(e)) {
+            return AnyView(EmptyView())
+        }
         switch e {
         case .text(let t):
             return AnyView(Text(t.text)
@@ -239,9 +350,9 @@ struct AdaptiveCardView: View {
                 .foregroundStyle(t.isSubtle ? AnyShapeStyle(.secondary) : AnyShapeStyle(.primary))
                 .lineLimit(t.wrap ? nil : 1)
                 .fixedSize(horizontal: false, vertical: true))
-        case .facts(let facts):
+        case .facts(let set):
             return AnyView(Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 2) {
-                ForEach(Indexed.wrap(facts)) { f in
+                ForEach(Indexed.wrap(set.facts)) { f in
                     GridRow {
                         Text(f.value.title).foregroundStyle(.secondary)
                         Text(f.value.value)
@@ -255,15 +366,15 @@ struct AdaptiveCardView: View {
                                          alt: img.altText, open: open ?? { _ in }))
             }
             return AnyView(EmptyView())
-        case .container(let items):
+        case .container(let c):
             return AnyView(VStack(alignment: .leading, spacing: 4) {
-                ForEach(Indexed.wrap(items)) { i in element(i.value) }
+                ForEach(Indexed.wrap(c.items)) { i in element(i.value) }
             })
-        case .columns(let cols):
+        case .columns(let c):
             return AnyView(HStack(alignment: .top, spacing: 12) {
-                ForEach(Indexed.wrap(cols)) { c in
+                ForEach(Indexed.wrap(c.columns)) { col in
                     VStack(alignment: .leading, spacing: 4) {
-                        ForEach(Indexed.wrap(c.value)) { i in element(i.value) }
+                        ForEach(Indexed.wrap(col.value)) { i in element(i.value) }
                     }
                 }
             })

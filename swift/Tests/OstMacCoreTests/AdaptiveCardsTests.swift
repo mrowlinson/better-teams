@@ -57,7 +57,7 @@ final class AdaptiveCardsTests: XCTestCase {
         {"type":"Image","url":"https://example.com/r.png"}]}]}]}
         """
 
-    /// Unsupported surface: Submit + inputs + Execute stay fallback-only.
+    /// Mixed surface: Submit adopted, the Input leaf stays fallback-only.
     static let submitCard = """
         {"type":"AdaptiveCard","version":"1.4","body":[\
         {"type":"TextBlock","text":"Pick a slot"},\
@@ -72,9 +72,13 @@ final class AdaptiveCardsTests: XCTestCase {
         XCTAssertEqual(cards.count, 1)
         XCTAssertEqual(cards[0].body.count, 4)
         XCTAssertEqual(cards[0].actions.count, 1)
-        XCTAssertEqual(cards[0].actions[0].title, "View run")
-        XCTAssertEqual(cards[0].actions[0].url, "https://example.com/builds/7")
+        guard case .openURL(let a) = cards[0].actions[0] else {
+            return XCTFail("actions[0] is \(cards[0].actions[0])")
+        }
+        XCTAssertEqual(a.title, "View run")
+        XCTAssertEqual(a.url, "https://example.com/builds/7")
         XCTAssertFalse(cards[0].needsFallback)
+        XCTAssertNil(cards[0].approval)
     }
 
     func testEnvelopeAndMessageShapesMineContent() {
@@ -100,10 +104,10 @@ final class AdaptiveCardsTests: XCTestCase {
             return XCTFail("body[1] is \(body[1])")
         }
         XCTAssertTrue(sub.isSubtle)
-        guard case let .facts(facts) = body[2] else {
+        guard case let .facts(set) = body[2] else {
             return XCTFail("body[2] is \(body[2])")
         }
-        XCTAssertEqual(facts, [
+        XCTAssertEqual(set.facts, [
             AdaptiveCard.Fact(title: "Branch", value: "main"),
             AdaptiveCard.Fact(title: "Run", value: "#7"),
         ])
@@ -118,16 +122,16 @@ final class AdaptiveCardsTests: XCTestCase {
         let cards = AdaptiveCard.cards(fromRaw: Self.nestedCard)
         XCTAssertEqual(cards.count, 1)
         XCTAssertEqual(cards[0].body.count, 2)
-        guard case let .container(items) = cards[0].body[0] else {
+        guard case let .container(c) = cards[0].body[0] else {
             return XCTFail("body[0] is \(cards[0].body[0])")
         }
-        XCTAssertEqual(items.count, 1)
+        XCTAssertEqual(c.items.count, 1)
         guard case let .columns(cols) = cards[0].body[1] else {
             return XCTFail("body[1] is \(cards[0].body[1])")
         }
-        XCTAssertEqual(cols.count, 2)
-        XCTAssertEqual(cols[0].count, 1)
-        XCTAssertEqual(cols[1].count, 2)
+        XCTAssertEqual(cols.columns.count, 2)
+        XCTAssertEqual(cols.columns[0].count, 1)
+        XCTAssertEqual(cols.columns[1].count, 2)
         XCTAssertFalse(cards[0].needsFallback)
     }
 
@@ -141,10 +145,10 @@ final class AdaptiveCardsTests: XCTestCase {
             """
         let cards = AdaptiveCard.cards(fromRaw: json)
         XCTAssertEqual(cards.count, 1)
-        guard case let .container(items) = cards[0].body[0] else {
+        guard case let .container(c) = cards[0].body[0] else {
             return XCTFail("body[0] is \(cards[0].body[0])")
         }
-        XCTAssertTrue(items.isEmpty)
+        XCTAssertTrue(c.items.isEmpty)
     }
 
     // MARK: - Actions: OpenUrl only
@@ -158,7 +162,11 @@ final class AdaptiveCardsTests: XCTestCase {
             """
         let cards = AdaptiveCard.cards(fromRaw: json)
         XCTAssertEqual(cards.count, 1)
-        XCTAssertEqual(cards[0].actions.map(\.url), ["https://example.com/ok"])
+        let urls = cards[0].actions.compactMap {
+            if case .openURL(let a) = $0 { return a.url }
+            return nil
+        }
+        XCTAssertEqual(urls, ["https://example.com/ok"])
         // A dropped unsafe URL is not fallback-worthy on its own.
         XCTAssertFalse(cards[0].needsFallback)
         XCTAssertNil(AdaptiveCard.linkTarget(for: "file:///etc/passwd"))
@@ -168,8 +176,16 @@ final class AdaptiveCardsTests: XCTestCase {
     func testSubmitInputsExecuteNeedFallback() {
         let cards = AdaptiveCard.cards(fromRaw: Self.submitCard)
         XCTAssertEqual(cards.count, 1)
+        // The Submit itself is adopted (no fallback for it); the Input
+        // leaf keeps the fallback signal, and never renders.
         XCTAssertTrue(cards[0].needsFallback)
-        // Input leaf itself never renders.
+        XCTAssertEqual(cards[0].actions.count, 1)
+        guard case .submit(let s) = cards[0].actions[0] else {
+            return XCTFail("actions[0] is \(cards[0].actions[0])")
+        }
+        XCTAssertEqual(s.title, "Book")
+        // Non-string data values drop (approval ids are strings).
+        XCTAssertEqual(s.data, [:])
         XCTAssertEqual(cards[0].body.count, 1)
         let exec = """
             {"type":"AdaptiveCard","version":"1.4",\
@@ -180,12 +196,17 @@ final class AdaptiveCardsTests: XCTestCase {
     }
 
     func testUnknownActionNeedsFallback() {
+        // ToggleVisibility is ADOPTED now (see AdaptiveActionsGuards);
+        // a genuinely unknown action still falls back.
         let json = """
             {"type":"AdaptiveCard","version":"1.4",\
             "body":[{"type":"TextBlock","text":"T"}],\
-            "actions":[{"type":"Action.ToggleVisibility","title":"T"}]}
+            "actions":[{"type":"Action.SomethingNew","title":"T"}]}
             """
-        XCTAssertTrue(AdaptiveCard.cards(fromRaw: json)[0].needsFallback)
+        let cards = AdaptiveCard.cards(fromRaw: json)
+        XCTAssertEqual(cards.count, 1)
+        XCTAssertTrue(cards[0].needsFallback)
+        XCTAssertTrue(cards[0].actions.isEmpty)
     }
 
     // MARK: - Non-cards

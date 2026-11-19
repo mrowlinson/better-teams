@@ -122,6 +122,15 @@ final class TimelineActions {
         pb.setString(url.absoluteString, forType: .string)
     }
 
+    /// Adaptive approval card → approvals hub (ADAPTIVE-ACTIONS): select
+    /// the item first so the landing shows it, then switch sections.
+    /// Unknown ids land on the hub's empty selection (safe, hub-owned).
+    func openApproval(id: String) {
+        guard let model else { return }
+        ApprovalsSection.selectItem(id, model)
+        model.navigator?.select(section: .native(.approvals))
+    }
+
     func toggleSave(_ m: ChatMessage) {
         graph?.savedMessages.toggle(chatID: chatID, message: m)
     }
