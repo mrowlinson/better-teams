@@ -225,6 +225,7 @@ final class MenuShortcutCatalogGuardTests: XCTestCase {
         "Call > Push to Talk [~ ]",
         "Call > Start Recording",
         "Call > Start Transcription",
+        "Call > Breakout Rooms…",
         "Call > Test Call",
         "Call > Add to Speed Dial",
         "Call > Remove from Speed Dial",

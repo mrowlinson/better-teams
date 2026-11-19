@@ -959,6 +959,8 @@ public enum CoreReads {
         if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
            content.range(of: "<img", options: .caseInsensitive) != nil
         {
+            // Stickers name their label; plain photos keep "Sent an image".
+            if let st = MessageRender.stickerPreview(forRaw: content) { return truncatePreview(st) }
             return "Sent an image"
         }
         return truncatePreview(text)

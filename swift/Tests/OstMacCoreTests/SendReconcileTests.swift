@@ -68,6 +68,29 @@ final class SendReconcileTests: XCTestCase {
         XCTAssertTrue(done(), "did not settle", file: file, line: line)
     }
 
+    func testStickerSendCarriesRefAndSettles() async {
+        let svc = FakeService()
+        let s = store(svc)
+        s.sendSticker(pngPath: "/tmp/party.png", label: "Party")
+        XCTAssertEqual(s.messages.count, 1)
+        XCTAssertEqual(s.messages[0].content, "[Sticker: Party]")
+        XCTAssertTrue(s.messages[0].id.hasPrefix("pending-"))
+        await settle(s) { !s.messages[0].id.hasPrefix("pending-") }
+        XCTAssertEqual(svc.posts.count, 1)
+        XCTAssertEqual(svc.posts[0].sticker, StickerSendRef(pngPath: "/tmp/party.png", label: "Party"))
+        XCTAssertTrue(s.failedIDs.isEmpty)
+    }
+
+    func testStickerBlankLabelDefaults() async {
+        let svc = FakeService()
+        let s = store(svc)
+        s.sendSticker(pngPath: "/tmp/party.png", label: "   ")
+        await settle(s) { !s.messages[0].id.hasPrefix("pending-") }
+        XCTAssertEqual(s.messages[0].content, "[Sticker: Sticker]")
+        XCTAssertEqual(svc.posts[0].sticker?.label, "Sticker")
+        XCTAssertTrue(s.failedIDs.isEmpty)
+    }
+
     func testPostAnswerSettlesBubbleWithServerID() async {
         let svc = FakeService()
         let s = store(svc)

@@ -47,6 +47,8 @@ public final class CallSession {
     @ObservationIgnored let camera: CameraCapture?
     /// Mic / speaker / camera pickers + level meter (§8 Devices).
     @ObservationIgnored let devices: CallDevices
+    /// Breakout rooms plan (BREAKOUT): per-call state, reset at teardown.
+    @ObservationIgnored let breakoutRooms = BreakoutRoomsStore()
     /// A video call. 1:1 (VIDEO1): the stage shows the remote video large
     /// with the self view as a picture-in-picture, and the camera starts
     /// on. Group chats and meetings (MEETVIDEO): the tile grid of
@@ -596,6 +598,7 @@ public final class CallSession {
         stopCaptionsEngine()
         for v in remoteVideos.values { v.stop() }
         meetingVideo?.stop()
+        breakoutRooms.reset()
         devices.close()
         stage.detachFromHost()
         let w = window

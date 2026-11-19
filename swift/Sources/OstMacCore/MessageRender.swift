@@ -718,6 +718,71 @@ public enum MessageRender {
         }
     }
 
+    // MARK: - Stickers (lane stickers)
+
+    /// One official-client sticker mined from raw message HTML: the
+    /// `<img>` inside the `<readonly
+    /// itemtype="http://schema.skype.com/Sticker">` wrapper. Plain
+    /// `<img>` photos are not stickers. `label` is the img alt, else
+    /// the wrapper's aria-label/title (entity-decoded); `width`/`height`
+    /// are the img attrs when both parse positive.
+    public struct StickerInfo: Sendable, Equatable {
+        public let url: String
+        public let label: String
+        public let width: Int?
+        public let height: Int?
+
+        public init(url: String, label: String, width: Int? = nil, height: Int? = nil) {
+            self.url = url
+            self.label = label
+            self.width = width
+            self.height = height
+        }
+    }
+
+    /// The sticker in `raw`, if any. Mining stays inside the sticker
+    /// wrapper span so a quoted photo's alt never poses as the label.
+    public static func sticker(fromRaw raw: String?) -> StickerInfo? {
+        guard let raw, raw.range(of: "skype.com/sticker", options: .caseInsensitive) != nil else { return nil }
+        let scope: String = {
+            guard let s = raw.range(of: "<readonly", options: .caseInsensitive) else { return raw }
+            let tail = String(raw[s.lowerBound...])
+            if let e = tail.range(of: "</readonly>", options: .caseInsensitive) {
+                return String(tail[..<e.lowerBound])
+            }
+            return tail
+        }()
+        let tags = imgTags(in: scope)
+        guard let tag = tags.first else { return nil }
+        let attrs = attributes(of: tag)
+        guard let src = attrs["src"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !src.isEmpty
+        else { return nil }
+        let wrapAttrs: [String: String] = {
+            guard let s = scope.range(of: "<readonly", options: .caseInsensitive),
+                  let gt = scope[s.lowerBound...].firstIndex(of: ">")
+            else { return [:] }
+            return attributes(of: String(scope[s.lowerBound...gt]))
+        }()
+        let label = [attrs["alt"], wrapAttrs["aria-label"], wrapAttrs["title"]]
+            .compactMap { $0.map(decodeEntities)?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first(where: { !$0.isEmpty }) ?? "Sticker"
+        func dim(_ k: String) -> Int? {
+            guard let v = attrs[k]?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  let n = Int(v), n > 0
+            else { return nil }
+            return n
+        }
+        return StickerInfo(url: decodeEntities(src), label: label, width: dim("width"), height: dim("height"))
+    }
+
+    /// List/chat preview for image-only bubbles: stickers show their
+    /// label (`[Sticker: Party!]`); photos stay imageless (nil).
+    public static func stickerPreview(forRaw raw: String?) -> String? {
+        guard let s = sticker(fromRaw: raw) else { return nil }
+        return "[Sticker: \(s.label)]"
+    }
+
     /// Raw `<img …>` tag spans (case-insensitive open, first `>` closes).
     static func imgTags(in html: String) -> [String] {
         var out: [String] = []

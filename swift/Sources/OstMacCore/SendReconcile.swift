@@ -14,6 +14,20 @@
 // the next page/echo).
 import Foundation
 
+/// Sticker payload for one logical send (lane stickers): a local PNG
+/// plus its label. The wire (AMS upload + sticker message) runs in
+/// `SendTransport.live.post`; text stays the "[Sticker: label]"
+/// placeholder the optimistic bubble shows.
+public struct StickerSendRef: Sendable, Equatable {
+    public let pngPath: String
+    public let label: String
+
+    public init(pngPath: String, label: String) {
+        self.pngPath = pngPath
+        self.label = label
+    }
+}
+
 /// One logical send's wire request (the route is resolved by the store).
 public struct OutgoingSend: Sendable, Equatable {
     public enum Route: Sendable, Equatable {
@@ -34,10 +48,12 @@ public struct OutgoingSend: Sendable, Equatable {
     public let subject: String
     /// COMPOSER-B: resolved broadcast mentions (empty = none).
     public let mentions: [WireMentionRef]
+    /// Stickers: local PNG + label (nil = text send).
+    public let sticker: StickerSendRef?
 
     public init(chatID: String, text: String, route: Route = .plain, clientMessageID: String,
                 importance: MessageImportance = .normal, subject: String = "",
-                mentions: [WireMentionRef] = []) {
+                mentions: [WireMentionRef] = [], sticker: StickerSendRef? = nil) {
         self.chatID = chatID
         self.text = text
         self.route = route
@@ -45,6 +61,7 @@ public struct OutgoingSend: Sendable, Equatable {
         self.importance = importance
         self.subject = subject
         self.mentions = mentions
+        self.sticker = sticker
     }
 }
 
@@ -67,6 +84,15 @@ public struct SendTransport: Sendable {
     /// account hop).
     public static let live = SendTransport(
         post: { r in
+            // Stickers ride AMS (upload + sticker message), not the text
+            // post path; retries reuse the same client message id.
+            if let s = r.sticker {
+                let resp = try RustCore.stickerSend(
+                    chatID: r.chatID, pngPath: s.pngPath, label: s.label,
+                    clientMessageID: r.clientMessageID)
+                MeetingChatUnmute.after(.send, chatID: r.chatID) // CHATSYNC3 R1
+                return resp.id
+            }
             // COMPOSER-B: the additive `_opts` FFI always (empty opts
             // render the legacy body bit-identical — unit-tested in ost).
             let imp = r.importance.wireValue

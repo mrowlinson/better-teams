@@ -145,6 +145,14 @@ pub use chat::{
     remove_chat_member_with_client, rename_chat_with_client, thread_topic_body, thread_topic_url,
     MemberAddResult, ShareHistory,
 };
+// OstMac stickers: native AMS-upload sticker send + detect.
+pub use chat::{
+    is_sticker_html, parse_sticker_object_id, png_dimensions,
+    send_sticker_message_with_client_id, sticker_content, sticker_create_body,
+    sticker_effective_label, sticker_label, sticker_message_body, sticker_view_url,
+    upload_sticker_image_data, STICKER_DEFAULT_LABEL, STICKER_EDGE_MAX, STICKER_IMAGE_MAX_BYTES,
+    STICKER_ITEMTYPE,
+};
 pub use calendar::{
     calendar_view_path, list_upcoming_meetings_data, lobby_next, normalize_join_meeting_id,
     online_meeting_by_join_id_path, parse_calendar_view, parse_join_id_lookup, parse_join_url,
@@ -224,6 +232,11 @@ pub async fn read_messages(chat_id: &str, limit: usize) -> Result<()> {
 /// Send a message to a chat (native Teams API)
 pub async fn send_message(to: &str, message: &str) -> Result<()> {
     chat::send_message(to, message).await
+}
+
+/// Send a local PNG file as a sticker (AMS upload + sticker message)
+pub async fn send_sticker(to: &str, png_path: &str, label: &str) -> Result<()> {
+    chat::send_sticker(to, png_path, label).await
 }
 
 /// Add (or with `remove`, remove) an emoji reaction on one message.

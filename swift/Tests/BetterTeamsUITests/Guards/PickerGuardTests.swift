@@ -4,6 +4,7 @@
 // UI). Drives the pure page model, the grid stepping and the search
 // field's real key handling.
 import AppKit
+import UniformTypeIdentifiers
 import XCTest
 
 import OstMacCore
@@ -78,5 +79,29 @@ final class PickerGuardTests: XCTestCase {
     func testPickerGridsUseTheSameColumnsAsTheirNavigation() {
         XCTAssertEqual(ReactionPicker.columns, 8)
         XCTAssertEqual(GIFPicker.columns, 3)
+    }
+
+    // MARK: sticker picker (lane stickers)
+
+    func testStickerPickerIsPNGOnlyWithLabelDefault() {
+        // The wire takes PNGs (AMS pish/image) — the panel filters to them.
+        XCTAssertEqual(StickerPickerModel.allowedTypes, [.png])
+        XCTAssertEqual(StickerPickerModel.effectiveLabel("Party"), "Party")
+        XCTAssertEqual(StickerPickerModel.effectiveLabel("  spaced  "), "spaced")
+        XCTAssertEqual(StickerPickerModel.effectiveLabel("   "), "Sticker")
+        XCTAssertEqual(StickerPickerModel.effectiveLabel(""), "Sticker")
+    }
+
+    func testStickerPickerSendGatesOnChosenImage() {
+        var m = StickerPickerModel()
+        XCTAssertFalse(m.canSend, "no image yet")
+        m.noteSelection(path: "/tmp/x.jpg", displayName: "x.jpg", loads: false)
+        XCTAssertFalse(m.canSend, "unreadable image")
+        XCTAssertNotNil(m.error)
+        XCTAssertNil(m.pngPath)
+        m.noteSelection(path: "/tmp/party.png", displayName: "party.png", loads: true)
+        XCTAssertTrue(m.canSend)
+        XCTAssertNil(m.error)
+        XCTAssertEqual(m.pngPath, "/tmp/party.png")
     }
 }

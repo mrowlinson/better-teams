@@ -69,6 +69,7 @@ public enum ChatCommands {
     public static let mentionPopover = "mention"
     public static let reactionPopover = "reaction"
     public static let gifPopover = "gif"
+    public static let stickerPopover = "sticker"
     public static let sendLaterPopover = "sendLater"
     public static let praisePopover = "praise"
 

@@ -13,6 +13,7 @@ enum ComposerPopover: Hashable, Identifiable {
     case mention
     case reaction(messageID: String)
     case gif
+    case sticker
     case sendLater
     case praise
 
@@ -21,6 +22,7 @@ enum ComposerPopover: Hashable, Identifiable {
         case .mention: "mention"
         case .reaction(let m): "reaction:\(m)"
         case .gif: "gif"
+        case .sticker: "sticker"
         case .sendLater: "sendLater"
         case .praise: "praise"
         }
@@ -31,6 +33,7 @@ enum ComposerPopover: Hashable, Identifiable {
         switch evidenceName {
         case ChatCommands.mentionPopover: self = .mention
         case ChatCommands.gifPopover: self = .gif
+        case ChatCommands.stickerPopover: self = .sticker
         case ChatCommands.sendLaterPopover: self = .sendLater
         case ChatCommands.praisePopover: self = .praise
         case ChatCommands.reactionPopover:

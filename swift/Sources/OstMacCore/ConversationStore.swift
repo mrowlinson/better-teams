@@ -970,6 +970,28 @@ public final class ConversationStore: ObservableObject {
         deliver(localID: pendingID, request: request, verifyFirst: false)
     }
 
+    /// Post a sticker: optimistic "[Sticker: label]" bubble, then the AMS
+    /// upload + sticker message through the normal §106 settle path, so
+    /// Retry reuses the client message id and the server echo settles the
+    /// bubble in place. Blank labels become "Sticker" on the wire.
+    public func sendSticker(pngPath: String, label: String) {
+        let clean = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        let name = clean.isEmpty ? "Sticker" : clean
+        guard let id = chatID, !isDemo else { return }
+        let cmid = SendReconcile.newClientMessageID()
+        let pendingID = SendReconcile.pendingID(for: cmid)
+        let bubble = ChatMessage(
+            id: pendingID,
+            sender: "Me", timestamp: Self.nowISO(), content: "[Sticker: \(name)]", isOwn: true,
+            clientMessageID: cmid)
+        messages.append(bubble)
+        onLocalSend?(bubble)
+        let request = OutgoingSend(chatID: id, text: bubble.content, clientMessageID: cmid,
+                                   sticker: StickerSendRef(pngPath: pngPath, label: name))
+        outgoing[pendingID] = request
+        deliver(localID: pendingID, request: request, verifyFirst: false)
+    }
+
     // MARK: - Send reconcile (§106)
 
     /// Send wire (tests inject a fake; `--send-timeout-shim` wraps it).

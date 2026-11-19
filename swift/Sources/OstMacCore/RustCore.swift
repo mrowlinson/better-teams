@@ -514,6 +514,23 @@ public enum RustCore {
         }
     }
 
+    /// Stickers: send a local PNG as a sticker (AMS upload + sticker
+    /// message) with a caller-owned client message id. Blocking FFI
+    /// (network): call off the main thread.
+    public static func stickerSend(
+        chatID: String, pngPath: String, label: String, clientMessageID: String
+    ) throws -> SendResponse {
+        try chatID.withCString { idPtr in
+            try pngPath.withCString { pathPtr in
+                try label.withCString { labelPtr in
+                    try clientMessageID.withCString { cPtr in
+                        try call(ostmac_sticker_send(idPtr, pathPtr, labelPtr, cPtr), as: SendResponse.self)
+                    }
+                }
+            }
+        }
+    }
+
     /// §106: channel thread reply with a caller-owned client message id.
     public static func threadReplyIdem(
         channelID: String, rootID: String, text: String, clientMessageID: String

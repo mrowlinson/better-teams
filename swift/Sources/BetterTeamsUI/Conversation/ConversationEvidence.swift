@@ -130,6 +130,16 @@ enum ConversationEvidence {
                                     isOwn: false, raw: raw),
                         keepOwnership: true)
         }
+        if seeds.contains("sticker") {
+            // Lane stickers: a received official-shape sticker (demo
+            // image URL, so it renders offline) for render captures.
+            conv.ingest(ChatMessage(id: "sticker-evidence", sender: "Megan Harper",
+                                    timestamp: Date().ISO8601Format(),
+                                    content: "",
+                                    isOwn: false,
+                                    raw: "<p><readonly aria-label=\"Party!\" contenteditable=\"false\" itemtype=\"http://schema.skype.com/Sticker\" title=\"Party!\"><img src=\"demo://photo-1\" width=\"480\" height=\"320\" itemscope=\"image/png\" itemtype=\"http://schema.skype.com/AMSImage\" alt=\"Party!\" id=\"demo-sticker-1\" itemid=\"demo-sticker-1\" href=\"demo://photo-1\" target-src=\"demo://photo-1\"></readonly></p>"),
+                        keepOwnership: true)
+        }
         if seeds.contains("reply"), let target = others.last { conv.beginReply(to: target) }
         if seeds.contains("share"), let target = others.last {
             // Next turn: the window is on screen by then (the route is

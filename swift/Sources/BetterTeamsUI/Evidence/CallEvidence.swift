@@ -87,6 +87,7 @@ enum CallEvidence {
             m.app?.call.seedDemo(state: "incoming")
             if route.query["accept"] == "1" { m.app?.call.accept() }
         case "call":
+            roomsForceLive = route.query["roomsLive"] == "1"
             let p = presentation(route.query["presentation"]) ?? .current
             let session = begin(route.query["state"] ?? "prejoin", presentation: p, show: true, wc,
                                 query: route.query)
@@ -120,6 +121,11 @@ enum CallEvidence {
         MeetingParticipant(id: "8:orgid:tom", name: "Tom Becker"),
         MeetingParticipant(id: "8:orgid:megan", name: "Megan Harper", muted: true),
     ]
+
+    /// BREAKOUT-R2 evidence: `&roomsLive=1` forces the rooms sheet's
+    /// live gate for the capture (same disabled UI live users see).
+    /// Reset per route in apply; single route per launch.
+    static var roomsForceLive = false
 
     static let standup = MeetingItem(
         meetingId: CalendarSelection.demoMeetingID, subject: "Engineering standup",
@@ -155,6 +161,14 @@ enum CallEvidence {
                                  messages: MeetingDemo.messages)
         let s = m.beginCall(kind, presentation: p, show: show)
         s?.joinForDemo(video: state == "meetingvideo" || state == "presenting")
+        // BREAKOUT evidence: `&rooms=open` builds the rooms plan over
+        // the demo roster (automatic assignment) and opens every room,
+        // so the open state captures deterministically.
+        if query["rooms"] == "open", let s {
+            s.breakoutRooms.create(count: 4, mode: .automatic,
+                                    rosterIDs: app.meeting.participants.map({ $0.id }))
+            s.breakoutRooms.openAll()
+        }
         // C2a local-only controls (no signaling, no server writes).
         if let raw = query["layout"], let mode = MeetingLayoutMode(rawValue: raw) { s?.setLayout(mode) }
         if query["captions"] == "1" {

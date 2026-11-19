@@ -1645,6 +1645,58 @@ pub fn send_idem_json(chat_id: &str, text: &str, client_message_id: &str) -> Str
     send_idem_inner(chat_id, text, client_message_id, &ost::api::SendOpts::none())
 }
 
+/// Stickers: send a local PNG file as a sticker (AMS upload + sticker
+/// message) with a caller-owned client message id (blank = fresh;
+/// retries reuse it). Returns `{ok:true, chat_id, id?,
+/// client_message_id}` or `{ok:false}`. PNG-only: anything
+/// `png_dimensions` rejects fails before any network.
+pub fn sticker_send_json(
+    chat_id: &str,
+    png_path: &str,
+    label: &str,
+    client_message_id: &str,
+) -> String {
+    let cmid = cmid_or_new(client_message_id);
+    if chat_id.trim().is_empty() {
+        return err_json("arg", "empty chat_id");
+    }
+    let bytes = match std::fs::read(png_path) {
+        Ok(b) => b,
+        Err(e) => return err_json("arg", format!("cannot read sticker file: {e}")),
+    };
+    let (width, height) = match ost::api::png_dimensions(&bytes) {
+        Some(d) => d,
+        None => return err_json("arg", "sticker file must be a PNG"),
+    };
+    let run = || -> Result<String, String> {
+        let rt = rt()?;
+        rt.block_on(async {
+            let client = ost::api::client::TeamsClient::new()
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            let filename = std::path::Path::new(png_path)
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("sticker.png");
+            let object_id = ost::api::upload_sticker_image_data(&client, chat_id, filename, &bytes)
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            let view = ost::api::sticker_view_url(&client, &object_id)
+                .map_err(|e| format!("{:#}", e))?;
+            let sent = ost::api::send_sticker_message_with_client_id(
+                &client, chat_id, &object_id, &view, label, width, height, &cmid,
+            )
+            .await
+            .map_err(|e| format!("{:#}", e))?;
+            Ok(sent_json(chat_id, &sent))
+        })
+    };
+    match run() {
+        Ok(s) => s,
+        Err(e) => err_json("send", e),
+    }
+}
+
 /// COMPOSER-B: [`send_idem_json`] with importance (`"high"`/`"urgent"`,
 /// else normal), subject (blank = absent), and broadcast mentions
 /// (`[{token,id,display,kind}]` JSON, tolerant). Additive: `none()` is
@@ -4373,6 +4425,30 @@ pub extern "C" fn ostmac_thread_reply_idem(
     })();
     match args {
         Ok((id, r, t, c)) => string_to_c(thread_reply_idem_json(&id, &r, &t, &c)),
+        Err(e) => string_to_c(err_json("arg", e)),
+    }
+}
+
+/// Stickers: send a local PNG file as a sticker. `label` is `opt`
+/// (NULL or empty = "Sticker"); `client_message_id` blank = fresh.
+/// See [`sticker_send_json`]. Caller frees.
+#[no_mangle]
+pub extern "C" fn ostmac_sticker_send(
+    chat_id: *const c_char,
+    png_path: *const c_char,
+    label: *const c_char,
+    client_message_id: *const c_char,
+) -> *mut c_char {
+    let args = (|| {
+        Ok::<_, String>((
+            cstr_to_string(chat_id)?,
+            cstr_to_string(png_path)?,
+            opt_cstr_to_string(label)?.unwrap_or_default(),
+            opt_cstr_to_string(client_message_id)?.unwrap_or_default(),
+        ))
+    })();
+    match args {
+        Ok((id, p, l, c)) => string_to_c(sticker_send_json(&id, &p, &l, &c)),
         Err(e) => string_to_c(err_json("arg", e)),
     }
 }

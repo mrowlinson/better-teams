@@ -15,7 +15,7 @@ use crate::auth::TokenStore;
 use crate::config::Config;
 
 pub const AAD: &str = "test-aad-token";
-pub const SKYPE: &str = "test-skype-token";
+pub const SKYPE: &str = "FIXTURE-SKYPE";
 pub const GRAPH: &str = "test-graph-token";
 
 /// One request the fake saw.

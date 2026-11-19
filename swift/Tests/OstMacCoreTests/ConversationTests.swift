@@ -51,6 +51,15 @@ final class ConversationTests: XCTestCase {
         XCTAssertThrowsError(try RustCore.send(chatID: "19:x", text: "  "))
     }
 
+    /// Sticker FFI rejects before any network: empty chat id first, then
+    /// the missing file (both offline — no trial tenant needed).
+    func testLiveFFIStickerRejectsArgsBeforeNetwork() {
+        XCTAssertThrowsError(try RustCore.stickerSend(chatID: "", pngPath: "/nonexistent/x.png",
+                                                      label: "", clientMessageID: "c1"))
+        XCTAssertThrowsError(try RustCore.stickerSend(chatID: "19:x", pngPath: "/nonexistent/x.png",
+                                                      label: "Party", clientMessageID: "c1"))
+    }
+
     /// Header title (om-chatnames): resolved name, else the generic
     /// label — never the raw chat id.
     func testHeaderTitleNeverRawID() {

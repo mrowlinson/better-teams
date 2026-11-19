@@ -1,9 +1,12 @@
 // ComposerPopovers.swift — transient pickers anchored to the composer
 // (UI-SPEC §6.2.2, §9.5): @-mention suggestions, reaction More…, GIF
-// search, Send Later. One at a time (`ComposerPopover`); work is kept
-// when a popover auto-closes (the draft lives in `ComposerModel`).
+// search, sticker pick, Send Later. One at a time (`ComposerPopover`);
+// work is kept when a popover auto-closes (the draft lives in
+// `ComposerModel`).
+import AppKit
 import OstMacCore
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// R4: index-stable identity for picker rows with no model id, built
 /// before the ForEach so no banned identity form appears inside it.
@@ -46,6 +49,14 @@ struct ComposerPopoverContent: View {
             }
         case .praise:
             PraiseComposer(conv: conv, composer: composer)
+        case .sticker:
+            StickerPicker { pngPath, label in
+                conv.sendSticker(pngPath: pngPath, label: label)
+                composer.popover = nil
+                composer.focusRequest += 1
+            } cancel: {
+                composer.popover = nil
+            }
         case .sendLater:
             if let scheduled = services.scheduled(model) {
                 SendLaterPicker(text: composer.draft(chatID)) { date in
@@ -309,6 +320,104 @@ struct GIFPicker: View {
             searching = false
             for g in found { services.media.image(url: g.previewURL, messageID: "gif-picker").load() }
         }
+    }
+}
+
+/// Pure sticker-pick state (lane stickers): the PNG-only gate and the
+/// label default live here so guards pin them without opening a panel.
+struct StickerPickerModel: Equatable {
+    /// The wire takes PNGs (AMS `pish/image`); the panel filters to them.
+    static let allowedTypes: [UTType] = [.png]
+    /// Wire label: trimmed, blank = "Sticker" (matches the core default).
+    static func effectiveLabel(_ label: String) -> String {
+        let t = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        return t.isEmpty ? "Sticker" : t
+    }
+
+    var label = ""
+    var pngPath: String?
+    var error: String?
+    var canSend: Bool { pngPath != nil && error == nil }
+
+    mutating func noteSelection(path: String, displayName: String, loads: Bool) {
+        if loads {
+            pngPath = path
+            error = nil
+        } else {
+            pngPath = nil
+            error = "\"\(displayName)\" isn't a readable image."
+        }
+    }
+}
+
+@MainActor
+private final class StickerPickerState: ObservableObject {
+    @Published var model = StickerPickerModel()
+    @Published var preview: NSImage?
+
+    func choose() {
+        guard let window = NSApp.keyWindow ?? NSApp.mainWindow, window.attachedSheet == nil else { return }
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = StickerPickerModel.allowedTypes
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.prompt = "Choose"
+        panel.beginSheetModal(for: window) { [weak self] response in
+            guard response == .OK, let url = panel.urls.first else { return }
+            let img = NSImage(contentsOf: url)
+            self?.model.noteSelection(path: url.path, displayName: url.lastPathComponent, loads: img != nil)
+            self?.preview = img
+        }
+    }
+}
+
+/// Sticker picker (lane stickers): a label field, a PNG file pick
+/// (native NSOpenPanel, PNG-only — the wire takes nothing else), a
+/// preview, and Send. Native TextField + Buttons, no custom chrome.
+struct StickerPicker: View {
+    let pick: (String, String) -> Void
+    let cancel: () -> Void
+    @StateObject private var state = StickerPickerState()
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            TextField("Label (optional)", text: $state.model.label)
+                .textFieldStyle(.roundedBorder)
+            ZStack {
+                RoundedRectangle(cornerRadius: 6, style: .continuous).fill(.fill.quaternary)
+                if let img = state.preview {
+                    Image(nsImage: img)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                } else {
+                    Label("No Image Chosen", systemImage: "photo")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .frame(width: 296, height: 160)
+            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+            if let error = state.model.error {
+                Text(error)
+                    .font(.callout)
+                    .foregroundStyle(.red)
+            }
+            HStack {
+                Button("Choose Image…") { state.choose() }
+                Spacer()
+                Button("Cancel", role: .cancel) { cancel() }
+                Button("Send Sticker") {
+                    if let path = state.model.pngPath {
+                        pick(path, StickerPickerModel.effectiveLabel(state.model.label))
+                    }
+                }
+                .disabled(!state.model.canSend)
+                .keyboardShortcut(.defaultAction)
+            }
+            .buttonStyle(.automatic)
+        }
+        .padding(12)
+        .frame(width: 320)
     }
 }
 

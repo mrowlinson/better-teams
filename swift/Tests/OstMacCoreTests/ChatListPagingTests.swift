@@ -138,6 +138,9 @@ final class ChatListPagingTests: XCTestCase {
     func testImageOnlyPreviewAndPageLinkGuard() {
         XCTAssertEqual(CoreReads.listPreview("<p><img src=\"x\" alt=\"image\"></p>"), "Sent an image")
         XCTAssertEqual(CoreReads.listPreview("<p>Hello</p>"), "Hello")
+        XCTAssertEqual(CoreReads.listPreview(
+            "<p><readonly itemtype=\"http://schema.skype.com/Sticker\" aria-label=\"Party!\"><img src=\"https://h/x\"></readonly></p>"),
+            "[Sticker: Party!]")
         XCTAssertTrue(CoreReads.isChatPageLink(
             "https://amer.ng.msg.teams.microsoft.com/v1/users/ME/conversations?view=mychats&syncState=s"))
         XCTAssertFalse(CoreReads.isChatPageLink("http://amer.ng.msg.teams.microsoft.com/v1/users/ME/conversations"))

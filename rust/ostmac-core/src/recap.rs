@@ -1492,6 +1492,32 @@ mod tests {
     }
 
     #[test]
+    fn catchup_reasons_name_the_unavailable_cause() {
+        // COPILOT lane: the AI Recap is the lane's Copilot surface, and
+        // every "not processed" status Teams reports must reach the viewer
+        // as a reason (unavailable-with-reason, never a bare "none").
+        for (status, word) in [
+            ("NotProcessedMissingLicense", "license"),
+            ("NotProcessedMissingTranscript", "transcribed"),
+            ("NotProcessedTranscriptTooShort", "short"),
+            ("NotProcessedNonEnglishTranscript", "language"),
+            ("NotProcessedFeatureNotAvailable", "organization"),
+            ("NoRecording", "recorded"),
+            ("NoPermission", "permission"),
+            ("InProgress", "ready"),
+        ] {
+            let reason =
+                catchup_reason(status).unwrap_or_else(|| panic!("no reason for {}", status));
+            assert!(reason.to_lowercase().contains(word), "{} -> {}", status, reason);
+            let v = json!({"EntitySets": [{"ResultSets": [{"Results": [{"Source": {"Status": status}}]}]}]});
+            let a = catchup_answer(&v);
+            assert_eq!(a["available"], false);
+            assert_eq!(a["reason"].as_str(), Some(reason));
+        }
+        assert_eq!(catchup_reason("Bogus"), None);
+    }
+
+    #[test]
     fn civil_dates() {
         assert_eq!(civil_from_days(0), (1970, 1, 1));
         assert_eq!(civil_from_days(20_725), (2026, 9, 29));

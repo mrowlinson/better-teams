@@ -333,6 +333,14 @@ struct MessageRowView: View {
                               open: { actions.preview(image: $0) },
                               save: { actions.save(image: $0, alt: $1, choose: $2) })
             }
+            // Stickers name their label under the image (plain photos
+            // stay captionless; alt text remains the accessibility label).
+            if let sticker = MessageRender.sticker(fromRaw: message.raw), !images.isEmpty {
+                Text(sticker.label)
+                    .font(AppFont.caption(scale))
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel("Sticker: \(sticker.label)")
+            }
             if !row.docs.isEmpty {
                 FileChips(docs: row.docs, actions: actions)
             }

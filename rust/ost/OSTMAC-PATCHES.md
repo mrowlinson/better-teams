@@ -1927,6 +1927,19 @@ Notes:
     the session-expired sentence exactly once. Tests:
     `api::client::tests::reauth_branch_surfaces_single_wrap`.
     UPSTREAM: PR https://github.com/eisbaw/ost/pull/119 (fix/reauth-single-wrap, stacks on #115)
+111. [major] `src/api/chat.rs` + `src/api/client.rs` + `src/api/mod.rs` +
+    `src/main.rs` — **native sticker send + detect (lanes/stickers)**.
+    Sticker = AMS-hosted PNG + chatsvc `RichText/Html` message (Burp
+    capture shape: `<readonly itemtype="http://schema.skype.com/Sticker">`
+    + `<img>` + `amsreferences`). New: `sticker_region_hosts` (amer→
+    us-prod/us-api, emea→eu-prod/eu-api; unknown bails naming the host),
+    AMS create (`pish/image`) + PUT `imgpsh` upload, `sticker_content` /
+    `sticker_message_body` builders, `send_sticker_message_with_client_id`
+    (§106 idempotent), `send_sticker` + `send-sticker` CLI, `png_dimensions`
+    gate, `is_sticker_html` + `sticker_label` detect. eu-prod.asyncgw is
+    inferred — the trial must verify it. Tests: 6 sticker tests incl. a
+    3-request fake-transport end-to-end (AMS auth vs chat auth asserted).
+    UPSTREAM: pending
 
 106. [feat] `src/api/channel_moderation.rs`, `src/api/client.rs`,
     `src/api/team_settings.rs`, `src/api/mod.rs`, `src/main.rs` —

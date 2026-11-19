@@ -28,6 +28,10 @@ public enum CallCommands {
     public static let decline: CommandID = "call.decline"
     public static let hand: CommandID = "call.hand"
     public static let pushToTalk: CommandID = "call.pushToTalk"
+    /// Breakout rooms sheet (BREAKOUT): Call menu, group meetings only.
+    public static let rooms: CommandID = "call.rooms"
+    /// Sheet name for the rooms plan (SheetRequest names are strings).
+    public static let roomsSheet = "rooms"
 
     /// Popover name (evidence `popover=devices`).
     public static let devicesPopover = "devices"
@@ -69,5 +73,7 @@ public enum CallCommands {
         Command(pushToTalk, "Push to Talk", symbol: "mic",
                 key: " ", modifiers: [.option],
                 menu: .init(.call, group: 2, order: 5), owner: .call),
+        Command(rooms, "Breakout Rooms…", symbol: "person.3.fill",
+                menu: .init(.call, group: 2, order: 8), owner: .call),
     ]
 }

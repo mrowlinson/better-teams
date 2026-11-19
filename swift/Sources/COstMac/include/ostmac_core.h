@@ -213,6 +213,11 @@ char *ostmac_thread_reply_idem_opts(const char *channel_id, const char *root_id,
 // Caller frees.
 char *ostmac_send_praise_idem(const char *chat_id, const char *badge, const char *recipient,
                               const char *note, const char *sender, const char *client_message_id);
+// Stickers: send a local PNG as a sticker (AMS upload + sticker
+// message). `label` NULL/empty = "Sticker"; `client_message_id`
+// blank = fresh. Caller frees.
+char *ostmac_sticker_send(const char *chat_id, const char *png_path, const char *label,
+                          const char *client_message_id);
 // §106 verify: {ok, found, message?} — newest page searched by client
 // message id (a timed-out send checks before Failed/re-post). Caller frees.
 char *ostmac_find_client_message(const char *chat_id, const char *client_message_id);

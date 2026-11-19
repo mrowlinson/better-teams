@@ -396,11 +396,11 @@ on GitHub by opening an issue.
 
 Incomplete or not started yet ("in progress" = being worked on now):
 
-- **Compose:** stickers (deferred — no clean native path); emphasis wire proven live, importance/subject/mentions live proof needs a test channel
+- **Compose:** emphasis wire proven live, importance/subject/mentions live proof needs a test channel
 - **Meetings:** hand/reactions/pin/participant UI shipped local-only, live proof queued on trial tenant; lobby admit UI instrumented, live run queued on trial tenant
 - **Calling:** Teams Phone (dial pad, voicemail, forwarding, delegates) — parked: no Teams Phone licence on this tenant
 - **Chats and teams:** Teams saved-messages sync, thread mute, full notification-rules matrix (all three parked — no server surface found)
 - **External (federated) chat:** shipped, live proof blocked: tenant has external access disabled
-- **On hold:** webinars, breakout rooms, whiteboard shared ink (local sketch shipped), Copilot
-- **Blocked by Microsoft:** Loop components (no public create/embed/sync API exists; ships if one appears)
-- **Live proof:** end-to-end live proof queued on the trial tenant (multi-person meetings, channels, moderation, praise, polls, share-to-Outlook, whiteboard)
+- **On hold:** webinars, breakout rooms (local planning only — no API to open live rooms)
+- **Blocked by Microsoft:** Loop components (no public create/embed/sync API exists; ships if one appears); Copilot chat (needs a M365 Copilot licence plus admin-consented scopes a personal client can't hold)
+- **Live proof:** end-to-end live proof queued on the trial tenant (multi-person meetings, channels, moderation, praise, polls, share-to-Outlook, whiteboard, stickers)

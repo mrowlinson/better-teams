@@ -410,4 +410,43 @@ final class RichMediaTests: XCTestCase {
         XCTAssertTrue(fm.fileExists(atPath: legacy.appendingPathComponent("o.png").path))
         XCTAssertTrue(fm.fileExists(atPath: fresh.appendingPathComponent("n.png").path))
     }
+
+    // MARK: - Stickers (lane stickers)
+
+    private static let stickerRaw = #"<p><readonly aria-label="Party!" contenteditable="false" itemtype="http://schema.skype.com/Sticker" title="Party!"><img src="https://us-api.asm.skype.com/v1/objects/0-test-1/views/imgo" width="100" height="80" itemscope="image/png" itemtype="http://schema.skype.com/AMSImage" alt="Party!" id="0-test-1" itemid="0-test-1" href="https://us-api.asm.skype.com/v1/objects/0-test-1/views/imgo" target-src="https://us-api.asm.skype.com/v1/objects/0-test-1/views/imgo"></readonly></p>"#
+
+    func testStickerInfoOfficialShape() {
+        let s = MessageRender.sticker(fromRaw: Self.stickerRaw)
+        XCTAssertEqual(s?.url, "https://us-api.asm.skype.com/v1/objects/0-test-1/views/imgo")
+        XCTAssertEqual(s?.label, "Party!")
+        XCTAssertEqual(s?.width, 100)
+        XCTAssertEqual(s?.height, 80)
+    }
+
+    func testStickerNotAPhoto() {
+        XCTAssertNil(MessageRender.sticker(fromRaw: #"<p><img src="https://h/x.png" alt="photo"></p>"#))
+        XCTAssertNil(MessageRender.sticker(fromRaw: "<p>hi</p>"))
+        XCTAssertNil(MessageRender.sticker(fromRaw: nil))
+        XCTAssertNil(MessageRender.sticker(fromRaw: ""))
+    }
+
+    func testStickerLabelFallbacks() {
+        let aria = #"<p><readonly itemtype="http://schema.skype.com/Sticker" aria-label="Go &amp; win"><img src="https://h/x"></readonly></p>"#
+        XCTAssertEqual(MessageRender.sticker(fromRaw: aria)?.label, "Go & win")
+        let bare = #"<readonly itemtype="http://schema.skype.com/Sticker"><img src="https://h/x"></readonly>"#
+        XCTAssertEqual(MessageRender.sticker(fromRaw: bare)?.label, "Sticker")
+        // Quoted photo alt outside the wrapper never poses as the label.
+        let mixed = #"<p><img src="https://h/q" alt="quoted"></p>"# + Self.stickerRaw
+        XCTAssertEqual(MessageRender.sticker(fromRaw: mixed)?.label, "Party!")
+        // Case-insensitive wrapper; dims only when both parse positive.
+        let upper = Self.stickerRaw.replacingOccurrences(of: "readonly", with: "READONLY")
+        XCTAssertEqual(MessageRender.sticker(fromRaw: upper)?.label, "Party!")
+        let nodims = #"<readonly itemtype="http://schema.skype.com/Sticker"><img src="https://h/x" alt="L" width="big"></readonly>"#
+        XCTAssertNil(MessageRender.sticker(fromRaw: nodims)?.width)
+    }
+
+    func testStickerPreviewText() {
+        XCTAssertEqual(MessageRender.stickerPreview(forRaw: Self.stickerRaw), "[Sticker: Party!]")
+        XCTAssertEqual(MessageRender.stickerPreview(forRaw: #"<p><img src="https://h/x.png"></p>"#), nil)
+    }
 }

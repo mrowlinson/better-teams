@@ -55,6 +55,7 @@ final class CallSection: SectionProvider, InspectorCapable {
             case CallCommands.showChat: Self.toggleInspector(segment: "chat", m)
             case CallCommands.hand: s.toggleHandRaised()
             case CallCommands.pushToTalk: s.talkBurst()
+            case CallCommands.rooms: m.presentSheet(SheetRequest(CallCommands.roomsSheet, in: .call))
             default: return false
             }
         }
@@ -65,6 +66,19 @@ final class CallSection: SectionProvider, InspectorCapable {
     static func isRinging(_ m: WindowModel) -> Bool {
         guard let info = m.app?.call.call else { return false }
         return info.dir == "in" && info.state == "ringing"
+    }
+
+    /// Breakout rooms sheet (BREAKOUT): the plan over the live roster.
+    /// Live sessions have no rooms API (Teams-client-only), so the
+    /// sheet disables every mutation there; demo stays interactive.
+    static func roomsLive(_ m: WindowModel) -> Bool {
+        m.app != nil && !m.options.demo
+    }
+
+    func sheet(_ r: SheetRequest, _ m: WindowModel) -> AnyView? {
+        guard r.name == CallCommands.roomsSheet, let app = m.app, let s = m.call, !s.ended else { return nil }
+        return AnyView(BreakoutRoomsSheet(rooms: s.breakoutRooms, roster: app.meeting,
+                                          live: Self.roomsLive(m) || CallEvidence.roomsForceLive))
     }
 
     func validate(_ c: CommandID, arg: String?, _ m: WindowModel) -> CommandValidation {
@@ -94,6 +108,12 @@ final class CallSection: SectionProvider, InspectorCapable {
                                          title: s.handRaised ? "Lower Hand" : "Raise Hand")
             case CallCommands.pushToTalk:
                 return CommandValidation(enabled: s.joined && AppSettings.shared.pushToTalk)
+            case CallCommands.rooms:
+                // Group calls and meetings only (rooms need a roster).
+                // The menu stays enabled in live sessions: the sheet
+                // itself disables every mutation there (no rooms API)
+                // and says so, so live users see why, not a dead menu.
+                return CommandValidation(enabled: s.joined && s.group)
             default:
                 return .disabled
             }
