@@ -48,7 +48,7 @@ final class CallsSection: SectionProvider {
                                        presence: app.presence, chats: m.graph.chats))
     }
 
-    var allToolbarItems: [CommandID] { [CallsCommands.newCall, CallsCommands.testCall] }
+    var allToolbarItems: [CommandID] { [CallsCommands.newCall, CallsCommands.phone, CallsCommands.testCall] }
 
     func selection(for route: Route) -> SectionSelection? {
         guard let id = route.tail.first else { return nil }
@@ -223,6 +223,9 @@ final class CallsSection: SectionProvider {
         case CallsCommands.newCall:
             if m.nav.section != .calls { m.navigator?.select(section: .calls) }
             m.presentSheet(SheetRequest(CallsCommands.newCallSheet, in: .calls))
+        case CallsCommands.phone:
+            if m.nav.section != .calls { m.navigator?.select(section: .calls) }
+            m.presentSheet(SheetRequest(CallsCommands.phoneSheet, in: .calls))
         case CallsCommands.testCall:
             Self.testCall(m)
         case CallsCommands.callBack:
@@ -254,6 +257,8 @@ final class CallsSection: SectionProvider {
         switch c {
         case CallsCommands.newCall, CallsCommands.testCall:
             return CommandValidation(enabled: idle)
+        case CallsCommands.phone:
+            return CommandValidation(enabled: true)
         case CallsCommands.callBack:
             guard let p = selected(m) else { return .disabled }
             return CommandValidation(enabled: idle && !p.thread.isEmpty)
@@ -276,9 +281,13 @@ final class CallsSection: SectionProvider {
     }
 
     func sheet(_ r: SheetRequest, _ m: WindowModel) -> AnyView? {
-        guard r.name == CallsCommands.newCallSheet, let app = m.app else { return nil }
-        return AnyView(NewCallSheet(chats: m.graph.chats,
-                                    contacts: NewChatSheet.directory(app, demo: m.options.demo),
-                                    presence: app.presence))
+        guard let app = m.app else { return nil }
+        if r.name == CallsCommands.newCallSheet {
+            return AnyView(NewCallSheet(chats: m.graph.chats,
+                                        contacts: NewChatSheet.directory(app, demo: m.options.demo),
+                                        presence: app.presence))
+        }
+        guard r.name == CallsCommands.phoneSheet else { return nil }
+        return AnyView(PhoneSheet(phone: app.phone))
     }
 }

@@ -52,6 +52,17 @@ enum CallEvidence {
     static func apply(_ route: Route, _ wc: ShellWindowController) {
         let m = wc.model
         guard m.options.demo else { return }
+        if route.head == "calls", let tab = route.query["phone"] {
+            // Evidence: the Phone sheet on one tab (demo only; the
+            // harness snapshots the sheet via primaryWindow).
+            PhoneSheet.evidenceTab = PhoneTab(rawValue: tab)
+            m.navigator?.select(section: .calls)
+            m.presentSheet(SheetRequest(CallsCommands.phoneSheet, in: .calls))
+            Task { @MainActor in
+                guard await waitFor({ wc.window?.attachedSheet != nil }) else { return }
+                EvidenceHarness.primaryWindow = wc.window?.attachedSheet
+            }
+        }
         if route.head == "calls", route.query["confirm"] == "clear" {
             // Evidence: the Clear Call History confirmation alert, once the
             // main window is up (R7: re-check per main-queue turn, no sleep).

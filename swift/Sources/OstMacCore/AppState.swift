@@ -173,6 +173,10 @@ public final class AppState: ObservableObject {
     /// Message density (f2-density): Comfortable/Compact preference.
     public let density: DensityStore
     public let call: CallStore
+    /// Teams Phone surfaces (phoneui lane): dial pad, voicemail,
+    /// forwarding, delegates. Demo = interactive fakes; live =
+    /// disabled-with-reason until PSTN-TRIAL proves a licence.
+    public let phone: PhoneStore
     /// Rebuilt per account on switch (d1-accounts).
     @Published public var history: CallHistoryStore
     public let meeting = MeetingRosterStore()
@@ -366,6 +370,7 @@ public final class AppState: ObservableObject {
         searchRecents = isDemo ? SearchRecentsStore(defaults: nil) : SearchRecentsStore()
         call = CallStore(demo: isDemo)
         chatRoster = ChatRosterStore(demo: isDemo)
+        phone = PhoneStore(demo: isDemo)
         actionItems = ActionItemsStore()
         // §84: real mode reads Teams' own pins; demo keeps its seeds.
         pinnedMessages = PinnedMessageStore(defaults: store, server: isDemo ? nil : LivePinnedServer())

@@ -203,6 +203,7 @@ final class MenuShortcutCatalogGuardTests: XCTestCase {
         "Conversation > Delete Channel…",
         "Call >",
         "Call > Start Audio Call",
+        "Call > Phone…",
         "Call > Start Video Call",
         "Call > Meet Now",
         "Call > Show Call",

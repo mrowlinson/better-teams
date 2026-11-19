@@ -138,6 +138,9 @@ swift/Sources/OstMacCore/ContactCardExtras.swift::schedule | POST /me/calendar/g
 swift/Sources/OstMacCore/OutOfOffice.swift::fetch | GET /me/mailboxSettings | works | live OOO R0 probe 200, automaticRepliesSetting keys recorded; scope MailboxSettings.ReadWrite granted
 swift/Sources/OstMacCore/OutOfOffice.swift::save | PATCH /me/mailboxSettings (automaticRepliesSetting only) | unproven | no live write in lane (HARD BAN on OOO set) — needs owner OK for set+revert proof
 swift/Sources/OstMacCore/ShareOutlook.swift::send | POST /me/sendMail | unproven | Mail.Send not in the Teams token scopes (403 capability message until proven) — needs owner OK for one live self-send to own trial mailbox + delete
+swift/Sources/OstMacCore/PhoneSettings.swift::fetchDelegates | GET /beta/me/communications/callSettings/delegates | blocked | scope CallDelegation.Read not granted on the Teams token (pstnprobe: SPE_E3, no MCOEV) — would 403; needs owner OK for first live proof on the trial tenant
+swift/Sources/OstMacCore/PhoneSettings.swift::addDelegate | POST /beta/me/communications/callSettings/delegates | blocked | scope CallDelegation.ReadWrite not granted on the Teams token — would 403; needs owner OK for set+revert proof on the trial tenant
+swift/Sources/OstMacCore/PhoneSettings.swift::removeDelegate | DELETE /beta/me/communications/callSettings/delegates/{id} | blocked | scope CallDelegation.ReadWrite not granted on the Teams token — would 403; needs owner OK for set+revert proof on the trial tenant
 swift/Sources/OstMacCore/ProfilePhotoStore.swift::fetch | GET /users/{id}/photo/$value | works | scope User.ReadBasic.All granted
 swift/Sources/OstMacCore/ReadCore.swift::meetings | GET /me/calendarView | works | live probeA 200
 swift/Sources/OstMacCore/ReadCore.swift::teams | GET /me/joinedTeams, /teams/{id}/channels | works | live probeA 200; applog 200

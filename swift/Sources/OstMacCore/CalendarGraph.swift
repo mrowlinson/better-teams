@@ -28,6 +28,9 @@ struct URLSessionCalendarHTTP: CalendarHTTP {
 
 public struct CalendarGraph: Sendable {
     static let base = "https://graph.microsoft.com/v1.0"
+    /// Beta base (call delegation APIs are beta-only). Spelled here so
+    /// call sites never carry the host (allowlist lint).
+    static let betaBase = "https://graph.microsoft.com/beta"
     static let preferUTC = "outlook.timezone=\"UTC\""
     /// calendarView pages followed per range (100 rows each).
     static let maxPages = 6
