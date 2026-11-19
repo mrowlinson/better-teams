@@ -1981,7 +1981,7 @@ Notes:
     M | --archive | --unarchive | bare=list, --owners filters owners]).
     Tests: 4 new (typed body/membership gate, member info, archive
     paths, is_archived read-back).
-    UPSTREAM: pending
+    UPSTREAM: PR https://github.com/eisbaw/ost/pull/121 (fix/channel-create-members-archive, stacks on #104)
 108. [feat] `src/api/chat.rs` (+ `src/api/mod.rs` re-export) —
     **Praise card post (PRAISE lane)**. New send path for Praise
     badges: `praise_card_content` (AdaptiveCard 1.0 ColumnSet: badge
@@ -1993,7 +1993,7 @@ Notes:
     plain send; empty badge/recipient/chat id rejected). Constants
     `PRAISE_APP_ID` / `ADAPTIVE_CARD_CONTENT_TYPE`. Tests:
     `api::chat::tests::praise_body_attachment_shape`.
-    UPSTREAM: pending
+    UPSTREAM: PR https://github.com/eisbaw/ost/pull/122 (fix/praise-card-post, stacks on #96)
 109. [feat] `src/calling/recording.rs` — **embedder recording-flow
     primitives (meetrecord lane)**. New `start_recording_http`
     (add-bot → extract-from-HTTP-response → transcription → recording;
@@ -2004,6 +2004,7 @@ Notes:
     (transcription-only stop). `stop_call_recording` reuses the shared
     transcription-stop. Behavior of the existing CLI flow
     (`start_call_recording`, inject-only callers) is unchanged.
+    UPSTREAM: PR https://github.com/eisbaw/ost/pull/123 (fix/recording-http-flow, stacks on #108; one-line adaptation: single-arg extract_recorder_from_payload, region-aware fallback arrives via #53)
 110. [feat] `src/api/chat.rs` (+ `src/api/mod.rs` re-export,
     `rust/ostmac-core` JSON) — **echo-matrix read-back
     (COMPOSEPROOF2)**. `MessageInfo` gains `importance: Option<String>`
