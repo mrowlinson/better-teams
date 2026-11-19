@@ -321,6 +321,10 @@ fn chat_to_json(c: &ost::api::ChatInfo) -> serde_json::Value {
         "last_message_time": c.last_message_time,
         "last_message_sender": c.last_message_sender,
         "last_message_preview": c.last_message_preview,
+        "last_message_id": c.last_message_id,
+        "consumption_horizon": c.consumption_horizon,
+        "frontier_message_id": c.frontier_message_id,
+        "unread": c.unread,
     })
 }
 
@@ -6153,11 +6157,17 @@ mod tests {
             last_message_time: Some("t".to_string()),
             last_message_sender: Some("s".to_string()),
             last_message_preview: Some("p".to_string()),
+            last_message_id: Some("9".to_string()),
+            consumption_horizon: Some("9;9;9".to_string()),
+            frontier_message_id: Some("9".to_string()),
+            unread: Some(false),
         };
         let v = chat_to_json(&c);
         assert_eq!(v["id"], "19:abc@thread");
         assert_eq!(v["is_group"], true);
         assert_eq!(v["last_message_preview"], "p");
+        assert_eq!(v["frontier_message_id"], "9");
+        assert_eq!(v["unread"], false);
     }
 
     #[test]

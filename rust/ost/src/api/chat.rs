@@ -24,6 +24,25 @@ struct Conversation {
     thread_properties: Option<ThreadProperties>,
     #[serde(rename = "lastMessage")]
     last_message: Option<NativeMessage>,
+    /// Latest message id as the list view reports it: a NUMBER on the
+    /// wire (`1795112231936`, not a string), so kept as a value and
+    /// normalized by [`wire_id_to_string`].
+    #[serde(rename = "lastUpdatedMessageId")]
+    last_updated_message_id: Option<serde_json::Value>,
+    /// Per-conversation read state: `properties.consumptionhorizon`
+    /// is the owner's read frontier (`"<t1>;<t2>;<messageId>"`).
+    /// Absent on empty threads (server sends no `properties` at all).
+    properties: Option<ConversationProperties>,
+}
+
+/// `properties` block of one conversation in the mychats view.
+/// Only the read frontier is modeled; everything else rides
+/// `extra` so unknown shapes never fail the parse.
+#[derive(Debug, Deserialize)]
+struct ConversationProperties {
+    consumptionhorizon: Option<String>,
+    #[serde(default, flatten)]
+    extra: HashMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -245,6 +264,7 @@ pub async fn list_chats(limit: usize) -> Result<()> {
                 println!("  [{}]: {}", sender, preview.trim());
             }
         }
+        println!("  {}", format_chat_read_state(chat));
 
         println!();
     }
@@ -281,17 +301,28 @@ pub fn format_read_line(msg: &MessageInfo, verbose: bool) -> String {
 
 /// Read messages from a specific chat thread (prints to stdout).
 /// `verbose` appends each message's server id (see [`format_read_line`]).
+/// A thread-level read-state footer follows (own `consumptionhorizon`
+/// frontier vs latest id, server fields only); when the state fetch
+/// fails the footer degrades to unknown instead of failing the read.
 pub async fn read_messages(chat_id: &str, limit: usize, verbose: bool) -> Result<()> {
     let client = TeamsClient::new().await?;
+    let state = thread_read_state_data(&client, chat_id).await;
     let msgs = read_messages_data(&client, chat_id, limit).await?;
 
     if msgs.is_empty() {
         println!("(no messages)");
-        return Ok(());
+    } else {
+        for msg in &msgs {
+            println!("{}", format_read_line(msg, verbose));
+        }
     }
 
-    for msg in &msgs {
-        println!("{}", format_read_line(msg, verbose));
+    match state {
+        Ok(s) => println!("{}", format_thread_read_state(&s)),
+        Err(e) => {
+            let short = e.to_string().lines().next().unwrap_or("").trim().to_string();
+            println!("Read frontier: unknown ({})", short);
+        }
     }
 
     Ok(())
@@ -2460,6 +2491,170 @@ pub async fn read_receipts_data(
 }
 
 // ---------------------------------------------------------------------------
+// Per-chat / thread-level read state (cliunread: output-only surface)
+// ---------------------------------------------------------------------------
+
+/// Normalize a wire message id that may arrive as a JSON string
+/// (`lastMessage.id`) or a JSON number (`lastUpdatedMessageId`).
+/// Blank strings and non-scalars yield None.
+fn wire_id_to_string(value: &serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::String(s) => {
+            let t = s.trim();
+            if t.is_empty() {
+                None
+            } else {
+                Some(t.to_string())
+            }
+        }
+        serde_json::Value::Number(n) => Some(n.to_string()),
+        _ => None,
+    }
+}
+
+/// Per-chat unread from server fields only: the latest message id
+/// (server id, client message id, edited id — the horizon may name
+/// any of them) against the own `consumptionhorizon` frontier.
+/// None = unknown (no horizon, unparsable horizon, or no latest id).
+/// Pure so tests pin it.
+pub fn conversation_unread(last_ids: &[&str], horizon: Option<&str>) -> Option<bool> {
+    let horizon = horizon?.trim();
+    if horizon.is_empty() || last_ids.is_empty() {
+        return None;
+    }
+    let frontier = receipt_message_id(horizon)?;
+    Some(!last_ids.iter().any(|id| *id == frontier))
+}
+
+/// Latest-message id candidates for one conversation: server id first,
+/// then client/edited ids mined case-insensitively from the unmodeled
+/// wire fields (own frontiers name the clientmessageid, not the server
+/// id), then the numeric `lastUpdatedMessageId`.
+fn conversation_latest_ids(conv: &Conversation) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut push = |s: String| {
+        if !s.trim().is_empty() && !out.contains(&s) {
+            out.push(s);
+        }
+    };
+    if let Some(ref msg) = conv.last_message {
+        if let Some(ref s) = msg.id {
+            push(s.trim().to_string());
+        }
+        // `client_message_id_of` already mines `clientmessageid`
+        // case-insensitively with numeric tolerance (sendfix shape).
+        if let Some(s) = client_message_id_of(&msg.extra) {
+            push(s);
+        }
+        if let Some(s) = extra_wire_id(&msg.extra, "skypeeditedid") {
+            push(s);
+        }
+    }
+    if let Some(ref v) = conv.last_updated_message_id {
+        if let Some(s) = wire_id_to_string(v) {
+            push(s);
+        }
+    }
+    out
+}
+
+/// One unmodeled top-level wire id, case-insensitive, numeric-tolerant
+/// (same contract as [`client_message_id_of`], other key).
+fn extra_wire_id(extra: &HashMap<String, serde_json::Value>, key: &str) -> Option<String> {
+    let v = extra.iter().find(|(k, _)| k.eq_ignore_ascii_case(key)).map(|(_, v)| v)?;
+    wire_id_to_string(v)
+}
+
+/// Read-state fields for one conversation row (shared by the `chats`
+/// list and the `read` footer). Pure so tests pin it.
+fn conversation_read_fields(
+    conv: &Conversation,
+) -> (Option<String>, Option<String>, Option<String>, Option<bool>) {
+    let ids: Vec<String> = conversation_latest_ids(conv);
+    let latest = ids.iter().next().cloned();
+    let horizon = conv
+        .properties
+        .as_ref()
+        .and_then(|p| p.consumptionhorizon.clone());
+    let frontier = horizon.as_deref().and_then(receipt_message_id);
+    let id_refs: Vec<&str> = ids.iter().map(|s| s.as_str()).collect();
+    let unread = conversation_unread(&id_refs, horizon.as_deref());
+    (latest, horizon, frontier, unread)
+}
+
+/// One `chats` row's read-state line (output-only addition).
+/// `Unread: unknown` when the server sends no frontier for the thread.
+pub fn format_chat_read_state(chat: &ChatInfo) -> String {
+    let unread = match chat.unread {
+        Some(true) => "yes",
+        Some(false) => "no",
+        None => "unknown",
+    };
+    match (&chat.frontier_message_id, &chat.last_message_id) {
+        (Some(frontier), Some(latest)) => {
+            format!("Unread: {} (frontier {} / latest {})", unread, frontier, latest)
+        }
+        (Some(frontier), None) => {
+            format!("Unread: {} (frontier {})", unread, frontier)
+        }
+        _ => "Unread: unknown (no consumptionhorizon)".to_string(),
+    }
+}
+
+/// Thread-level read state for the `read` footer (server fields only).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThreadReadState {
+    /// Frontier message id from `properties.consumptionhorizon`.
+    pub frontier_message_id: Option<String>,
+    /// Latest message id (`lastMessage.id`, else `lastUpdatedMessageId`).
+    pub latest_message_id: Option<String>,
+    pub unread: Option<bool>,
+}
+
+/// One `read` footer's read-state line (output-only addition).
+pub fn format_thread_read_state(state: &ThreadReadState) -> String {
+    let unread = match state.unread {
+        Some(true) => "yes",
+        Some(false) => "no",
+        None => "unknown",
+    };
+    match (&state.frontier_message_id, &state.latest_message_id) {
+        (Some(frontier), Some(latest)) => {
+            format!("Read frontier: {} | Latest: {} | Unread: {}", frontier, latest, unread)
+        }
+        (Some(frontier), None) => {
+            format!("Read frontier: {} | Latest: none | Unread: {}", frontier, unread)
+        }
+        _ => "Read frontier: unknown (no consumptionhorizon)".to_string(),
+    }
+}
+
+/// Fetch one conversation (read-only GET) for the `read` footer.
+/// Errors surface to the caller; the `read` printer degrades to the
+/// unknown line instead of failing the read.
+pub async fn thread_read_state_data(
+    client: &TeamsClient,
+    chat_id: &str,
+) -> Result<ThreadReadState> {
+    if chat_id.trim().is_empty() {
+        anyhow::bail!("empty chat_id");
+    }
+    let base = client.chat_service_url();
+    let url = format!("{}/v1/users/ME/conversations/{}", base, chat_id.trim());
+    let resp = client.chat_get(&url).await?;
+    let conv: Conversation = resp
+        .json()
+        .await
+        .context("Failed to parse conversation response")?;
+    let (latest, _, frontier, unread) = conversation_read_fields(&conv);
+    Ok(ThreadReadState {
+        frontier_message_id: frontier,
+        latest_message_id: latest,
+        unread,
+    })
+}
+
+// ---------------------------------------------------------------------------
 // Data-returning API functions for TUI integration
 // ---------------------------------------------------------------------------
 
@@ -2472,6 +2667,18 @@ pub struct ChatInfo {
     pub last_message_time: Option<String>,
     pub last_message_sender: Option<String>,
     pub last_message_preview: Option<String>,
+    /// Server `lastMessage.id` (None when the thread has no messages).
+    pub last_message_id: Option<String>,
+    /// Raw `properties.consumptionhorizon` (`"<t1>;<t2>;<messageId>"`;
+    /// None when the server sends no frontier for this thread).
+    pub consumption_horizon: Option<String>,
+    /// Frontier message id (text after the last `;`); None = unknown.
+    pub frontier_message_id: Option<String>,
+    /// Per-chat unread from server fields only: latest id beyond the
+    /// own frontier. None = unknown (no frontier or no latest id).
+    /// Sender-agnostic: an own latest message past a stale frontier
+    /// still counts (frontiers normally advance on send/read).
+    pub unread: Option<bool>,
 }
 
 /// A single message for TUI display.
@@ -3062,6 +3269,10 @@ pub fn parse_created_chat(value: &serde_json::Value) -> Result<ChatInfo> {
         last_message_time: None,
         last_message_sender: None,
         last_message_preview: None,
+        last_message_id: None,
+        consumption_horizon: None,
+        frontier_message_id: None,
+        unread: None,
     })
 }
 
@@ -3228,6 +3439,10 @@ pub async fn create_one_to_one_chat_data(
         last_message_time: None,
         last_message_sender: None,
         last_message_preview: None,
+        last_message_id: None,
+        consumption_horizon: None,
+        frontier_message_id: None,
+        unread: None,
     })
 }
 
@@ -3350,6 +3565,10 @@ pub async fn create_group_chat_data(
         last_message_time: None,
         last_message_sender: None,
         last_message_preview: None,
+        last_message_id: None,
+        consumption_horizon: None,
+        frontier_message_id: None,
+        unread: None,
     })
 }
 
@@ -3644,6 +3863,7 @@ pub async fn list_chats_data(client: &TeamsClient, limit: usize) -> Result<Vec<C
             (None, None, None)
         };
 
+        let (latest, horizon, frontier, unread) = conversation_read_fields(conv);
         chats.push(ChatInfo {
             id,
             name,
@@ -3651,6 +3871,10 @@ pub async fn list_chats_data(client: &TeamsClient, limit: usize) -> Result<Vec<C
             last_message_time: last_time,
             last_message_sender: last_sender,
             last_message_preview: last_preview,
+            last_message_id: latest,
+            consumption_horizon: horizon,
+            frontier_message_id: frontier,
+            unread,
         });
     }
 
@@ -7446,5 +7670,160 @@ mod gapl2_tests {
         assert_eq!(post["amsreferences"], serde_json::json!(["0-test-1"]));
         assert_eq!(post["clientmessageid"], "cmid-1");
         assert!(post["content"].as_str().unwrap().contains("skype.com/Sticker"));
+    }
+
+    // -- cliunread: server read-state surface (live trial shapes) --
+
+    fn read_conv(json: &str) -> Conversation {
+        serde_json::from_str(json).unwrap()
+    }
+
+    /// Live-shaped conversation: numeric `lastUpdatedMessageId`, string
+    /// ids, own `consumptionhorizon` naming the clientmessageid (trial
+    /// General thread, 2026-11-19 probe).
+    fn live_read_conv() -> Conversation {
+        read_conv(
+            r#"{"id":"19:t@thread.v2",
+                "lastUpdatedMessageId":1795112231936,
+                "lastMessage":{"id":"1795112231936",
+                    "clientmessageid":"1795112231635",
+                    "skypeeditedid":"1795112231635",
+                    "composetime":"2026-11-19T18:17:11.9360000Z",
+                    "messagetype":"RichText/Html","content":""},
+                "properties":{"addedBy":"8:orgid:owner",
+                    "consumptionhorizon":"1795112231936;1795112232186;1795112231635",
+                    "isemptyconversation":"False"}}"#,
+        )
+    }
+
+    #[test]
+    fn read_state_parses_live_shapes() {
+        // Numeric lastUpdatedMessageId + string ids parse; the own-send
+        // horizon names the clientmessageid, which counts as read.
+        let c = live_read_conv();
+        let (latest, horizon, frontier, unread) = conversation_read_fields(&c);
+        assert_eq!(latest.as_deref(), Some("1795112231936"));
+        assert_eq!(
+            horizon.as_deref(),
+            Some("1795112231936;1795112232186;1795112231635")
+        );
+        assert_eq!(frontier.as_deref(), Some("1795112231635"));
+        assert_eq!(unread, Some(false));
+        // String lastUpdatedMessageId parses too.
+        let c = read_conv(r#"{"id":"19:t@thread.v2","lastUpdatedMessageId":"42"}"#);
+        assert_eq!(conversation_latest_ids(&c), vec!["42".to_string()]);
+    }
+
+    #[test]
+    fn conversation_unread_truth_table() {
+        // Frontier naming the server id, the client id, or the edited
+        // id all count as read.
+        assert_eq!(
+            conversation_unread(&["srv-1", "cli-1", "cli-1"], Some("9;9;srv-1")),
+            Some(false)
+        );
+        assert_eq!(
+            conversation_unread(&["srv-1", "cli-1"], Some("9;9;cli-1")),
+            Some(false)
+        );
+        // Anything newer than the frontier is unread.
+        assert_eq!(
+            conversation_unread(&["srv-2", "cli-2"], Some("9;9;srv-1")),
+            Some(true)
+        );
+        // Unknown: no horizon, blank horizon, unparsable horizon, no ids.
+        assert_eq!(conversation_unread(&["srv-1"], None), None);
+        assert_eq!(conversation_unread(&["srv-1"], Some("  ")), None);
+        assert_eq!(conversation_unread(&["srv-1"], Some("9;9;")), None);
+        assert_eq!(conversation_unread(&[], Some("9;9;srv-1")), None);
+    }
+
+    #[test]
+    fn read_state_unknown_without_frontier() {
+        // Empty threads carry no `properties` at all (live conv[2]/[3]).
+        let c = read_conv(
+            r#"{"id":"19:e@thread.v2",
+                "properties":{"addedBy":"8:orgid:owner","isemptyconversation":"True"}}"#,
+        );
+        let (latest, horizon, frontier, unread) = conversation_read_fields(&c);
+        assert_eq!(latest, None);
+        assert_eq!(horizon, None);
+        assert_eq!(frontier, None);
+        assert_eq!(unread, None);
+        let bare = read_conv(r#"{"id":"19:e@thread.v2"}"#);
+        let (_, horizon, _, unread) = conversation_read_fields(&bare);
+        assert_eq!(horizon, None);
+        assert_eq!(unread, None);
+    }
+
+    #[test]
+    fn read_state_display_lines_pin_shapes() {
+        let chat = ChatInfo {
+            id: "19:t@thread.v2".to_string(),
+            name: "T".to_string(),
+            is_group: true,
+            last_message_time: None,
+            last_message_sender: None,
+            last_message_preview: None,
+            last_message_id: Some("1795112231936".to_string()),
+            consumption_horizon: Some("1795112231936;1795112232186;1795112231635".to_string()),
+            frontier_message_id: Some("1795112231635".to_string()),
+            unread: Some(false),
+        };
+        assert_eq!(
+            format_chat_read_state(&chat),
+            "Unread: no (frontier 1795112231635 / latest 1795112231936)"
+        );
+        let unread_chat = ChatInfo {
+            unread: Some(true),
+            ..chat_clone_for_test(&chat)
+        };
+        assert_eq!(
+            format_chat_read_state(&unread_chat),
+            "Unread: yes (frontier 1795112231635 / latest 1795112231936)"
+        );
+        let unknown_chat = ChatInfo {
+            last_message_id: None,
+            consumption_horizon: None,
+            frontier_message_id: None,
+            unread: None,
+            ..chat_clone_for_test(&chat)
+        };
+        assert_eq!(
+            format_chat_read_state(&unknown_chat),
+            "Unread: unknown (no consumptionhorizon)"
+        );
+        assert_eq!(
+            format_thread_read_state(&ThreadReadState {
+                frontier_message_id: Some("1795112231635".to_string()),
+                latest_message_id: Some("1795112231936".to_string()),
+                unread: Some(false),
+            }),
+            "Read frontier: 1795112231635 | Latest: 1795112231936 | Unread: no"
+        );
+        assert_eq!(
+            format_thread_read_state(&ThreadReadState {
+                frontier_message_id: None,
+                latest_message_id: None,
+                unread: None,
+            }),
+            "Read frontier: unknown (no consumptionhorizon)"
+        );
+    }
+
+    /// Field-by-field clone for display tests (`ChatInfo` has no Clone).
+    fn chat_clone_for_test(c: &ChatInfo) -> ChatInfo {
+        ChatInfo {
+            id: c.id.clone(),
+            name: c.name.clone(),
+            is_group: c.is_group,
+            last_message_time: c.last_message_time.clone(),
+            last_message_sender: c.last_message_sender.clone(),
+            last_message_preview: c.last_message_preview.clone(),
+            last_message_id: c.last_message_id.clone(),
+            consumption_horizon: c.consumption_horizon.clone(),
+            frontier_message_id: c.frontier_message_id.clone(),
+            unread: c.unread,
+        }
     }
 }

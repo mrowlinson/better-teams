@@ -114,6 +114,8 @@ pub use chat::{
     reaction_type_for_emoji, read_messages_data, read_messages_page, read_receipts_data,
     receipt_message_id, remove_reaction_with_client, reply_message_with_client, reply_snippet,
     send_message_body, send_message_with_client, send_reaction_with_client, split_reply_quote,
+    thread_read_state_data, conversation_unread, format_chat_read_state,
+    format_thread_read_state, ThreadReadState,
     REPLY_SNIPPET_MAX, WIRE_FENCE_MAX_BLOCKS,
 };
 // OstMac core-a: channel thread replies, chat roster, group create, reactors.

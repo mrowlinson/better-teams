@@ -2261,3 +2261,29 @@ this pass), `rust/ostmac-core` lib 224/0. Older counts (lib 257, core
     Tests: F1/S1/M2 body pins, mri parse, string-echo + span-mining
     pins, send→echo roundtrip.
     UPSTREAM: PARTIAL: (a) write half https://github.com/eisbaw/ost/pull/136 (fix/skype-write-shape, stacks on #116: properties block, mri, string entities, span tags; 2 new + updated pins ported, fake-transport e2e omitted with the never-ported harness); (b) read half (string/numeric echo mining + span mining) pending: needs the §110 read-path foundation, absent from every branch on this stack
+
+125. [minor] `src/api/chat.rs` + `src/api/mod.rs` — per-chat /
+    thread-level read-state surface (lanes/cliunread, output-only).
+    Parses the server's own read state that `chats`/`read` never
+    printed: `properties.consumptionhorizon` (owner frontier
+    `"<t1>;<t2>;<messageId>"`) + `lastMessage` ids +
+    numeric `lastUpdatedMessageId` (new `ConversationProperties`,
+    `wire_id_to_string`; latest-id candidates mined from
+    `clientmessageid`/`skypeeditedid` via the sendfix
+    `client_message_id_of` seam, no `NativeMessage` shape change).
+    Pure `conversation_unread` (frontier vs latest ids, sender-agnostic;
+    None = unknown) feeds `ChatInfo` (`last_message_id`,
+    `consumption_horizon`, `frontier_message_id`, `unread`) printed by
+    `chats` (`Unread: no (frontier … / latest …)`, `unknown (no
+    consumptionhorizon)` when the server sends no frontier) and the
+    `read` footer (`Read frontier: … | Latest: … | Unread: …` via one
+    read-only `GET conversations/{id}`; fetch failure degrades to the
+    unknown line, never fails the read). Peer `consumptionhorizons`
+    stays unused (403s on space threads live). Live-proven on the
+    trial tenant (General: frontier naming own clientmessageid → `no`;
+    horizon-less threads → `unknown`). No behavior change, no writes.
+    Tests: `read_state_parses_live_shapes`,
+    `conversation_unread_truth_table`,
+    `read_state_unknown_without_frontier`,
+    `read_state_display_lines_pin_shapes`.
+    UPSTREAM: pending.
