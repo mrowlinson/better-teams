@@ -10,6 +10,9 @@
 //
 // Wire shapes (real, from AdaptiveCard/CardActions mining):
 //   - our fallback text: first line "📊 <question>", then "1. <opt>" rows
+//   - list-rendered fallback (live): the send pipeline turns those rows
+//     into <ol><li>…</li></ol> HTML; the server stores the markup, so
+//     read-back parses the raw HTML (`listPoll`), not the text
 //   - Forms cards: Input.ChoiceSet with choices[] + Action.Submit
 import Combine
 import Foundation
@@ -314,14 +317,48 @@ public enum PollInfo {
         return Poll(id: messageID, question: question, options: options, allowMultiple: multi)
     }
 
-    /// Card JSON: our `btPoll` marker or a Forms ChoiceSet shape.
+    /// Card JSON (our `btPoll` marker or a Forms ChoiceSet shape), or
+    /// our own list-rendered fallback HTML (see `listPoll`).
     static func extractFromRaw(_ raw: String?, messageID: String) -> Poll? {
-        guard let raw,
-              MessageRender.looksLikeJSONObject(raw),
-              let data = raw.data(using: .utf8),
-              let json = try? JSONSerialization.jsonObject(with: data)
-        else { return nil }
-        return formsPoll(from: json, messageID: messageID)
+        guard let raw else { return nil }
+        if MessageRender.looksLikeJSONObject(raw),
+           let data = raw.data(using: .utf8),
+           let json = try? JSONSerialization.jsonObject(with: data)
+        {
+            return formsPoll(from: json, messageID: messageID)
+        }
+        return listPoll(fromHTML: raw, messageID: messageID)
+    }
+
+    /// List-rendered fallback (live shape): our send pipeline renders the
+    /// "N. <opt>" fallback rows as `<ol><li>…</li></ol>` HTML and the
+    /// server stores that markup, so the "N. " prefixes the text parser
+    /// needs are gone on read-back (pollslive live P1: text shape lost,
+    /// options intact in raw HTML). Claims only our own shape: a
+    /// "📊 <question>" paragraph, one list of ≥2 options, and the
+    /// trailing mode paragraph ("Pick one." / "Pick as many as you
+    /// like."). Anything else stays nil.
+    static func listPoll(fromHTML raw: String, messageID: String) -> Poll? {
+        let paras = MessageRender.innerTexts(of: "p", in: raw).map {
+            MessageRender.decodeEntities(MessageRender.stripTags($0))
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        guard let first = paras.first, first.hasPrefix("📊 ") else { return nil }
+        let question = String(first.dropFirst(2)).trimmingCharacters(in: .whitespaces)
+        guard !question.isEmpty else { return nil }
+        let options = MessageRender.innerTexts(of: "li", in: raw).map {
+            MessageRender.decodeEntities(MessageRender.stripTags($0))
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }.filter { !$0.isEmpty }
+        guard options.count >= 2 else { return nil }
+        let multi = paras.last == "Pick as many as you like."
+        guard multi || paras.last == "Pick one." else { return nil }
+        let opts = options.prefix(PollValidation.maxOptions).enumerated().map {
+            PollOption(id: "o\($0.offset + 1)", text: $0.element)
+        }
+        return Poll(
+            id: messageID, question: question, options: Array(opts),
+            allowMultiple: multi)
     }
 
     /// Forms shape: any Input.ChoiceSet choices[] + a question TextBlock.

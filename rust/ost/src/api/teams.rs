@@ -1110,6 +1110,20 @@ pub async fn create_channel_typed(
     Ok(())
 }
 
+/// Create one standard (private) team and print its id, name and channels
+/// as `key: value` lines (no tokens). Thin print wrapper over
+/// [`create_team_data`]; mirrors [`create_channel_typed`].
+pub async fn create_team(name: &str, description: Option<&str>) -> Result<()> {
+    let client = TeamsClient::new().await?;
+    let created = create_team_data(&client, name, description).await?;
+    println!("team_id: {}", created.team.id);
+    println!("team_name: {}", created.team.name);
+    for ch in &created.team.channels {
+        println!("channel: {} {}", ch.name, ch.id);
+    }
+    Ok(())
+}
+
 /// List one private/shared channel's members (prints to stdout).
 /// `owners_only` keeps owner-role entries; the header still names the
 /// full count. Standard channels share the team roster — use the

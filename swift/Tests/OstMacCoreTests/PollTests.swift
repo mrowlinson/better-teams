@@ -119,6 +119,42 @@ final class PollTests: XCTestCase {
         XCTAssertNil(PollInfo.extract(messageID: "m7", content: "", raw: AdaptiveCardsTests.bareCard))
     }
 
+    func testListRenderedFallbackParses() {
+        // Exact live bytes: trial General read-back of a posted fallback
+        // poll (pollslive P1). Text shape lost ("N. " prefixes gone);
+        // options intact in raw HTML.
+        let raw = "<p>📊 Friday lunch? (BetterTeams lane poll, will delete)</p>\r\n"
+            + "<ol>\r\n<li>Pizza</li><li>Sushi</li><li>Salads</li></ol>\r\n<p>Pick one.</p>"
+        let back = PollInfo.extract(messageID: "m8", content: "", raw: raw)
+        XCTAssertEqual(back?.question, "Friday lunch? (BetterTeams lane poll, will delete)")
+        XCTAssertEqual(back?.options.map(\.text), ["Pizza", "Sushi", "Salads"])
+        XCTAssertEqual(back?.options.map(\.id), ["o1", "o2", "o3"])
+        XCTAssertEqual(back?.allowMultiple, false)
+        XCTAssertEqual(back?.id, "m8")
+    }
+
+    func testListRenderedFallbackMarksMulti() {
+        let raw = "<p>📊 Days?</p><ul><li>Mon</li><li>Tue</li></ul><p>Pick as many as you like.</p>"
+        let back = PollInfo.extract(messageID: "m9", content: "", raw: raw)
+        XCTAssertEqual(back?.options.map(\.text), ["Mon", "Tue"])
+        XCTAssertEqual(back?.allowMultiple, true)
+    }
+
+    func testListWithoutMarkerIsNil() {
+        let raw = "<p>Hello</p><ol><li>A</li><li>B</li></ol><p>Pick one.</p>"
+        XCTAssertNil(PollInfo.extract(messageID: "m10", content: "", raw: raw))
+    }
+
+    func testListWithoutModeIsNil() {
+        let raw = "<p>📊 Lunch?</p><ol><li>Pizza</li><li>Salad</li></ol>"
+        XCTAssertNil(PollInfo.extract(messageID: "m11", content: "", raw: raw))
+    }
+
+    func testListWithOneOptionIsNil() {
+        let raw = "<p>📊 Lunch?</p><ol><li>Pizza</li></ol><p>Pick one.</p>"
+        XCTAssertNil(PollInfo.extract(messageID: "m12", content: "", raw: raw))
+    }
+
     // MARK: - Votes
 
     private func registeredPoll(multi: Bool = false) -> Poll {

@@ -2053,3 +2053,45 @@ Gate (FIXPACK pass, 2026-09-29): `cargo test --release --lib` in vendored
 `rust/ost` green (lib 373/0; bin, imgfix probe and doc runs not repeated
 this pass), `rust/ostmac-core` lib 224/0. Older counts (lib 257, core
 222-230) predate the §85-§89 test additions.
+
+112. [minor] `src/api/teams.rs` + `src/api/mod.rs` + `src/main.rs` —
+    **team create CLI (lanes/teamcli)**. Thin print wrapper `create_team`
+    over the existing `create_team_data` (middle-tier POST
+    `{mt}/beta/teams/create`, §TEAMCREATE), passthrough in `mod.rs`, new
+    `teams-create --name <name> [--description <d>]` subcommand in
+    `main.rs`. Prints `team_id:` / `team_name:` / `channel:` lines, no
+    tokens. Additive surface only; no existing behavior changed.
+    Live-verified in trial tenant (team "BetterTeams Test" created).
+    Tests: full `cargo test` green in `rust/ost` (451/0) and
+    `rust/ostmac-core` (256/0) at time of landing.
+    UPSTREAM: pending
+
+113. [minor] `src/auth/oauth.rs` — **device-flow scope expansion
+    (lanes/scopeexpand)**. New `DEVICE_REQUEST_GRAPH_SCOPES` (8 explicit
+    Graph delegated scopes) appended to the device-code consent request in
+    `login()` after the two pre-existing scopes (Skype `/.default` stays
+    FIRST so the v2.0-issued access token keeps its Skype audience for the
+    authsvc exchange; refresh token carries the full consented set and
+    `acquire_graph_token` redeems `graph/.default` from it unchanged).
+    Covers five live-lane 403 walls: VirtualEvent.ReadWrite (webinars),
+    OnlineMeetings.ReadWrite (meeting create), ChannelSettings.ReadWrite.All
+    (archive/unarchive), Channel.Delete.All (net-zero delete),
+    Group.ReadWrite.All (team visibility), Chat.ReadWrite (/me/chats),
+    UserTeamwork.Read + User.Read.All (beta /me/teamwork). Takes effect
+    only after owner device-flow re-consent. NOT live-verified (auth-changing
+    code ships dark; re-consent tap is owner-side after merge).
+    Tests: new `device_request_scope_set_pinned` (exact set/order pin).
+114. [minor] `src/api/chat.rs` — **praise card app attribution
+    (lanes/praiseshape)**. `praise_message_body` attachments now stamp
+    the captured official-client fields: `appId` = `PRAISE_APP_ID`
+    (`d832a33f-...`, previously defined but never sent) and a per-card
+    `cardClientId` (32-hex form of the attachment GUID). Without these
+    the server drops the card at write (body="" attachments=[] from
+    birth; praiselive R1b). Reference: captured official-client Praise
+    card (dev-tools, Matti Paukkonen 2020-09-03) + Graph
+    chatMessageAttachment `teamsAppId` attribution docs; residual gaps
+    (badge Image/CDN url, numeric column widths) left untouched — live
+    proof rides a later lane (no live sends in this lane).
+    Tests: `api::chat::tests::praise_body_attachment_shape` (asserts
+    `appId` + `cardClientId`).
+    UPSTREAM: pending

@@ -1029,10 +1029,14 @@ pub fn praise_card_content(badge: &str, recipient: &str, note: &str, sender: &st
     })
 }
 
-/// POST body for one Praise send (pure, Graph-documented shape): HTML
-/// content naming the attachment id plus one Adaptive Card
-/// attachment. `attachment_id` is caller-owned (a fresh GUID per
-/// send); empty badge/recipient is rejected by the caller.
+/// POST body for one Praise send (pure, captured official-client
+/// shape): HTML content naming the attachment id plus one Adaptive
+/// Card attachment. `attachment_id` is caller-owned (a fresh GUID per
+/// send); empty badge/recipient is rejected by the caller. The
+/// attachment carries the Praise `appId` attribution plus a per-card
+/// `cardClientId` (32-hex form of the attachment GUID) — without
+/// these the server drops the attachment at write (body="" and
+/// attachments=[] from birth; praiselive R1b).
 pub fn praise_message_body(
     badge: &str,
     recipient: &str,
@@ -1040,6 +1044,7 @@ pub fn praise_message_body(
     sender: &str,
     attachment_id: &str,
 ) -> serde_json::Value {
+    let card_client_id: String = attachment_id.chars().filter(|c| *c != '-').collect();
     serde_json::json!({
         "content": format!("<attachment id=\"{}\"></attachment>", attachment_id),
         "messagetype": "RichText/Html",
@@ -1047,6 +1052,8 @@ pub fn praise_message_body(
         "attachments": [{
             "id": attachment_id,
             "contentType": ADAPTIVE_CARD_CONTENT_TYPE,
+            "appId": PRAISE_APP_ID,
+            "cardClientId": card_client_id,
             "content": praise_card_content(badge, recipient, note, sender)
         }]
     })
@@ -5380,8 +5387,10 @@ src="x">"#));
     }
 
     // PRAISE: the card body carries badge/recipient/note in the
-    // Graph-documented attachment shape; the attachment id matches
-    // the content's <attachment> tag.
+    // captured official-client attachment shape; the attachment id
+    // matches the content's <attachment> tag and the attachment
+    // carries the Praise appId attribution + per-card cardClientId
+    // (server drops unattributed card attachments at write).
     #[test]
     fn praise_body_attachment_shape() {
         let id = "11111111-2222-3333-4444-555555555555";
@@ -5391,6 +5400,8 @@ src="x">"#));
         let atts = &b["attachments"];
         assert_eq!(atts[0]["id"], id);
         assert_eq!(atts[0]["contentType"], ADAPTIVE_CARD_CONTENT_TYPE);
+        assert_eq!(atts[0]["appId"], PRAISE_APP_ID);
+        assert_eq!(atts[0]["cardClientId"], "11111111222233334444555555555555");
         let card = &atts[0]["content"];
         assert_eq!(card["type"], "AdaptiveCard");
         let flat = format!("{}", card);

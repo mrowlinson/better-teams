@@ -12,6 +12,13 @@
 // never called live without a licence + CallDelegation scope). Forwarding
 // and voicemail have NO delegated Graph endpoint — Teams client /
 // Set-CsUserCallingSettings only — so they are demo-fake only.
+//
+// Trial update (PSTN-TRIAL R0, tmp/pstntrial/licences.json): the trial
+// tenant carries ENTERPRISEPREMIUM with MCOEV + MCOMEETADV provisioned
+// (Success) and NO MCOPSTN* plan. Dial stays disabled — now with the
+// calling-plan reason (PhoneLicence.callingPlanNote) instead of only the
+// generic licence reason. Voicemail/forwarding stay demo-only (no
+// delegated endpoint); delegates stay scope-gated (CallDelegation.*).
 import Foundation
 
 // MARK: - Endpoint map (paths + scopes; host lives in CalendarGraph)
@@ -197,6 +204,44 @@ public struct CallDelegate: Equatable, Identifiable, Sendable {
               let rows = obj["value"] as? [[String: Any]]
         else { return nil }
         return rows.compactMap(parse)
+    }
+}
+
+// MARK: - Licence capability (PSTN-TRIAL R1)
+
+/// Teams Phone capability parsed from Graph licence shapes
+/// (`subscribedSkus` part numbers + `licenseDetails` service plans).
+/// Plans decide — a part number alone never implies capability.
+public struct PhoneLicence: Equatable, Sendable {
+    public var hasPhoneSystem: Bool
+    public var hasCallingPlan: Bool
+
+    public init(hasPhoneSystem: Bool = false, hasCallingPlan: Bool = false) {
+        self.hasPhoneSystem = hasPhoneSystem
+        self.hasCallingPlan = hasCallingPlan
+    }
+
+    public static let none = PhoneLicence()
+
+    /// Phone System = MCOEV plan; Calling Plan = any MCOPSTN* plan
+    /// (MCOPSTN1/2/5/6 domestic/international variants).
+    public static func parse(servicePlanNames: [String]) -> PhoneLicence {
+        PhoneLicence(hasPhoneSystem: servicePlanNames.contains("MCOEV"),
+                     hasCallingPlan: servicePlanNames.contains { $0.hasPrefix("MCOPSTN") })
+    }
+
+    public var canDialPSTN: Bool { hasPhoneSystem && hasCallingPlan }
+
+    public static let callingPlanReason =
+        "Teams Phone is on this account, but outbound calling needs a Calling Plan — Teams-to-Teams only for now."
+
+    /// Non-nil only for the trial shape (Phone System without a calling
+    /// plan): the dial pad stays disabled, with this reason under the
+    /// generic licence reason. Nil covers both other cases — no licence
+    /// (generic reason already shown) and full capability (no reason).
+    public var callingPlanNote: String? {
+        guard hasPhoneSystem, !hasCallingPlan else { return nil }
+        return Self.callingPlanReason
     }
 }
 
@@ -403,6 +448,11 @@ public final class PhoneStore: ObservableObject {
     @Published public private(set) var people: [CallDelegate] = []
     @Published public private(set) var loading = false
     @Published public private(set) var error: String?
+    /// Trial-proven capability (PSTN-TRIAL R1). Default `.none` preserves
+    /// the generic-reason behavior until a lane sets the proven shape.
+    @Published public private(set) var licence = PhoneLicence.none
+
+    public func setLicence(_ l: PhoneLicence) { licence = l }
 
     public let isDemo: Bool
     private let api: any PhoneAPI

@@ -396,10 +396,10 @@ on GitHub by opening an issue.
 
 Incomplete or not started yet ("in progress" = being worked on now):
 
-- **Compose:** emphasis wire proven live, importance/subject/mentions live proof needs a test channel
+- **Compose:** emphasis wire proven live; importance/subject/mentions stripped server-side on read-back (proven live in channel context)
 - **Meetings:** hand/reactions/pin/participant UI shipped local-only, live proof queued on trial tenant; lobby admit UI instrumented, live run queued on trial tenant
-- **Calling:** Teams Phone UI shipped (dial pad, voicemail, forwarding, delegates); live calling parked: no Teams Phone licence on this tenant
+- **Calling:** Teams Phone UI shipped (dial pad, voicemail, forwarding, delegates); trial licence confirmed (E5 + Phone System, no calling plan — Teams-to-Teams yes, PSTN dial-out no)
 - **Chats and teams:** Teams saved-messages sync (no surface on the old tenant; re-probe queued on the trial tenant; local store shipped)
 - **External (federated) chat:** shipped, live proof blocked: tenant has external access disabled
 - **Blocked by Microsoft:** Loop components (no public create/embed/sync API exists; ships if one appears); Copilot chat (needs a M365 Copilot licence plus admin-consented scopes a personal client can't hold); breakout rooms (no management API under any identity — Graph, ACS SDK, and Call Automation all lack it; local planner shipped)
-- **Live proof:** end-to-end live proof queued on the trial tenant (multi-person meetings, channels, moderation, praise, polls, share-to-Outlook, whiteboard, stickers, webinars, phone calling)
+- **Live proof:** end-to-end live proof queued on the trial tenant (multi-person meetings, channels, moderation, praise, polls, whiteboard, webinars, phone calling)

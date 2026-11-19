@@ -154,4 +154,54 @@ final class PhoneSettingsTests: XCTestCase {
         try api.removeDelegate(id: added.id)
         XCTAssertEqual(try api.delegates().count, 2)
     }
+
+    // MARK: licence capability (PSTN-TRIAL R1)
+
+    /// Trial tenant shape (tmp/pstntrial/licences.json): MCOEV Success, no
+    /// MCOPSTN — Phone System without a calling plan.
+    func testParseTrialShapeIsPhoneSystemWithoutCallingPlan() {
+        let trial = ["TEAMS1", "MCOEV", "MCOMEETADV", "MCOSTANDARD"]
+        let l = PhoneLicence.parse(servicePlanNames: trial)
+        XCTAssertTrue(l.hasPhoneSystem)
+        XCTAssertFalse(l.hasCallingPlan)
+        XCTAssertFalse(l.canDialPSTN)
+        XCTAssertNotNil(l.callingPlanNote)
+        XCTAssertTrue(l.callingPlanNote?.contains("Calling Plan") == true)
+    }
+
+    /// Prior BEEBE probe shape (SPE_E3, TEAMS1 only): no capability.
+    func testParseE3ShapeHasNeither() {
+        let l = PhoneLicence.parse(servicePlanNames: ["TEAMS1", "MCOSTANDARD"])
+        XCTAssertFalse(l.hasPhoneSystem)
+        XCTAssertFalse(l.hasCallingPlan)
+        XCTAssertFalse(l.canDialPSTN)
+        XCTAssertNil(l.callingPlanNote)
+    }
+
+    func testParseCallingPlanUnlocksDial() {
+        let l = PhoneLicence.parse(servicePlanNames: ["TEAMS1", "MCOEV", "MCOPSTN1"])
+        XCTAssertTrue(l.hasPhoneSystem)
+        XCTAssertTrue(l.hasCallingPlan)
+        XCTAssertTrue(l.canDialPSTN)
+        XCTAssertNil(l.callingPlanNote)
+    }
+
+    func testCallingPlanNeedsPhoneSystem() {
+        // Defensive: a calling plan without MCOEV still cannot dial PSTN.
+        let l = PhoneLicence.parse(servicePlanNames: ["MCOPSTN2"])
+        XCTAssertFalse(l.canDialPSTN)
+        XCTAssertNil(l.callingPlanNote)
+    }
+
+    func testStoreDefaultsToUnknownLicence() async {
+        let store = await MainActor.run { PhoneStore(demo: false) }
+        let licence = await MainActor.run { store.licence }
+        XCTAssertEqual(licence, PhoneLicence.none)
+        XCTAssertNil(licence.callingPlanNote)
+        let trial = PhoneLicence.parse(servicePlanNames: ["MCOEV"])
+        await MainActor.run { store.setLicence(trial) }
+        let after = await MainActor.run { store.licence }
+        XCTAssertEqual(after, trial)
+        XCTAssertNotNil(after.callingPlanNote)
+    }
 }

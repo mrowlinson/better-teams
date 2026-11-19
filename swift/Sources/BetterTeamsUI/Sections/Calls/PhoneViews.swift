@@ -112,6 +112,14 @@ struct DialPadView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
+                // Trial shape (PhoneLicence): Phone System without a
+                // calling plan names the actual missing capability.
+                if let note = phone.licence.callingPlanNote {
+                    Text(note)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
             }
         }
         .padding(20)
