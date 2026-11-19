@@ -45,13 +45,11 @@ final class TeamsSection: SectionProvider, InspectorCapable {
 
     /// Private/shared channel roster for the Manage Channel sheet
     /// (fresh each presentation; the sheet owns its load).
+    /// Demo: a seeded in-memory fake that acts (add/remove persist
+    /// between openings). Live: the RustCore wire.
     func channelRoster(_ teamID: String, _ channelID: String, _ m: WindowModel) -> ChannelMembersViewModel {
-        if m.options.demo {
-            let r = ChannelMembersViewModel(teamID: teamID, channelID: channelID)
-            r.adopt([])
-            return r
-        }
-        return ChannelMembersViewModel(teamID: teamID, channelID: channelID)
+        ChannelMembersViewModel(teamID: teamID, channelID: channelID,
+                                api: Self.membersAPI(demo: m.options.demo, demoAPI: demoMembers))
     }
 
     func roster(_ teamID: String, _ m: WindowModel) -> TeamRosterViewModel {
@@ -269,6 +267,13 @@ final class TeamsSection: SectionProvider, InspectorCapable {
 
     static func workflowsAPI(demo: Bool, demoAPI: DemoWorkflowsAPI) -> ChannelWorkflowsAPI {
         demo ? demoAPI : UnavailableWorkflowsAPI()
+    }
+
+    /// One fake roster per section, so demo edits persist between openings.
+    private let demoMembers = DemoMembersAPI()
+
+    static func membersAPI(demo: Bool, demoAPI: DemoMembersAPI) -> ChannelMembersAPI {
+        demo ? demoAPI : LiveChannelMembersAPI()
     }
 
     // MARK: commands

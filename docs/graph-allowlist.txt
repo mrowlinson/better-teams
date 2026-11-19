@@ -118,6 +118,8 @@ swift/Sources/OstMacCore/CalendarGraph.swift::calendarRange | GET /me/calendars/
 swift/Sources/OstMacCore/CalendarGraph.swift::calendars | GET /me/calendars | works | scope Calendars.ReadWrite.Shared granted
 swift/Sources/OstMacCore/CalendarGraph.swift::create | POST /me/events (+ GET re-read) | works | scope Calendars.ReadWrite granted
 swift/Sources/OstMacCore/CalendarGraph.swift::createWebinar | POST /solutions/virtualEvents/webinars | unproven | scope VirtualEvent.ReadWrite not in the granted list and a tenant write is never sent under the live rules — needs owner OK for one live webinar create
+swift/Sources/OstMacCore/CalendarGraph.swift::updateWebinar | PATCH /solutions/virtualEvents/webinars/{id} | unproven | scope VirtualEvent.ReadWrite not in the granted list and a tenant write is never sent under the live rules — needs owner OK for one live webinar configure
+swift/Sources/OstMacCore/CalendarGraph.swift::listRegistrations | GET /solutions/virtualEvents/webinars/{id}/registrations | unproven | read-only; needs owner OK for one live registration read on the trial tenant
 swift/Sources/OstMacCore/CalendarGraph.swift::delete | DELETE /me/events/{id} | works | scope Calendars.ReadWrite granted
 swift/Sources/OstMacCore/CalendarGraph.swift::detail | GET /me/events/{id}, recurrence, attachments | works | scope Calendars.ReadWrite granted; probeA calendarView 200
 swift/Sources/OstMacCore/CalendarGraph.swift::forward | POST /me/events/{id}/forward | works | scope Calendars.ReadWrite granted

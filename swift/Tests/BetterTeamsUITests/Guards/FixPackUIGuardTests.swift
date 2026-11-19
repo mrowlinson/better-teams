@@ -147,6 +147,35 @@ final class FixPackUIGuardTests: XCTestCase {
         XCTAssertTrue(TeamsSection.workflowsAPI(demo: false, demoAPI: demo) is UnavailableWorkflowsAPI)
     }
 
+    func testMembersSourceIsDemoFakeOrLiveByMode() {
+        let demo = DemoMembersAPI()
+        XCTAssertTrue(TeamsSection.membersAPI(demo: true, demoAPI: demo) as AnyObject === demo)
+        XCTAssertTrue(TeamsSection.membersAPI(demo: false, demoAPI: demo) is LiveChannelMembersAPI)
+    }
+
+    // MARK: Sheets: Manage Channel roster (demo acts in-memory, never the wire)
+
+    func testDemoMembersListAddRemove() async throws {
+        let api = DemoMembersAPI()
+        let r = ChannelMembersViewModel(teamID: "t", channelID: "c", api: api)
+        await r.load()
+        if case .loaded = r.state {} else { return XCTFail("expected loaded, got \(r.state)") }
+        XCTAssertEqual(r.members.count, 3)
+        XCTAssertEqual(ChannelMembersViewModel.sorted(r.members).first?.isOwner, true)
+        await r.add(user: "zoe@example.com", owner: false)
+        if case .loaded = r.state {} else { return XCTFail("expected loaded after add") }
+        XCTAssertEqual(r.members.count, 4)
+        let added = try XCTUnwrap(r.members.first { $0.displayName == "zoe@example.com" })
+        await r.remove(memberID: added.id)
+        XCTAssertEqual(r.members.count, 3)
+        XCTAssertNil(r.members.first { $0.id == added.id })
+        if case .loaded = r.state {} else { return XCTFail("expected loaded after remove") }
+        // Control: a second channel seeds independently.
+        let other = try api.list(teamID: "t", channelID: "other")
+        XCTAssertEqual(other.members.count, 3)
+        XCTAssertTrue(other.members.allSatisfy { !$0.id.contains("-added-") })
+    }
+
     // MARK: Sheets: Manage Channel (what the sheet is bound to, not the team roster)
 
     func testManageChannelOpensItsOwnSheetNotTheTeamRoster() async throws {

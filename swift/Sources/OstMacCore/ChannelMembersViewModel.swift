@@ -45,6 +45,19 @@ public final class ChannelMembersViewModel: ObservableObject {
         self.removeFetcher = removeFetcher
     }
 
+    /// API-backed construction (demo seam: `DemoMembersAPI` in demo,
+    /// `LiveChannelMembersAPI` on the wire). The default-fetcher init
+    /// above stays the live wire.
+    public convenience init(teamID: String, channelID: String, api: ChannelMembersAPI) {
+        self.init(
+            teamID: teamID,
+            channelID: channelID,
+            listFetcher: { try api.list(teamID: $0, channelID: $1) },
+            addFetcher: { try api.add(teamID: $0, channelID: $1, user: $2, owner: $3) },
+            removeFetcher: { try api.remove(teamID: $0, channelID: $1, memberID: $2) }
+        )
+    }
+
     /// Display name for one roster entry. Graph `displayName` wins
     /// when non-blank, then email, then the membership id. Pure helper
     /// so tests pin the fallback chain.
