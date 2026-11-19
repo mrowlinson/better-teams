@@ -237,9 +237,9 @@
 
 ### Planner, To Do, Shifts and OneNote
 
-- **Planner:** buckets, checkboxes, add tasks, assignees in the inspector
+- **Planner:** buckets, labels, checklists, comments, attachments, add tasks, assignees in the inspector, Charts and Schedule views
 - **To Do:** your lists, quick add, show or hide completed
-- **Shifts:** the week's schedule with a team picker
+- **Shifts:** the week's schedule with a team picker, swap and time-off requests, shift create and publish
 - **OneNote:** browse notebooks natively and append to a page
 
 <details>
