@@ -2202,3 +2202,16 @@ this pass), `rust/ostmac-core` lib 224/0. Older counts (lib 257, core
     4 core FFI (`ostmac-core/src/meetings_plus.rs`) + 13 Swift
     (`MeetingsPlusTests`) + 3 guards (`MeetingsPlusGuardTests`).
     UPSTREAM: pending
+
+122. [minor] `src/api/channel_moderation.rs` + `src/api/mod.rs` —
+    **preserve bot/connector flags on moderation writes
+    (lanes/channeladmin)**. A thread property without
+    `allowBotsPost`/`allowConnectorsPost` reads back blocked, so the
+    first write on a fresh channel flipped bots/connectors
+    allowed -> blocked (live-proven); absent keys are now seeded from
+    the beta read's effective flags (per key; omitted there = allow,
+    the tenant default), present keys are untouched (no extra read),
+    and a failed beta read refuses the write. Key encoding
+    live-pinned (1 allow, 0 block, independent).
+    Tests: beta-seed body, absent-defaults allow.
+    UPSTREAM: pending

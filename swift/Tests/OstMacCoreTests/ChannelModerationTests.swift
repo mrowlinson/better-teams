@@ -25,11 +25,13 @@ final class ChannelModerationTests: XCTestCase {
         visibilityUpdater: @escaping @Sendable (String, Bool) throws -> TeamVisibilityResponse = { _, p in
             TeamVisibilityResponse(visibility: p ? "private" : "public")
         },
+        settings: @escaping @Sendable (String) throws -> TeamMemberSettings = { _ in TeamMemberSettings() },
         rows: LockedBox<[TeamItem]> = LockedBox(server)
     ) -> TeamsViewModel {
         TeamsViewModel(
             fetcher: { TeamsResponse(ok: true, teams: rows.value) },
             ownerCheck: owner,
+            settingsFetcher: settings,
             moderationFetcher: moderation,
             moderationUpdater: updater,
             visibilityFetcher: visibility,
@@ -73,6 +75,24 @@ final class ChannelModerationTests: XCTestCase {
         XCTAssertFalse(refused)
         XCTAssertFalse(called)
         XCTAssertEqual(vm2.actionError, "Only team owners can change moderation settings.")
+    }
+
+    func testModerationGeneralRefusesPreNetwork() async {
+        var called = false
+        let vm = model(
+            updater: { _, _, _, _ in called = true },
+            settings: { _ in TeamMemberSettings(primaryChannelId: "c1") })
+        await vm.load()
+        await vm.refreshOwnership()
+        XCTAssertTrue(vm.isGeneral(teamID: "own", channelID: "c1"))
+        let refused = await vm.updateModeration(teamID: "own", channelID: "c1", posts: .moderators, replies: nil)
+        XCTAssertFalse(refused)
+        XCTAssertFalse(called)
+        XCTAssertEqual(vm.actionError, "The General channel's moderation can't be changed (Teams allows it only on standard channels).")
+        // A standard channel still writes.
+        let ok = await vm.updateModeration(teamID: "own", channelID: "c2", posts: .moderators, replies: nil)
+        XCTAssertTrue(ok)
+        XCTAssertTrue(called)
     }
 
     func testModerationOptimisticAndRevert() async {

@@ -567,13 +567,19 @@ public final class TeamsViewModel: ObservableObject {
 
     /// Set one channel's moderation restrictions: the row updates at
     /// once and reverts on failure. Owner-only: refuses when the
-    /// caller is not a known owner. Returns success.
+    /// caller is not a known owner; the General channel is refused
+    /// before any network (the service allows moderation only on
+    /// standard channels). Returns success.
     @discardableResult
     public func updateModeration(
         teamID: String, channelID: String, posts: WhoCanPost?, replies: WhoCanReply?
     ) async -> Bool {
         guard canEditModeration(teamID: teamID) else {
             actionError = "Only team owners can change moderation settings."
+            return false
+        }
+        guard !isGeneral(teamID: teamID, channelID: channelID) else {
+            actionError = "The General channel's moderation can't be changed (Teams allows it only on standard channels)."
             return false
         }
         let key = Self.moderationKey(teamID: teamID, channelID: channelID)

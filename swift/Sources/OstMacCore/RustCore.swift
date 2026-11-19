@@ -321,7 +321,8 @@ public enum RustCore {
         }
     }
 
-    /// Set one channel's moderation restrictions (middle-tier PATCH).
+    /// Set one channel's moderation restrictions (chat-service
+    /// thread-property PUT).
     /// nil fields stay unchanged; at least one must change. Blocking
     /// network: call off the main thread. TEAMMOD.
     public static func channelModerationUpdate(

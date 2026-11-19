@@ -116,6 +116,10 @@
 # Demo routes, channel/team menus + tree sync (TEAMSYNC):
 #   teams/demo-team-eng/demo-chan-shipping?sheet=editChannel   Edit Channel sheet
 #   teams/demo-team-eng/demo-chan-shipping?deleted=1           This channel was deleted
+# Demo routes, channel moderation editor (CHANNEL-ADMIN):
+#   teams/demo-team-eng/demo-chan-shipping?sheet=manageChannel&scroll=moderation    Manage Channel, moderation editor (owner)
+#   teams/demo-team-mkt/demo-chan-mkt-launch?sheet=manageChannel&scroll=moderation  Manage Channel, moderation disabled (non-owner)
+#   teams/demo-team-eng/demo-chan-general?sheet=manageChannel&scroll=moderation     Manage Channel, General refusal
 # Demo routes, team lifecycle (TEAM-ADMIN):
 #   teams/demo-team-eng?sheet=editTeam            Edit Team sheet
 #   teams/demo-team-eng?inspector=1               Team inspector (Manage: edit/archive/delete)

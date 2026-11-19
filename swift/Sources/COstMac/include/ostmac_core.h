@@ -155,7 +155,8 @@ char *ostmac_team_settings(const char *team_id);
 // Caller frees.
 char *ostmac_channel_moderation(const char *team_id, const char *channel_id);
 
-// TEAMMOD: set one channel's moderation restrictions (middle-tier PATCH):
+// TEAMMOD: set one channel's moderation restrictions (chat-service
+// thread-property PUT):
 // {ok}. posts/replies may be NULL (unchanged); at least one must change.
 // Caller frees.
 char *ostmac_channel_moderation_update(

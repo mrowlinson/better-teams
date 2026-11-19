@@ -24,6 +24,19 @@ enum ManageChannelInfo {
         default: "All team members"
         }
     }
+
+    /// Moderation editor state: nil = editable, else the disabled
+    /// reason to show. General first: the service forbids it even
+    /// for owners.
+    static func moderationReason(isGeneral: Bool, canEdit: Bool) -> String? {
+        if isGeneral {
+            return "The General channel's moderation can't be changed (Teams allows it only on standard channels)."
+        }
+        if !canEdit {
+            return "Only team owners can change moderation settings."
+        }
+        return nil
+    }
 }
 
 struct ManageChannelSheet: View {
@@ -32,13 +45,30 @@ struct ManageChannelSheet: View {
     @ObservedObject var folders: FolderStore
     let channelID: String
     @Environment(\.windowModel) private var model
+    @State private var posts = WhoCanPost.everyone
+    @State private var replies = WhoCanReply.everyone
+    @State private var modTouched = false
+    @State private var modError: String?
 
     var body: some View {
         VStack(spacing: 0) {
             if let (team, ch) = TeamsListPane.locate(channelID, in: teams.teams) {
                 header(team: team, channel: ch)
                 Divider()
-                form(team: team, channel: ch)
+                ScrollViewReader { proxy in
+                    form(team: team, channel: ch)
+                        .onAppear {
+                            // Evidence-only (?scroll=moderation): captures
+                            // need the section on screen; demo never
+                            // scrolls otherwise.
+                            if model?.options.demo == true, model?.options.evidence == true,
+                               model?.options.route.flatMap(Route.init(string:))?.query["scroll"] == "moderation" {
+                                DispatchQueue.main.async {
+                                    proxy.scrollTo("moderation", anchor: .top)
+                                }
+                            }
+                        }
+                }
             } else {
                 ContentUnavailableView("Channel Not Available", systemImage: "number",
                                        description: Text(teams.state == .loading ? "Loading\u{2026}" : "This channel is no longer available."))
@@ -55,6 +85,19 @@ struct ManageChannelSheet: View {
         }
         .frame(width: 480, height: 560)
         .task { await teams.refreshOwnership() }
+        .task(id: channelID) { await seedModeration() }
+    }
+
+    /// Seed the moderation pickers from the read (unless the user
+    /// already touched one).
+    private func seedModeration() async {
+        guard let (team, _) = TeamsListPane.locate(channelID, in: teams.teams) else { return }
+        await teams.refreshModeration(teamID: team.teamId, channelID: channelID)
+        guard !modTouched else { return }
+        let fresh = teams.moderation[TeamsViewModel.moderationKey(teamID: team.teamId, channelID: channelID)]
+            ?? ChannelModeration()
+        posts = fresh.posts
+        replies = fresh.replies
     }
 
     private func header(team: TeamItem, channel: TeamChannel) -> some View {
@@ -123,6 +166,10 @@ struct ManageChannelSheet: View {
                 permissionRow("Edit Channel", .edit, team: team)
                 permissionRow("Delete Channel", .delete, team: team)
             }
+            Section("Moderation") {
+                moderationRows(team: team, channel: channel)
+            }
+            .id("moderation")
             Section("Manage") {
                 HStack(spacing: 10) {
                     Button("Edit\u{2026}") { after(TeamsCommands.editChannel) }
@@ -136,6 +183,66 @@ struct ManageChannelSheet: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    /// Who can post/reply: immediate-apply pickers for owners of a
+    /// standard channel; everyone else sees the read values disabled
+    /// with the reason.
+    private func moderationRows(team: TeamItem, channel: TeamChannel) -> some View {
+        let reason = ManageChannelInfo.moderationReason(
+            isGeneral: teams.isGeneral(teamID: team.teamId, channelID: channel.channelId),
+            canEdit: teams.canEditModeration(teamID: team.teamId))
+        return Group {
+            Picker("Who can post", selection: Binding(get: { posts }, set: {
+                posts = $0
+                modTouched = true
+                applyModeration(team: team, channel: channel)
+            })) {
+                ForEach(WhoCanPost.allCases, id: \.self) { Text($0.label).tag($0) }
+            }
+            .disabled(reason != nil)
+            .accessibilityLabel("Who can post")
+            Picker("Who can reply", selection: Binding(get: { replies }, set: {
+                replies = $0
+                modTouched = true
+                applyModeration(team: team, channel: channel)
+            })) {
+                ForEach(WhoCanReply.allCases, id: \.self) { Text($0.label).tag($0) }
+            }
+            .disabled(reason != nil)
+            .accessibilityLabel("Who can reply")
+            if let reason {
+                Text(reason).foregroundStyle(.secondary)
+            }
+            if let modError {
+                HStack(spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Palette.failed)
+                    Text(modError).foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    /// This sheet has no Save: a picker change writes through the
+    /// view model at once (which reverts its row on failure); the
+    /// pickers revert here to match.
+    private func applyModeration(team: TeamItem, channel: TeamChannel) {
+        let key = TeamsViewModel.moderationKey(teamID: team.teamId, channelID: channel.channelId)
+        let current = teams.moderation[key] ?? ChannelModeration()
+        let newPosts: WhoCanPost? = posts != current.posts ? posts : nil
+        let newReplies: WhoCanReply? = replies != current.replies ? replies : nil
+        guard newPosts != nil || newReplies != nil else { modError = nil; return }
+        modError = nil
+        Task { @MainActor in
+            let ok = await teams.updateModeration(teamID: team.teamId, channelID: channel.channelId,
+                                                  posts: newPosts, replies: newReplies)
+            if !ok {
+                modError = teams.actionError ?? "Couldn't save moderation settings."
+                let reverted = teams.moderation[key] ?? ChannelModeration()
+                posts = reverted.posts
+                replies = reverted.replies
+            }
+        }
     }
 
     private func permissionRow(_ title: String, _ action: ChannelAction, team: TeamItem) -> some View {

@@ -1168,7 +1168,8 @@ pub fn channel_moderation_json(team_id: &str, channel_id: &str) -> String {
     }
 }
 
-/// Set one channel's moderation restrictions (middle-tier PATCH).
+/// Set one channel's moderation restrictions (chat-service
+/// thread-property PUT).
 /// `posts`/`replies` may be None (unchanged); at least one must change.
 /// Returns `{ok:true, team_id, channel_id}` or `{ok:false}`. TEAMMOD.
 pub fn channel_moderation_update_json(

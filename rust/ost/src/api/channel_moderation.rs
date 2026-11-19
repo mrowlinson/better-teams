@@ -21,6 +21,10 @@
 //! accepts a `channelSettings` envelope but silently ignores nested
 //! moderation keys. The General channel (a "space thread") refuses the
 //! write with 403 `AclCheckFailed`, so it is refused before any network.
+//! A property that omits the bot/connector keys reads back blocked,
+//! so absent keys are seeded from the beta read's effective flags
+//! (per key; omitted there = allow, the tenant default) — a write
+//! never flips flags it wasn't asked to change.
 //! Moderators are the team's owners (implicit) plus any listed channel
 //! moderators; the UI shows the owner list from the roster (read-only)
 //! whenever posting is moderators-only.
@@ -117,6 +121,12 @@ fn check_replies(v: &str) -> Result<()> {
 /// Thread-property name carrying channel moderation on the chat
 /// service (a JSON string; see [`parse_thread_settings`]).
 pub const CHANNEL_SETTINGS_PROPERTY: &str = "channelSettings";
+
+/// Thread-property keys for the bot/connector flags (1 allow, 0
+/// block; live-proven, independent). A property that omits them reads
+/// back blocked — so a write must seed, never drop, them.
+pub const THREAD_BOTS_KEY: &str = "allowBotsPost";
+pub const THREAD_CONNECTORS_KEY: &str = "allowConnectorsPost";
 
 /// Map a `--posts` value to its `postPermissions` integer (live-proven:
 /// 0 everyone, 1 moderators, 2 everyoneExceptGuests). Pure.
@@ -234,6 +244,41 @@ pub fn thread_settings_thread_url(base: &str, channel_id: &str) -> String {
     format!("{}/v1/threads/{}", base.trim_end_matches('/'), channel_id.trim())
 }
 
+/// Seed bot/connector keys the thread property omits. A property
+/// without them reads back blocked (live-proven: a minimal PUT flips
+/// bots/connectors allowed -> blocked), so absent keys are seeded from
+/// the beta read's effective flags — per key, independently — and a
+/// beta read that omits them (never set) seeds allow, the tenant
+/// default. Keys already present are never touched (no extra read).
+/// A failed beta read refuses the write: failing closed beats a
+/// silent flag flip.
+async fn seed_absent_bot_keys(
+    client: &TeamsClient,
+    team_id: &str,
+    channel_id: &str,
+    current: &mut ThreadChannelSettings,
+) -> Result<()> {
+    if current.rest.contains_key(THREAD_BOTS_KEY) && current.rest.contains_key(THREAD_CONNECTORS_KEY) {
+        return Ok(());
+    }
+    let beta = moderation_data(client, team_id, channel_id)
+        .await
+        .context("couldn't read the channel's bot/connector flags, refusing the write")?;
+    if !current.rest.contains_key(THREAD_BOTS_KEY) {
+        current.rest.insert(
+            THREAD_BOTS_KEY.to_string(),
+            Value::from(u8::from(beta.allow_bots.unwrap_or(true))),
+        );
+    }
+    if !current.rest.contains_key(THREAD_CONNECTORS_KEY) {
+        current.rest.insert(
+            THREAD_CONNECTORS_KEY.to_string(),
+            Value::from(u8::from(beta.allow_connectors.unwrap_or(true))),
+        );
+    }
+    Ok(())
+}
+
 /// Set one channel's moderation restrictions through the chat-service
 /// thread property (read-modify-write, so bot/connector/pin flags are
 /// preserved). At least one restriction must change; the General channel
@@ -265,6 +310,7 @@ pub async fn update_moderation_data(
         bail!("The General channel's moderation can't be changed (the service allows it only on standard channels)");
     }
     let mut current = thread_settings_data(client, channel_id).await?;
+    seed_absent_bot_keys(client, team_id, channel_id, &mut current).await?;
     if let Some(p) = posts {
         current.post_permissions = posts_perm(p)?;
     }
@@ -468,6 +514,88 @@ mod tests {
             .unwrap_err();
         assert!(format!("{:#}", e).contains("General"), "{}", e);
         assert!(fake.requests().is_empty());
+    }
+
+    /// CHANNEL-ADMIN: a property without bot keys seeds them from
+    /// the beta read (per key), so the write preserves the effective
+    /// flags instead of flipping them to blocked.
+    #[tokio::test]
+    async fn update_seeds_absent_bot_keys_from_beta() {
+        use crate::api::fake_transport::Fake;
+        const TEAM_GUID: &str = "11111111-2222-3333-4444-555555555555";
+        const TEAM_THREAD: &str = "19:team@thread.tacv2";
+        const CHAN: &str = "19:std@thread.tacv2";
+        let fake = Fake::start(vec![
+            (
+                "GET",
+                "/graph/teams/11111111-2222-3333-4444-555555555555/channels",
+                200,
+                json!({"id": CHAN, "moderationSettings": {
+                    "userNewMessageRestriction": "everyone",
+                    "allowNewMessageFromBots": true,
+                    "allowNewMessageFromConnectors": false}}).to_string(),
+            ),
+            ("GET", "/graph/teams/11111111", 200, json!({"internalId": TEAM_THREAD}).to_string()),
+            (
+                "GET",
+                "/chat/v1/threads/19:std@thread.tacv2",
+                200,
+                json!({"properties": {"channelSettings": "{\"postPermissions\":0,\"allowReplies\":0}"}}).to_string(),
+            ),
+            ("PUT", "/chat/v1/threads/19:std@thread.tacv2/properties", 200, "{}".into()),
+        ])
+        .await;
+        update_moderation_data(&fake.client(), TEAM_GUID, CHAN, Some("moderators"), None)
+            .await
+            .expect("seeded write ok");
+        let reqs = fake.requests();
+        assert_eq!(reqs.len(), 4, "{:?}", reqs);
+        let put = reqs.iter().find(|r| r.method == "PUT").expect("one PUT");
+        let prop: Value =
+            serde_json::from_str(put.json()["channelSettings"].as_str().expect("string property")).unwrap();
+        assert_eq!(
+            prop,
+            json!({"postPermissions":1,"allowReplies":0,"allowBotsPost":1,"allowConnectorsPost":0})
+        );
+    }
+
+    /// CHANNEL-ADMIN: a beta read that omits the flags (never set)
+    /// seeds allow, the tenant default.
+    #[tokio::test]
+    async fn update_absent_beta_flags_seed_allow() {
+        use crate::api::fake_transport::Fake;
+        const TEAM_GUID: &str = "11111111-2222-3333-4444-555555555555";
+        const TEAM_THREAD: &str = "19:team@thread.tacv2";
+        const CHAN: &str = "19:std@thread.tacv2";
+        let fake = Fake::start(vec![
+            (
+                "GET",
+                "/graph/teams/11111111-2222-3333-4444-555555555555/channels",
+                200,
+                json!({"id": CHAN}).to_string(),
+            ),
+            ("GET", "/graph/teams/11111111", 200, json!({"internalId": TEAM_THREAD}).to_string()),
+            (
+                "GET",
+                "/chat/v1/threads/19:std@thread.tacv2",
+                200,
+                json!({}).to_string(),
+            ),
+            ("PUT", "/chat/v1/threads/19:std@thread.tacv2/properties", 200, "{}".into()),
+        ])
+        .await;
+        update_moderation_data(&fake.client(), TEAM_GUID, CHAN, None, Some("authorAndModerators"))
+            .await
+            .expect("seeded write ok");
+        let reqs = fake.requests();
+        assert_eq!(reqs.len(), 4, "{:?}", reqs);
+        let put = reqs.iter().find(|r| r.method == "PUT").expect("one PUT");
+        let prop: Value =
+            serde_json::from_str(put.json()["channelSettings"].as_str().expect("string property")).unwrap();
+        assert_eq!(
+            prop,
+            json!({"postPermissions":0,"allowReplies":1,"allowBotsPost":1,"allowConnectorsPost":1})
+        );
     }
 
     /// Bad values and empty changes bail before any network.
