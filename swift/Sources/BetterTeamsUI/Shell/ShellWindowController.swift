@@ -631,6 +631,7 @@ public final class ShellWindowController: NSWindowController, NSWindowDelegate, 
         // editor already lives there (SPECFIX-P2 #11).
         out.append(Self.presenceScheduleItem(live: live))
         out.append(Self.outOfOfficeItem(live: live))
+        out.append(Self.statusMessageItem(live: live))
         if let app = model.app {
             var first = true
             for acct in app.accounts.accounts {
@@ -658,6 +659,13 @@ public final class ShellWindowController: NSWindowController, NSWindowDelegate, 
     static func presenceScheduleItem(live: Bool) -> SubmenuItem {
         SubmenuItem("Presence Schedule…", arg: "schedule", symbol: "calendar.badge.clock",
                     enabled: live, separatorBefore: true)
+    }
+
+    /// "Set Status Message…" row (test seam): the status-message editor
+    /// lives in Settings ▸ Notifications next to OOO. Disabled in demo.
+    static func statusMessageItem(live: Bool) -> SubmenuItem {
+        SubmenuItem("Set Status Message…", arg: "statusmsg", symbol: "text.bubble",
+                    enabled: live, separatorBefore: false)
     }
 
     /// "Out of Office…" row (test seam): the OOO editor lives in
@@ -689,7 +697,7 @@ public final class ShellWindowController: NSWindowController, NSWindowDelegate, 
             app.presenceTruth.undoLastAutoChange()
         } else if arg == "presenceUnlock" {
             app.presenceTruth.unlock()
-        } else if arg == "schedule" || arg == "ooo" {
+        } else if arg == "schedule" || arg == "ooo" || arg == "statusmsg" {
             bringForward()
             SettingsWindowController.shared.show(pane: "notifications")
         } else if arg.hasPrefix("account:") {

@@ -121,6 +121,7 @@ struct NotificationsPane: View {
             PresenceStatusSection(truth: truth, presence: presence, live: live)
             PresenceScheduleSection(schedule: schedule)
             OutOfOfficeSection(presence: presence, live: live)
+            StatusMessageSection(presence: presence, live: live)
             }
             .formStyle(.grouped)
         }

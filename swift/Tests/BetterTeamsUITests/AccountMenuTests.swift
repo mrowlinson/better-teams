@@ -25,6 +25,15 @@ final class AccountMenuTests: XCTestCase {
         XCTAssertFalse(ShellWindowController.outOfOfficeItem(live: false).enabled)
     }
 
+    func testStatusMessageItem() {
+        let on = ShellWindowController.statusMessageItem(live: true)
+        XCTAssertEqual(on.title, "Set Status Message…")
+        XCTAssertEqual(on.arg, "statusmsg")
+        XCTAssertTrue(on.enabled)
+        // No signed-in app (demo): never hidden, disabled instead.
+        XCTAssertFalse(ShellWindowController.statusMessageItem(live: false).enabled)
+    }
+
     func testTopLevelAddAccount() {
         let app = CommandCatalog.all.filter { $0.menu?.menu == .app }
             .sorted { ($0.menu!.group, $0.menu!.order) < ($1.menu!.group, $1.menu!.order) }
