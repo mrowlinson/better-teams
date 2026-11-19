@@ -252,8 +252,36 @@ pub async fn list_chats(limit: usize) -> Result<()> {
     Ok(())
 }
 
+/// One history line for `read` stdout. Default shape is stable
+/// (`[ts] sender: body`, byte-identical to before); verbose appends the
+/// server message id so `edit`/`delete`/`mark-read` callers can copy it
+/// (their `--help` points at `read -v` output).
+pub fn format_read_line(msg: &MessageInfo, verbose: bool) -> String {
+    // OstMac om-botposts: kept card posts carry empty `content` (the
+    // embedder mines rows from `raw`) — never print a blank line.
+    // Image-only bubbles keep their own shape (empty body, raw has
+    // `<img>`); only card payloads get the marker.
+    let body = if msg.content.trim().is_empty() && has_card_payload(&msg.raw) {
+        "(card post)"
+    } else {
+        msg.content.as_str()
+    };
+    let mut line = match &msg.reply_to {
+        Some(parent) => format!(
+            "[{}] {}: {} (reply to {})",
+            msg.timestamp, msg.sender, body, parent
+        ),
+        None => format!("[{}] {}: {}", msg.timestamp, msg.sender, body),
+    };
+    if verbose {
+        line.push_str(&format!(" [id: {}]", msg.id));
+    }
+    line
+}
+
 /// Read messages from a specific chat thread (prints to stdout).
-pub async fn read_messages(chat_id: &str, limit: usize) -> Result<()> {
+/// `verbose` appends each message's server id (see [`format_read_line`]).
+pub async fn read_messages(chat_id: &str, limit: usize, verbose: bool) -> Result<()> {
     let client = TeamsClient::new().await?;
     let msgs = read_messages_data(&client, chat_id, limit).await?;
 
@@ -263,22 +291,7 @@ pub async fn read_messages(chat_id: &str, limit: usize) -> Result<()> {
     }
 
     for msg in &msgs {
-        // OstMac om-botposts: kept card posts carry empty `content` (the
-        // embedder mines rows from `raw`) — never print a blank line.
-        // Image-only bubbles keep their own shape (empty body, raw has
-        // `<img>`); only card payloads get the marker.
-        let body = if msg.content.trim().is_empty() && has_card_payload(&msg.raw) {
-            "(card post)"
-        } else {
-            msg.content.as_str()
-        };
-        match &msg.reply_to {
-            Some(parent) => println!(
-                "[{}] {}: {} (reply to {})",
-                msg.timestamp, msg.sender, body, parent
-            ),
-            None => println!("[{}] {}: {}", msg.timestamp, msg.sender, body),
-        }
+        println!("{}", format_read_line(msg, verbose));
     }
 
     Ok(())
@@ -2054,6 +2067,23 @@ pub async fn delete_message_with_client(
     let url = message_delete_url(&base, chat_id, message_id);
     tracing::debug!("Deleting message at {}", url);
     client.chat_delete(&url, None).await?;
+    Ok(())
+}
+
+/// Mark one conversation read up to `message_id` (prints to stdout).
+/// CLI entry point. Empty ids fail fast before any I/O so usage errors
+/// stay hermetic (unit-tested without network); the PUT itself runs in
+/// [`mark_read_with_client`].
+pub async fn mark_read(chat_id: &str, message_id: &str) -> Result<()> {
+    if chat_id.trim().is_empty() {
+        anyhow::bail!("empty chat_id");
+    }
+    if message_id.trim().is_empty() {
+        anyhow::bail!("empty message_id");
+    }
+    let client = TeamsClient::new().await?;
+    mark_read_with_client(&client, chat_id, message_id).await?;
+    println!("Marked read.");
     Ok(())
 }
 
@@ -5155,6 +5185,69 @@ src="x">"#));
         let empty: serde_json::Value =
             serde_json::from_str(r#"{"consumptionhorizons":[]}"#).unwrap();
         assert!(parse_consumptionhorizons(&empty).is_empty());
+    }
+
+    fn read_fixture(content: &str, raw: &str, reply_to: Option<String>) -> MessageInfo {
+        MessageInfo {
+            id: "1750000000000".to_string(),
+            sender_mri: "8:orgid:mate".to_string(),
+            sender: "Mate".to_string(),
+            timestamp: "2026-06-15T12:00:00Z".to_string(),
+            content: content.to_string(),
+            raw: raw.to_string(),
+            reactions: vec![],
+            reply_to,
+            client_message_id: None,
+            importance: None,
+            subject: None,
+            mentions: vec![],
+        }
+    }
+
+    #[test]
+    fn read_line_default_shape_stable() {
+        // Default `read` output is byte-stable: no id anywhere.
+        let m = read_fixture("hello", "<p>hello</p>", None);
+        assert_eq!(
+            format_read_line(&m, false),
+            "[2026-06-15T12:00:00Z] Mate: hello"
+        );
+        assert!(!format_read_line(&m, false).contains("1750000000000"));
+        // Reply attribution shape unchanged.
+        let r = read_fixture("ack", "<p>ack</p>", Some("1700000000000".to_string()));
+        assert_eq!(
+            format_read_line(&r, false),
+            "[2026-06-15T12:00:00Z] Mate: ack (reply to 1700000000000)"
+        );
+        // Card posts still collapse instead of printing blank.
+        let c = read_fixture("", "<attachment>card</attachment>", None);
+        assert_eq!(
+            format_read_line(&c, false),
+            "[2026-06-15T12:00:00Z] Mate: (card post)"
+        );
+    }
+
+    #[test]
+    fn read_line_verbose_appends_id() {
+        // `read -v` prints the server id `edit`/`delete`/`mark-read` need.
+        let m = read_fixture("hello", "<p>hello</p>", None);
+        assert_eq!(
+            format_read_line(&m, true),
+            "[2026-06-15T12:00:00Z] Mate: hello [id: 1750000000000]"
+        );
+        let r = read_fixture("ack", "<p>ack</p>", Some("1700000000000".to_string()));
+        let line = format_read_line(&r, true);
+        assert!(line.contains("(reply to 1700000000000)"));
+        assert!(line.ends_with("[id: 1750000000000]"));
+    }
+
+    #[tokio::test]
+    async fn mark_read_rejects_empty_ids_without_io() {
+        // Fail-fast validation runs before any client/network I/O.
+        assert!(mark_read("", "m1").await.is_err());
+        assert!(mark_read("  ", "m1").await.is_err());
+        assert!(mark_read("19:chat", "").await.is_err());
+        assert!(mark_read("19:chat", "   ").await.is_err());
     }
 
     fn native(json: &str) -> NativeMessage {

@@ -58,6 +58,24 @@ fn check_graph_allowed(method: &str, path: &str) -> Result<()> {
     Ok(())
 }
 
+/// Graph-beta PATCH allowlist: exactly `PATCH
+/// /teams/{id}/channels/{id}` (channel `moderationSettings`, the one
+/// beta-only write the lane needs). Query strings are ignored; ids must
+/// be non-empty. Pure so tests pin it. MODERATION-FIX.
+pub fn graph_beta_patch_allowed(path: &str) -> bool {
+    let p = path.split('?').next().unwrap_or("").trim_end_matches('/');
+    let seg: Vec<&str> = p.split('/').filter(|s| !s.is_empty()).collect();
+    match seg.as_slice() {
+        ["teams", team, "channels", channel] => {
+            !team.trim().is_empty()
+                && !channel.trim().is_empty()
+                && !team.chars().any(|c| c.is_whitespace())
+                && !channel.chars().any(|c| c.is_whitespace())
+        }
+        _ => false,
+    }
+}
+
 pub struct TeamsClient {
     http: reqwest::Client,
     config: Config,
@@ -224,6 +242,21 @@ impl TeamsClient {
         GRAPH_BASE.to_string()
     }
 
+    /// Graph **beta** root. Production is always the Microsoft host;
+    /// unit tests may point it at a local fake (`graphBetaBase` key,
+    /// same seam as `graphBase`). MODERATION-FIX.
+    fn graph_beta_base(&self) -> String {
+        #[cfg(test)]
+        if let Some(b) = self
+            .config
+            .get_region_gtms()
+            .and_then(|v| v.get("graphBetaBase").and_then(|s| s.as_str()).map(String::from))
+        {
+            return b;
+        }
+        GRAPH_BETA_BASE.to_string()
+    }
+
     /// CSA root (`…/api/csa/api/v1`). Production is always the Teams
     /// host; unit tests may point it at a local fake (`csaBase` key).
     pub(crate) fn csa_base(&self) -> String {
@@ -312,7 +345,7 @@ impl TeamsClient {
     pub async fn graph_beta_get(&self, path: &str) -> Result<reqwest::Response> {
         check_graph_allowed("GET", path)?;
         let token = self.graph_token()?;
-        let url = format!("{}{}", GRAPH_BETA_BASE, path);
+        let url = format!("{}{}", self.graph_beta_base(), path);
         tracing::debug!("Graph-beta GET {}", url);
 
         let resp = self
@@ -322,6 +355,48 @@ impl TeamsClient {
             .send_observed("GET", &url, self.timeout)
             .await
             .with_context(|| format!("Graph-beta GET {} failed", url))?;
+
+        check_response(resp, &url).await
+    }
+
+    /// PATCH request to the Graph **beta** endpoint (same bearer token).
+    /// Allowlisted to exactly one route: channel moderation
+    /// (`PATCH /teams/{id}/channels/{id}` carrying `moderationSettings`,
+    /// beta-only — the middle tier rejects that body with 400, live-proven
+    /// 11-19). Every other PATCH still goes through
+    /// [`check_graph_allowed`](check_graph_allowed), so the §GRAPHSWEEP
+    /// v1.0 denials (channel rename/delete, team create, …) are unchanged.
+    /// MODERATION-FIX.
+    pub async fn graph_beta_patch(
+        &self,
+        path: &str,
+        body: &serde_json::Value,
+    ) -> Result<reqwest::Response> {
+        if !graph_beta_patch_allowed(path) {
+            if let Some((what, scope)) = graph_denied("PATCH", path) {
+                anyhow::bail!(
+                    "{} isn't available with the Teams sign-in (Microsoft Graph permission {} isn't granted to the Teams web client)",
+                    what,
+                    scope
+                );
+            }
+            anyhow::bail!(
+                "PATCH {} isn't available with the Teams sign-in (Graph beta PATCH is allowlisted to channel moderation only)",
+                path
+            );
+        }
+        let token = self.graph_token()?;
+        let url = format!("{}{}", self.graph_beta_base(), path);
+        tracing::debug!("Graph-beta PATCH {}", url);
+
+        let resp = self
+            .http
+            .patch(&url)
+            .bearer_auth(&token)
+            .json(body)
+            .send_observed("PATCH", &url, self.timeout)
+            .await
+            .with_context(|| format!("Graph-beta PATCH {} failed", url))?;
 
         check_response(resp, &url).await
     }
@@ -1049,6 +1124,70 @@ mod tests {
         assert!(msg.contains("Creating a team isn't available with the Teams sign-in"), "{}", msg);
         assert!(msg.contains("Team.Create"), "{}", msg);
         assert!(check_graph_allowed("GET", "/me").is_ok());
+    }
+
+    /// MODERATION-FIX: the beta PATCH allowlist pins to the one
+    /// moderation route; everything else stays refused.
+    #[test]
+    fn beta_patch_allowlist_pins_to_moderation_route() {
+        assert!(graph_beta_patch_allowed("/teams/t1/channels/c1"));
+        assert!(graph_beta_patch_allowed("/teams/t1/channels/c1/"));
+        assert!(graph_beta_patch_allowed("/teams/t1/channels/c1?$select=moderationSettings"));
+        for bad in [
+            "/teams",
+            "/teams/t1",
+            "/teams/t1/channels",
+            "/teams//channels/c1",
+            "/teams/t1/channels/c1/messages",
+            "/teams/t1/members/m1",
+            "/groups/t1",
+            "/me",
+            "",
+            "/teams/t 1/channels/c1",
+        ] {
+            assert!(!graph_beta_patch_allowed(bad), "{}", bad);
+        }
+        // v1.0 channel PATCH stays denied (GRAPHSWEEP unchanged).
+        assert!(check_graph_allowed("PATCH", "/teams/t1/channels/c1").is_err());
+    }
+
+    /// MODERATION-FIX: a non-allowlisted beta PATCH never hits the
+    /// network, and the allowlisted route rides the beta host with the
+    /// Graph token only.
+    #[tokio::test]
+    async fn beta_patch_allowlists_before_network() {
+        use crate::api::fake_transport::{Fake, GRAPH};
+        let fake = Fake::start(vec![]).await;
+        let client = fake.client();
+        let e = client
+            .graph_beta_patch("/teams", &serde_json::json!({}))
+            .await
+            .unwrap_err();
+        let msg = format!("{:#}", e);
+        assert!(msg.contains("isn't available with the Teams sign-in"), "{}", msg);
+        assert!(fake.requests().is_empty());
+
+        let fake = Fake::start(vec![("PATCH", "/graph/teams/t1/channels/c1", 200, "{}".into())]).await;
+        let client = fake.client();
+        client
+            .graph_beta_patch(
+                "/teams/t1/channels/c1",
+                &serde_json::json!({"moderationSettings": {"userNewMessageRestriction": "moderators"}}),
+            )
+            .await
+            .expect("beta PATCH ok");
+        let reqs = fake.requests();
+        assert_eq!(reqs.len(), 1);
+        assert_eq!(reqs[0].method, "PATCH");
+        assert_eq!(reqs[0].path, "/graph/teams/t1/channels/c1");
+        assert_eq!(
+            reqs[0].headers.get("authorization").map(String::as_str),
+            Some(format!("Bearer {GRAPH}").as_str())
+        );
+        assert_eq!(
+            reqs[0].json(),
+            serde_json::json!({"moderationSettings": {"userNewMessageRestriction": "moderators"}})
+        );
     }
 
     fn plain(status: &str, content_type: &str, body: &[u8]) -> Vec<u8> {

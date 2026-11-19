@@ -2095,3 +2095,24 @@ this pass), `rust/ostmac-core` lib 224/0. Older counts (lib 257, core
     Tests: `api::chat::tests::praise_body_attachment_shape` (asserts
     `appId` + `cardClientId`).
     UPSTREAM: pending
+
+115. [minor] `src/api/chat.rs` + `src/api/mod.rs` + `src/main.rs` — **CLI read IDs +
+    mark-read verb (lanes/clifix)**. `read -v` prints each message's id
+    (previously promised by help text but never printed, making
+    delete/edit unusable); new mark-read verb wires lib
+    `mark_read_with_client` to the CLI. Unblocks live net-zero deletes
+    and read-state verification.
+    Tests: CLI parse + display tests.
+    UPSTREAM: pending
+
+116. [feat] `src/api/channel_moderation.rs` — **thread-property PUT
+    moderation write + General guard (lanes/moderationfix)**. Replaces
+    the disproven middle-tier PATCH transport (§106 code path) with
+    chat-service `PUT .../threads/{id}/properties?name=channelSettings`
+    (int enums postPermissions/allowReplies, read-modify-write,
+    unknown keys round-trip, fails closed); General refused
+    pre-network (service AclCheckFailed: moderation not allowed on
+    space threads). Live-proven net-zero on a temp channel (deleted).
+    Tests: int maps, URL pins, round-trip + defaults + malformed, e2e
+    thread-PUT, General refusal, bad-value bails.
+    UPSTREAM: pending

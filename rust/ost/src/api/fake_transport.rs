@@ -125,6 +125,7 @@ impl Fake {
             "middleTier": format!("{}/mt/", self.base),
             "chatService": format!("{}/chat", self.base),
             "graphBase": format!("{}/graph", self.base),
+            "graphBetaBase": format!("{}/graph", self.base),
             "csaBase": format!("{}/csa", self.base),
         }));
         TeamsClient::for_test(c)

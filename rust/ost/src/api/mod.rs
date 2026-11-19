@@ -44,9 +44,12 @@ pub use notes::{NotePage, NotebookInfo, PageInfo, SectionInfo};
 pub use planner::{BucketInfo, PlanInfo, PlannerTaskInfo};
 pub use presence::PresenceInfo;
 pub use channel_moderation::{
-    moderation_body, moderation_data, moderation_path, moderation_read_path,
-    parse_moderation_settings, set_moderation, show_moderation, update_moderation_data,
-    ChannelModeration, POST_EVERYONE, POST_EXCEPT_GUESTS, POST_MODERATORS,
+    moderation_data, moderation_path, moderation_read_path,
+    parse_moderation_settings, parse_thread_settings, posts_perm, render_thread_settings,
+    replies_perm, set_moderation, show_moderation, thread_settings_data, thread_settings_thread_url,
+    thread_settings_url, update_moderation_data,
+    ChannelModeration, ThreadChannelSettings, CHANNEL_SETTINGS_PROPERTY,
+    POST_EVERYONE, POST_EXCEPT_GUESTS, POST_MODERATORS,
     REPLY_AUTHOR_MODERATORS, REPLY_EVERYONE,
 };
 pub use team_settings::{
@@ -225,8 +228,13 @@ pub async fn list_chats(limit: usize) -> Result<()> {
 }
 
 /// Read messages from a chat (native Teams API)
-pub async fn read_messages(chat_id: &str, limit: usize) -> Result<()> {
-    chat::read_messages(chat_id, limit).await
+pub async fn read_messages(chat_id: &str, limit: usize, verbose: bool) -> Result<()> {
+    chat::read_messages(chat_id, limit, verbose).await
+}
+
+/// Mark one conversation read up to a message (native Teams API)
+pub async fn mark_read(chat_id: &str, message_id: &str) -> Result<()> {
+    chat::mark_read(chat_id, message_id).await
 }
 
 /// Send a message to a chat (native Teams API)
