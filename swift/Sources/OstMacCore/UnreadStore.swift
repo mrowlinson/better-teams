@@ -286,6 +286,35 @@ public final class UnreadStore: ObservableObject {
         }
     }
 
+    /// Reclassify one chat's PRE-EXISTING unread when its mute flips
+    /// (localnotif): muting moves the chat's current badge out of the
+    /// dock total at once; unmuting moves it back. ingest() only flags
+    /// NEW arrivals, so without this the dock would keep counting a
+    /// newly muted chat until its next event. Blank ids and no-change
+    /// flips are no-ops (no dock write). Muting a read chat records
+    /// nothing (ingest flags it on the next arrival); unmuting one
+    /// clears a lone flag silently (markRead precedent).
+    public func setMuted(chatID: String, muted: Bool) {
+        let id = chatID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !id.isEmpty else { return }
+        let badged = (counts[id] ?? 0) > 0 || overrides.contains(id)
+        if muted {
+            guard badged, !mutedUnreadIDs.contains(id) else { return }
+            let before = total
+            mutedUnreadIDs.insert(id)
+            if total != before {
+                syncDock()
+            }
+        } else {
+            guard mutedUnreadIDs.contains(id) else { return }
+            let before = total
+            mutedUnreadIDs.remove(id)
+            if total != before {
+                syncDock()
+            }
+        }
+    }
+
     /// Seed counts accrued while another account was active (gap-g1
     /// switch handoff: the background roll-up drains here so the switch
     /// lands on unread N). Merges additively; blank ids and non-positive

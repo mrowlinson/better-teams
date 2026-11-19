@@ -289,6 +289,9 @@ public final class AppState: ObservableObject {
     // (name backup covers the gap).
     private var meetingDedup = MeetingStartDedup()
     public let rules: RulesStore
+    /// localnotif: last muted-chat set reconciled into the unread
+    /// store (mute flips reclassify pre-existing unread at once).
+    private var lastMutedIDs: Set<String> = []
     private var ownerMRI: String?
 
     public init(args: [String]) {
@@ -677,6 +680,21 @@ public final class AppState: ObservableObject {
                 self?.mentions.markRead(chatID: chatID)
             }
         }
+        // localnotif: mute flips reclassify pre-existing unread at once
+        // (muted chats leave the dock total immediately; unmuted ones
+        // return). ingest() only flags NEW arrivals, so the sink diffs
+        // the muted set and reclassifies each flip. Covers every mute
+        // path uniformly: menu, Settings levels, server adopt, rollback.
+        lastMutedIDs = rules.config.mutedChatIDs
+        rules.$config
+            .map(\.mutedChatIDs)
+            .removeDuplicates()
+            .dropFirst()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] mutes in
+                Task { @MainActor [weak self] in self?.reconcileMutedUnread(mutes) }
+            }
+            .store(in: &cancellables)
         call.$call
             .receive(on: DispatchQueue.main)
             .sink { [weak self] c in
@@ -2766,6 +2784,18 @@ public final class AppState: ObservableObject {
     /// to the banner gate and the rules quiet gate, same reason).
     private var localQuietNow: Bool {
         quietHours.isQuietNow || focusSync.quietNow
+    }
+
+    /// Reclassify pre-existing unread across one muted-set flip
+    /// (localnotif): newly muted chats leave the dock total at once,
+    /// newly unmuted ones return to it. Rows keep their own badge
+    /// either way (D19: the row still bolds, only the dock moves).
+    private func reconcileMutedUnread(_ mutes: Set<String>) {
+        let newlyMuted = mutes.subtracting(lastMutedIDs)
+        let newlyUnmuted = lastMutedIDs.subtracting(mutes)
+        lastMutedIDs = mutes
+        for id in newlyMuted { unread.setMuted(chatID: id, muted: true) }
+        for id in newlyUnmuted { unread.setMuted(chatID: id, muted: false) }
     }
 
     /// One rules decision for a live event (owns the meeting-start

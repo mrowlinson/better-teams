@@ -74,6 +74,9 @@ final class ActivitySection: SectionProvider, InspectorCapable {
             return AnyView(EmptyPane("No Activity", systemImage: "bell",
                                      message: "Mentions, replies and reactions appear here."))
         }
+        // Evidence seed lands here (listPane owns the WindowModel;
+        // selection(for:) runs too early to seed).
+        if state.filter == .saved { seedDemoSavedIfNeeded(m) }
         return AnyView(ActivityListPane(activity: app.activity, saved: m.graph.savedMessages, state: state,
                                         showsFeed: { [weak self] in self?.showsFeed($0) ?? false }))
     }
@@ -104,7 +107,38 @@ final class ActivitySection: SectionProvider, InspectorCapable {
 
     func selection(for route: Route) -> SectionSelection? {
         state.evidenceNoCache = route.query["cached"] == "0"
+        // Evidence only (`activity?filter=saved`): open Activity with
+        // that filter on, seeding two demo saves when the demo store is
+        // empty so captures show rows + the local-only footer. In-memory
+        // demo only; real profiles never seed.
+        if let raw = route.query["filter"], let f = ActivityFilter(rawValue: raw) {
+            state.filter = f
+        }
         return route.tail.first.map { SectionSelection(id: $0) }
+    }
+
+    /// Demo seed for `activity?filter=saved` captures (in memory only,
+    /// seeded once): two saves so the rows + local-only footer render.
+    private var demoSavedSeeded = false
+
+    func seedDemoSavedIfNeeded(_ m: WindowModel) {
+        guard m.options.demo, !demoSavedSeeded, let app = m.app else { return }
+        demoSavedSeeded = true
+        let saved = m.graph.savedMessages
+        guard saved.saves.isEmpty else { return }
+        let now = Date().timeIntervalSince1970
+        saved.adopt([
+            SavedMessage(
+                chatID: "demo-2", messageID: "demo-save-1", sender: "Ava",
+                preview: "Q3 launch notes are in the shared doc",
+                content: "Q3 launch notes are in the shared doc",
+                timestamp: "2026-11-18T15:00:00Z", savedAt: now),
+            SavedMessage(
+                chatID: "demo-tom", messageID: "demo-save-2", sender: "Tom",
+                preview: "Can you review the rollout plan?",
+                content: "Can you review the rollout plan?",
+                timestamp: "2026-11-18T14:00:00Z", savedAt: now - 3600),
+        ])
     }
 
     /// Opening a row reviews it and lands on its message (§6.1).
@@ -268,6 +302,13 @@ struct ActivityListPane: View {
                           message: "Nothing in the feed matches this search.")
             } else if state.filter == .all || forced == .empty {
                 EmptyPane("No Activity", systemImage: "bell", message: "Mentions, replies and reactions appear here.")
+            } else if state.filter == .saved {
+                // localnotif: saved is local-only (no Teams sync), so
+                // the empty state says where saves live.
+                EmptyPane(state.filter.emptyTitle, systemImage: "line.3.horizontal.decrease",
+                          message: "Messages you save stay on this Mac. They don't sync with Teams.") {
+                    Button("Show All Activity") { state.filter = .all }
+                }
             } else {
                 EmptyPane(state.filter.emptyTitle, systemImage: "line.3.horizontal.decrease") {
                     Button("Show All Activity") { state.filter = .all }
@@ -321,6 +362,16 @@ struct ActivityListPane: View {
         } primaryAction: { ids in
             if let id = ids.first { m.navigator?.select(SectionSelection(id: id), in: .activity) }
         }
+            // localnotif: the saved list is local-only (no Teams sync)
+            // — the footer says so under the rows.
+            if state.filter == .saved {
+                Divider()
+                Text("Saved messages stay on this Mac. They don't sync with Teams.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+            }
         }
     }
 }
