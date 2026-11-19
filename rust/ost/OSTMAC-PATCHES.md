@@ -2154,7 +2154,7 @@ this pass), `rust/ostmac-core` lib 224/0. Older counts (lib 257, core
     Tests: 17 `api::planner::tests` (paths/bodies/parse incl. encoded
     reference keys) + new live flow (7 LIVE, 2 pending with exact
     evidence).
-    UPSTREAM: pending
+    UPSTREAM: PR https://github.com/eisbaw/ost/pull/130 (fix/planner-depth, stacks on #67)
 
 119. [minor] `src/api/tabs.rs` + `src/api/mod.rs` + `src/main.rs` —
     **tab add/rename/remove + CLI verbs (lanes/tabsmgmt)**. New
