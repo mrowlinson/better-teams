@@ -2260,4 +2260,4 @@ this pass), `rust/ostmac-core` lib 224/0. Older counts (lib 257, core
     numeric ids, and span tags (array + `<at>` mining kept).
     Tests: F1/S1/M2 body pins, mri parse, string-echo + span-mining
     pins, send→echo roundtrip.
-    UPSTREAM: pending
+    UPSTREAM: PARTIAL: (a) write half https://github.com/eisbaw/ost/pull/136 (fix/skype-write-shape, stacks on #116: properties block, mri, string entities, span tags; 2 new + updated pins ported, fake-transport e2e omitted with the never-ported harness); (b) read half (string/numeric echo mining + span mining) pending: needs the §110 read-path foundation, absent from every branch on this stack
