@@ -176,6 +176,9 @@
 - Translate messages into your language
 - Ghost mode: hold back read receipts, presence and typing
 - Adaptive cards with inline actions, expandable sections and approval links
+- Loop components in chat with open-in-Teams links
+- Copilot chat with streaming answers, sources and suggestion chips
+- Whiteboard with shared boards plus an offline local sketch
 
 ### People
 
@@ -216,6 +219,7 @@
 - Test call to check your setup
 - Recap tab on meeting chats with the recording and its transcript
 - Meeting extras: attendance list, recording/transcription toggles and record controls
+- Breakout rooms management (create, assign, open, close, settings, announce)
 
 ### Calendar
 
@@ -409,5 +413,5 @@ Incomplete or not started yet ("in progress" = being worked on now):
 - **Calling:** Teams Phone UI shipped (dial pad, voicemail, forwarding, delegates, park/queues browse); trial licence confirmed (E5 + Phone System, no calling plan — Teams-to-Teams yes, PSTN dial-out no)
 - **Chats and teams:** Teams saved-messages sync has no server surface (re-probed on the trial tenant; local store shipped)
 - **External (federated) chat:** shipped, live proof queued on the trial tenant (guest invites pending)
-- **Private surfaces mapped, implementation queued:** Loop components, Copilot chat (free tier answers without the paid seat), breakout rooms (Teams web uses MiddleTier REST), and whiteboard sync (REST + ODSP endpoints mapped) — no public APIs exist, so the private wire shapes were reverse-engineered from Teams' own client; live verification + implementation run once tenant access is restored; local planner/board/embed shipped meanwhile
+- **Private surfaces implemented, live proof queued:** Loop components, Copilot chat, breakout rooms, and whiteboard sync are built on reverse-engineered private wire shapes (no public APIs exist) with honest live-gated UI; end-to-end live verification runs once tenant access is restored
 - **Live proof:** end-to-end live proof queued on the trial tenant (multi-person meetings, channels, praise, polls, webinars, phone calling, tabs chat-loop, team admin, tags, approvals, status message, adaptive cards; channel tab loop + channel moderation already proven live)
