@@ -125,6 +125,13 @@ public final class CalendarWeekStore: ObservableObject {
     @Published public internal(set) var instancesError: [String: String] = [:]
     @Published public internal(set) var creating = false
     @Published public internal(set) var createError: String?
+    /// Webinar configure in flight and its last failure.
+    @Published public internal(set) var webinarSaving = false
+    @Published public internal(set) var webinarSaveError: String?
+    /// Registrants per webinar id; ids in flight; failures per id.
+    @Published public internal(set) var webinarRegs: [String: [WebinarRegistrant]] = [:]
+    @Published public internal(set) var webinarRegsLoading: Set<String> = []
+    @Published public internal(set) var webinarRegsError: [String: String] = [:]
     /// Multi-calendar overlay (read-only): the mailbox's extra
     /// calendars, the overlaid ids, and their rows per calendar id.
     @Published public internal(set) var overlayCalendars: [CalendarFeed] = []

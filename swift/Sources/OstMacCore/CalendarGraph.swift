@@ -287,16 +287,45 @@ public struct CalendarGraph: Sendable {
 
     /// Create a draft Teams webinar (Graph virtual events) and return
     /// its id. Publishing stays in Teams.
-    public func createWebinar(title: String, start: Date, end: Date, audience: String = "organization") throws -> String {
+    public func createWebinar(title: String, start: Date, end: Date, audience: String = "organization",
+                            description: String? = nil) throws -> String {
         struct R: Decodable { let id: String }
         let utc = TimeZone(identifier: "UTC")!
-        let data = try request("POST", "/solutions/virtualEvents/webinars", json: [
+        var body: [String: Any] = [
             "displayName": title,
             "audience": audience,
             "startDateTime": ["dateTime": CalendarTime.wallClock(start, in: utc), "timeZone": "UTC"],
             "endDateTime": ["dateTime": CalendarTime.wallClock(end, in: utc), "timeZone": "UTC"],
-        ])
+        ]
+        if let description = CalendarEvents.nonEmpty(description) { body["description"] = description }
+        let data = try request("POST", "/solutions/virtualEvents/webinars", json: body)
         return try JSONDecoder().decode(R.self, from: data).id
+    }
+
+    /// Configure a draft webinar (`PATCH
+    /// `/solutions/virtualEvents/webinars/{id}`): title, description
+    /// and audience. Nil patch fields are omitted; an empty patch is a
+    /// no-op. Publishing stays in Teams.
+    public func updateWebinar(id: String, patch: WebinarPatch) throws {
+        guard !patch.isEmpty else { return }
+        try request("PATCH", "/solutions/virtualEvents/webinars/\(Self.encode(id))", json: patch.body)
+    }
+
+    /// Registrants of `webinarID` (`GET
+    /// `/solutions/virtualEvents/webinars/{id}/registrations`, 100 per
+    /// page). Blank-email rows are dropped.
+    public func listRegistrations(webinarID: String) throws -> [WebinarRegistrant] {
+        var next: String? =
+            "/solutions/virtualEvents/webinars/\(Self.encode(webinarID))/registrations?$select=id,firstName,lastName,email,status,registrationDateTime&$top=100"
+        var rows: [WebinarRegistrant] = []
+        var pages = 0
+        while let path = next, pages < Self.maxPages {
+            let page = try WebinarRegistrations.page(try request("GET", path))
+            rows += page.rows
+            next = page.next
+            pages += 1
+        }
+        return rows
     }
 
     /// Graph RSVP (`accept` | `tentativelyAccept` | `decline`) on `id`

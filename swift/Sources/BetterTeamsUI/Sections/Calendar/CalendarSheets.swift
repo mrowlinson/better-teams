@@ -569,28 +569,49 @@ struct DuplicateEventSheet: View {
     }
 }
 
-/// New webinar (CAL2-4): a draft Teams webinar (title, time). Graph
-/// virtual events create it unpublished; registration and publishing
-/// stay in Teams.
+/// New webinar (CAL2-4): a draft Teams webinar (title, time, audience).
+/// Graph virtual events create it unpublished; publishing stays in
+/// Teams. After the draft lands the sheet offers configure (title /
+/// description / audience PATCH) and the registration list.
 struct NewWebinarSheet: View {
     @ObservedObject var week: CalendarWeekStore
     @State private var title = ""
+    @State private var description = ""
+    @State private var audience = WebinarAudience.organization
     @State private var start = NewMeetingSheet.nextHalfHour(RelativeClock.shared.now).addingTimeInterval(86_400)
     @State private var end = NewMeetingSheet.nextHalfHour(RelativeClock.shared.now).addingTimeInterval(86_400 + 3600)
     @State private var createdID: String?
+    @State private var savedNote = false
     @Environment(\.windowModel) private var model
+
+    /// Evidence: `calendar?sheet=newWebinar&contact=<id>` opens the
+    /// sheet on an existing draft (configure + registrations).
+    init(week: CalendarWeekStore, createdID: String? = nil) {
+        self.week = week
+        _createdID = State(initialValue: createdID)
+    }
 
     var body: some View {
         CalendarSheetFrame(title: "New Webinar", action: createdID == nil ? "Create Draft" : "Done",
                            enabled: createdID != nil || (!trimmed(title).isEmpty && end > start),
                            busy: week.creating ? "Creating\u{2026}" : nil,
                            error: week.createError, perform: create) {
-            if createdID != nil {
-                Label("Draft webinar created. Finish registration and publish it in Teams.",
-                      systemImage: "checkmark.circle")
+            if let id = createdID {
+                WebinarConfigureView(week: week, webinarID: id, title: $title,
+                                     description: $description, audience: $audience, savedNote: $savedNote)
+                Divider()
+                WebinarRegistrationsView(week: week, webinarID: id)
             } else {
                 Form {
                     TextField("Title", text: $title, prompt: prompt("Webinar title"))
+                    TextField("Description", text: $description, prompt: prompt("What the webinar covers"),
+                              axis: .vertical)
+                        .lineLimit(2 ... 4)
+                    Picker("Audience", selection: $audience) {
+                        ForEach(WebinarAudience.allCases, id: \.self) { a in
+                            Text(a.label).tag(a)
+                        }
+                    }
                     DatePicker("Starts", selection: $start)
                     DatePicker("Ends", selection: $end)
                 }
@@ -608,6 +629,114 @@ struct NewWebinarSheet: View {
             model?.dismissSheet()
             return
         }
-        Task { createdID = await week.createWebinar(title: title, start: start, end: end) }
+        Task {
+            createdID = await week.createWebinar(
+                title: title, start: start, end: end,
+                description: trimmed(description).isEmpty ? nil : trimmed(description),
+                audience: audience)
+        }
+    }
+}
+
+/// Configure a draft webinar (PATCH title / description / audience).
+private struct WebinarConfigureView: View {
+    @ObservedObject var week: CalendarWeekStore
+    let webinarID: String
+    @Binding var title: String
+    @Binding var description: String
+    @Binding var audience: WebinarAudience
+    @Binding var savedNote: Bool
+
+    var body: some View {
+        Form {
+            TextField("Title", text: $title)
+            TextField("Description", text: $description, axis: .vertical)
+                .lineLimit(2 ... 4)
+            Picker("Audience", selection: $audience) {
+                ForEach(WebinarAudience.allCases, id: \.self) { a in
+                    Text(a.label).tag(a)
+                }
+            }
+        }
+        .formStyle(.columns)
+        HStack {
+            if savedNote {
+                Label("Saved", systemImage: "checkmark.circle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
+            Button("Save Changes") { save() }
+                .disabled(week.webinarSaving || trimmed(title).isEmpty)
+        }
+        .font(.caption)
+        if let err = week.webinarSaveError {
+            Text(err).font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    private func save() {
+        savedNote = false
+        Task {
+            let patch = WebinarPatch(title: trimmed(title),
+                                     description: trimmed(description).isEmpty ? nil : trimmed(description),
+                                     audience: audience)
+            if await week.saveWebinar(id: webinarID, patch: patch) { savedNote = true }
+        }
+    }
+}
+
+/// Registration list for a draft webinar (native List; refresh reads
+/// Graph again).
+struct WebinarRegistrationsView: View {
+    @ObservedObject var week: CalendarWeekStore
+    let webinarID: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Registrations\(countSuffix)")
+                    .font(.headline)
+                Spacer(minLength: 0)
+                if week.webinarRegsLoading.contains(webinarID) {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Button("Refresh") { week.loadWebinarRegistrations(id: webinarID, force: true) }
+                        .font(.caption)
+                }
+            }
+            if let err = week.webinarRegsError[webinarID] {
+                Text(err).font(.caption).foregroundStyle(.secondary)
+            } else if let regs = week.webinarRegs[webinarID] {
+                if regs.isEmpty {
+                    Text("No registrations yet.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    List(regs, id: \.id) { r in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(r.displayName)
+                            Text(r.email).font(.caption).foregroundStyle(.secondary)
+                        }
+                        .badge(statusLabel(r.status))
+                    }
+                    .frame(minHeight: 120, maxHeight: 240)
+                }
+            } else {
+                Text("Registration opens after publishing in Teams.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .onAppear { week.loadWebinarRegistrations(id: webinarID) }
+    }
+
+    private var countSuffix: String {
+        guard let regs = week.webinarRegs[webinarID] else { return "" }
+        return regs.isEmpty ? "" : " (\(regs.count))"
+    }
+
+    private func statusLabel(_ status: String?) -> Text {
+        Text((status ?? "registered").capitalized)
     }
 }

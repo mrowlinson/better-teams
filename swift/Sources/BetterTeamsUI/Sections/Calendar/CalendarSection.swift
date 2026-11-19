@@ -376,7 +376,7 @@ final class CalendarSection: SectionProvider, InspectorCapable {
             return AnyView(EventInstancesSheet(week: app.calWeek, seriesID: id, title: title,
                                                openedFrom: Self.current(m).meetingID))
         case CalendarCommands.webinarSheet:
-            return AnyView(NewWebinarSheet(week: app.calWeek))
+            return AnyView(NewWebinarSheet(week: app.calWeek, createdID: r.arg))
         default: return nil
         }
     }

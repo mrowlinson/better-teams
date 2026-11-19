@@ -7,6 +7,14 @@ enum CalendarEvidence {
     static func apply(_ route: Route, _ wc: ShellWindowController) {
         let m = wc.model
         guard m.options.demo, route.head == "calendar" else { return }
+        // Webinar evidence: `calendar?sheet=newWebinar&contact=<id>`
+        // seeds demo registrations for the draft (capture only).
+        if route.query["sheet"] == "newWebinar", let id = route.query["contact"] {
+            Task { @MainActor in
+                guard let app = m.app else { return }
+                app.calWeek.seedDemoRegistrations(id: id)
+            }
+        }
         guard let overlay = route.query["overlay"] else { return }
         // Main-actor store calls, once the main window is up (CallEvidence pattern).
         Task { @MainActor in

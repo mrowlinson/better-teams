@@ -24,8 +24,12 @@ public struct CalendarRunners: Sendable {
     public var categories: @Sendable () throws -> [CalendarCategory]
     /// A full new event (Duplicate: attendees, location, body kept).
     public var create: @Sendable (CalendarEventDraft) throws -> MeetingItem
-    /// `(title, start, end)` → draft webinar id.
-    public var webinar: @Sendable (String, Date, Date) throws -> String
+    /// `WebinarDraft` → draft webinar id.
+    public var webinar: @Sendable (WebinarDraft) throws -> String
+    /// `(webinar id, patch)` → configure the draft webinar.
+    public var updateWebinar: @Sendable (String, WebinarPatch) throws -> Void
+    /// `webinar id` → its registrants.
+    public var webinarRegistrations: @Sendable (String) throws -> [WebinarRegistrant]
     /// `(series master id, from, to)` → the series' occurrences.
     public var instances: @Sendable (String, Date, Date) throws -> [MeetingItem]
     /// Extra mailbox calendars (overlay sources, read-only).
@@ -53,7 +57,9 @@ public struct CalendarRunners: Sendable {
         schedule: @escaping @Sendable ([String], Date, Date) throws -> [CalendarFreeBusy] = { _, _, _ in throw unsupported() },
         categories: @escaping @Sendable () throws -> [CalendarCategory] = { throw unsupported() },
         create: @escaping @Sendable (CalendarEventDraft) throws -> MeetingItem = { _ in throw unsupported() },
-        webinar: @escaping @Sendable (String, Date, Date) throws -> String = { _, _, _ in throw unsupported() },
+        webinar: @escaping @Sendable (WebinarDraft) throws -> String = { _ in throw unsupported() },
+        updateWebinar: @escaping @Sendable (String, WebinarPatch) throws -> Void = { _, _ in throw unsupported() },
+        webinarRegistrations: @escaping @Sendable (String) throws -> [WebinarRegistrant] = { _ in throw unsupported() },
         instances: @escaping @Sendable (String, Date, Date) throws -> [MeetingItem] = { _, _, _ in throw unsupported() },
         calendars: @escaping @Sendable () throws -> [CalendarFeed] = { throw unsupported() },
         calendarRange: @escaping @Sendable (String, Date, Date) throws -> [MeetingItem] = { _, _, _ in throw unsupported() },
@@ -73,6 +79,8 @@ public struct CalendarRunners: Sendable {
         self.categories = categories
         self.create = create
         self.webinar = webinar
+        self.updateWebinar = updateWebinar
+        self.webinarRegistrations = webinarRegistrations
         self.instances = instances
         self.calendars = calendars
         self.calendarRange = calendarRange
@@ -98,7 +106,13 @@ public struct CalendarRunners: Sendable {
             schedule: { try CalendarGraph.production().schedule(for: $0, from: $1, to: $2) },
             categories: { try CalendarGraph.production().masterCategories() },
             create: { try CalendarGraph.production().create($0) },
-            webinar: { try CalendarGraph.production().createWebinar(title: $0, start: $1, end: $2) },
+            webinar: {
+                try CalendarGraph.production().createWebinar(
+                    title: $0.title, start: $0.start, end: $0.end,
+                    audience: $0.audience.rawValue, description: $0.description)
+            },
+            updateWebinar: { try CalendarGraph.production().updateWebinar(id: $0, patch: $1) },
+            webinarRegistrations: { try CalendarGraph.production().listRegistrations(webinarID: $0) },
             instances: { try CalendarGraph.production().instances(seriesID: $0, from: $1, to: $2) },
             calendars: { try CalendarGraph.production().calendars() },
             calendarRange: { try CalendarGraph.production().calendarRange(id: $0, from: $1, to: $2) },

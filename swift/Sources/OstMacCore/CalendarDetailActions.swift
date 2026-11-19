@@ -271,16 +271,14 @@ extension CalendarWeekStore {
         return row
     }
 
-    /// Create a draft Teams webinar; returns its id (publishing and
-    /// registration stay in Teams).
-    public func createWebinar(title: String, start: Date, end: Date) async -> String? {
+    /// Create a draft Teams webinar; returns its id (publishing stays
+    /// in Teams).
+    public func createWebinar(title: String, start: Date, end: Date,
+                              description: String? = nil,
+                              audience: WebinarAudience = .organization) async -> String? {
         let name = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty else {
-            createError = "Title is required"
-            return nil
-        }
-        guard end > start else {
-            createError = "End must be after start"
+        if let err = WebinarPatch.error(title: name, start: start, end: end, description: description) {
+            createError = err
             return nil
         }
         guard !creating else { return nil }
@@ -289,11 +287,68 @@ extension CalendarWeekStore {
         creating = true
         defer { creating = false }
         let runner = runners.webinar
+        let draft = WebinarDraft(title: name, start: start, end: end,
+                                 description: CalendarEvents.nonEmpty(description), audience: audience)
         do {
-            return try await Task.blocking { try runner(name, start, end) }.value
+            return try await Task.blocking { try runner(draft) }.value
         } catch {
             createError = Self.message(for: error)
             return nil
+        }
+    }
+
+    /// Configure a draft webinar (title / description / audience).
+    /// Guards first; true when the PATCH landed.
+    public func saveWebinar(id: String, patch: WebinarPatch) async -> Bool {
+        if patch.isEmpty {
+            webinarSaveError = "Nothing to save"
+            return false
+        }
+        if let title = patch.title,
+           title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            webinarSaveError = "Title is required"
+            return false
+        }
+        if let description = patch.description, description.count > 2000 {
+            webinarSaveError = "Description is too long"
+            return false
+        }
+        guard !webinarSaving else { return false }
+        webinarSaveError = nil
+        if localEdits { return true }
+        webinarSaving = true
+        defer { webinarSaving = false }
+        let runner = runners.updateWebinar
+        do {
+            try await Task.blocking { try runner(id, patch) }.value
+            return true
+        } catch {
+            webinarSaveError = Self.message(for: error)
+            return false
+        }
+    }
+
+    /// Evidence only: demo registrations for a draft webinar (demo
+    /// hosting; never live data).
+    public func seedDemoRegistrations(id: String) {
+        guard localEdits else { return }
+        webinarRegs[id] = WebinarDemo.registrations
+    }
+
+    /// Read `id`'s registrants once (registration list view).
+    public func loadWebinarRegistrations(id: String, force: Bool = false) {
+        guard force || webinarRegs[id] == nil, !webinarRegsLoading.contains(id) else { return }
+        if localEdits { return }
+        webinarRegsLoading.insert(id)
+        webinarRegsError[id] = nil
+        let runner = runners.webinarRegistrations
+        Task {
+            do {
+                webinarRegs[id] = try await Task.blocking { try runner(id) }.value
+            } catch {
+                webinarRegsError[id] = Self.message(for: error)
+            }
+            webinarRegsLoading.remove(id)
         }
     }
 
