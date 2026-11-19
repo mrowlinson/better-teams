@@ -175,6 +175,7 @@
 - Images open in a viewer at their final size, in light or dark
 - Translate messages into your language
 - Ghost mode: hold back read receipts, presence and typing
+- Adaptive cards with inline actions, expandable sections and approval links
 
 ### People
 
@@ -200,6 +201,10 @@
 - Posts, Files, Notes and app tabs for every channel
 - Threads open beside the channel in the inspector
 - Team roster with Add Member and Remove
+- Edit team name, description and picture; archive, restore and delete teams
+- Manage channel moderation: who can post and who can reply (owners only)
+- Team tags with member assignment, plus @tag mentions in the composer
+- Add, rename and remove channel and chat tabs
 
 ### Meetings and calls
 
@@ -210,6 +215,7 @@
 - Calls ring with a notification you can accept or decline
 - Test call to check your setup
 - Recap tab on meeting chats with the recording and its transcript
+- Meeting extras: attendance list, recording/transcription toggles and record controls
 
 ### Calendar
 
@@ -234,6 +240,7 @@
 - Pin apps to the sidebar, where they show their real icons
 - App library with filters, plus your own web links
 - Teams links inside apps open in Better Teams, never a browser
+- Approvals hub: review requests, approve or reject with a comment, track flow status
 
 ### Planner, To Do, Shifts and OneNote
 
@@ -285,6 +292,7 @@
 - Quiet hours, and silence while a Focus is on
 - Unread count on the Dock icon, with New Chat and your status in the Dock menu
 - Optional menu bar item
+- Status message with duration, set from Settings or the account menu
 
 ### Mac-native and keyboard
 
@@ -397,9 +405,9 @@ on GitHub by opening an issue.
 Incomplete or not started yet ("in progress" = being worked on now):
 
 - **Compose:** emphasis/importance/subject/mentions wires proven live in channel context (write-shape fix shipped; timeline banner renders); 1:1 policy-strip behavior untested (no 1:1 target in trial)
-- **Meetings:** hand/reactions/pin/participant UI shipped local-only, live proof queued on trial tenant; lobby admit UI instrumented, live run queued on trial tenant
-- **Calling:** Teams Phone UI shipped (dial pad, voicemail, forwarding, delegates); trial licence confirmed (E5 + Phone System, no calling plan — Teams-to-Teams yes, PSTN dial-out no)
-- **Chats and teams:** Teams saved-messages sync (no surface on the old tenant; re-probe queued on the trial tenant; local store shipped)
-- **External (federated) chat:** shipped, live proof blocked: tenant has external access disabled
-- **Blocked by Microsoft:** Loop components (no public create/embed/sync API exists; ships if one appears); Copilot chat (needs a M365 Copilot licence plus admin-consented scopes a personal client can't hold); breakout rooms (no management API under any identity — Graph, ACS SDK, and Call Automation all lack it; local planner shipped)
-- **Live proof:** end-to-end live proof queued on the trial tenant (multi-person meetings, channels, moderation, praise, polls, whiteboard, webinars, phone calling, tabs, team admin, tags, approvals)
+- **Meetings:** hand/reactions/pin/participant UI + attendance list + server capture toggles + meeting record controls shipped local-only, live proof queued on trial tenant; lobby admit UI instrumented, live run queued on trial tenant
+- **Calling:** Teams Phone UI shipped (dial pad, voicemail, forwarding, delegates, park/queues browse); trial licence confirmed (E5 + Phone System, no calling plan — Teams-to-Teams yes, PSTN dial-out no)
+- **Chats and teams:** Teams saved-messages sync has no server surface (re-probed on the trial tenant; local store shipped)
+- **External (federated) chat:** shipped, live proof queued on the trial tenant (guest invites pending)
+- **Blocked by Microsoft:** Loop components (no public create/embed/sync API exists; ships if one appears); Copilot chat (needs a M365 Copilot licence plus admin-consented scopes a personal client can't hold); breakout rooms (no management API under any identity — Graph, ACS SDK, and Call Automation all lack it; local planner shipped); whiteboard shared ink sync (no public content/ink API exists; local board + shared-board embed shipped)
+- **Live proof:** end-to-end live proof queued on the trial tenant (multi-person meetings, channels, praise, polls, webinars, phone calling, tabs chat-loop, team admin, tags, approvals, status message, adaptive cards; channel tab loop + channel moderation already proven live)
