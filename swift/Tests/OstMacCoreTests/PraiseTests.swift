@@ -113,6 +113,83 @@ final class PraiseTests: XCTestCase {
         XCTAssertEqual(post?.sender, "Sam")
     }
 
+    // MARK: - unattributed Graph shape (P13/P17 persisted form)
+
+    /// Graph message envelope for one received Praise post: HTML body
+    /// naming the attachment plus ONE Adaptive Card attachment carrying
+    /// the card JSON as a STRING, no teamsAppId (the §123 persisted
+    /// shape: body_len 63, attachments_len 1).
+    private func unattributedGraphRaw(card: [String: Any], attachmentID: String) -> String {
+        guard let cardData = try? JSONSerialization.data(withJSONObject: card),
+              let cardString = String(data: cardData, encoding: .utf8),
+              let envData = try? JSONSerialization.data(withJSONObject: [
+                  "body": [
+                      "contentType": "html",
+                      "content": "<attachment id=\"\(attachmentID)\"></attachment>",
+                  ],
+                  "attachments": [[
+                      "id": attachmentID,
+                      "contentType": PraiseCard.adaptiveContentType,
+                      "content": cardString,
+                  ]],
+              ]),
+              let raw = String(data: envData, encoding: .utf8)
+        else { return "" }
+        return raw
+    }
+
+    /// Ship shape (§123 wire: text badge, no Image): mines fully and
+    /// never placeholders beside the native card.
+    func testUnattributedTextBadgeShapeMinesWithoutPlaceholder() {
+        let card = PraiseCard.card(badge: .awesome, recipient: "Jane",
+                                   note: "Nice work", sender: "Sam")
+        let raw = unattributedGraphRaw(card: card, attachmentID: "d27e51faa0db4d388a0a38ab8506d1f6")
+        XCTAssertFalse(raw.isEmpty)
+        let post = PraiseCard.mine(fromRaw: raw)
+        XCTAssertEqual(post?.badge, .awesome)
+        XCTAssertEqual(post?.sender, "Sam")
+        XCTAssertEqual(post?.recipient, "Jane")
+        XCTAssertEqual(post?.note, "Nice work")
+        let m = ChatMessage(id: "p13", sender: "Sam", timestamp: "",
+                            content: "", isOwn: false, raw: raw)
+        XCTAssertFalse(MessageRender.showsPlaceholder(for: m))
+    }
+
+    /// P13 shape (capture-faithful: badge as Image altText, string
+    /// widths): mines via altText and never placeholders.
+    func testUnattributedImageBadgeShapeMinesWithoutPlaceholder() {
+        let card: [String: Any] = [
+            "type": "AdaptiveCard", "version": "1.0",
+            "body": [[
+                "type": "ColumnSet", "spacing": "large", "separator": true,
+                "columns": [
+                    ["type": "Column", "width": "2.6", "items": [[
+                        "type": "Image", "altText": "Courage",
+                        "url": "https://example.invalid/badge.png",
+                    ]]],
+                    ["type": "Column", "width": "6", "spacing": "medium", "items": [
+                        ["type": "TextBlock", "wrap": true, "size": "small",
+                         "isSubtle": true, "text": "Sam sent praise to"],
+                        ["type": "TextBlock", "wrap": true, "spacing": "small",
+                         "weight": "bolder", "size": "medium", "text": "Jane"],
+                        ["type": "TextBlock", "spacing": "small", "wrap": true,
+                         "text": "Nice work"],
+                    ]],
+                ],
+            ]],
+        ]
+        let raw = unattributedGraphRaw(card: card, attachmentID: "6165566cb5d6462994f4ccfab685b548")
+        XCTAssertFalse(raw.isEmpty)
+        let post = PraiseCard.mine(fromRaw: raw)
+        XCTAssertEqual(post?.badge, .courage)
+        XCTAssertEqual(post?.sender, "Sam")
+        XCTAssertEqual(post?.recipient, "Jane")
+        XCTAssertEqual(post?.note, "Nice work")
+        let m = ChatMessage(id: "p13img", sender: "Sam", timestamp: "",
+                            content: "", isOwn: false, raw: raw)
+        XCTAssertFalse(MessageRender.showsPlaceholder(for: m))
+    }
+
     func testRecipientSuggestionPrefersOtherSpeaker() {
         let msgs = [
             ChatMessage(id: "1", sender: "Me", timestamp: "", content: "hi", isOwn: true),

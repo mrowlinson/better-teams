@@ -1239,6 +1239,11 @@ public enum MessageRender {
     public static func showsPlaceholder(for message: ChatMessage) -> Bool {
         // Rendered cards own the bubble: never placeholder beside them.
         if MessageBubbleState.shouldShowCards(for: message) { return false }
+        // Mined Praise posts own the bubble too (native card, never the
+        // generic path): the unattributed Graph shape carries its card as
+        // a string, which parses no generic cards — without this the
+        // timeline shows the praise card AND the placeholder.
+        if PraiseCard.mine(fromRaw: message.raw ?? message.content) != nil { return false }
         let posts = botPosts(fromRaw: message.raw ?? message.content)
         if !posts.isEmpty { return false }
         if !bubbleText(for: message).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
