@@ -456,12 +456,17 @@ public final class PhoneStore: ObservableObject {
 
     public let isDemo: Bool
     private let api: any PhoneAPI
+    /// Park/queue source (PHONE-PLUS R1): demo fake or licence-gated
+    /// unavailable, same pattern as `api`.
+    private let parkApi: any ParkQueueAPI
 
     /// Nonisolated so views can take a default in their (nonisolated)
     /// inits (PresenceStore precedent); all members stay main-actor-isolated.
-    public nonisolated init(demo: Bool, api: (any PhoneAPI)? = nil) {
+    public nonisolated init(demo: Bool, api: (any PhoneAPI)? = nil,
+                            parkApi: (any ParkQueueAPI)? = nil) {
         isDemo = demo
         self.api = api ?? (demo ? DemoPhoneAPI() : UnavailablePhoneAPI())
+        self.parkApi = parkApi ?? (demo ? DemoParkQueueAPI() : UnavailableParkQueueAPI())
     }
 
     public var unreadCount: Int { messages.filter { !$0.isRead }.count }
@@ -474,6 +479,74 @@ public final class PhoneStore: ObservableObject {
         self.messages = messages
         self.people = people
         error = nil
+    }
+
+    // MARK: park + queues (PHONE-PLUS R1)
+
+    @Published public private(set) var parkedCalls: [ParkedCall] = []
+    @Published public private(set) var queues: [CallQueue] = []
+    @Published public private(set) var attendants: [AutoAttendant] = []
+    /// refreshPlus gate (see method; independent of `loading`).
+    private var plusLoading = false
+
+    /// Test seam: adopt park/queue demo state without I/O.
+    public func adoptPlus(parked: [ParkedCall], queues: [CallQueue], attendants: [AutoAttendant]) {
+        self.parkedCalls = parked
+        self.queues = queues
+        self.attendants = attendants
+        error = nil
+    }
+
+    /// Refresh park/queue demo state. Live never fetches (no licence, no
+    /// policy, no Graph shape) — views show the reasons instead.
+    /// Own gate (not the shared `loading` flag: `refresh()` may already
+    /// hold it when the sheet appears and both must complete).
+    public func refreshPlus() {
+        guard isDemo, !plusLoading else { return }
+        plusLoading = true
+        let parkApi = self.parkApi
+        Task {
+            do {
+                let p = try await Task.blocking { try parkApi.parked() }.value
+                let q = try await Task.blocking { try parkApi.queues() }.value
+                let a = try await Task.blocking { try parkApi.attendants() }.value
+                self.parkedCalls = p
+                self.queues = q
+                self.attendants = a
+                self.error = nil
+            } catch {
+                self.error = String(describing: error)
+            }
+            self.plusLoading = false
+        }
+    }
+
+    public func parkCall(name: String) {
+        guard isDemo else { return }
+        let parkApi = self.parkApi
+        Task {
+            do {
+                let c = try await Task.blocking { try parkApi.park(name: name) }.value
+                self.parkedCalls.insert(c, at: 0)
+                self.error = nil
+            } catch {
+                self.error = String(describing: error)
+            }
+        }
+    }
+
+    public func pickupCall(code: String) {
+        guard isDemo else { return }
+        let parkApi = self.parkApi
+        Task {
+            do {
+                let c = try await Task.blocking { try parkApi.pickup(code: code) }.value
+                self.parkedCalls.removeAll { $0.id == c.id }
+                self.error = nil
+            } catch {
+                self.error = String(describing: error)
+            }
+        }
     }
 
     /// Refresh from the source. Live never fetches (no licence) — views
@@ -571,4 +644,211 @@ public final class PhoneStore: ObservableObject {
             }
         }
     }
+}
+
+// MARK: - Call park / pickup (PHONE-PLUS R1)
+//
+// Endpoint map (R0, docs): NO Graph endpoint exists for parking or
+// picking up a call — delegated or application. Park/retrieve is a Teams
+// client feature; the admin path is Teams PowerShell (call-park policy
+// cmdlets) and the caller must be an Enterprise Voice user covered by a
+// call-park policy. There is no Graph scope to request, so the live
+// surface stays disabled until a licence + policy is proven — same
+// licence-gated pattern as the PHONEUI tabs above. Demo fake only.
+
+/// One parked call (demo shape; no Graph read exists).
+public struct ParkedCall: Equatable, Identifiable, Sendable {
+    public let id: String
+    public let code: String
+    public let parkedFor: String
+    public let at: Date
+
+    public init(id: String, code: String, parkedFor: String, at: Date) {
+        self.id = id
+        self.code = code
+        self.parkedFor = parkedFor
+        self.at = at
+    }
+}
+
+/// Pickup-code rules: Teams announces a numeric code; the retriever dials
+/// it. Digits only, 2–8 long.
+public enum CallParkCode {
+    public static func normalize(_ raw: String) -> String {
+        String(raw.filter(\.isNumber).prefix(8))
+    }
+
+    public static func isRetrievable(_ raw: String) -> Bool {
+        let n = normalize(raw)
+        return n.count >= 2 && n.count <= 8 && n.allSatisfy(\.isNumber)
+    }
+}
+
+// MARK: - Call queues / auto attendants (PHONE-PLUS R1)
+//
+// Endpoint map (R0, docs): NO Graph endpoint exists for listing or
+// managing call queues or auto attendants (MS Q&A confirms; the admin
+// path is Teams PowerShell queue/attendant cmdlets). Licence story: Teams
+// Phone System plus resource accounts. Same pattern: demo browse only,
+// live disabled with the reason.
+
+/// One call queue (demo shape; no Graph read exists).
+public struct CallQueue: Equatable, Identifiable, Sendable {
+    public let id: String
+    public let name: String
+    public let agentCount: Int
+    public let routing: String
+
+    public init(id: String, name: String, agentCount: Int, routing: String) {
+        self.id = id
+        self.name = name
+        self.agentCount = agentCount
+        self.routing = routing
+    }
+
+    static func parse(_ obj: [String: Any]) -> CallQueue? {
+        guard let id = obj["id"] as? String, !id.isEmpty,
+              let name = (obj["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !name.isEmpty
+        else { return nil }
+        let agents = obj["agentCount"] as? Int ?? 0
+        let routing = (obj["routing"] as? String) ?? ""
+        return CallQueue(id: id, name: name, agentCount: max(0, agents), routing: routing)
+    }
+
+    static func parseList(_ data: Data) -> [CallQueue]? {
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let rows = obj["value"] as? [[String: Any]]
+        else { return nil }
+        return rows.compactMap(parse)
+    }
+}
+
+/// One auto attendant (demo shape; no Graph read exists).
+public struct AutoAttendant: Equatable, Identifiable, Sendable {
+    public let id: String
+    public let name: String
+    public let greeting: String
+
+    public init(id: String, name: String, greeting: String) {
+        self.id = id
+        self.name = name
+        self.greeting = greeting
+    }
+
+    static func parse(_ obj: [String: Any]) -> AutoAttendant? {
+        guard let id = obj["id"] as? String, !id.isEmpty,
+              let name = (obj["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !name.isEmpty
+        else { return nil }
+        let greeting = (obj["greeting"] as? String) ?? ""
+        return AutoAttendant(id: id, name: name, greeting: greeting)
+    }
+
+    static func parseList(_ data: Data) -> [AutoAttendant]? {
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let rows = obj["value"] as? [[String: Any]]
+        else { return nil }
+        return rows.compactMap(parse)
+    }
+}
+
+// MARK: - Park/queue API seam (DemoChannelMembers precedent)
+
+/// Park/queue source. Sync throws (the blocking-FFI shape); stores run
+/// these off-main via `Task.blocking`, same contract as `PhoneAPI`.
+public protocol ParkQueueAPI: Sendable {
+    func parked() throws -> [ParkedCall]
+    func park(name: String) throws -> ParkedCall
+    func pickup(code: String) throws -> ParkedCall
+    func queues() throws -> [CallQueue]
+    func attendants() throws -> [AutoAttendant]
+}
+
+/// Live source: no licence, no policy, no Graph shape — every call throws
+/// the licence reason.
+public struct UnavailableParkQueueAPI: ParkQueueAPI {
+    public init() {}
+    public func parked() throws -> [ParkedCall] { throw PhoneAPIError.needsLicence(PhoneStore.parkReason) }
+    public func park(name: String) throws -> ParkedCall { throw PhoneAPIError.needsLicence(PhoneStore.parkReason) }
+    public func pickup(code: String) throws -> ParkedCall { throw PhoneAPIError.needsLicence(PhoneStore.parkReason) }
+    public func queues() throws -> [CallQueue] { throw PhoneAPIError.needsLicence(PhoneStore.queuesReason) }
+    public func attendants() throws -> [AutoAttendant] { throw PhoneAPIError.needsLicence(PhoneStore.queuesReason) }
+}
+
+/// Seeded in-memory fake (demo). Western demo names (repo rule).
+/// @unchecked: every read/write of state holds `lock`.
+public final class DemoParkQueueAPI: ParkQueueAPI, @unchecked Sendable {
+    private let lock = NSLock()
+    private var calls: [ParkedCall]
+    private var queuesValue: [CallQueue]
+    private var attendantsValue: [AutoAttendant]
+    private var counter = 0
+
+    public init() {
+        let base = Date(timeIntervalSince1970: 1_764_000_000)
+        calls = [
+            ParkedCall(id: "demo-park-1", code: "731", parkedFor: "Megan Harper", at: base),
+            ParkedCall(id: "demo-park-2", code: "4528", parkedFor: "Tom Becker", at: base - 900),
+        ]
+        queuesValue = [
+            CallQueue(id: "demo-q-1", name: "Support", agentCount: 4, routing: "Round robin"),
+            CallQueue(id: "demo-q-2", name: "Sales", agentCount: 2, routing: "Attendant routing"),
+        ]
+        attendantsValue = [
+            AutoAttendant(id: "demo-aa-1", name: "Main", greeting: "Thanks for calling — press 1 for Support, 2 for Sales."),
+            AutoAttendant(id: "demo-aa-2", name: "After hours", greeting: "Our offices are closed — please leave a message."),
+        ]
+    }
+
+    public func parked() throws -> [ParkedCall] {
+        lock.lock(); defer { lock.unlock() }
+        return calls.sorted { $0.at > $1.at }
+    }
+
+    public func park(name: String) throws -> ParkedCall {
+        lock.lock(); defer { lock.unlock() }
+        let clean = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty else { throw PhoneAPIError.failed("Enter a name to park the call for.") }
+        counter += 1
+        let code = String(700 + counter * 7)
+        let c = ParkedCall(id: "demo-park-added-\(counter)", code: code, parkedFor: clean, at: Date())
+        calls.append(c)
+        return c
+    }
+
+    public func pickup(code: String) throws -> ParkedCall {
+        lock.lock(); defer { lock.unlock() }
+        let want = CallParkCode.normalize(code)
+        guard CallParkCode.isRetrievable(want) else {
+            throw PhoneAPIError.failed("Enter the numeric pickup code announced when the call was parked.")
+        }
+        guard let i = calls.firstIndex(where: { $0.code == want }) else {
+            throw PhoneAPIError.failed("No parked call answers to that code.")
+        }
+        return calls.remove(at: i)
+    }
+
+    public func queues() throws -> [CallQueue] {
+        lock.lock(); defer { lock.unlock() }
+        return queuesValue
+    }
+
+    public func attendants() throws -> [AutoAttendant] {
+        lock.lock(); defer { lock.unlock() }
+        return attendantsValue
+    }
+}
+
+// MARK: - PhoneStore plus (park + queues state)
+
+extension PhoneStore {
+    /// Shown on the live Park tab (no Graph endpoint; needs Enterprise
+    /// Voice + a call-park policy as well as the licence).
+    public static let parkReason =
+        "Call park needs a Teams Phone licence and a call park policy — ask your admin."
+    /// Shown on the live Queues tab (no Graph endpoint; admin-provisioned
+    /// queues/attendants).
+    public static let queuesReason =
+        "Call queues and auto attendants need a Teams Phone licence — ask your admin."
 }

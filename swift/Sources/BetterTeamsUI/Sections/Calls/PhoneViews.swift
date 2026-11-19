@@ -14,6 +14,8 @@ enum PhoneTab: String, CaseIterable, Identifiable {
     case voicemail
     case forwarding
     case delegates
+    case park
+    case queues
 
     var id: String { rawValue }
 }
@@ -55,12 +57,18 @@ struct PhoneSheet: View {
                 DelegatesView(phone: phone)
                     .tabItem { Label("Delegates", systemImage: "person.2") }
                     .tag(PhoneTab.delegates)
+                ParkView(phone: phone)
+                    .tabItem { Label("Park", systemImage: "pause.circle") }
+                    .tag(PhoneTab.park)
+                QueuesView(phone: phone)
+                    .tabItem { Label("Queues", systemImage: "person.3") }
+                    .tag(PhoneTab.queues)
             }
             .padding(.horizontal, 12)
             .padding(.bottom, 12)
         }
         .frame(minWidth: 480, minHeight: 420)
-        .onAppear { phone.refresh() }
+        .onAppear { phone.refresh(); phone.refreshPlus() }
     }
 }
 
@@ -459,5 +467,173 @@ struct DelegatesView: View {
         let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let at = t.firstIndex(of: "@"), at != t.startIndex, at != t.index(before: t.endIndex) else { return false }
         return t[t.index(after: at)...].contains(".")
+    }
+}
+
+// MARK: park / pickup
+
+/// Parked-call list + park-by-name + pickup-by-code. Demo edits the fake;
+/// live is disabled with the licence reason (no Graph park/pickup shape —
+/// Teams client feature behind a call-park policy).
+struct ParkView: View {
+    @ObservedObject var phone: PhoneStore
+    @State private var name = ""
+    @State private var code = ""
+    @State private var retrieved: ParkedCall?
+
+    var body: some View {
+        if phone.isDemo {
+            demoPark
+        } else {
+            VStack(spacing: 8) {
+                PhoneUnavailablePane()
+                Text(PhoneStore.parkReason)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                Text(PhoneStore.liveReason)
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
+        }
+    }
+
+    private var demoPark: some View {
+        VStack(spacing: 0) {
+            if phone.parkedCalls.isEmpty {
+                ContentUnavailableView("No Parked Calls", systemImage: "pause.circle",
+                                       description: Text("Parked calls wait here until someone picks them up."))
+            } else {
+                List {
+                    ForEach(phone.parkedCalls) { c in
+                        HStack {
+                            Text(c.code)
+                                .font(.title3.monospacedDigit())
+                            VStack(alignment: .leading) {
+                                Text(c.parkedFor)
+                                Text(ParkView.timeLabel(c.at))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Button("Pick Up") { pick(c.code) }
+                                .buttonStyle(.link)
+                        }
+                    }
+                }
+                .listStyle(.inset)
+            }
+            Divider()
+            HStack {
+                TextField("Park a call for (name)", text: $name)
+                    .textFieldStyle(.roundedBorder)
+                Button("Park") { park() }
+                    .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+            .padding(.horizontal, 12)
+            .padding(.top, 8)
+            HStack {
+                TextField("Pickup code", text: $code)
+                    .textFieldStyle(.roundedBorder)
+                    .onChange(of: code) { _, v in code = CallParkCode.normalize(v) }
+                Button("Retrieve") { pick(code) }
+                    .disabled(!CallParkCode.isRetrievable(code))
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            if let r = retrieved {
+                Text("Picked up \(r.parkedFor)'s call (\(r.code)).")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.bottom, 8)
+            }
+            if let e = phone.error {
+                Text(e).font(.caption).foregroundStyle(.red).padding(.bottom, 8)
+            }
+        }
+    }
+
+    private func park() {
+        retrieved = nil
+        phone.parkCall(name: name)
+        name = ""
+    }
+
+    private func pick(_ c: String) {
+        // The store removes the call on success; surface the code back.
+        retrieved = phone.parkedCalls.first { $0.code == CallParkCode.normalize(c) }
+        phone.pickupCall(code: c)
+        code = ""
+    }
+
+    static func timeLabel(_ date: Date) -> String {
+        let f = DateFormatter()
+        f.dateStyle = .none
+        f.timeStyle = .short
+        return f.string(from: date)
+    }
+}
+
+// MARK: queues / auto attendants
+
+/// Browse call queues + auto attendants. Demo lists the seeded fake; live
+/// is disabled with the licence reason (no Graph queue/attendant shape —
+/// Teams PowerShell admin surface).
+struct QueuesView: View {
+    @ObservedObject var phone: PhoneStore
+
+    var body: some View {
+        if phone.isDemo {
+            demoQueues
+        } else {
+            VStack(spacing: 8) {
+                PhoneUnavailablePane()
+                Text(PhoneStore.queuesReason)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                Text(PhoneStore.liveReason)
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
+        }
+    }
+
+    private var demoQueues: some View {
+        List {
+            Section("Call Queues") {
+                if phone.queues.isEmpty {
+                    Text("No queues.")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(phone.queues) { q in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(q.name)
+                            Text("\(q.agentCount) agents · \(q.routing)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.vertical, 2)
+                    }
+                }
+            }
+            Section("Auto Attendants") {
+                if phone.attendants.isEmpty {
+                    Text("No auto attendants.")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(phone.attendants) { a in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(a.name)
+                            Text(a.greeting)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.vertical, 2)
+                    }
+                }
+            }
+        }
+        .listStyle(.inset)
     }
 }
