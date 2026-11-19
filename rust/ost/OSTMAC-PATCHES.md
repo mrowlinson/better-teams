@@ -2117,3 +2117,20 @@ this pass), `rust/ostmac-core` lib 224/0. Older counts (lib 257, core
     Tests: int maps, URL pins, round-trip + defaults + malformed, e2e
     thread-PUT, General refusal, bad-value bails.
     UPSTREAM: PR https://github.com/eisbaw/ost/pull/128 (fix/channel-moderation-thread-put, stacks on #120; fake-transport e2e omitted with the never-ported harness, same precedent as #124)
+
+117. [feat] `src/api/schedule.rs` + `src/api/mod.rs` — **Shifts write
+    ops (lanes/shiftswrite)**. New data fns over the existing
+    `graph_post`/`graph_patch`/`graph_delete` helpers: swap/offer/
+    time-off request create + approve/decline, shift create/update/
+    delete, direct time-off create, `POST .../schedule/share`
+    (publish). All args validated pre-network (team/kind ids,
+    ISO-8601 bounds); `is_missing_scope` recognizes the 403
+    `Missing scope permissions` refusal (names
+    `Schedule.ReadWrite.All` / `Group.ReadWrite.All`). Every write
+    needs delegated `Schedule.ReadWrite.All`: trial live probe
+    `tests/shifts_write_probe.rs` (ignored, explicit run) records
+    schedule `enabled=false`/`NotStarted` + POST timeOffRequests 403
+    with the token's scope list (no `Schedule.*`), then declines any
+    created request (net-zero; verified by re-list).
+    Tests: path/validation unit tests + the ignored live probe.
+    UPSTREAM: pending

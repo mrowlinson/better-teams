@@ -564,6 +564,70 @@ char *ostmac_schedule_week(const char *team_id);
 char *ostmac_schedule_range(const char *team_id, const char *start,
                             const char *end);
 
+// One team's change requests of one kind ("swap"|"offer"|"timeoff"):
+// {ok,team_id,kind,requests:[{id,state?,sender_shift_id?,
+// receiver_user_id?,reason_id?,start?,end?,message?}]}. Unknown kind
+// yields {ok:false,error:"arg"} pre-network. Caller frees.
+char *ostmac_schedule_requests(const char *team_id, const char *kind);
+
+// Create a swap request for one shift: {ok,id}. Null receiver/message
+// = absent. Without Schedule.ReadWrite.All: {ok:false,error:"scope"}.
+char *ostmac_schedule_swap_create(const char *team_id,
+                                  const char *sender_shift_id,
+                                  const char *receiver_user_id,
+                                  const char *message);
+
+// Create an offer request (give one shift to one member): {ok,id}.
+// Same scope rule as the swap create.
+char *ostmac_schedule_offer_create(const char *team_id,
+                                   const char *sender_shift_id,
+                                   const char *receiver_user_id,
+                                   const char *message);
+
+// Create a time-off request for one reason and range: {ok,id}.
+// Bad bounds yield {ok:false,error:"arg"} pre-network.
+char *ostmac_schedule_timeoff_request_create(const char *team_id,
+                                             const char *reason_id,
+                                             const char *start,
+                                             const char *end,
+                                             const char *message);
+
+// Approve (approve != 0) or decline one change request (manager):
+// {ok}. Unknown kind / blank id yield {ok:false,error:"arg"}.
+char *ostmac_schedule_request_decide(const char *team_id,
+                                     const char *kind,
+                                     const char *request_id, int approve,
+                                     const char *message);
+
+// Create one draft shift (manager): {ok,id}. Null/blank user = open
+// shift. Bad bounds yield {ok:false,error:"arg"} pre-network.
+char *ostmac_schedule_shift_create(const char *team_id, const char *user_id,
+                                    const char *start, const char *end,
+                                    const char *display_name,
+                                    const char *theme, const char *notes);
+
+// Patch one shift's draft slot (manager): {ok}. All-blank fields yield
+// {ok:false,error:"arg"} (nothing to update).
+char *ostmac_schedule_shift_update(const char *team_id, const char *shift_id,
+                                    const char *start, const char *end,
+                                    const char *display_name,
+                                    const char *theme, const char *notes);
+
+// Delete one shift (manager): {ok}.
+char *ostmac_schedule_shift_delete(const char *team_id,
+                                    const char *shift_id);
+
+// Create one draft time-off instance directly (manager): {ok,id}.
+char *ostmac_schedule_timeoff_create(const char *team_id,
+                                     const char *user_id,
+                                     const char *reason_id,
+                                     const char *start, const char *end);
+
+// Publish drafts (manager): {ok}. notify != 0 notifies the team.
+// Blank bounds share the whole schedule.
+char *ostmac_schedule_share(const char *team_id, int notify,
+                             const char *start, const char *end);
+
 // Start background Trouter push: 0 ok, -1 running, -2 no auth, -3 rt fail.
 int ostmac_trouter_start(void);
 

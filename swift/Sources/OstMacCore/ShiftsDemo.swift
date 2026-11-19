@@ -77,3 +77,84 @@ public enum ShiftsDemo {
         ])
     }
 }
+
+/// Mutable demo Shifts session (offline, in-memory): the demo store's
+/// week fetcher and writer share one instance, so request/approve and
+/// create/publish flows run end to end in `--demo` and captures.
+/// Lock-guarded: writer closures run off the main thread.
+public final class ShiftsDemoSession: @unchecked Sendable {
+    private let lock = NSLock()
+    private var requestSeq = 0
+    private var shiftSeq = 0
+    /// Requests by kind (seeded with one pending swap + one pending
+    /// time-off so the manager queue is never empty in demo).
+    public var requests: [ShiftChangeRequest] = [
+        ShiftChangeRequest(id: "demo-req-swap-1", kind: "swap", state: "pending",
+                           senderShiftID: "demo-shift-tom-fri", receiverUserID: "demo-u-ava",
+                           message: "Can you take my Friday on-call?"),
+        ShiftChangeRequest(id: "demo-req-off-1", kind: "timeoff", state: "pending",
+                           receiverUserID: "demo-u-ava", reasonID: "demo-reason-vacation",
+                           start: ShiftsDemo.stamp(10, 0), end: ShiftsDemo.stamp(12, 0),
+                           message: "Long weekend"),
+    ]
+    /// Draft shifts created this session (land in the week grid).
+    public var extraShifts: [ShiftItem] = []
+    /// Draft time-off created this session.
+    public var extraTimeOff: [TimeOffItem] = []
+    /// Shift overlay by id (updated draft, or nil = deleted).
+    public var shiftOverlay: [String: ShiftItem?] = [:]
+    /// Time-off overlay by id (nil = deleted).
+    public var timeOffOverlay: [String: TimeOffItem?] = [:]
+    /// Share stamps drafts shared (demo publish).
+    public var shared = false
+
+    public init() {}
+
+    /// Canned week + session overlays (draft extras stay draft until
+    /// `shared` flips them, mirroring publish).
+    public func response(teamID: String) -> ShiftWeekResponse {
+        lock.lock(); defer { lock.unlock() }
+        let base = ShiftsDemo.response(teamID: teamID)
+        let shifts = base.shifts.compactMap { s -> ShiftItem? in
+            guard let over = shiftOverlay[s.id] else { return self.applyShared(s) }
+            return over.map { self.applyShared($0) }
+        } + extraShifts.map { applyShared($0) }
+        let offs = base.timesOff.compactMap { t -> TimeOffItem? in
+            guard let over = timeOffOverlay[t.id] else { return self.applyShared(t) }
+            return over.map { self.applyShared($0) }
+        } + extraTimeOff.map { applyShared($0) }
+        return ShiftWeekResponse(ok: true, team_id: teamID, schedule: base.schedule,
+                                 shifts: shifts, timesOff: offs, reasons: base.reasons)
+    }
+
+    private func applyShared(_ s: ShiftItem) -> ShiftItem {
+        guard shared, s.isDraft else { return s }
+        return ShiftItem(id: s.id, userId: s.userId, displayName: s.displayName,
+                         start: s.start, end: s.end, theme: s.theme, notes: s.notes, isDraft: false)
+    }
+
+    private func applyShared(_ t: TimeOffItem) -> TimeOffItem {
+        guard shared, t.isDraft else { return t }
+        return TimeOffItem(id: t.id, userId: t.userId, reasonId: t.reasonId,
+                           start: t.start, end: t.end, isDraft: false)
+    }
+
+    func withLock<T>(_ body: () -> T) -> T {
+        lock.lock(); defer { lock.unlock() }
+        return body()
+    }
+
+    func nextRequestID() -> String {
+        withLock {
+            requestSeq += 1
+            return "demo-req-\(requestSeq)"
+        }
+    }
+
+    func nextShiftID() -> String {
+        withLock {
+            shiftSeq += 1
+            return "demo-shift-new-\(shiftSeq)"
+        }
+    }
+}

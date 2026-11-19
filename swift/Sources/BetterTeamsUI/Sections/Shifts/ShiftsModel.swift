@@ -27,6 +27,8 @@ struct ShiftsCell: Identifiable, Equatable {
     let theme: String?
     let isDraft: Bool
     let notes: String?
+    /// Time-off spans render from time-off rows (no swap/delete).
+    let isTimeOff: Bool
 }
 
 /// One table row: a person's week (shifts and time off).
@@ -59,7 +61,7 @@ struct ShiftsRow: Identifiable, Equatable {
                 let end = ShiftItem.parse(dateTime: s.end)
                 let range = [start, end].compactMap { $0?.formatted(time) }.joined(separator: " \u{2013} ")
                 days[day].append(ShiftsCell(id: s.id, time: range, label: s.displayName, theme: s.theme,
-                                            isDraft: s.isDraft, notes: s.notes))
+                                            isDraft: s.isDraft, notes: s.notes, isTimeOff: false))
                 byUser[key] = days
             }
         }
@@ -79,7 +81,8 @@ struct ShiftsRow: Identifiable, Equatable {
                     : "\(max(s, ds).formatted(time)) \u{2013} \(min(e, de).formatted(time))"
                 days[d].append(ShiftsCell(id: "\(t.id)-\(d)", time: range,
                                           label: t.reasonId.flatMap { reasonNames[$0] } ?? "Time Off",
-                                          theme: timeOffTheme, isDraft: t.isDraft, notes: nil))
+                                          theme: timeOffTheme, isDraft: t.isDraft, notes: nil,
+                                          isTimeOff: true))
             }
             byUser[key] = days
         }

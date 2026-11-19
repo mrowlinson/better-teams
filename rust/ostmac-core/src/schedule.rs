@@ -1,15 +1,19 @@
-//! Team schedule week (Shifts) JSON over the FFI (read-only).
+//! Team schedule week (Shifts) JSON over the FFI, plus write ops.
 //!
 //! One FFI call returns the whole week grid: schedule header + shifts
 //! + time-off instances + reasons, so Swift renders with a single
 //! round-trip. Balances are host-side counts of approved instances per
-//! reason (Graph exposes no balances endpoint). No writes.
+//! reason (Graph exposes no balances endpoint). Writes (change
+//! requests, shift CRUD, publish) need `Schedule.ReadWrite.All` and
+//! are manager-gated in the UI; without the scope they fail with
+//! `error: "scope"`.
 
 use std::ffi::c_char;
+use std::os::raw::c_int;
 
 use serde_json::json;
 
-use super::{cstr_to_string, err_json, rt, string_to_c};
+use super::{cstr_to_string, err_json, opt_cstr_to_string, rt, string_to_c};
 
 fn shift_to_json(s: &ost::api::ShiftInfo) -> serde_json::Value {
     json!({
@@ -192,6 +196,599 @@ pub extern "C" fn ostmac_schedule_range(
     }
 }
 
+// -- Write ops (swap/offer/time-off requests, shift CRUD, publish) --
+//
+// Envelopes: `{ok:true, ...}` or `{ok:false, error, detail}`. `error`
+// is `arg` for caller mistakes (rejected before any sign-in/network),
+// `scope` when the tenant token lacks `Schedule.ReadWrite.All`
+// (the host shows scope-pending instead of raw JSON), else the op
+// name. A null C string means "absent" for every optional arg; a
+// non-null blank is absent too.
+
+/// Map a write failure: missing-scope refusals become `scope`, arg
+/// failures stay `arg` only when raised pre-network (FFI checks run
+/// first), everything else carries the op name.
+fn write_err(op: &str, e: String) -> String {
+    let text = e;
+    if ost::api::is_missing_scope(&text) {
+        err_json("scope", format!("{} needs Schedule.ReadWrite.All: {}", op, text))
+    } else {
+        err_json(op, text)
+    }
+}
+
+fn nonempty(value: &str, what: &str) -> Result<String, String> {
+    let v = value.trim();
+    if v.is_empty() {
+        return Err(err_json("arg", format!("empty {}", what)));
+    }
+    Ok(v.to_string())
+}
+
+fn request_to_json(r: &ost::api::ChangeRequestInfo) -> serde_json::Value {
+    json!({
+        "id": r.id,
+        "state": r.state,
+        "sender_shift_id": r.sender_shift_id,
+        "receiver_user_id": r.receiver_user_id,
+        "reason_id": r.reason_id,
+        "start": r.start,
+        "end": r.end,
+        "message": r.message,
+    })
+}
+
+fn requests_json(team_id: &str, kind: &str) -> String {
+    if team_id.trim().is_empty() {
+        return err_json("arg", "empty team_id");
+    }
+    if ost::api::request_collection(kind).is_err() {
+        return err_json("arg", format!("unknown shift request kind '{}'", kind.trim()));
+    }
+    let run = || -> Result<String, String> {
+        let r = rt()?;
+        r.block_on(async {
+            let client = timed("sign-in", SCHEDULE_CALL_TIMEOUT, ost::api::client::TeamsClient::new()).await?;
+            let reqs = timed(
+                "requests",
+                SCHEDULE_CALL_TIMEOUT,
+                ost::api::list_change_requests_data(&client, team_id, kind),
+            )
+            .await?;
+            Ok(json!({
+                "ok": true,
+                "team_id": team_id.trim(),
+                "kind": kind.trim(),
+                "requests": reqs.iter().map(request_to_json).collect::<Vec<_>>(),
+            })
+            .to_string())
+        })
+    };
+    match run() {
+        Ok(s) => s,
+        Err(e) => write_err("schedule_requests", e),
+    }
+}
+
+/// One team's change requests of one kind (`swap`|`offer`|`timeoff`).
+#[no_mangle]
+pub extern "C" fn ostmac_schedule_requests(team_id: *const c_char, kind: *const c_char) -> *mut c_char {
+    let team = match cstr_to_string(team_id) {
+        Ok(s) => s,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    match cstr_to_string(kind) {
+        Ok(k) => string_to_c(requests_json(&team, &k)),
+        Err(e) => string_to_c(err_json("arg", e)),
+    }
+}
+
+fn sender_request_json(
+    op: &str,
+    team_id: &str,
+    kind: &str,
+    sender_shift_id: &str,
+    receiver_user_id: Option<&str>,
+    message: Option<&str>,
+) -> String {
+    if team_id.trim().is_empty() {
+        return err_json("arg", "empty team_id");
+    }
+    let sender = match nonempty(sender_shift_id, "sender_shift_id") {
+        Ok(s) => s,
+        Err(e) => return e,
+    };
+    let run = || -> Result<String, String> {
+        let r = rt()?;
+        r.block_on(async {
+            let client = timed("sign-in", SCHEDULE_CALL_TIMEOUT, ost::api::client::TeamsClient::new()).await?;
+            let id = timed(op, SCHEDULE_CALL_TIMEOUT, async {
+                match kind {
+                    "swap" => ost::api::create_swap_request_data(&client, team_id, &sender, receiver_user_id, message).await,
+                    _ => ost::api::create_offer_request_data(&client, team_id, &sender, receiver_user_id, message).await,
+                }
+            })
+            .await?;
+            Ok(json!({ "ok": true, "id": id }).to_string())
+        })
+    };
+    match run() {
+        Ok(s) => s,
+        Err(e) => write_err(op, e),
+    }
+}
+
+/// Create a swap request for one shift. Null receiver/message = absent.
+#[no_mangle]
+pub extern "C" fn ostmac_schedule_swap_create(
+    team_id: *const c_char,
+    sender_shift_id: *const c_char,
+    receiver_user_id: *const c_char,
+    message: *const c_char,
+) -> *mut c_char {
+    let team = match cstr_to_string(team_id) {
+        Ok(s) => s,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    let sender = match cstr_to_string(sender_shift_id) {
+        Ok(s) => s,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    let recv = opt_cstr_to_string(receiver_user_id).unwrap_or(None);
+    let msg = opt_cstr_to_string(message).unwrap_or(None);
+    string_to_c(sender_request_json(
+        "schedule_swap", &team, "swap", &sender, recv.as_deref(), msg.as_deref(),
+    ))
+}
+
+/// Create an offer request (give one shift to one member).
+#[no_mangle]
+pub extern "C" fn ostmac_schedule_offer_create(
+    team_id: *const c_char,
+    sender_shift_id: *const c_char,
+    receiver_user_id: *const c_char,
+    message: *const c_char,
+) -> *mut c_char {
+    let team = match cstr_to_string(team_id) {
+        Ok(s) => s,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    let sender = match cstr_to_string(sender_shift_id) {
+        Ok(s) => s,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    let recv = opt_cstr_to_string(receiver_user_id).unwrap_or(None);
+    let msg = opt_cstr_to_string(message).unwrap_or(None);
+    string_to_c(sender_request_json(
+        "schedule_offer", &team, "offer", &sender, recv.as_deref(), msg.as_deref(),
+    ))
+}
+
+fn timeoff_request_json(
+    team_id: &str,
+    reason_id: &str,
+    start: &str,
+    end: &str,
+    message: Option<&str>,
+) -> String {
+    if team_id.trim().is_empty() {
+        return err_json("arg", "empty team_id");
+    }
+    if reason_id.trim().is_empty() {
+        return err_json("arg", "empty reason_id");
+    }
+    if !ost::api::datetime_ok(start) {
+        return err_json("arg", "start must be an ISO-8601 date-time");
+    }
+    if !ost::api::datetime_ok(end) {
+        return err_json("arg", "end must be an ISO-8601 date-time");
+    }
+    let run = || -> Result<String, String> {
+        let r = rt()?;
+        r.block_on(async {
+            let client = timed("sign-in", SCHEDULE_CALL_TIMEOUT, ost::api::client::TeamsClient::new()).await?;
+            let id = timed(
+                "schedule_timeoff_request",
+                SCHEDULE_CALL_TIMEOUT,
+                ost::api::create_timeoff_request_data(&client, team_id, reason_id, start, end, message),
+            )
+            .await?;
+            Ok(json!({ "ok": true, "id": id }).to_string())
+        })
+    };
+    match run() {
+        Ok(s) => s,
+        Err(e) => write_err("schedule_timeoff_request", e),
+    }
+}
+
+/// Create a time-off request for one reason and range.
+#[no_mangle]
+pub extern "C" fn ostmac_schedule_timeoff_request_create(
+    team_id: *const c_char,
+    reason_id: *const c_char,
+    start: *const c_char,
+    end: *const c_char,
+    message: *const c_char,
+) -> *mut c_char {
+    let team = match cstr_to_string(team_id) {
+        Ok(s) => s,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    let reason = match cstr_to_string(reason_id) {
+        Ok(s) => s,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    let from = match cstr_to_string(start) {
+        Ok(s) => s,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    let to = match cstr_to_string(end) {
+        Ok(s) => s,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    let msg = opt_cstr_to_string(message).unwrap_or(None);
+    string_to_c(timeoff_request_json(&team, &reason, &from, &to, msg.as_deref()))
+}
+
+fn decide_json(
+    team_id: &str,
+    kind: &str,
+    request_id: &str,
+    approve: bool,
+    message: Option<&str>,
+) -> String {
+    if team_id.trim().is_empty() {
+        return err_json("arg", "empty team_id");
+    }
+    if ost::api::request_collection(kind).is_err() {
+        return err_json("arg", format!("unknown shift request kind '{}'", kind.trim()));
+    }
+    if request_id.trim().is_empty() {
+        return err_json("arg", "empty request_id");
+    }
+    let run = || -> Result<String, String> {
+        let r = rt()?;
+        r.block_on(async {
+            let client = timed("sign-in", SCHEDULE_CALL_TIMEOUT, ost::api::client::TeamsClient::new()).await?;
+            timed(
+                "schedule_decide",
+                SCHEDULE_CALL_TIMEOUT,
+                ost::api::decide_change_request_data(&client, team_id, kind, request_id, approve, message),
+            )
+            .await?;
+            Ok(json!({ "ok": true }).to_string())
+        })
+    };
+    match run() {
+        Ok(s) => s,
+        Err(e) => write_err("schedule_decide", e),
+    }
+}
+
+/// Approve (`approve` != 0) or decline one change request (manager).
+#[no_mangle]
+pub extern "C" fn ostmac_schedule_request_decide(
+    team_id: *const c_char,
+    kind: *const c_char,
+    request_id: *const c_char,
+    approve: c_int,
+    message: *const c_char,
+) -> *mut c_char {
+    let team = match cstr_to_string(team_id) {
+        Ok(s) => s,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    let kind_s = match cstr_to_string(kind) {
+        Ok(s) => s,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    let req = match cstr_to_string(request_id) {
+        Ok(s) => s,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    let msg = opt_cstr_to_string(message).unwrap_or(None);
+    string_to_c(decide_json(&team, &kind_s, &req, approve != 0, msg.as_deref()))
+}
+
+fn shift_create_json(
+    team_id: &str,
+    user_id: Option<&str>,
+    start: &str,
+    end: &str,
+    display_name: Option<&str>,
+    theme: Option<&str>,
+    notes: Option<&str>,
+) -> String {
+    if team_id.trim().is_empty() {
+        return err_json("arg", "empty team_id");
+    }
+    if !ost::api::datetime_ok(start) {
+        return err_json("arg", "start must be an ISO-8601 date-time");
+    }
+    if !ost::api::datetime_ok(end) {
+        return err_json("arg", "end must be an ISO-8601 date-time");
+    }
+    let run = || -> Result<String, String> {
+        let r = rt()?;
+        r.block_on(async {
+            let client = timed("sign-in", SCHEDULE_CALL_TIMEOUT, ost::api::client::TeamsClient::new()).await?;
+            let id = timed(
+                "schedule_shift_create",
+                SCHEDULE_CALL_TIMEOUT,
+                ost::api::create_shift_data(
+                    &client, team_id, user_id.unwrap_or(""), start, end, display_name, theme, notes,
+                ),
+            )
+            .await?;
+            Ok(json!({ "ok": true, "id": id }).to_string())
+        })
+    };
+    match run() {
+        Ok(s) => s,
+        Err(e) => write_err("schedule_shift_create", e),
+    }
+}
+
+/// Create one draft shift (manager). Blank/null user = open shift.
+#[no_mangle]
+pub extern "C" fn ostmac_schedule_shift_create(
+    team_id: *const c_char,
+    user_id: *const c_char,
+    start: *const c_char,
+    end: *const c_char,
+    display_name: *const c_char,
+    theme: *const c_char,
+    notes: *const c_char,
+) -> *mut c_char {
+    let team = match cstr_to_string(team_id) {
+        Ok(s) => s,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    let user = opt_cstr_to_string(user_id).unwrap_or(None);
+    let from = match cstr_to_string(start) {
+        Ok(s) => s,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    let to = match cstr_to_string(end) {
+        Ok(s) => s,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    let name = opt_cstr_to_string(display_name).unwrap_or(None);
+    let theme_s = opt_cstr_to_string(theme).unwrap_or(None);
+    let notes_s = opt_cstr_to_string(notes).unwrap_or(None);
+    string_to_c(shift_create_json(
+        &team, user.as_deref(), &from, &to, name.as_deref(), theme_s.as_deref(), notes_s.as_deref(),
+    ))
+}
+
+fn shift_update_json(
+    team_id: &str,
+    shift_id: &str,
+    start: Option<&str>,
+    end: Option<&str>,
+    display_name: Option<&str>,
+    theme: Option<&str>,
+    notes: Option<&str>,
+) -> String {
+    if team_id.trim().is_empty() {
+        return err_json("arg", "empty team_id");
+    }
+    if shift_id.trim().is_empty() {
+        return err_json("arg", "empty shift_id");
+    }
+    let fields = [start, end, display_name, theme, notes];
+    if !fields.iter().any(|f| f.is_some_and(|s| !s.trim().is_empty())) {
+        return err_json("arg", "nothing to update (all fields blank)");
+    }
+    for (name, v) in [("start", start), ("end", end)] {
+        if let Some(s) = v.filter(|s| !s.trim().is_empty()) {
+            if !ost::api::datetime_ok(s) {
+                return err_json("arg", format!("{} must be an ISO-8601 date-time", name));
+            }
+        }
+    }
+    let run = || -> Result<String, String> {
+        let r = rt()?;
+        r.block_on(async {
+            let client = timed("sign-in", SCHEDULE_CALL_TIMEOUT, ost::api::client::TeamsClient::new()).await?;
+            timed(
+                "schedule_shift_update",
+                SCHEDULE_CALL_TIMEOUT,
+                ost::api::update_shift_data(&client, team_id, shift_id, start, end, display_name, theme, notes),
+            )
+            .await?;
+            Ok(json!({ "ok": true }).to_string())
+        })
+    };
+    match run() {
+        Ok(s) => s,
+        Err(e) => write_err("schedule_shift_update", e),
+    }
+}
+
+/// Patch one shift's draft slot (manager). Blank/null = unchanged.
+#[no_mangle]
+pub extern "C" fn ostmac_schedule_shift_update(
+    team_id: *const c_char,
+    shift_id: *const c_char,
+    start: *const c_char,
+    end: *const c_char,
+    display_name: *const c_char,
+    theme: *const c_char,
+    notes: *const c_char,
+) -> *mut c_char {
+    let team = match cstr_to_string(team_id) {
+        Ok(s) => s,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    let id = match cstr_to_string(shift_id) {
+        Ok(s) => s,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    let from = opt_cstr_to_string(start).unwrap_or(None);
+    let to = opt_cstr_to_string(end).unwrap_or(None);
+    let name = opt_cstr_to_string(display_name).unwrap_or(None);
+    let theme_s = opt_cstr_to_string(theme).unwrap_or(None);
+    let notes_s = opt_cstr_to_string(notes).unwrap_or(None);
+    string_to_c(shift_update_json(
+        &team, &id, from.as_deref(), to.as_deref(), name.as_deref(), theme_s.as_deref(), notes_s.as_deref(),
+    ))
+}
+
+fn shift_delete_json(team_id: &str, shift_id: &str) -> String {
+    if team_id.trim().is_empty() {
+        return err_json("arg", "empty team_id");
+    }
+    if shift_id.trim().is_empty() {
+        return err_json("arg", "empty shift_id");
+    }
+    let run = || -> Result<String, String> {
+        let r = rt()?;
+        r.block_on(async {
+            let client = timed("sign-in", SCHEDULE_CALL_TIMEOUT, ost::api::client::TeamsClient::new()).await?;
+            timed(
+                "schedule_shift_delete",
+                SCHEDULE_CALL_TIMEOUT,
+                ost::api::delete_shift_data(&client, team_id, shift_id),
+            )
+            .await?;
+            Ok(json!({ "ok": true }).to_string())
+        })
+    };
+    match run() {
+        Ok(s) => s,
+        Err(e) => write_err("schedule_shift_delete", e),
+    }
+}
+
+/// Delete one shift (manager).
+#[no_mangle]
+pub extern "C" fn ostmac_schedule_shift_delete(team_id: *const c_char, shift_id: *const c_char) -> *mut c_char {
+    let team = match cstr_to_string(team_id) {
+        Ok(s) => s,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    match cstr_to_string(shift_id) {
+        Ok(id) => string_to_c(shift_delete_json(&team, &id)),
+        Err(e) => string_to_c(err_json("arg", e)),
+    }
+}
+
+fn timeoff_create_json(team_id: &str, user_id: &str, reason_id: &str, start: &str, end: &str) -> String {
+    if team_id.trim().is_empty() {
+        return err_json("arg", "empty team_id");
+    }
+    if user_id.trim().is_empty() {
+        return err_json("arg", "empty user_id");
+    }
+    if reason_id.trim().is_empty() {
+        return err_json("arg", "empty reason_id");
+    }
+    if !ost::api::datetime_ok(start) {
+        return err_json("arg", "start must be an ISO-8601 date-time");
+    }
+    if !ost::api::datetime_ok(end) {
+        return err_json("arg", "end must be an ISO-8601 date-time");
+    }
+    let run = || -> Result<String, String> {
+        let r = rt()?;
+        r.block_on(async {
+            let client = timed("sign-in", SCHEDULE_CALL_TIMEOUT, ost::api::client::TeamsClient::new()).await?;
+            let id = timed(
+                "schedule_timeoff_create",
+                SCHEDULE_CALL_TIMEOUT,
+                ost::api::create_timeoff_data(&client, team_id, user_id, reason_id, start, end),
+            )
+            .await?;
+            Ok(json!({ "ok": true, "id": id }).to_string())
+        })
+    };
+    match run() {
+        Ok(s) => s,
+        Err(e) => write_err("schedule_timeoff_create", e),
+    }
+}
+
+/// Create one draft time-off instance directly (manager).
+#[no_mangle]
+pub extern "C" fn ostmac_schedule_timeoff_create(
+    team_id: *const c_char,
+    user_id: *const c_char,
+    reason_id: *const c_char,
+    start: *const c_char,
+    end: *const c_char,
+) -> *mut c_char {
+    let team = match cstr_to_string(team_id) {
+        Ok(s) => s,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    let user = match cstr_to_string(user_id) {
+        Ok(s) => s,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    let reason = match cstr_to_string(reason_id) {
+        Ok(s) => s,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    let from = match cstr_to_string(start) {
+        Ok(s) => s,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    match cstr_to_string(end) {
+        Ok(to) => string_to_c(timeoff_create_json(&team, &user, &reason, &from, &to)),
+        Err(e) => string_to_c(err_json("arg", e)),
+    }
+}
+
+fn share_json(team_id: &str, notify_team: bool, start: Option<&str>, end: Option<&str>) -> String {
+    if team_id.trim().is_empty() {
+        return err_json("arg", "empty team_id");
+    }
+    for (name, v) in [("start", start), ("end", end)] {
+        if let Some(s) = v.filter(|s| !s.trim().is_empty()) {
+            if !ost::api::datetime_ok(s) {
+                return err_json("arg", format!("{} must be an ISO-8601 date-time", name));
+            }
+        }
+    }
+    let run = || -> Result<String, String> {
+        let r = rt()?;
+        r.block_on(async {
+            let client = timed("sign-in", SCHEDULE_CALL_TIMEOUT, ost::api::client::TeamsClient::new()).await?;
+            timed(
+                "schedule_share",
+                SCHEDULE_CALL_TIMEOUT,
+                ost::api::share_schedule_data(&client, team_id, notify_team, start, end),
+            )
+            .await?;
+            Ok(json!({ "ok": true }).to_string())
+        })
+    };
+    match run() {
+        Ok(s) => s,
+        Err(e) => write_err("schedule_share", e),
+    }
+}
+
+/// Publish drafts (manager). `notify` != 0 notifies the team. Blank
+/// bounds share the whole schedule.
+#[no_mangle]
+pub extern "C" fn ostmac_schedule_share(
+    team_id: *const c_char,
+    notify: c_int,
+    start: *const c_char,
+    end: *const c_char,
+) -> *mut c_char {
+    let team = match cstr_to_string(team_id) {
+        Ok(s) => s,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    let from = opt_cstr_to_string(start).unwrap_or(None);
+    let to = opt_cstr_to_string(end).unwrap_or(None);
+    string_to_c(share_json(&team, notify != 0, from.as_deref(), to.as_deref()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -278,6 +875,70 @@ mod tests {
         unsafe { drop(std::ffi::CString::from_raw(p)) };
         let v: serde_json::Value = serde_json::from_str(&s).unwrap();
         assert_eq!(v["ok"], false);
+    }
+
+    #[test]
+    fn write_rejects_bad_args_pre_network() {
+        for bad in [requests_json("", "swap"), requests_json("t1", "open"), requests_json("  ", "timeoff")] {
+            let v: serde_json::Value = serde_json::from_str(&bad).unwrap();
+            assert_eq!(v["ok"], false);
+            assert_eq!(v["error"], "arg");
+        }
+        let v: serde_json::Value = serde_json::from_str(&sender_request_json(
+            "schedule_swap", "t1", "swap", "  ", None, None,
+        ))
+        .unwrap();
+        assert_eq!(v["error"], "arg");
+        for bad in [
+            timeoff_request_json("t1", "", "2026-12-24T00:00:00Z", "2026-12-26T00:00:00Z", None),
+            timeoff_request_json("t1", "r1", "junk", "2026-12-26T00:00:00Z", None),
+            timeoff_request_json("t1", "r1", "2026-12-24T00:00:00Z", "junk", None),
+        ] {
+            let v: serde_json::Value = serde_json::from_str(&bad).unwrap();
+            assert_eq!(v["error"], "arg", "{}", bad);
+        }
+        for bad in [
+            decide_json("", "swap", "r1", true, None),
+            decide_json("t1", "bogus", "r1", true, None),
+            decide_json("t1", "swap", "  ", false, None),
+        ] {
+            let v: serde_json::Value = serde_json::from_str(&bad).unwrap();
+            assert_eq!(v["error"], "arg", "{}", bad);
+        }
+        for bad in [
+            shift_create_json("t1", None, "junk", "2026-11-24T17:00:00Z", None, None, None),
+            shift_update_json("t1", "s1", None, None, None, None, None),
+            shift_update_json("t1", "  ", Some("2026-11-24T09:00:00Z"), None, None, None, None),
+            shift_delete_json("t1", "  "),
+            timeoff_create_json("t1", "", "r1", "2026-12-24T00:00:00Z", "2026-12-26T00:00:00Z"),
+            share_json("  ", true, None, None),
+            share_json("t1", false, Some("junk"), None),
+        ] {
+            let v: serde_json::Value = serde_json::from_str(&bad).unwrap();
+            assert_eq!(v["error"], "arg", "{}", bad);
+        }
+        // Missing-scope Graph failures map to the scope envelope.
+        let e = "HTTP 403 for https://graph.microsoft.com/v1.0/x: {{\"error\":{{\"code\":\"Forbidden\",\"message\":\"Missing scope permissions\"}}}}".to_string();
+        let v: serde_json::Value = serde_json::from_str(&write_err("schedule_share", e)).unwrap();
+        assert_eq!(v["error"], "scope");
+        assert!(v["detail"].as_str().unwrap_or("").contains("Schedule.ReadWrite.All"));
+        let e2 = "HTTP 404 for https://graph.microsoft.com/v1.0/x: {{\"error\":{{\"code\":\"NotFound\"}}}}".to_string();
+        let v2: serde_json::Value = serde_json::from_str(&write_err("schedule_share", e2)).unwrap();
+        assert_eq!(v2["error"], "schedule_share");
+        // Request rows map to snake_case for the host.
+        let r = ost::api::ChangeRequestInfo {
+            id: "q1".into(),
+            state: Some("pending".into()),
+            sender_shift_id: Some("s1".into()),
+            receiver_user_id: None,
+            reason_id: None,
+            start: None,
+            end: None,
+            message: Some("swap?".into()),
+        };
+        let v = request_to_json(&r);
+        assert_eq!(v["sender_shift_id"], "s1");
+        assert_eq!(v["state"], "pending");
     }
 
     #[test]

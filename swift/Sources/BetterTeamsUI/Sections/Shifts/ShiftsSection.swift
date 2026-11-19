@@ -97,6 +97,19 @@ final class ShiftsSection: SectionProvider, InspectorCapable {
             guard let id = arg, id != store.selectedTeamID else { return false }
             Self.select(nil, m)
             store.select(teamID: id)
+        case ShiftsCommands.requestTimeOff:
+            m.presentSheet(SheetRequest(ShiftsCommands.timeOffSheet, in: .native(.shifts)))
+        case ShiftsCommands.addShift:
+            m.presentSheet(SheetRequest(ShiftsCommands.addShiftSheet, in: .native(.shifts)))
+        case ShiftsCommands.publish:
+            Task {
+                do {
+                    try await store.publishDrafts(notifyTeam: false)
+                    store.note("Schedule published.")
+                } catch {
+                    store.note(shiftsWriteError(error))
+                }
+            }
         default:
             return false
         }
@@ -113,8 +126,31 @@ final class ShiftsSection: SectionProvider, InspectorCapable {
             return CommandValidation(enabled: navigable(m) && !store.isCurrentWeek)
         case ShiftsCommands.team:
             return CommandValidation(enabled: here(m) && !store.teams.isEmpty)
+        case ShiftsCommands.requestTimeOff:
+            return CommandValidation(enabled: navigable(m) && m.connection != .offline)
+        case ShiftsCommands.addShift:
+            return CommandValidation(enabled: navigable(m) && store.isManager
+                && m.connection != .offline)
+        case ShiftsCommands.publish:
+            return CommandValidation(enabled: navigable(m) && store.isManager
+                && store.hasDrafts && m.connection != .offline)
         default:
             return .disabled
+        }
+    }
+
+    func sheet(_ r: SheetRequest, _ m: WindowModel) -> AnyView? {
+        guard let store = m.app?.shifts else { return nil }
+        switch r.name {
+        case ShiftsCommands.timeOffSheet:
+            return AnyView(TimeOffRequestSheet(store: store))
+        case ShiftsCommands.addShiftSheet:
+            return AnyView(AddShiftSheet(store: store))
+        case ShiftsCommands.swapSheet:
+            guard let shiftID = r.arg, !shiftID.isEmpty else { return nil }
+            return AnyView(SwapRequestSheet(store: store, shiftID: shiftID))
+        default:
+            return nil
         }
     }
 

@@ -77,6 +77,9 @@ public final class ShiftsStore: ObservableObject {
     /// the people rows; empty until the roster lands (rows fall back).
     @Published public private(set) var memberNames: [String: String] = [:]
 
+    /// Host-side manager-gate refusal (never raw JSON).
+    public static let managerOnlyMessage = "Only team owners can do that."
+
     /// A week fetch runs behind the grid on screen (week navigation,
     /// Retry): the toolbar shows a small progress indicator; the grid
     /// never blanks.
@@ -96,6 +99,44 @@ public final class ShiftsStore: ObservableObject {
     /// holds every week).
     private let prefetchesAdjacentWeeks: Bool
     private let membersFetcher: MembersFetcher?
+    /// Write path (requests / shift CRUD / publish). Live core FFI by
+    /// default; demo and tests inject an in-memory writer (same seam
+    /// as the week fetchers).
+    public var writer: ShiftsWriter
+    /// Signed-in user's AAD id (host adopts from whoami at open; demo
+    /// adopts its owner). Nil = unknown, never a manager.
+    @Published public private(set) var ownUserID: String?
+    /// Owner user ids of the selected team (from the roster fetch).
+    /// `isManager` = own id among them; defaults closed (false) until
+    /// both the roster and the own id land.
+    @Published public private(set) var managerUserIDs: Set<String> = []
+    /// Change requests of the selected team (pending first).
+    @Published public private(set) var requests: [ShiftChangeRequest] = []
+    /// Requests fetch running behind the grid (never blanks it).
+    @Published public private(set) var isLoadingRequests = false
+    /// Last requests failure (scope-pending or sanitized line); nil
+    /// when clear. The grid on screen stays.
+    @Published public private(set) var requestsError: String?
+    /// One-line write confirmation ("Published.", "Request sent.");
+    /// cleared on open. Sheets show their own errors inline.
+    @Published public private(set) var notice: String?
+
+    /// Write confirmation for the week pane (sheets + queue rows).
+    public func note(_ text: String) { notice = text }
+
+    // MARK: write-side state (shifts-write lane; set from ShiftsWrite.swift)
+    func adoptWriteOwn(_ id: String?) { ownUserID = id }
+    func setManagerIDs(_ ids: Set<String>) { managerUserIDs = ids }
+    func setRequestsLoading(_ loading: Bool) { isLoadingRequests = loading }
+    func setRequests(_ rs: [ShiftChangeRequest], error: String?) {
+        requests = rs
+        requestsError = error
+        isLoadingRequests = false
+    }
+    func requestsErrorNote(_ text: String) {
+        requestsError = text
+        isLoadingRequests = false
+    }
     /// Weeks fetched this session by team + week start, with fetch time.
     private var weekCache: [String: (response: ShiftWeekResponse, at: Date)] = [:]
     private var prefetching: Set<String> = []
@@ -177,21 +218,25 @@ public final class ShiftsStore: ObservableObject {
     /// Live default: the server returns the week on screen only.
     public nonisolated convenience init(
         range: @escaping RangeFetcher = { try RustCore.shiftsWeek(teamID: $0, weekStart: $1) },
-        members: MembersFetcher? = nil
+        members: MembersFetcher? = nil,
+        writer: ShiftsWriter = .live()
     ) {
-        self.init(range: range, members: members, prefetch: true)
+        self.init(range: range, members: members, prefetch: true, writer: writer)
     }
 
-    private nonisolated init(range: @escaping RangeFetcher, members: MembersFetcher?, prefetch: Bool) {
+    private nonisolated init(range: @escaping RangeFetcher, members: MembersFetcher?, prefetch: Bool,
+                             writer: ShiftsWriter) {
         self.weekFetcher = range
         self.membersFetcher = members
         self.prefetchesAdjacentWeeks = prefetch
+        self.writer = writer
     }
 
     /// Whole-schedule fetcher (demo, tests): every week comes from the
     /// same response, filtered to the week on screen.
-    public nonisolated convenience init(week: @escaping WeekFetcher, members: MembersFetcher? = nil) {
-        self.init(range: { id, _ in try week(id) }, members: members, prefetch: false)
+    public nonisolated convenience init(week: @escaping WeekFetcher, members: MembersFetcher? = nil,
+                                        writer: ShiftsWriter = .live()) {
+        self.init(range: { id, _ in try week(id) }, members: members, prefetch: false, writer: writer)
     }
 
     /// `[weekStart, weekStart + 7 days]` as UTC ISO-8601 strings (the
@@ -349,7 +394,8 @@ public final class ShiftsStore: ObservableObject {
     }
 
     /// Roster names for the people rows (nil fetcher = none; best effort: a failure keeps
-    /// the fallback labels, never an error state).
+    /// the fallback labels, never an error state). Owner ids land
+    /// alongside (manager gating reads them, never the names).
     private func loadMembers(teamID: String, generation gen: Int) {
         guard let fetcher = membersFetcher else { return }
         Task {
@@ -357,11 +403,17 @@ public final class ShiftsStore: ObservableObject {
                   gen == openGeneration
             else { return }
             var names: [String: String] = [:]
+            var owners = Set<String>()
             for m in resp.members {
-                if let id = m.userId, !id.isEmpty { names[id] = m.displayName }
+                if let id = m.userId, !id.isEmpty {
+                    names[id] = m.displayName
+                    if m.isOwner { owners.insert(id) }
+                }
                 names[m.id] = m.displayName
+                if m.isOwner { owners.insert(m.id) }
             }
             memberNames = names
+            setManagerIDs(owners)
             memberNamesCache[teamID] = names
             saveSnapshot()
         }
@@ -456,6 +508,7 @@ public final class ShiftsStore: ObservableObject {
         selectedTeamID = id
         pendingWeekStart = nil
         weekError = nil
+        notice = nil
         let start = weekStart
         if let hit = weekCache[Self.cacheKey(id, start)] {
             // Seen this session: show it now, refresh behind.
@@ -529,6 +582,7 @@ public final class ShiftsStore: ObservableObject {
                         loadProgress = nil
                         rebuild()
                         loadMembers(teamID: candidate, generation: gen)
+                        loadRequests(teamID: candidate)
                         prefetch(around: start, team: candidate, calendar: .current)
                         return true
                     }
@@ -572,6 +626,7 @@ public final class ShiftsStore: ObservableObject {
             reloadTeams?()
             return
         }
+        loadRequests(teamID: id)
         open(teamID: id)
     }
 

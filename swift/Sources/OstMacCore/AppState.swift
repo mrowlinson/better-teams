@@ -560,8 +560,11 @@ public final class AppState: ObservableObject {
             calWeek = CalendarWeekStore(
                 weekFetcher: { CalendarDemo.week(calendarGate, start: $0) },
                 localEdits: true, demoGate: calendarGate, prefetchAdjacentWeeks: true)
-            shifts = ShiftsStore(week: { ShiftsDemo.response(teamID: $0) },
-                                 members: { DemoTeams.roster(teamID: $0) })
+            let demoShifts = ShiftsDemoSession()
+            shifts = ShiftsStore(week: { demoShifts.response(teamID: $0) },
+                                 members: { DemoTeams.roster(teamID: $0) },
+                                 writer: .demo(demoShifts))
+            shifts.adoptOwn("demo-u-me") // demo owner: manager view on
             presence.adoptOwn(DemoData.ownPresence())
             for (chatID, peer) in DemoData.peerPresence() {
                 presence.adoptChatPeer(chatID: chatID, response: peer)
@@ -3249,6 +3252,9 @@ public final class AppState: ObservableObject {
             }
             return
         }
+        // Adopt only when resolved: a nil active id must not clear the
+        // demo's adopted owner (or a previously resolved live id).
+        if let own = accounts.activeAccount?.userID { shifts.adoptOwn(own) }
         shifts.setTeams(items)
         shifts.open(teamID: shifts.selectedTeamID ?? items[0].id)
     }

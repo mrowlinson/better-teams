@@ -37,6 +37,11 @@ struct ShiftsWeekPane: View {
                                 .padding(.horizontal, 16)
                                 .padding(.vertical, 6)
                         }
+                        if store.showsRequestsArea {
+                            ShiftsRequestsView(store: store)
+                            Divider()
+                        }
+                        writeActions(model)
                         if rows.isEmpty { emptyWeek } else { table(week, rows, model) }
                     }
                     // A week loading behind the grid on screen: a small
@@ -60,6 +65,28 @@ struct ShiftsWeekPane: View {
     private var emptyWeek: some View {
         EmptyPane(ShiftsPaneState.emptyWeekTitle, systemImage: "calendar",
                   message: ShiftsSection.weekRange(store.weekStart))
+    }
+
+    /// Member + manager write affordances (manager ones render for
+    /// managers only; the commands re-check in validate).
+    private func writeActions(_ m: WindowModel) -> some View {
+        HStack(spacing: 16) {
+            Button("Request Time Off") {
+                m.presentSheet(SheetRequest(ShiftsCommands.timeOffSheet, in: .native(.shifts)))
+            }
+            .buttonStyle(.link)
+            .disabled(m.connection == .offline)
+            if store.isManager {
+                Button("Add Shift…") {
+                    m.presentSheet(SheetRequest(ShiftsCommands.addShiftSheet, in: .native(.shifts)))
+                }
+                .buttonStyle(.link)
+                .disabled(m.connection == .offline)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 4)
     }
 
     private func table(_ week: ShiftWeek, _ rows: [ShiftsRow], _ m: WindowModel) -> some View {
@@ -197,6 +224,27 @@ struct ShiftsInspectorPane: View {
                                     .font(AppFont.body(scale))
                                     .foregroundStyle(.secondary)
                                     .textSelection(.enabled)
+                            }
+                            if !cell.isTimeOff {
+                                if row.id == store.ownUserID {
+                                    Button("Request Swap") {
+                                        model?.presentSheet(SheetRequest(
+                                            ShiftsCommands.swapSheet, in: .native(.shifts),
+                                            arg: cell.id))
+                                    }
+                                }
+                                if store.isManager {
+                                    Button("Delete Shift", role: .destructive) {
+                                        Task {
+                                            do {
+                                                try await store.deleteShift(shiftID: cell.id)
+                                                store.note("Shift deleted.")
+                                            } catch {
+                                                store.note(shiftsWriteError(error))
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
