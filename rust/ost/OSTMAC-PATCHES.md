@@ -1939,7 +1939,7 @@ Notes:
     gate, `is_sticker_html` + `sticker_label` detect. eu-prod.asyncgw is
     inferred — the trial must verify it. Tests: 6 sticker tests incl. a
     3-request fake-transport end-to-end (AMS auth vs chat auth asserted).
-    UPSTREAM: pending
+    UPSTREAM: PR https://github.com/eisbaw/ost/pull/124 (fix/sticker-send, stacks on #122; two adaptations: plain .send() for the unmerged §78 observer seam, SendSticker anchored on pre-reply_to Send; 4 pure tests ported, fake-transport e2e omitted with the never-ported harness)
 
 106. [feat] `src/api/channel_moderation.rs`, `src/api/client.rs`,
     `src/api/team_settings.rs`, `src/api/mod.rs`, `src/main.rs` —
