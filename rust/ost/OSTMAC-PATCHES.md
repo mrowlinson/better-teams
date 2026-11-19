@@ -2201,7 +2201,7 @@ this pass), `rust/ostmac-core` lib 224/0. Older counts (lib 257, core
     Tests: 8 hermetic (`api::meetings_plus::tests`, paths/body/parse) +
     4 core FFI (`ostmac-core/src/meetings_plus.rs`) + 13 Swift
     (`MeetingsPlusTests`) + 3 guards (`MeetingsPlusGuardTests`).
-    UPSTREAM: pending
+    UPSTREAM: PR https://github.com/eisbaw/ost/pull/133 (fix/meetings-plus-attendance-capture, fresh base)
 
 122. [minor] `src/api/channel_moderation.rs` + `src/api/mod.rs` —
     **preserve bot/connector flags on moderation writes
