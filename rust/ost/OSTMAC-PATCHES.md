@@ -2215,3 +2215,29 @@ this pass), `rust/ostmac-core` lib 224/0. Older counts (lib 257, core
     live-pinned (1 allow, 0 block, independent).
     Tests: beta-seed body, absent-defaults allow.
     UPSTREAM: PR https://github.com/eisbaw/ost/pull/134 (fix/channel-moderation-bot-flags, stacks on #128; fake-transport e2e omitted with the never-ported harness, same precedent as #124)
+
+123. [minor] `src/api/chat.rs` + `src/api/mod.rs` — **praise via Graph,
+    unattributed (lanes/praiseshaper2)**. Root cause, live-proven over
+    18 trial probes (net-zero): the chat-service endpoint silently
+    strips AdaptiveCard attachments at write (body="" + no attachments
+    key from birth) whatever the card details — badge Image, numeric
+    vs string widths, object vs string content, $schema, attachment id
+    all ruled out single-variable (P1–P9); text persists, text+card
+    drops the card only, dangling tag content is wiped (P10/P11). The
+    Graph endpoint says it loud: stamping the Praise app id 403s
+    unless the app is installed in the target + AAD-allowlisted (P12).
+    `send_praise_with_client_id` now POSTs a Graph chatMessage to
+    `/chats/{id}/messages` (channel conversation ids ride the same
+    route, P15/P16 — no team lookup): HTML tag body + one Adaptive
+    Card attachment with the card JSON as a STRING, deliberately
+    unattributed. New pure fns `praise_graph_message_body`,
+    `praise_graph_post_path`, `graph_posted_message_id`; removed the
+    never-working `praise_message_body` + `PRAISE_APP_ID`. The cmid
+    arg is echoed for send-reconcile only (Graph does no server-side
+    dedup on it). Live-proven: P13/P14/P16 persist body+attachment,
+    P17 end-to-end via the shipped send path, all tombstoned after
+    (Graph-list oracle).
+    Tests: `praise_graph_body_shape` (string content, tag/id match,
+    no teamsAppId/appId/cardClientId keys), `praise_graph_post_path_pin`,
+    `graph_posted_message_id_pin`.
+    UPSTREAM: pending

@@ -189,10 +189,13 @@ public enum PraiseCard {
         ]
     }
 
-    /// POST body pieces for one Praise send (mirrors the Rust
-    /// `praise_message_body` shape, pinned here for the optimistic
-    /// bubble and for tests): HTML content naming the attachment id,
-    /// one Adaptive Card attachment carrying the card.
+    /// POST body pieces for one Praise send (optimistic/miner shape,
+    /// pinned here for the optimistic bubble and for tests — NOT the
+    /// wire shape: the wire sends the Graph chatMessage from Rust
+    /// `praise_graph_message_body`, unattributed with the card as a
+    /// string; this envelope keeps the object card + appID the miner
+    /// reads): HTML content naming the attachment id, one Adaptive
+    /// Card attachment carrying the card.
     /// Returns a JSON-compatible dictionary:
     /// `contentType`, `content`,
     /// `attachments: {id, contentType, content: card}`.
