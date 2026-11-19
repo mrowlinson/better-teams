@@ -19,7 +19,7 @@ struct TeamsInspectorPane: View {
                 ThreadInspector(team: team, channelID: ch, rootID: root, sel: sel, conv: conv,
                                 state: section.state(model))
             } else if let team {
-                TeamInspector(team: team, roster: section.roster(team.teamId, model), conv: conv)
+                TeamInspector(team: team, roster: section.roster(team.teamId, model), conv: conv, teams: teams)
             } else {
                 EmptyPane("No Team Selected", systemImage: "person.3")
             }
@@ -174,6 +174,7 @@ struct TeamInspector: View {
     let team: TeamItem
     @ObservedObject var roster: TeamRosterViewModel
     @ObservedObject var conv: ConversationStore
+    @ObservedObject var teams: TeamsViewModel
     @Environment(\.windowModel) private var model
 
     /// Owners manage the roster: matched by user id (core-a
@@ -221,6 +222,8 @@ struct TeamInspector: View {
             let owners = TeamRosterViewModel.owners(of: sorted)
             let members = TeamRosterViewModel.nonOwners(of: sorted)
             Form {
+                privacySection
+                    .onAppear { Task { await teams.refreshVisibility(teamID: team.teamId) } }
                 if !owners.isEmpty {
                     Section("Owners (\(owners.count))") {
                         ForEach(owners) { memberRow($0) }
@@ -245,6 +248,40 @@ struct TeamInspector: View {
                 }
             }
             .formStyle(.grouped)
+        }
+    }
+
+    /// TEAMMOD: the team privacy switch (backing-group visibility).
+    /// Owner-only: anyone else sees the current value read-only.
+    /// Unknown (unread/failed read) shows a loading row, never a guess.
+    @ViewBuilder
+    private var privacySection: some View {
+        Section("Privacy") {
+            let privacy = teams.visibility[team.teamId] ?? .unknown
+            if privacy == .unknown {
+                Text("Loading privacy…").foregroundStyle(.secondary)
+            } else {
+                Toggle("Private team", isOn: Binding(
+                    get: { teams.visibility[team.teamId] == .private },
+                    set: { want in
+                        Task { await teams.updateVisibility(teamID: team.teamId, makePrivate: want) }
+                    }
+                ))
+                .disabled(!canManage || model?.connection == .offline)
+                .accessibilityLabel("Private team")
+                if !canManage {
+                    Text("Only team owners can change privacy.")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else {
+                    Text(privacy == .private
+                         ? "Invite-only: owners add every member."
+                         : "Anyone in the organization can join.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            if let err = teams.actionError, canManage {
+                Text(err).font(.caption).foregroundStyle(.secondary)
+            }
         }
     }
 

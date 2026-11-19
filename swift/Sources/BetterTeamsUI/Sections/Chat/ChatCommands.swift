@@ -38,6 +38,11 @@ public enum ChatCommands {
     /// and Pin Chat (1), which stay pinned.
     public static let reply: CommandID = "message.reply"
     public static let forward: CommandID = "message.forward"
+    /// Share one message as email (SHAREOUTLOOK). No menu placement: the
+    /// menu-bar catalog guard pins every Conversation item exactly, so
+    /// menu placement needs owner OK for the guard edit (follow-up).
+    /// Until then it lives in the bubble context menu + keyboard path.
+    public static let shareOutlook: CommandID = "message.shareOutlook"
     public static let react: CommandID = "message.react"
     public static let save: CommandID = "message.save"
     public static let pinMessage: CommandID = "message.pin"
@@ -56,6 +61,7 @@ public enum ChatCommands {
     /// presents them without editing this folder.
     public static let newChatSheet = "newChat"
     public static let forwardSheet = "forward"
+    public static let shareOutlookSheet = "shareOutlook"
     public static let scheduledSheet = "scheduled"
     public static let snoozeCustomSheet = "snoozeCustom"
     public static let manageFoldersSheet = "manageFolders"
@@ -64,6 +70,7 @@ public enum ChatCommands {
     public static let reactionPopover = "reaction"
     public static let gifPopover = "gif"
     public static let sendLaterPopover = "sendLater"
+    public static let praisePopover = "praise"
 
     @MainActor
     public static let all: [Command] = [
@@ -101,6 +108,7 @@ public enum ChatCommands {
                 menu: .init(.conversation, group: 0, order: 2), owner: .chat),
         Command(forward, "Forward…",
                 menu: .init(.conversation, group: 0, order: 3), owner: .chat),
+        Command(shareOutlook, "Share to Outlook…", owner: .chat),
         Command(react, "React", symbol: "face.smiling",
                 menu: .init(.conversation, group: 0, order: 4), isSubmenu: true, owner: .chat),
         Command(save, "Save this message", alternateTitle: "Unsave",

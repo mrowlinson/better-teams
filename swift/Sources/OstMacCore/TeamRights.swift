@@ -31,7 +31,7 @@ public struct TeamMemberSettings: Codable, Sendable, Equatable {
 
 /// A channel write the menu can offer.
 public enum ChannelAction: Sendable {
-    case edit, delete
+    case edit, delete, archive
 }
 
 /// Result of the permission check: enabled, or disabled with the reason
@@ -59,6 +59,9 @@ public enum ChannelRights {
         if action == .delete, isGeneral {
             return .denied("The General channel can't be deleted.")
         }
+        if action == .archive, isGeneral {
+            return .denied("The General channel can't be archived.")
+        }
         if isOwner == true { return .allowed }
         guard isOwner == false else { return .allowed }
         switch action {
@@ -70,6 +73,8 @@ public enum ChannelRights {
             if settings?.allowCreateUpdateChannels == false {
                 return .denied("Only team owners can edit channels in this team.")
             }
+        case .archive:
+            return .denied("Only team owners can archive channels in this team.")
         }
         return .allowed
     }

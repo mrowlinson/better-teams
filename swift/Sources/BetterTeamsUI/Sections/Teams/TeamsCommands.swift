@@ -16,6 +16,7 @@ public enum TeamsCommands {
     public static let manageChannel: CommandID = "teams.manageChannel"
     public static let channelEmail: CommandID = "teams.channelEmail"
     public static let editChannel: CommandID = "teams.editChannel"
+    public static let archiveChannel: CommandID = "teams.archiveChannel"
     public static let deleteChannel: CommandID = "teams.deleteChannel"
     public static let openChannelWindow: CommandID = "teams.openChannelWindow"
     public static let moveChannelToSection: CommandID = "teams.moveChannelToSection"
@@ -63,6 +64,8 @@ public enum TeamsCommands {
                 owner: .teams),
         Command(channelWorkflows, "Channel Workflows…", menu: .init(.conversation, group: 6, order: 4),
                 owner: .teams),
+        Command(archiveChannel, "Archive Channel…", alternateTitle: "Unarchive Channel…",
+                menu: .init(.conversation, group: 6, order: 5), owner: .teams),
         Command(deleteChannel, "Delete Channel…", menu: .init(.conversation, group: 7, order: 0), owner: .teams),
         Command(hideTeam, "Hide Team", alternateTitle: "Show Team",
                 menu: .init(.conversation, group: 4, order: 2), owner: .teams),

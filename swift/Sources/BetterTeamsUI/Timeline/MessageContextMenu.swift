@@ -41,6 +41,7 @@ struct MessageContextMenu: View {
             }
             Button("Reply") { actions.reply(m) }
             Button("Forward…") { actions.forward(m) }
+            Button("Share to Outlook…") { actions.shareOutlook(m) }
             Button("Copy") { actions.copy(m) }
             Button("Copy Link") { actions.copyLink(m) }
             Divider()
@@ -102,6 +103,12 @@ final class TimelineActions {
 
     func forward(_ m: ChatMessage) {
         model?.presentSheet(SheetRequest(ChatCommands.forwardSheet, in: model?.nav.section ?? .chat, arg: m.id))
+    }
+
+    /// Share one message as email (SHAREOUTLOOK): the sheet prefills
+    /// To (empty) + subject + body from the message.
+    func shareOutlook(_ m: ChatMessage) {
+        model?.presentSheet(SheetRequest(ChatCommands.shareOutlookSheet, in: model?.nav.section ?? .chat, arg: m.id))
     }
 
     func copy(_ m: ChatMessage) {

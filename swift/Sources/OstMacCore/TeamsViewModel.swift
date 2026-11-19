@@ -25,6 +25,8 @@ public final class TeamsViewModel: ObservableObject {
     public typealias Fetcher = @Sendable () throws -> TeamsResponse
     /// Sync channel create (runs off-main): team id, name, description.
     public typealias Creator = @Sendable (String, String, String?) throws -> ChannelCreateResponse
+    public typealias TypedCreator = @Sendable (String, String, String?, String?) throws -> ChannelCreateResponse
+    public typealias ChannelArchiver = @Sendable (String, String) throws -> Void
     /// Sync join-by-id (runs off-main). Throws `CoreCallError` on core failure.
     public typealias Joiner = @Sendable (String) throws -> TeamJoinResponse
     /// Sync team create (runs off-main): name, description.
@@ -42,6 +44,14 @@ public final class TeamsViewModel: ObservableObject {
     public typealias OwnerCheck = @Sendable (String) throws -> Bool
     /// Sync read-only member-permission read (runs off-main): team id.
     public typealias SettingsFetcher = @Sendable (String) throws -> TeamMemberSettings
+    /// Sync read-only moderation read (runs off-main): team id, channel id. TEAMMOD.
+    public typealias ModerationFetcher = @Sendable (String, String) throws -> ChannelModeration
+    /// Sync moderation write (runs off-main): team id, channel id, posts?, replies?. TEAMMOD.
+    public typealias ModerationUpdater = @Sendable (String, String, String?, String?) throws -> Void
+    /// Sync read-only visibility read (runs off-main): team id. TEAMMOD.
+    public typealias VisibilityFetcher = @Sendable (String) throws -> TeamVisibilityResponse
+    /// Sync visibility write (runs off-main): team id, makePrivate. TEAMMOD.
+    public typealias VisibilityUpdater = @Sendable (String, Bool) throws -> TeamVisibilityResponse
 
     /// Latest rows (only meaningful in `.loaded`; stale otherwise).
     @Published public private(set) var teams: [TeamItem] = []
@@ -82,6 +92,11 @@ public final class TeamsViewModel: ObservableObject {
     @Published public private(set) var notOwnedTeamIDs: Set<String> = []
     /// Member permissions + General channel id per team (unknown fields nil).
     @Published public private(set) var memberSettings: [String: TeamMemberSettings] = [:]
+    /// Moderation settings per channel, keyed `"\(teamID)/\(channelID)"`
+    /// (unknown fields nil = unmoderated default). TEAMMOD.
+    @Published public private(set) var moderation: [String: ChannelModeration] = [:]
+    /// Team privacy per team (unknown = unread). TEAMMOD.
+    @Published public private(set) var visibility: [String: TeamPrivacy] = [:]
     /// Channels that vanished from the tree while known (deleted here
     /// or elsewhere); an open one shows the deleted state. Cleared when
     /// the id comes back.
@@ -91,6 +106,9 @@ public final class TeamsViewModel: ObservableObject {
 
     private let fetcher: Fetcher
     private let creator: Creator
+    private let typedCreator: TypedCreator
+    private let channelArchiver: ChannelArchiver
+    private let channelUnarchiver: ChannelArchiver
     private let joiner: Joiner
     private let teamCreator: TeamCreator
     private let publicSearcher: PublicSearcher
@@ -100,6 +118,10 @@ public final class TeamsViewModel: ObservableObject {
     private let teamLeaver: TeamLeaver
     private let ownerCheck: OwnerCheck
     private let settingsFetcher: SettingsFetcher
+    private let moderationFetcher: ModerationFetcher
+    private let moderationUpdater: ModerationUpdater
+    private let visibilityFetcher: VisibilityFetcher
+    private let visibilityUpdater: VisibilityUpdater
     /// When each team's rights were last asked.
     private var ownershipAskedAt: [String: Date] = [:]
     /// Seconds before a team's rights are read again (permissions can
@@ -116,6 +138,11 @@ public final class TeamsViewModel: ObservableObject {
     public init(
         fetcher: @escaping Fetcher = { try RustCore.teams() },
         creator: @escaping Creator = { try RustCore.channelCreate(teamID: $0, name: $1, description: $2) },
+        typedCreator: @escaping TypedCreator = {
+            try RustCore.channelCreateTyped(teamID: $0, name: $1, description: $2, membershipType: $3)
+        },
+        channelArchiver: @escaping ChannelArchiver = { try RustCore.channelArchive(teamID: $0, channelID: $1) },
+        channelUnarchiver: @escaping ChannelArchiver = { try RustCore.channelUnarchive(teamID: $0, channelID: $1) },
         joiner: @escaping Joiner = { try RustCore.teamJoin(teamID: $0) },
         teamCreator: @escaping TeamCreator = { try RustCore.teamCreate(name: $0, description: $1) },
         publicSearcher: @escaping PublicSearcher = { try RustCore.teamSearch(query: $0) },
@@ -125,10 +152,19 @@ public final class TeamsViewModel: ObservableObject {
         },
         teamLeaver: @escaping TeamLeaver = { try RustCore.teamLeave(teamID: $0) },
         ownerCheck: @escaping OwnerCheck = { try RustCore.isTeamOwner(teamID: $0) },
-        settingsFetcher: @escaping SettingsFetcher = { try RustCore.teamSettings(teamID: $0) }
+        settingsFetcher: @escaping SettingsFetcher = { try RustCore.teamSettings(teamID: $0) },
+        moderationFetcher: @escaping ModerationFetcher = { try RustCore.channelModeration(teamID: $0, channelID: $1) },
+        moderationUpdater: @escaping ModerationUpdater = {
+            try RustCore.channelModerationUpdate(teamID: $0, channelID: $1, posts: $2, replies: $3)
+        },
+        visibilityFetcher: @escaping VisibilityFetcher = { try RustCore.teamVisibility(teamID: $0) },
+        visibilityUpdater: @escaping VisibilityUpdater = { try RustCore.teamVisibilityUpdate(teamID: $0, makePrivate: $1) }
     ) {
         self.fetcher = fetcher
         self.creator = creator
+        self.typedCreator = typedCreator
+        self.channelArchiver = channelArchiver
+        self.channelUnarchiver = channelUnarchiver
         self.joiner = joiner
         self.teamCreator = teamCreator
         self.publicSearcher = publicSearcher
@@ -137,6 +173,10 @@ public final class TeamsViewModel: ObservableObject {
         self.teamLeaver = teamLeaver
         self.ownerCheck = ownerCheck
         self.settingsFetcher = settingsFetcher
+        self.moderationFetcher = moderationFetcher
+        self.moderationUpdater = moderationUpdater
+        self.visibilityFetcher = visibilityFetcher
+        self.visibilityUpdater = visibilityUpdater
     }
 
     /// NOLOAD: last-good snapshot store (nil = memory only / demo).
@@ -225,6 +265,31 @@ public final class TeamsViewModel: ObservableObject {
         do {
             let created = try await Task.blocking {
                 try creator(teamID, trimmed, description)
+            }.value
+            guard let idx = teams.firstIndex(where: { $0.teamId == teamID }) else { return }
+            let row = teams[idx]
+            teams[idx] = TeamItem(
+                teamId: row.teamId, name: row.name,
+                channels: row.channels + [created.channel])
+        } catch {
+            createError = Self.message(for: error)
+        }
+    }
+
+    /// Create one channel of any membership type (`standard` when nil;
+    /// private/shared make the caller the owner). Same row/error rules
+    /// as the standard path.
+    public func createChannel(
+        teamID: String, name: String, description: String?, membershipType: String?
+    ) async {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        createError = nil
+        let creator = typedCreator
+        let membershipType = membershipType
+        do {
+            let created = try await Task.blocking {
+                try creator(teamID, trimmed, description, membershipType)
             }.value
             guard let idx = teams.firstIndex(where: { $0.teamId == teamID }) else { return }
             let row = teams[idx]
@@ -447,6 +512,106 @@ public final class TeamsViewModel: ObservableObject {
             action, isGeneral: isGeneral(teamID: teamID, channelID: channelID), isOwner: owner, settings: settings)
     }
 
+    // MARK: - Moderation + privacy (TEAMMOD)
+
+    /// Store key for one channel's moderation settings.
+    public nonisolated static func moderationKey(teamID: String, channelID: String) -> String {
+        "\(teamID)/\(channelID)"
+    }
+
+    /// Moderation/privacy writes need a KNOWN owner (fail closed:
+    /// they change tenant-wide settings). Unknown ownership disables
+    /// the controls; non-owners see them disabled with a reason.
+    public func canEditModeration(teamID: String) -> Bool {
+        ChannelModerationRights.canEdit(isOwner: ownedTeamIDs.contains(teamID) ? true : nil)
+    }
+
+    public func canSetVisibility(teamID: String) -> Bool {
+        canEditModeration(teamID: teamID)
+    }
+
+    /// Read one channel's moderation settings into `moderation`.
+    /// A failed read leaves the old value (never a guess).
+    public func refreshModeration(teamID: String, channelID: String) async {
+        let key = Self.moderationKey(teamID: teamID, channelID: channelID)
+        let fetch = moderationFetcher
+        guard let got = try? await Task.blocking(priority: .utility, operation: {
+            try fetch(teamID, channelID)
+        }).value else { return }
+        if moderation[key] != got { moderation[key] = got }
+    }
+
+    /// Set one channel's moderation restrictions: the row updates at
+    /// once and reverts on failure. Owner-only: refuses when the
+    /// caller is not a known owner. Returns success.
+    @discardableResult
+    public func updateModeration(
+        teamID: String, channelID: String, posts: WhoCanPost?, replies: WhoCanReply?
+    ) async -> Bool {
+        guard canEditModeration(teamID: teamID) else {
+            actionError = "Only team owners can change moderation settings."
+            return false
+        }
+        let key = Self.moderationKey(teamID: teamID, channelID: channelID)
+        let before = moderation[key]
+        let next = ChannelModeration(
+            userNewMessageRestriction: posts?.rawValue ?? before?.userNewMessageRestriction,
+            replyRestriction: replies?.rawValue ?? before?.replyRestriction,
+            allowBots: before?.allowBots, allowConnectors: before?.allowConnectors)
+        guard posts != nil || replies != nil else { return false }
+        moderation[key] = next
+        actionError = nil
+        pendingWrites += 1
+        defer { pendingWrites -= 1 }
+        let updater = moderationUpdater
+        do {
+            try await Task.blocking {
+                try updater(teamID, channelID, posts?.rawValue, replies?.rawValue)
+            }.value
+            return true
+        } catch {
+            if let before { moderation[key] = before } else { moderation.removeValue(forKey: key) }
+            actionError = Self.message(for: error)
+            return false
+        }
+    }
+
+    /// Read one team's privacy into `visibility`. A failed read leaves
+    /// the old value.
+    public func refreshVisibility(teamID: String) async {
+        let fetch = visibilityFetcher
+        guard let got = try? await Task.blocking(priority: .utility, operation: {
+            try fetch(teamID)
+        }).value else { return }
+        let privacy = got.privacy
+        if visibility[teamID] != privacy { visibility[teamID] = privacy }
+    }
+
+    /// Flip one team's privacy: the value changes at once and reverts
+    /// on failure. Owner-only. Returns success.
+    @discardableResult
+    public func updateVisibility(teamID: String, makePrivate: Bool) async -> Bool {
+        guard canSetVisibility(teamID: teamID) else {
+            actionError = "Only team owners can change team privacy."
+            return false
+        }
+        let before = visibility[teamID]
+        visibility[teamID] = makePrivate ? .private : .public
+        actionError = nil
+        pendingWrites += 1
+        defer { pendingWrites -= 1 }
+        let updater = visibilityUpdater
+        do {
+            let got = try await Task.blocking { try updater(teamID, makePrivate) }.value
+            visibility[teamID] = got.privacy
+            return true
+        } catch {
+            if let before { visibility[teamID] = before } else { visibility.removeValue(forKey: teamID) }
+            actionError = Self.message(for: error)
+            return false
+        }
+    }
+
     /// True when `channelID` is its team's General channel.
     public func isGeneral(teamID: String, channelID: String) -> Bool {
         let primary = memberSettings[teamID]?.primaryChannelId
@@ -519,7 +684,8 @@ public final class TeamsViewModel: ObservableObject {
         channels[ci] = TeamChannel(
             channelId: old.channelId, name: wantName ?? old.name,
             description: wantDesc.map { $0.isEmpty ? nil : $0 } ?? old.description,
-            membershipType: old.membershipType, webUrl: old.webUrl, email: old.email)
+            membershipType: old.membershipType, webUrl: old.webUrl, email: old.email,
+            isArchived: old.isArchived)
         teams[ti] = TeamItem(teamId: teams[ti].teamId, name: teams[ti].name, channels: channels)
         actionError = nil
         pendingWrites += 1
@@ -527,6 +693,49 @@ public final class TeamsViewModel: ObservableObject {
         let updater = channelUpdater
         do {
             try await Task.blocking { try updater(teamID, channelID, wantName, wantDesc) }.value
+            snapshots?.save(teams, key: Self.snapshotKey)
+            return true
+        } catch {
+            teams = before
+            actionError = Self.message(for: error)
+            return false
+        }
+    }
+
+    /// Archive one channel: the row flags at once and reverts on
+    /// failure. Archiving is async server-side — the row may read
+    /// back unflipped until the next sync. Returns success.
+    @discardableResult
+    public func archiveChannel(teamID: String, channelID: String) async -> Bool {
+        await setArchived(teamID: teamID, channelID: channelID, archived: true)
+    }
+
+    /// Restore one archived channel: the row unflags at once and
+    /// reverts on failure. Returns success.
+    @discardableResult
+    public func unarchiveChannel(teamID: String, channelID: String) async -> Bool {
+        await setArchived(teamID: teamID, channelID: channelID, archived: false)
+    }
+
+    private func setArchived(teamID: String, channelID: String, archived: Bool) async -> Bool {
+        guard let ti = teams.firstIndex(where: { $0.teamId == teamID }),
+              let ci = teams[ti].channels.firstIndex(where: { $0.channelId == channelID })
+        else { return false }
+        let before = teams
+        let old = teams[ti].channels[ci]
+        var channels = teams[ti].channels
+        channels[ci] = TeamChannel(
+            channelId: old.channelId, name: old.name,
+            description: old.description,
+            membershipType: old.membershipType, webUrl: old.webUrl, email: old.email,
+            isArchived: archived)
+        teams[ti] = TeamItem(teamId: teams[ti].teamId, name: teams[ti].name, channels: channels)
+        actionError = nil
+        pendingWrites += 1
+        defer { pendingWrites -= 1 }
+        let runner = archived ? channelArchiver : channelUnarchiver
+        do {
+            try await Task.blocking { try runner(teamID, channelID) }.value
             snapshots?.save(teams, key: Self.snapshotKey)
             return true
         } catch {

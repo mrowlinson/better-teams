@@ -268,16 +268,32 @@ struct ChatPinnedTabPane: View {
     let tab: ChannelTab
     let chatID: String
     @Environment(\.windowModel) private var model
+    /// Local ink for whiteboard tabs (in memory; never synced).
+    @StateObject private var ink = WhiteboardInkStore()
 
     var body: some View {
         if let m = model {
-            let launch = Self.launch(tab, store: m.frameHost.library.store, chatID: chatID)
-            switch ChatTabCatalog.route(for: tab, hasManifest: launch != nil) {
-            case .hosted:
-                if let launch { hosted(launch, m) } else { placeholder }
-            case .web(let url): web(url, m)
-            case .placeholder: placeholder
+            if ChatTabCatalog.kind(of: tab) == .whiteboard {
+                VStack(spacing: 0) {
+                    Group { routeBody(m) }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    Divider()
+                    WhiteboardSketchSection(boardID: tab.id, ink: ink)
+                }
+            } else {
+                routeBody(m)
             }
+        }
+    }
+
+    @ViewBuilder
+    private func routeBody(_ m: WindowModel) -> some View {
+        let launch = Self.launch(tab, store: m.frameHost.library.store, chatID: chatID)
+        switch ChatTabCatalog.route(for: tab, hasManifest: launch != nil) {
+        case .hosted:
+            if let launch { hosted(launch, m) } else { placeholder }
+        case .web(let url): web(url, m)
+        case .placeholder: placeholder
         }
     }
 

@@ -637,6 +637,21 @@ final class TimelineViewController: NSViewController, NSTableViewDataSource, NST
         var unmatched: [String] = []
         let out = list.map { item -> TimelineItem in
             guard case .message(let id, let rev, let header) = item, let m = messagesByID[id] else { return item }
+            // Polls lane: fold the card's vote state into the revision
+            // so voting re-measures the row (the results/error lines
+            // change its height).
+            let pollState: String? = {
+                let content = MessageRender.bubbleText(for: m)
+                guard PollInfo.isFallbackText(content) || PollRegistry.poll(messageID: id) != nil,
+                      let poll = PollRegistry.resolve(messageID: id, content: content, raw: m.raw)
+                else { return nil }
+                let mine = PollRegistry.myVote(messageID: id).sorted().joined(separator: ",")
+                let counts = (PollRegistry.tally(messageID: id) ?? [])
+                    .map { "\($0.option.id)=\($0.votes)" }.joined(separator: ",")
+                let voters = PollRegistry.ballotCount(messageID: id)
+                return "\(poll.question)|\(poll.options.map(\.text).joined(separator: "|"))"
+                    + "|\(poll.allowMultiple)|\(poll.closed)|\(mine)|\(counts)|\(voters)"
+            }()
             let refs = InlineDocs.refs(fromRaw: m.raw)
             let chips = refs.isEmpty || docs.isEmpty ? [] : InlineDocs.resolve(refs: refs, filesByAttachmentID: docs)
             if chips.count < min(refs.count, InlineDocs.maxRows), !failed.contains(id) { unmatched.append(id) }
@@ -649,7 +664,8 @@ final class TimelineViewController: NSViewController, NSTableViewDataSource, NST
                 isSaved: saves?.isSaved(chatID: chat, messageID: id) ?? false,
                 ownName: ownName, chatID: chat,
                 bubble: RowBubble.of(m, scope: scope),
-                docs: chips, deleteFailed: deleteFailed.contains(id))
+                docs: chips, deleteFailed: deleteFailed.contains(id),
+                pollState: pollState)
             data[id] = row
             return .message(id: id, revision: TimelineRowState.combine(rev, row.extraRevision), showsHeader: header)
         }

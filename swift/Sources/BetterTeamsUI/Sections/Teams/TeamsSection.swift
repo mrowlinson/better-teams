@@ -43,6 +43,17 @@ final class TeamsSection: SectionProvider, InspectorCapable {
         return p
     }
 
+    /// Private/shared channel roster for the Manage Channel sheet
+    /// (fresh each presentation; the sheet owns its load).
+    func channelRoster(_ teamID: String, _ channelID: String, _ m: WindowModel) -> ChannelMembersViewModel {
+        if m.options.demo {
+            let r = ChannelMembersViewModel(teamID: teamID, channelID: channelID)
+            r.adopt([])
+            return r
+        }
+        return ChannelMembersViewModel(teamID: teamID, channelID: channelID)
+    }
+
     func roster(_ teamID: String, _ m: WindowModel) -> TeamRosterViewModel {
         if let r = rosters[teamID] { return r }
         let r: TeamRosterViewModel
@@ -216,13 +227,23 @@ final class TeamsSection: SectionProvider, InspectorCapable {
         case TeamsCommands.addMemberSheet:
             guard let team = r.arg ?? current(m)?.teamID else { return nil }
             return AnyView(AddMemberSheet(roster: roster(team, m)))
-        case TeamsCommands.editChannelSheet:
-            guard let id = r.arg ?? current(m)?.channelID else { return nil }
-            return AnyView(EditChannelSheet(teams: app.teams, channelID: id))
         case TeamsCommands.manageChannelSheet:
-            guard let id = r.arg ?? current(m)?.channelID else { return nil }
+            // arg = channel id (row menu) or current channel (menu bar).
+            // Private/shared channels carry their own roster; standard
+            // channels get the Manage Channel sheet.
+            guard let id = r.arg ?? current(m)?.channelID,
+                  let (team, channel) = TeamsListPane.locate(id, in: app.teams.teams) else { return nil }
+            if channel.isPrivateOrShared {
+                return AnyView(ChannelMembersSheet(roster: channelRoster(team.teamId, id, m)))
+            }
             return AnyView(ManageChannelSheet(teams: app.teams, prefs: prefs(m),
                                               folders: m.graph.chats.folders, channelID: id))
+        case TeamsCommands.editChannelSheet:
+            guard let id = r.arg ?? current(m)?.channelID else { return nil }
+            // Deferred resolution (launch routes): the form appears once
+            // the channel resolves; the roster is built for its team then.
+            return AnyView(EditChannelSheet(teams: app.teams, channelID: id,
+                                            roster: { [self, m] in self.roster($0, m) }))
         case TeamsCommands.channelWorkflowsSheet:
             guard let id = r.arg ?? current(m)?.channelID else { return nil }
             // Demo: an in-memory fake that acts. Live: says Workflows
@@ -316,6 +337,17 @@ final class TeamsSection: SectionProvider, InspectorCapable {
             guard let ch = channelTarget(arg, m),
                   TeamsListPane.locate(ch, in: app.teams.teams) != nil else { return false }
             m.presentSheet(SheetRequest(TeamsCommands.manageChannelSheet, in: .teams, arg: ch))
+        case TeamsCommands.archiveChannel:
+            guard let ch = channelTarget(arg, m),
+                  let (team, channel) = TeamsListPane.locate(ch, in: app.teams.teams),
+                  app.teams.permission(.archive, teamID: team.teamId, channelID: ch).isAllowed else { return false }
+            let teams = app.teams
+            let teamID = team.teamId
+            if channel.isArchived == true {
+                Task { await teams.unarchiveChannel(teamID: teamID, channelID: ch) }
+            } else {
+                Task { await teams.archiveChannel(teamID: teamID, channelID: ch) }
+            }
         case TeamsCommands.channelEmail:
             guard let ch = channelTarget(arg, m),
                   let email = TeamsListPane.locate(ch, in: app.teams.teams)?.1.email, !email.isEmpty else {
@@ -406,6 +438,12 @@ final class TeamsSection: SectionProvider, InspectorCapable {
             let allowed = teams.permission(c == TeamsCommands.editChannel ? .edit : .delete,
                                            teamID: team.teamId, channelID: ch).isAllowed
             return CommandValidation(enabled: allowed && m.connection != .offline)
+        case TeamsCommands.archiveChannel:
+            guard let ch, let (team, channel) = TeamsListPane.locate(ch, in: m.app?.teams.teams ?? []),
+                  let teams = m.app?.teams else { return .disabled }
+            let allowed = teams.permission(.archive, teamID: team.teamId, channelID: ch).isAllowed
+            return CommandValidation(enabled: allowed && m.connection != .offline,
+                                     title: channel.isArchived == true ? "Unarchive Channel…" : "Archive Channel…")
         case TeamsCommands.openChannelWindow, TeamsCommands.channelWorkflows:
             return CommandValidation(enabled: ch != nil)
         case TeamsCommands.moveChannelToSection:

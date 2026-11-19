@@ -355,6 +355,7 @@ public enum CoreReads {
             let membershipType: String?
             let webUrl: String?
             let email: String?
+            let isArchived: Bool?
         }
         let value: [Channel]
     }
@@ -394,7 +395,8 @@ public enum CoreReads {
                             description: ch.description,
                             membershipType: ch.membershipType,
                             webUrl: ch.webUrl,
-                            email: ch.email
+                            email: ch.email,
+                            isArchived: ch.isArchived
                         )
                     }
                 } ?? []

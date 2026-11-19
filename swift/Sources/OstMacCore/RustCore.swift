@@ -211,6 +211,89 @@ public enum RustCore {
         }
     }
 
+    /// Create one channel of any membership type (`standard` when nil).
+    /// Core resolves the caller as owner for private/shared when no
+    /// owner is passed. Blocking FFI (network): call off the main thread.
+    public static func channelCreateTyped(
+        teamID: String, name: String, description: String? = nil,
+        membershipType: String? = nil
+    ) throws -> ChannelCreateResponse {
+        try teamID.withCString { idPtr in
+            try name.withCString { namePtr in
+                try withOptionalCString(description) { descPtr in
+                    try withOptionalCString(membershipType) { typePtr in
+                        try call(
+                            ostmac_channel_create_typed(idPtr, namePtr, descPtr, typePtr, nil),
+                            as: ChannelCreateResponse.self)
+                    }
+                }
+            }
+        }
+    }
+
+    /// Archive one channel (Graph async POST). The flip lands after
+    /// the call returns; re-read the channel to confirm. Blocking FFI
+    /// (network): call off the main thread.
+    public static func channelArchive(teamID: String, channelID: String) throws {
+        struct Ack: Decodable { let ok: Bool }
+        try teamID.withCString { teamPtr in
+            try channelID.withCString { chanPtr in
+                _ = try call(ostmac_channel_archive(teamPtr, chanPtr), as: Ack.self)
+            }
+        }
+    }
+
+    /// Restore one archived channel. Blocking FFI (network): call off
+    /// the main thread.
+    public static func channelUnarchive(teamID: String, channelID: String) throws {
+        struct Ack: Decodable { let ok: Bool }
+        try teamID.withCString { teamPtr in
+            try channelID.withCString { chanPtr in
+                _ = try call(ostmac_channel_unarchive(teamPtr, chanPtr), as: Ack.self)
+            }
+        }
+    }
+
+    /// One private/shared channel's members. Blocking FFI (network):
+    /// call off the main thread.
+    public static func channelMembers(teamID: String, channelID: String) throws -> ChannelMembersResponse {
+        try teamID.withCString { teamPtr in
+            try channelID.withCString { chanPtr in
+                try call(ostmac_channel_members(teamPtr, chanPtr), as: ChannelMembersResponse.self)
+            }
+        }
+    }
+
+    /// Add one user to a private/shared channel. Blocking FFI
+    /// (network): call off the main thread.
+    public static func channelMemberAdd(
+        teamID: String, channelID: String, user: String, owner: Bool = false
+    ) throws -> ChannelMemberAddResponse {
+        try teamID.withCString { teamPtr in
+            try channelID.withCString { chanPtr in
+                try user.withCString { userPtr in
+                    try call(
+                        ostmac_channel_member_add(teamPtr, chanPtr, userPtr, owner ? 1 : 0),
+                        as: ChannelMemberAddResponse.self)
+                }
+            }
+        }
+    }
+
+    /// Remove one membership from a private/shared channel. Blocking
+    /// FFI (network): call off the main thread.
+    public static func channelMemberRemove(teamID: String, channelID: String, memberID: String) throws {
+        struct Ack: Decodable { let ok: Bool }
+        try teamID.withCString { teamPtr in
+            try channelID.withCString { chanPtr in
+                try memberID.withCString { memberPtr in
+                    _ = try call(
+                        ostmac_channel_member_remove(teamPtr, chanPtr, memberPtr), as: Ack.self)
+                }
+            }
+        }
+    }
+
     /// Whether the signed-in user owns `teamID` (read-only: whoami +
     /// member list). Blocking network: call off the main thread.
     public static func isTeamOwner(teamID: String) throws -> Bool {
@@ -224,6 +307,54 @@ public enum RustCore {
     public static func teamSettings(teamID: String) throws -> TeamMemberSettings {
         try teamID.withCString { ptr in
             try call(ostmac_team_settings(ptr), as: TeamMemberSettings.self)
+        }
+    }
+
+    /// One channel's moderation settings, read-only (beta Graph read;
+    /// null fields = unknown). Blocking network: call off the main thread.
+    /// TEAMMOD.
+    public static func channelModeration(teamID: String, channelID: String) throws -> ChannelModeration {
+        try teamID.withCString { teamPtr in
+            try channelID.withCString { chanPtr in
+                try call(ostmac_channel_moderation(teamPtr, chanPtr), as: ChannelModeration.self)
+            }
+        }
+    }
+
+    /// Set one channel's moderation restrictions (middle-tier PATCH).
+    /// nil fields stay unchanged; at least one must change. Blocking
+    /// network: call off the main thread. TEAMMOD.
+    public static func channelModerationUpdate(
+        teamID: String, channelID: String, posts: String?, replies: String?
+    ) throws {
+        struct Ack: Decodable { let ok: Bool }
+        try teamID.withCString { teamPtr in
+            try channelID.withCString { chanPtr in
+                try withOptionalCString(posts) { postsPtr in
+                    try withOptionalCString(replies) { repliesPtr in
+                        _ = try call(
+                            ostmac_channel_moderation_update(teamPtr, chanPtr, postsPtr, repliesPtr),
+                            as: Ack.self)
+                    }
+                }
+            }
+        }
+    }
+
+    /// One team's privacy (backing-group visibility, read-only; null =
+    /// unknown). Blocking network: call off the main thread. TEAMMOD.
+    public static func teamVisibility(teamID: String) throws -> TeamVisibilityResponse {
+        try teamID.withCString { ptr in
+            try call(ostmac_team_visibility(ptr), as: TeamVisibilityResponse.self)
+        }
+    }
+
+    /// Flip one team's privacy (middle-tier/Graph PATCH + read-back).
+    /// Blocking network: call off the main thread. TEAMMOD.
+    public static func teamVisibilityUpdate(teamID: String, makePrivate: Bool) throws -> TeamVisibilityResponse {
+        try teamID.withCString { ptr in
+            try call(ostmac_team_visibility_update(ptr, makePrivate ? 1 : 0),
+                     as: TeamVisibilityResponse.self)
         }
     }
 
@@ -471,6 +602,29 @@ public enum RustCore {
                                                                       impPtr, subPtr, menPtr),
                                         as: SendResponse.self)
                                 }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// PRAISE: post a Praise card. Blocking FFI (network): call off
+    /// the main thread.
+    public static func sendPraiseIdem(
+        chatID: String, badge: String, recipient: String, note: String,
+        sender: String, clientMessageID: String
+    ) throws -> SendResponse {
+        try chatID.withCString { idPtr in
+            try badge.withCString { bPtr in
+                try recipient.withCString { rPtr in
+                    try note.withCString { nPtr in
+                        try sender.withCString { sPtr in
+                            try clientMessageID.withCString { cPtr in
+                                try call(
+                                    ostmac_send_praise_idem(idPtr, bPtr, rPtr, nPtr, sPtr, cPtr),
+                                    as: SendResponse.self)
                             }
                         }
                     }

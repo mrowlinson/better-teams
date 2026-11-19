@@ -239,9 +239,25 @@ struct CreateChannelSheet: View {
     @State var teamID: String
     @State private var name = ""
     @State private var about = ""
+    @State private var kind = ChannelKind.standard
     @State private var creating = false
     @State private var submitted = false
     @Environment(\.windowModel) private var model
+
+    /// Channel membership type for the create sheet (native segmented
+    /// picker; private/shared make the caller the owner).
+    enum ChannelKind: String, CaseIterable, Identifiable {
+        case standard = "Standard", privateChannel = "Private", shared = "Shared"
+        var id: String { rawValue }
+        /// Graph `membershipType` (nil = standard default).
+        var membershipType: String? {
+            switch self {
+            case .standard: return nil
+            case .privateChannel: return "private"
+            case .shared: return "shared"
+            }
+        }
+    }
 
     init(teams: TeamsViewModel, teamID: String) {
         self.teams = teams
@@ -260,8 +276,19 @@ struct CreateChannelSheet: View {
                 TextField("Name", text: $name, prompt: prompt("Channel name"))
                 TextField("Description", text: $about, prompt: prompt("Optional"), axis: .vertical)
                     .lineLimit(2...4)
+                Picker("Type", selection: $kind) {
+                    ForEach(ChannelKind.allCases) { k in Text(k.rawValue).tag(k) }
+                }
+                .pickerStyle(.segmented)
             }
             .formStyle(.columns)
+            if kind != .standard {
+                HStack {
+                    Spacer()
+                    InfoButton(subject: "a \(kind.rawValue.lowercased()) channel",
+                               text: "Only its members can see it. You become its owner.")
+                }
+            }
         }
     }
 
@@ -269,10 +296,12 @@ struct CreateChannelSheet: View {
         let n = trimmed(name)
         let d = trimmed(about)
         let team = teamID
+        let kind = kind
         submitted = true
         creating = true
         Task { @MainActor in
-            await teams.createChannel(teamID: team, name: n, description: d.isEmpty ? nil : d)
+            await teams.createChannel(teamID: team, name: n, description: d.isEmpty ? nil : d,
+                                      membershipType: kind.membershipType)
             creating = false
             guard teams.createError == nil,
                   let ch = teams.teams.first(where: { $0.teamId == team })?.channels.last(where: { $0.name == n })
@@ -284,17 +313,19 @@ struct CreateChannelSheet: View {
     }
 }
 
-/// Edit channel (TEAMSYNC): rename and re-describe one channel. The
-/// row changes at once; a failed save rolls back and shows the error.
+/// Edit channel (TEAMSYNC + TEAMMOD moderation): rename and re-describe
+/// one channel, plus who can post/reply. The row changes at once; a
+/// failed save rolls back and shows the error.
 struct EditChannelSheet: View {
     @ObservedObject var teams: TeamsViewModel
     let channelID: String
+    let roster: (String) -> TeamRosterViewModel
 
     var body: some View {
         // The sheet can open before the list loads (launch routes): the
         // form appears once the channel resolves, seeded from it.
         if let (team, ch) = TeamsListPane.locate(channelID, in: teams.teams) {
-            EditChannelForm(teams: teams, teamID: team.teamId, channel: ch)
+            EditChannelForm(teams: teams, roster: roster(team.teamId), teamID: team.teamId, channel: ch)
         } else {
             TeamsSheetFrame(title: "Edit Channel", action: "Save", enabled: false,
                             busy: teams.state == .loading ? "Loading…" : nil,
@@ -315,38 +346,108 @@ struct EditChannelSheet: View {
 
 private struct EditChannelForm: View {
     @ObservedObject var teams: TeamsViewModel
+    @ObservedObject var roster: TeamRosterViewModel
     let teamID: String
     let channel: TeamChannel
+    /// Moderation the pickers were seeded from (pre-fetch snapshot).
+    private let seeded: ChannelModeration
     @State private var name: String
     @State private var about: String
+    @State private var posts: WhoCanPost
+    @State private var replies: WhoCanReply
     @State private var saving = false
     @State private var submitted = false
     @Environment(\.windowModel) private var model
 
-    init(teams: TeamsViewModel, teamID: String, channel: TeamChannel) {
+    init(teams: TeamsViewModel, roster: TeamRosterViewModel, teamID: String, channel: TeamChannel) {
         self.teams = teams
+        self.roster = roster
         self.teamID = teamID
         self.channel = channel
         _name = State(initialValue: channel.name)
         _about = State(initialValue: channel.description ?? "")
+        let key = TeamsViewModel.moderationKey(teamID: teamID, channelID: channel.channelId)
+        let current = teams.moderation[key] ?? ChannelModeration()
+        seeded = current
+        _posts = State(initialValue: current.posts)
+        _replies = State(initialValue: current.replies)
     }
 
     private var changed: Bool {
         (trimmed(name) != channel.name && !trimmed(name).isEmpty)
             || trimmed(about) != (channel.description ?? "")
+            || moderationChanged
     }
+
+    private var moderationKey: String {
+        TeamsViewModel.moderationKey(teamID: teamID, channelID: channel.channelId)
+    }
+
+    private var moderationChanged: Bool {
+        let current = teams.moderation[moderationKey] ?? ChannelModeration()
+        return posts != current.posts || replies != current.replies
+    }
+
+    private var canModerate: Bool { teams.canEditModeration(teamID: teamID) }
 
     var body: some View {
         TeamsSheetFrame(title: "Edit Channel", action: "Save",
-                        enabled: changed && !trimmed(name).isEmpty,
+                        enabled: changed && !trimmed(name).isEmpty && model?.connection != .offline,
                         busy: saving ? "Saving…" : nil,
                         error: submitted ? teams.actionError : nil, perform: save) {
             Form {
                 TextField("Name", text: $name, prompt: prompt("Channel name"))
                 TextField("Description", text: $about, prompt: prompt("Optional"), axis: .vertical)
                     .lineLimit(2...4)
+                Section("Moderation") {
+                    if canModerate {
+                        Picker("Who can post", selection: $posts) {
+                            ForEach(WhoCanPost.allCases, id: \.self) { Text($0.label).tag($0) }
+                        }
+                        .pickerStyle(.menu)
+                        .accessibilityLabel("Who can post")
+                        Picker("Who can reply", selection: $replies) {
+                            ForEach(WhoCanReply.allCases, id: \.self) { Text($0.label).tag($0) }
+                        }
+                        .pickerStyle(.menu)
+                        .accessibilityLabel("Who can reply")
+                        if posts == .moderators {
+                            moderatorList
+                        }
+                    } else {
+                        Text("Only team owners can change moderation settings.")
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
             .formStyle(.columns)
+        }
+        .task {
+            await teams.refreshModeration(teamID: teamID, channelID: channel.channelId)
+            // The pickers seed before the read lands: adopt the read
+            // unless the user already touched a picker.
+            let fresh = teams.moderation[moderationKey] ?? ChannelModeration()
+            if posts == seeded.posts && replies == seeded.replies {
+                posts = fresh.posts
+                replies = fresh.replies
+            }
+        }
+        .onAppear {
+            if roster.members.isEmpty { roster.refresh() }
+        }
+    }
+
+    /// The mod list: team owners (implicit moderators) from the roster.
+    @ViewBuilder
+    private var moderatorList: some View {
+        let owners = TeamRosterViewModel.owners(of: roster.members)
+        if owners.isEmpty {
+            Text("Loading moderators…").foregroundStyle(.secondary)
+        } else {
+            ForEach(owners) { m in
+                Text(TeamRosterViewModel.displayName(for: m, names: roster.names))
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -356,10 +457,17 @@ private struct EditChannelForm: View {
         let newName = n == channel.name ? nil : n
         let newAbout = d == (channel.description ?? "") ? nil : d
         let id = channel.channelId
+        let current = teams.moderation[moderationKey] ?? ChannelModeration()
+        let newPosts: WhoCanPost? = (canModerate && posts != current.posts) ? posts : nil
+        let newReplies: WhoCanReply? = (canModerate && replies != current.replies) ? replies : nil
         submitted = true
         saving = true
         Task { @MainActor in
-            let ok = await teams.updateChannel(teamID: teamID, channelID: id, name: newName, description: newAbout)
+            var ok = await teams.updateChannel(teamID: teamID, channelID: id, name: newName, description: newAbout)
+            if newPosts != nil || newReplies != nil {
+                ok = await teams.updateModeration(teamID: teamID, channelID: id,
+                                                  posts: newPosts, replies: newReplies) && ok
+            }
             saving = false
             if ok { model?.dismissSheet() }
         }
@@ -397,6 +505,86 @@ struct AddMemberSheet: View {
             adding = false
             if case .error = roster.state { return }
             model?.dismissSheet()
+        }
+    }
+}
+
+/// Manage a private/shared channel: its own roster with Add/Remove.
+/// Standard channels share the team roster (Manage Members… instead).
+struct ChannelMembersSheet: View {
+    @ObservedObject var roster: ChannelMembersViewModel
+    @State private var user = ""
+    @State private var owner = false
+    @State private var adding = false
+
+    var body: some View {
+        TeamsSheetFrame(title: "Manage Channel", action: "Add", enabled: !trimmed(user).isEmpty,
+                        busy: adding ? "Adding…" : nil, error: errorText, perform: add) {
+            Form {
+                TextField("Person", text: $user, prompt: prompt("Email or user ID"))
+                Toggle("Make owner", isOn: $owner)
+            }
+            .formStyle(.columns)
+            rosterList
+        }
+        .task { await roster.load() }
+    }
+
+    @ViewBuilder
+    private var rosterList: some View {
+        switch roster.state {
+        case .loading:
+            HStack { ProgressView().controlSize(.small); Text("Loading members…").foregroundStyle(.secondary) }
+                .font(.caption)
+        case .empty:
+            Text("No other members yet.").foregroundStyle(.secondary).font(.caption)
+        case .error(let msg):
+            Text(msg).foregroundStyle(.secondary).font(.caption)
+        case .loaded:
+            let rows = ChannelMembersViewModel.sorted(roster.members)
+            let owners = rows.filter(\.isOwner)
+            let members = rows.filter { !$0.isOwner }
+            VStack(alignment: .leading, spacing: 4) {
+                if !owners.isEmpty {
+                    Text("Owners (\(owners.count))").font(.caption).foregroundStyle(.secondary)
+                    ForEach(owners) { memberRow($0) }
+                }
+                if !members.isEmpty {
+                    Text("Members (\(members.count))").font(.caption).foregroundStyle(.secondary)
+                    ForEach(members) { memberRow($0) }
+                }
+            }
+        }
+    }
+
+    private func memberRow(_ m: ChannelMember) -> some View {
+        HStack {
+            Text(ChannelMembersViewModel.displayName(for: m)).lineLimit(1)
+            Spacer()
+            Button("Remove") {
+                Task { @MainActor in await roster.remove(memberID: m.id) }
+            }
+            .buttonStyle(.link)
+            .accessibilityLabel("Remove \(ChannelMembersViewModel.displayName(for: m))")
+        }
+        .font(.caption)
+    }
+
+    private var errorText: String? {
+        if case .error(let msg) = roster.state, !adding { return msg }
+        return nil
+    }
+
+    private func add() {
+        let u = trimmed(user)
+        let makeOwner = owner
+        adding = true
+        Task { @MainActor in
+            await roster.add(user: u, owner: makeOwner)
+            adding = false
+            if case .error = roster.state { return }
+            user = ""
+            owner = false
         }
     }
 }

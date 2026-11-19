@@ -276,7 +276,9 @@ struct TeamsListPane: View {
                    unread: unread.isUnread(chatID: ch.channelId),
                    mentioned: mentions.contains(chatID: ch.channelId),
                    hidden: prefs.isHidden(ch.channelId),
-                   muted: prefs.level(ch.channelId) == .muted)
+                   muted: prefs.level(ch.channelId) == .muted,
+                   archived: ch.isArchived == true,
+                   locked: ch.isPrivateOrShared)
             .tag("chan:\(ch.channelId)")
             // VoiceOver: the channel menu's primary items as actions.
             .accessibilityAction(named: "Open in New Window") {
@@ -356,6 +358,12 @@ struct TeamsListPane: View {
             .disabled(offline || !edit.isAllowed)
             .help(edit.reason ?? "")
         Button("Manage Channel\u{2026}") { run(TeamsCommands.manageChannel, id, m) }
+        let archived = located?.1.isArchived == true
+        let arc = located.map { teams.permission(.archive, teamID: $0.0.teamId, channelID: id) }
+            ?? .denied("This channel is no longer available.")
+        Button(archived ? "Unarchive Channel\u{2026}" : "Archive Channel\u{2026}") { run(TeamsCommands.archiveChannel, id, m) }
+            .disabled(offline || !arc.isAllowed)
+            .help(arc.reason ?? "")
         Button("Get Link to Channel") { run(TeamsCommands.copyLink, id, m) }
         Button("Get Email Address") { run(TeamsCommands.channelEmail, id, m) }
             .disabled((located?.1.email ?? "").isEmpty)
@@ -469,6 +477,8 @@ struct ChannelRow: View {
     let mentioned: Bool
     let hidden: Bool
     let muted: Bool
+    var archived: Bool = false
+    var locked: Bool = false
     @Environment(\.contentTextScale) private var scale
 
     var body: some View {
@@ -500,6 +510,18 @@ struct ChannelRow: View {
                     .font(AppFont.caption(scale))
                     .foregroundStyle(.secondary)
             }
+            if archived {
+                Image(systemName: "archivebox")
+                    .font(AppFont.caption(scale))
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel("Archived")
+            }
+            if locked {
+                Image(systemName: "lock")
+                    .font(AppFont.caption(scale))
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel("Private")
+            }
         }
         .badge(mentioned ? Text("@") : nil)
         .badgeProminence(.increased)
@@ -515,6 +537,8 @@ struct ChannelRow: View {
         if mentioned { parts.append("mentioned") }
         if hidden { parts.append("hidden") }
         if muted { parts.append("notifications off") }
+        if archived { parts.append("archived") }
+        if locked { parts.append("private") }
         return parts.joined(separator: ", ")
     }
 }

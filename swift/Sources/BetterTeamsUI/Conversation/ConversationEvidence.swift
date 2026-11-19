@@ -2,8 +2,9 @@
 // conversation (UI-SPEC §11.3 `state=`-style modifiers, P2a):
 //
 //   chat/<id>?conv=error|loading|reauth
-//   chat/<id>?seed=reply,edit,attach,typing,pending,scheduled,delete,pins,rich
+//   chat/<id>?seed=reply,edit,attach,typing,pending,scheduled,delete,pins,rich,share,praise,poll
 //   chat/<id>?seed=deletefail        (own last bubble shows failed delete + Retry)
+//   (+ `pollsheet=1` opens the poll create sheet — Composer evidence)
 //   chat/<id>?jump=pinned            (after seed=pins: jump to the first pin)
 //
 // A route chat the demo list doesn't have (e.g. `demo-new`) joins the
@@ -78,6 +79,9 @@ enum ConversationEvidence {
             conv.close()
         default: break
         }
+        // Polls lane: open the create sheet from the route (bound to
+        // shared composer state, so it is up on first appear).
+        if route.query["pollsheet"] == "1" { services.composer.showPollSheet = true }
         let seeds = Set((route.query["seed"] ?? "").split(separator: ",").map(String.init))
         guard !seeds.isEmpty else { return }
         let others = conv.messages.filter { !$0.isOwn && !$0.deleted }
@@ -85,6 +89,23 @@ enum ConversationEvidence {
         if seeds.contains("pending") {
             conv.ingest(ChatMessage(id: "pending-evidence", sender: "Me", timestamp: Date().ISO8601Format(),
                                     content: "Uploading the review deck now…", isOwn: true),
+                        keepOwnership: true)
+        }
+        if seeds.contains("poll") {
+            // Polls lane: a received poll with one vote cast, so
+            // captures show the vote + results card (device-local vote,
+            // in memory only like every other seed).
+            let poll = PollValidation.make(
+                question: "Friday lunch?",
+                options: ["Pizza", "Sushi", "Salads"])
+            // Register (and vote) before ingest so the first measure
+            // and render see the poll, never an empty card.
+            PollRegistry.register(poll, messageID: "poll-evidence")
+            try? PollRegistry.vote(messageID: "poll-evidence", optionIDs: ["o1"])
+            conv.ingest(ChatMessage(id: "poll-evidence", sender: "Megan Harper",
+                                    timestamp: Date().ISO8601Format(),
+                                    content: PollPayload.fallbackText(poll: poll),
+                                    isOwn: false),
                         keepOwnership: true)
         }
         if seeds.contains("rich") {
@@ -96,7 +117,27 @@ enum ConversationEvidence {
                                     isOwn: false),
                         keepOwnership: true)
         }
+        if seeds.contains("praise") {
+            // PRAISE: a received Praise card (badge + note), so captures
+            // show the native badge render in the timeline.
+            let raw = PraiseCard.envelopeJSON(
+                badge: .awesome, recipient: "Jordan Blake",
+                note: "Shipped the release a day early — thank you!",
+                sender: "Megan Harper", attachmentID: "evidence-praise-1")
+            conv.ingest(ChatMessage(id: "praise-evidence", sender: "Megan Harper",
+                                    timestamp: Date().ISO8601Format(),
+                                    content: "",
+                                    isOwn: false, raw: raw),
+                        keepOwnership: true)
+        }
         if seeds.contains("reply"), let target = others.last { conv.beginReply(to: target) }
+        if seeds.contains("share"), let target = others.last {
+            // Next turn: the window is on screen by then (the route is
+            // applied before the window is first shown, same as delete).
+            DispatchQueue.main.async {
+                m.presentSheet(SheetRequest(ChatCommands.shareOutlookSheet, in: .chat, arg: target.id))
+            }
+        }
         if seeds.contains("edit"), let target = own.last { services.composer.beginEdit(target, chatID: chatID) }
         if seeds.contains("attach") { services.attachments.stage(paths: demoFiles()) }
         if seeds.contains("typing"), let typing = m.app?.typing {

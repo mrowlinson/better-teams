@@ -20,6 +20,8 @@ public struct OutgoingSend: Sendable, Equatable {
         case plain
         case reply(parentID: String, parentSender: String, parentText: String)
         case thread(rootID: String)
+        /// PRAISE: a Praise card post (badge = wire token).
+        case praise(badge: String, recipient: String, note: String, sender: String)
     }
 
     public let chatID: String
@@ -88,6 +90,12 @@ public struct SendTransport: Sendable {
                     channelID: r.chatID, rootID: root, text: r.text,
                     clientMessageID: r.clientMessageID,
                     importance: imp, subject: r.subject, mentionsJSON: men).id
+            case .praise(let badge, let recipient, let note, let sender):
+                let id = try RustCore.sendPraiseIdem(
+                    chatID: r.chatID, badge: badge, recipient: recipient, note: note,
+                    sender: sender, clientMessageID: r.clientMessageID).id
+                MeetingChatUnmute.after(.send, chatID: r.chatID) // CHATSYNC3 R1
+                return id
             }
         },
         find: { chat, cmid in

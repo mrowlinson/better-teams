@@ -408,7 +408,7 @@ final class ChatSection: SectionProvider, InspectorCapable {
         case ChatCommands.catchUpWindow:
             guard m.app?.catchUp.mode ?? .off != .off else { return false }
             CatchUpWindowController.show(m)
-        case ChatCommands.reply, ChatCommands.forward, ChatCommands.react,
+        case ChatCommands.reply, ChatCommands.forward, ChatCommands.shareOutlook, ChatCommands.react,
              ChatCommands.save, ChatCommands.pinMessage, ChatCommands.translate:
             return performMessageAction(c, arg: arg, m)
         case ChatCommands.speakStart:
@@ -602,7 +602,7 @@ final class ChatSection: SectionProvider, InspectorCapable {
         case ChatCommands.compose:
             // Any host showing a conversation (Chat, Activity, Search).
             return CommandValidation(enabled: ConversationToolbar.chatID(m) != nil)
-        case ChatCommands.reply, ChatCommands.forward, ChatCommands.react,
+        case ChatCommands.reply, ChatCommands.forward, ChatCommands.shareOutlook, ChatCommands.react,
              ChatCommands.save, ChatCommands.pinMessage, ChatCommands.translate:
             return validateMessageAction(c, m)
         case ChatCommands.speakStart:
@@ -723,6 +723,7 @@ final class ChatSection: SectionProvider, InspectorCapable {
         switch c {
         case ChatCommands.reply: actions.reply(msg)
         case ChatCommands.forward: actions.forward(msg)
+        case ChatCommands.shareOutlook: actions.shareOutlook(msg)
         case ChatCommands.react:
             let emoji = arg ?? ""
             if emoji == "more" { actions.moreReactions(msg) } else { actions.react(msg, emoji) }

@@ -64,6 +64,38 @@ char *ostmac_channel_update(
 // Caller frees.
 char *ostmac_channel_delete(const char *team_id, const char *channel_id);
 
+// Create one channel of any membership type (Graph POST, requires
+// sign-in): {ok,channel:{id,name,...}}. description and
+// membership_type may be NULL (standard); owners_json may be NULL (a
+// JSON array of user ids/UPNs for private/shared). Caller frees.
+char *ostmac_channel_create_typed(
+    const char *team_id, const char *name, const char *description,
+    const char *membership_type, const char *owners_json);
+
+// Archive one channel (Graph async POST, requires sign-in): {ok}.
+// Re-read the channel (is_archived) to confirm. Caller frees.
+char *ostmac_channel_archive(const char *team_id, const char *channel_id);
+
+// Restore one archived channel (Graph POST, requires sign-in): {ok}.
+// Caller frees.
+char *ostmac_channel_unarchive(const char *team_id, const char *channel_id);
+
+// List one private/shared channel's members (Graph GET, requires
+// sign-in): {ok,members:[...]}. Caller frees.
+char *ostmac_channel_members(const char *team_id, const char *channel_id);
+
+// Add one user to a private/shared channel (Graph POST, requires
+// sign-in): {ok,member:{...}}. owner nonzero grants the owner role.
+// Caller frees.
+char *ostmac_channel_member_add(
+    const char *team_id, const char *channel_id,
+    const char *user, unsigned char owner);
+
+// Remove one membership from a private/shared channel (Graph DELETE,
+// requires sign-in): {ok}. Caller frees.
+char *ostmac_channel_member_remove(
+    const char *team_id, const char *channel_id, const char *member_id);
+
 // Join one team by id (self-enroll): {ok, team_id}. Caller frees.
 char *ostmac_team_join(const char *team_id);
 
@@ -108,6 +140,27 @@ char *ostmac_team_members(const char *team_id);
 // {ok, team_id, allow_delete_channels|null, allow_create_update_channels|null,
 // primary_channel_id|null}. Caller frees.
 char *ostmac_team_settings(const char *team_id);
+
+// TEAMMOD: one channel's moderation settings (beta Graph read):
+// {ok, team_id, channel_id, user_new_message_restriction|null,
+// reply_restriction|null, allow_bots|null, allow_connectors|null}.
+// Caller frees.
+char *ostmac_channel_moderation(const char *team_id, const char *channel_id);
+
+// TEAMMOD: set one channel's moderation restrictions (middle-tier PATCH):
+// {ok}. posts/replies may be NULL (unchanged); at least one must change.
+// Caller frees.
+char *ostmac_channel_moderation_update(
+    const char *team_id, const char *channel_id,
+    const char *posts, const char *replies);
+
+// TEAMMOD: one team's privacy (backing-group visibility read):
+// {ok, team_id, visibility|null}. Caller frees.
+char *ostmac_team_visibility(const char *team_id);
+
+// TEAMMOD: flip one team's privacy (nonzero = Private): {ok, team_id,
+// visibility} (read back). Caller frees.
+char *ostmac_team_visibility_update(const char *team_id, int make_private);
 
 // Add one user (id or UPN) to a team; owner nonzero grants the owner
 // role. Returns {ok, member}. Caller frees.
@@ -154,6 +207,12 @@ char *ostmac_reply_idem_opts(const char *chat_id, const char *parent_id, const c
 char *ostmac_thread_reply_idem_opts(const char *channel_id, const char *root_id, const char *text,
                                     const char *client_message_id, const char *importance,
                                     const char *subject, const char *mentions_json);
+// PRAISE: post a Praise card (`badge` wire token, `recipient`, `note`;
+// `note`/`sender` tolerate NULL/empty). Empty badge/recipient/chat id
+// is an arg error. Same idempotency contract as ostmac_send_idem.
+// Caller frees.
+char *ostmac_send_praise_idem(const char *chat_id, const char *badge, const char *recipient,
+                              const char *note, const char *sender, const char *client_message_id);
 // §106 verify: {ok, found, message?} — newest page searched by client
 // message id (a timed-out send checks before Failed/re-post). Caller frees.
 char *ostmac_find_client_message(const char *chat_id, const char *client_message_id);

@@ -15,6 +15,11 @@ enum ConversationSheets {
             let id = r.arg ?? conv.messages.last(where: { !$0.isOwn && !$0.deleted })?.id
             guard let message = id.flatMap({ i in conv.messages.first { $0.id == i } }) else { return nil }
             return AnyView(ForwardSheet(message: message, conv: conv, chats: m.graph.chats))
+        case ChatCommands.shareOutlookSheet:
+            let conv = m.graph.conv
+            let id = r.arg ?? conv.messages.last(where: { !$0.isOwn && !$0.deleted })?.id
+            guard let message = id.flatMap({ i in conv.messages.first { $0.id == i } }) else { return nil }
+            return AnyView(ShareOutlookSheet(message: message))
         case ChatCommands.scheduledSheet:
             guard let store = ConversationServices.of(m).scheduled(m) else { return nil }
             return AnyView(ScheduledQueueSheet(store: store, conv: m.graph.conv, chatID: m.graph.conv.chatID))
@@ -94,6 +99,95 @@ struct ForwardSheet: View {
         guard let id = picked else { return }
         conv.forward(message, toChatID: id, destName: chats.chat(id: id)?.name)
         model?.dismissSheet()
+    }
+}
+
+/// Share one message as email (SHAREOUTLOOK, §9.5 sheet): To +
+/// subject + body prefilled from the message (To empty for the user).
+/// Send posts via Graph sendMail; a 403 surfaces the missing-scope
+/// capability message and the draft stays for editing. A sent sheet
+/// shows the sent state and closes on Done.
+struct ShareOutlookSheet: View {
+    @Environment(\.windowModel) private var model
+    @State private var draft: ShareOutlookDraft
+    @State private var sending = false
+    @State private var sent = false
+    @State private var error: String?
+    private let client: ShareOutlookGraph
+
+    init(message: ChatMessage, client: ShareOutlookGraph? = nil) {
+        _draft = State(initialValue: ShareOutlookDraft.prefill(from: message))
+        self.client = client ?? .production()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Share to Outlook").font(.headline)
+            if sent {
+                Label("Sent", systemImage: "checkmark.circle")
+                    .foregroundStyle(.secondary)
+                Text("The message was sent as email.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("To")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                TextField("name@example.com", text: $draft.to)
+                    .textFieldStyle(.roundedBorder)
+                Text("Subject")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                TextField("Subject", text: $draft.subject)
+                    .textFieldStyle(.roundedBorder)
+                Text("Body")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                TextEditor(text: $draft.body)
+                    .frame(height: 140)
+                    .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .stroke(.quaternary, lineWidth: 1))
+                    .font(.body)
+                if let error {
+                    Text(error)
+                        .font(.callout)
+                        .foregroundStyle(.red)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            HStack {
+                Spacer()
+                if sent {
+                    Button("Done", role: .cancel) { model?.dismissSheet() }
+                        .keyboardShortcut(.defaultAction)
+                } else {
+                    Button("Cancel", role: .cancel) { model?.dismissSheet() }
+                        .keyboardShortcut(.cancelAction)
+                    Button(sending ? "Sending…" : "Send") { send() }
+                        .keyboardShortcut(.defaultAction)
+                        .disabled(!draft.canSend || sending)
+                }
+            }
+        }
+        .padding(20)
+        .frame(width: 440)
+    }
+
+    private func send() {
+        guard draft.canSend, !sending, !sent else { return }
+        sending = true
+        error = nil
+        let draft = self.draft
+        let client = self.client
+        Task {
+            do {
+                try await Task.blocking { try client.send(draft) }.value
+                sent = true
+            } catch {
+                self.error = String(describing: error)
+            }
+            sending = false
+        }
     }
 }
 

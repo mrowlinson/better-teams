@@ -229,6 +229,10 @@ public enum DemoData {
             TeamChannel(channelId: "demo-chan-general", name: "General"),
             TeamChannel(channelId: "demo-chan-shipping", name: "Shipping"),
             TeamChannel(channelId: "demo-chan-long", name: "Release Review"),
+            TeamChannel(channelId: "demo-chan-privexec", name: "Exec Sync",
+                        membershipType: "private"),
+            TeamChannel(channelId: "demo-chan-oldlaunch", name: "Old Launch",
+                        description: "Last year's launch room.", isArchived: true),
         ]),
         TeamItem(teamId: "demo-team-design", name: "Design", channels: [
             TeamChannel(channelId: "demo-chan-crit", name: "Design Critique"),

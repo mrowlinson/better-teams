@@ -20,7 +20,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::ffi::{CStr, CString};
-use std::os::raw::{c_char, c_int};
+use std::os::raw::{c_char, c_int, c_uchar};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -364,6 +364,18 @@ fn channel_to_json(c: &ost::api::ChannelInfo) -> serde_json::Value {
         "description": c.description,
         "membership_type": c.membership_type,
         "web_url": c.web_url,
+        "is_archived": c.is_archived,
+    })
+}
+
+fn channel_member_to_json(m: &ost::api::ChannelMemberInfo) -> serde_json::Value {
+    json!({
+        "id": m.id,
+        "display_name": m.display_name,
+        "user_id": m.user_id,
+        "email": m.email,
+        "roles": m.roles,
+        "is_owner": m.is_owner,
     })
 }
 
@@ -475,6 +487,213 @@ pub fn channel_delete_json(team_id: &str, channel_id: &str) -> String {
     match run() {
         Ok(s) => s,
         Err(e) => err_json("channel_delete", e),
+    }
+}
+
+/// Create one channel of any membership type. `membership_type` blank
+/// means standard; `owners_json` is a JSON array of user ids/UPNs
+/// (required for private/shared, exactly one for shared). Returns
+/// `{ok:true, channel:{id,name,...}}` or `{ok:false}`. Requires sign-in.
+pub fn channel_create_typed_json(
+    team_id: &str,
+    name: &str,
+    description: Option<&str>,
+    membership_type: Option<&str>,
+    owners_json: Option<&str>,
+) -> String {
+    if let Err(e) = todo_id_ok("team_id", team_id) {
+        return e;
+    }
+    if name.trim().is_empty() {
+        return err_json("arg", "empty name");
+    }
+    let owners: Vec<String> = match owners_json {
+        None => Vec::new(),
+        Some(s) if s.trim().is_empty() => Vec::new(),
+        Some(s) => match serde_json::from_str::<serde_json::Value>(s) {
+            Ok(serde_json::Value::Array(items)) => items
+                .iter()
+                .filter_map(|v| v.as_str())
+                .map(str::to_string)
+                .collect(),
+            _ => return err_json("arg", "owners must be a JSON array of strings"),
+        },
+    };
+    let desc = description.filter(|d| !d.trim().is_empty());
+    let owners_ref: Vec<&str> = owners.iter().map(String::as_str).collect();
+    let run = || -> Result<String, String> {
+        let rt = rt()?;
+        rt.block_on(async {
+            let client = ost::api::client::TeamsClient::new()
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            let channel = ost::api::create_channel_typed_data(
+                &client,
+                team_id,
+                name,
+                desc,
+                membership_type,
+                &owners_ref,
+            )
+            .await
+            .map_err(|e| format!("{:#}", e))?;
+            Ok(json!({"ok": true, "channel": channel_to_json(&channel)}).to_string())
+        })
+    };
+    match run() {
+        Ok(s) => s,
+        Err(e) => err_json("channel_create", e),
+    }
+}
+
+/// Archive one channel (Graph async `POST .../archive`). Returns
+/// `{ok:true, team_id, channel_id}` or `{ok:false}`. Requires sign-in;
+/// re-read the channel (`is_archived`) to confirm the flip.
+pub fn channel_archive_json(team_id: &str, channel_id: &str) -> String {
+    if let Err(e) = todo_id_ok("team_id", team_id) {
+        return e;
+    }
+    if let Err(e) = todo_id_ok("channel_id", channel_id) {
+        return e;
+    }
+    let run = || -> Result<String, String> {
+        let rt = rt()?;
+        rt.block_on(async {
+            let client = ost::api::client::TeamsClient::new()
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            ost::api::archive_channel_data(&client, team_id, channel_id, None)
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            Ok(json!({"ok": true, "team_id": team_id.trim(), "channel_id": channel_id.trim()})
+                .to_string())
+        })
+    };
+    match run() {
+        Ok(s) => s,
+        Err(e) => err_json("channel_archive", e),
+    }
+}
+
+/// Restore one archived channel (`POST .../unarchive`). Returns
+/// `{ok:true, team_id, channel_id}` or `{ok:false}`. Requires sign-in.
+pub fn channel_unarchive_json(team_id: &str, channel_id: &str) -> String {
+    if let Err(e) = todo_id_ok("team_id", team_id) {
+        return e;
+    }
+    if let Err(e) = todo_id_ok("channel_id", channel_id) {
+        return e;
+    }
+    let run = || -> Result<String, String> {
+        let rt = rt()?;
+        rt.block_on(async {
+            let client = ost::api::client::TeamsClient::new()
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            ost::api::unarchive_channel_data(&client, team_id, channel_id)
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            Ok(json!({"ok": true, "team_id": team_id.trim(), "channel_id": channel_id.trim()})
+                .to_string())
+        })
+    };
+    match run() {
+        Ok(s) => s,
+        Err(e) => err_json("channel_unarchive", e),
+    }
+}
+
+/// List one private/shared channel's members. Returns
+/// `{ok:true, members:[...]}` or `{ok:false}`. Requires sign-in.
+pub fn channel_members_json(team_id: &str, channel_id: &str) -> String {
+    if let Err(e) = todo_id_ok("team_id", team_id) {
+        return e;
+    }
+    if let Err(e) = todo_id_ok("channel_id", channel_id) {
+        return e;
+    }
+    let run = || -> Result<String, String> {
+        let rt = rt()?;
+        rt.block_on(async {
+            let client = ost::api::client::TeamsClient::new()
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            let members = ost::api::list_channel_members_data(&client, team_id, channel_id)
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            let rows: Vec<_> = members.iter().map(channel_member_to_json).collect();
+            Ok(json!({"ok": true, "members": rows}).to_string())
+        })
+    };
+    match run() {
+        Ok(s) => s,
+        Err(e) => err_json("channel_members", e),
+    }
+}
+
+/// Add one user to a private/shared channel. Returns
+/// `{ok:true, member:{...}}` or `{ok:false}`. Requires sign-in.
+pub fn channel_member_add_json(
+    team_id: &str,
+    channel_id: &str,
+    user: &str,
+    owner: bool,
+) -> String {
+    if let Err(e) = todo_id_ok("team_id", team_id) {
+        return e;
+    }
+    if let Err(e) = todo_id_ok("channel_id", channel_id) {
+        return e;
+    }
+    if user.trim().is_empty() {
+        return err_json("arg", "empty user");
+    }
+    let run = || -> Result<String, String> {
+        let rt = rt()?;
+        rt.block_on(async {
+            let client = ost::api::client::TeamsClient::new()
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            let member =
+                ost::api::add_channel_member_data(&client, team_id, channel_id, user, owner)
+                    .await
+                    .map_err(|e| format!("{:#}", e))?;
+            Ok(json!({"ok": true, "member": channel_member_to_json(&member)}).to_string())
+        })
+    };
+    match run() {
+        Ok(s) => s,
+        Err(e) => err_json("channel_member_add", e),
+    }
+}
+
+/// Remove one membership from a private/shared channel. Returns
+/// `{ok:true}` or `{ok:false}`. Requires sign-in.
+pub fn channel_member_remove_json(team_id: &str, channel_id: &str, member_id: &str) -> String {
+    if let Err(e) = todo_id_ok("team_id", team_id) {
+        return e;
+    }
+    if let Err(e) = todo_id_ok("channel_id", channel_id) {
+        return e;
+    }
+    if let Err(e) = todo_id_ok("member_id", member_id) {
+        return e;
+    }
+    let run = || -> Result<String, String> {
+        let rt = rt()?;
+        rt.block_on(async {
+            let client = ost::api::client::TeamsClient::new()
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            ost::api::remove_channel_member_data(&client, team_id, channel_id, member_id)
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            Ok(json!({"ok": true}).to_string())
+        })
+    };
+    match run() {
+        Ok(s) => s,
+        Err(e) => err_json("channel_member_remove", e),
     }
 }
 
@@ -741,6 +960,138 @@ pub fn team_settings_json(team_id: &str) -> String {
     match run() {
         Ok(s) => s,
         Err(e) => err_json("team_settings", e),
+    }
+}
+
+/// One channel's moderation settings (beta Graph read).
+/// `{ok:true, team_id, channel_id, user_new_message_restriction:
+/// string|null, reply_restriction: string|null, allow_bots: bool|null,
+/// allow_connectors: bool|null}`; null = unknown. Bad ids are rejected
+/// before any network. TEAMMOD.
+pub fn channel_moderation_json(team_id: &str, channel_id: &str) -> String {
+    if let Err(e) = todo_id_ok("team_id", team_id) {
+        return e;
+    }
+    if let Err(e) = todo_id_ok("channel_id", channel_id) {
+        return e;
+    }
+    let run = || -> Result<String, String> {
+        let rt = rt()?;
+        rt.block_on(async {
+            let client = ost::api::client::TeamsClient::new()
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            let m = ost::api::moderation_data(&client, team_id, channel_id)
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            Ok(json!({
+                "ok": true,
+                "team_id": team_id.trim(),
+                "channel_id": channel_id.trim(),
+                "user_new_message_restriction": m.user_new_message_restriction,
+                "reply_restriction": m.reply_restriction,
+                "allow_bots": m.allow_bots,
+                "allow_connectors": m.allow_connectors,
+            })
+            .to_string())
+        })
+    };
+    match run() {
+        Ok(s) => s,
+        Err(e) => err_json("channel_moderation", e),
+    }
+}
+
+/// Set one channel's moderation restrictions (middle-tier PATCH).
+/// `posts`/`replies` may be None (unchanged); at least one must change.
+/// Returns `{ok:true, team_id, channel_id}` or `{ok:false}`. TEAMMOD.
+pub fn channel_moderation_update_json(
+    team_id: &str,
+    channel_id: &str,
+    posts: Option<&str>,
+    replies: Option<&str>,
+) -> String {
+    if let Err(e) = todo_id_ok("team_id", team_id) {
+        return e;
+    }
+    if let Err(e) = todo_id_ok("channel_id", channel_id) {
+        return e;
+    }
+    let posts = posts.map(str::trim).filter(|s| !s.is_empty());
+    let replies = replies.map(str::trim).filter(|s| !s.is_empty());
+    if posts.is_none() && replies.is_none() {
+        return err_json("arg", "nothing to update");
+    }
+    let run = || -> Result<String, String> {
+        let rt = rt()?;
+        rt.block_on(async {
+            let client = ost::api::client::TeamsClient::new()
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            ost::api::update_moderation_data(&client, team_id, channel_id, posts, replies)
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            Ok(json!({"ok": true, "team_id": team_id.trim(), "channel_id": channel_id.trim()})
+                .to_string())
+        })
+    };
+    match run() {
+        Ok(s) => s,
+        Err(e) => err_json("channel_moderation_update", e),
+    }
+}
+
+/// One team's privacy (backing-group visibility read).
+/// `{ok:true, team_id, visibility: string|null}`; null = unknown.
+/// TEAMMOD.
+pub fn team_visibility_json(team_id: &str) -> String {
+    if let Err(e) = todo_id_ok("team_id", team_id) {
+        return e;
+    }
+    let run = || -> Result<String, String> {
+        let rt = rt()?;
+        rt.block_on(async {
+            let client = ost::api::client::TeamsClient::new()
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            let v = ost::api::team_visibility_data(&client, team_id)
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            Ok(json!({"ok": true, "team_id": team_id.trim(), "visibility": v}).to_string())
+        })
+    };
+    match run() {
+        Ok(s) => s,
+        Err(e) => err_json("team_visibility", e),
+    }
+}
+
+/// Flip one team's privacy. `private_int` nonzero = Private, zero =
+/// Public. Returns `{ok:true, team_id, visibility}` (read back) or
+/// `{ok:false}`. TEAMMOD.
+pub fn team_visibility_update_json(team_id: &str, private_int: i32) -> String {
+    if let Err(e) = todo_id_ok("team_id", team_id) {
+        return e;
+    }
+    let private = private_int != 0;
+    let run = || -> Result<String, String> {
+        let rt = rt()?;
+        rt.block_on(async {
+            let client = ost::api::client::TeamsClient::new()
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            ost::api::update_team_visibility_data(&client, team_id, private)
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            let v = ost::api::team_visibility_data(&client, team_id)
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            Ok(json!({"ok": true, "team_id": team_id.trim(), "visibility": v}).to_string())
+        })
+    };
+    match run() {
+        Ok(s) => s,
+        Err(e) => err_json("team_visibility_update", e),
     }
 }
 
@@ -1323,6 +1674,72 @@ fn send_idem_inner(
                 .await
                 .map_err(|e| format!("{:#}", e))?;
             let sent = ost::api::send_message_with_client_id_opts(&client, chat_id, text, &cmid, opts)
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            Ok(sent_json(chat_id, &sent))
+        })
+    };
+    match run() {
+        Ok(s) => s,
+        Err(e) => err_json("send", e),
+    }
+}
+
+/// PRAISE: post a Praise card (badge + recipient + note) with a
+/// caller-owned client message id (same idempotency contract as
+/// [`ostmac_send_idem`]). Empty badge/recipient/chat id → arg error
+/// (the note may be empty). Caller frees.
+#[no_mangle]
+pub extern "C" fn ostmac_send_praise_idem(
+    chat_id: *const c_char,
+    badge: *const c_char,
+    recipient: *const c_char,
+    note: *const c_char,
+    sender: *const c_char,
+    client_message_id: *const c_char,
+) -> *mut c_char {
+    let args = (|| {
+        Ok::<_, String>((
+            cstr_to_string(chat_id)?,
+            cstr_to_string(badge)?,
+            cstr_to_string(recipient)?,
+            opt_cstr_to_string(note)?.unwrap_or_default(),
+            opt_cstr_to_string(sender)?.unwrap_or_default(),
+            cstr_to_string(client_message_id)?,
+        ))
+    })();
+    match args {
+        Ok((id, b, r, n, s, c)) => string_to_c(send_praise_idem_inner(&id, &b, &r, &n, &s, &c)),
+        Err(e) => string_to_c(err_json("arg", e)),
+    }
+}
+
+/// PRAISE: shared praise-post core (arg guards mirror the Rust send).
+fn send_praise_idem_inner(
+    chat_id: &str,
+    badge: &str,
+    recipient: &str,
+    note: &str,
+    sender: &str,
+    client_message_id: &str,
+) -> String {
+    let cmid = cmid_or_new(client_message_id);
+    if chat_id.trim().is_empty() {
+        return err_json("arg", "empty chat_id");
+    }
+    if badge.trim().is_empty() {
+        return err_json("arg", "empty badge");
+    }
+    if recipient.trim().is_empty() {
+        return err_json("arg", "empty recipient");
+    }
+    let run = || -> Result<String, String> {
+        let rt = rt()?;
+        rt.block_on(async {
+            let client = ost::api::client::TeamsClient::new()
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            let sent = ost::api::send_praise_with_client_id(&client, chat_id, badge, recipient, note, sender, &cmid)
                 .await
                 .map_err(|e| format!("{:#}", e))?;
             Ok(sent_json(chat_id, &sent))
@@ -3440,6 +3857,211 @@ pub extern "C" fn ostmac_channel_delete(
     }
 }
 
+/// One channel's moderation settings (beta Graph read). Caller frees.
+/// TEAMMOD.
+#[no_mangle]
+pub extern "C" fn ostmac_channel_moderation(
+    team_id: *const c_char,
+    channel_id: *const c_char,
+) -> *mut c_char {
+    let team = match cstr_to_string(team_id) {
+        Ok(s) => s,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    match cstr_to_string(channel_id) {
+        Ok(c) => string_to_c(channel_moderation_json(&team, &c)),
+        Err(e) => string_to_c(err_json("arg", e)),
+    }
+}
+
+/// Set one channel's moderation restrictions. `posts`/`replies` may be
+/// NULL (unchanged); at least one must change. Caller frees. TEAMMOD.
+#[no_mangle]
+pub extern "C" fn ostmac_channel_moderation_update(
+    team_id: *const c_char,
+    channel_id: *const c_char,
+    posts: *const c_char,
+    replies: *const c_char,
+) -> *mut c_char {
+    let team = match cstr_to_string(team_id) {
+        Ok(s) => s,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    let chan = match cstr_to_string(channel_id) {
+        Ok(s) => s,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    let po = match opt_cstr_to_string(posts) {
+        Ok(s) => s,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    match opt_cstr_to_string(replies) {
+        Ok(r) => string_to_c(channel_moderation_update_json(
+            &team,
+            &chan,
+            po.as_deref(),
+            r.as_deref(),
+        )),
+        Err(e) => string_to_c(err_json("arg", e)),
+    }
+}
+
+/// One team's privacy (backing-group visibility). Caller frees. TEAMMOD.
+#[no_mangle]
+pub extern "C" fn ostmac_team_visibility(team_id: *const c_char) -> *mut c_char {
+    match cstr_to_string(team_id) {
+        Ok(t) => string_to_c(team_visibility_json(&t)),
+        Err(e) => string_to_c(err_json("arg", e)),
+    }
+}
+
+/// Flip one team's privacy (nonzero = Private). Caller frees. TEAMMOD.
+#[no_mangle]
+pub extern "C" fn ostmac_team_visibility_update(
+    team_id: *const c_char,
+    make_private: c_int,
+) -> *mut c_char {
+    match cstr_to_string(team_id) {
+        Ok(t) => string_to_c(team_visibility_update_json(&t, make_private as i32)),
+        Err(e) => string_to_c(err_json("arg", e)),
+    }
+}
+
+/// Create one channel of any membership type. `description` and
+/// `membership_type` may be NULL (standard); `owners_json` may be NULL
+/// (a JSON array of user ids/UPNs for private/shared). See
+/// [`channel_create_typed_json`]. Caller frees.
+#[no_mangle]
+pub extern "C" fn ostmac_channel_create_typed(
+    team_id: *const c_char,
+    name: *const c_char,
+    description: *const c_char,
+    membership_type: *const c_char,
+    owners_json: *const c_char,
+) -> *mut c_char {
+    let id = match cstr_to_string(team_id) {
+        Ok(s) => s,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    let nm = match cstr_to_string(name) {
+        Ok(s) => s,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    let desc = match opt_cstr_to_string(description) {
+        Ok(s) => s,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    let mt = match opt_cstr_to_string(membership_type) {
+        Ok(s) => s,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    match opt_cstr_to_string(owners_json) {
+        Ok(o) => string_to_c(channel_create_typed_json(
+            &id,
+            &nm,
+            desc.as_deref(),
+            mt.as_deref(),
+            o.as_deref(),
+        )),
+        Err(e) => string_to_c(err_json("arg", e)),
+    }
+}
+
+/// Archive one channel. See [`channel_archive_json`]. Caller frees.
+#[no_mangle]
+pub extern "C" fn ostmac_channel_archive(
+    team_id: *const c_char,
+    channel_id: *const c_char,
+) -> *mut c_char {
+    let team = match cstr_to_string(team_id) {
+        Ok(s) => s,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    match cstr_to_string(channel_id) {
+        Ok(c) => string_to_c(channel_archive_json(&team, &c)),
+        Err(e) => string_to_c(err_json("arg", e)),
+    }
+}
+
+/// Restore one archived channel. See [`channel_unarchive_json`].
+/// Caller frees.
+#[no_mangle]
+pub extern "C" fn ostmac_channel_unarchive(
+    team_id: *const c_char,
+    channel_id: *const c_char,
+) -> *mut c_char {
+    let team = match cstr_to_string(team_id) {
+        Ok(s) => s,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    match cstr_to_string(channel_id) {
+        Ok(c) => string_to_c(channel_unarchive_json(&team, &c)),
+        Err(e) => string_to_c(err_json("arg", e)),
+    }
+}
+
+/// List one private/shared channel's members. See
+/// [`channel_members_json`]. Caller frees.
+#[no_mangle]
+pub extern "C" fn ostmac_channel_members(
+    team_id: *const c_char,
+    channel_id: *const c_char,
+) -> *mut c_char {
+    let team = match cstr_to_string(team_id) {
+        Ok(s) => s,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    match cstr_to_string(channel_id) {
+        Ok(c) => string_to_c(channel_members_json(&team, &c)),
+        Err(e) => string_to_c(err_json("arg", e)),
+    }
+}
+
+/// Add one user to a private/shared channel (`owner` nonzero grants
+/// the owner role). See [`channel_member_add_json`]. Caller frees.
+#[no_mangle]
+pub extern "C" fn ostmac_channel_member_add(
+    team_id: *const c_char,
+    channel_id: *const c_char,
+    user: *const c_char,
+    owner: c_uchar,
+) -> *mut c_char {
+    let team = match cstr_to_string(team_id) {
+        Ok(s) => s,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    let chan = match cstr_to_string(channel_id) {
+        Ok(s) => s,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    match cstr_to_string(user) {
+        Ok(u) => string_to_c(channel_member_add_json(&team, &chan, &u, owner != 0)),
+        Err(e) => string_to_c(err_json("arg", e)),
+    }
+}
+
+/// Remove one membership from a private/shared channel. See
+/// [`channel_member_remove_json`]. Caller frees.
+#[no_mangle]
+pub extern "C" fn ostmac_channel_member_remove(
+    team_id: *const c_char,
+    channel_id: *const c_char,
+    member_id: *const c_char,
+) -> *mut c_char {
+    let team = match cstr_to_string(team_id) {
+        Ok(s) => s,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    let chan = match cstr_to_string(channel_id) {
+        Ok(s) => s,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    match cstr_to_string(member_id) {
+        Ok(m) => string_to_c(channel_member_remove_json(&team, &chan, &m)),
+        Err(e) => string_to_c(err_json("arg", e)),
+    }
+}
+
 /// Join one team by id (requires sign-in). See [`team_join_json`].
 #[no_mangle]
 pub extern "C" fn ostmac_team_join(team_id: *const c_char) -> *mut c_char {
@@ -4977,6 +5599,7 @@ mod tests {
                     description: None,
                     membership_type: None,
                     web_url: None,
+                    is_archived: None,
                 },
                 ost::api::ChannelInfo {
                     id: "19:random@thread.tacv2".to_string(),
@@ -4984,6 +5607,7 @@ mod tests {
                     description: None,
                     membership_type: None,
                     web_url: None,
+                    is_archived: Some(false),
                 },
             ],
         };
@@ -4998,6 +5622,8 @@ mod tests {
         assert!(v["channels"][0]["description"].is_null());
         assert!(v["channels"][0]["membership_type"].is_null());
         assert!(v["channels"][0]["web_url"].is_null());
+        assert!(v["channels"][0]["is_archived"].is_null());
+        assert_eq!(v["channels"][1]["is_archived"], false);
     }
 
     #[test]
@@ -5011,6 +5637,7 @@ mod tests {
                 description: Some("Team-wide announcements".to_string()),
                 membership_type: Some("standard".to_string()),
                 web_url: Some("https://teams.cloud.microsoft/l/channel/abc".to_string()),
+                is_archived: Some(true),
             }],
         };
         let v = team_to_json(&t);
@@ -5020,6 +5647,7 @@ mod tests {
             v["channels"][0]["web_url"],
             "https://teams.cloud.microsoft/l/channel/abc"
         );
+        assert_eq!(v["channels"][0]["is_archived"], true);
     }
 
     #[test]
@@ -5177,10 +5805,76 @@ mod tests {
             description: None,
             membership_type: None,
             web_url: None,
+            is_archived: None,
         };
         let v = channel_to_json(&c);
         assert_eq!(v["id"], "19:new@thread.tacv2");
         assert_eq!(v["name"], "New room");
+        assert!(v["is_archived"].is_null());
+    }
+
+    #[test]
+    fn channel_typed_guards_reject_before_network() {
+        // Bad team id.
+        let v: serde_json::Value =
+            serde_json::from_str(&channel_create_typed_json("a/b", "N", None, None, None))
+                .unwrap();
+        assert_eq!(v["ok"], false);
+        // Empty name.
+        let v: serde_json::Value =
+            serde_json::from_str(&channel_create_typed_json("t", "  ", None, None, None))
+                .unwrap();
+        assert_eq!(v["ok"], false);
+        // Owners must be a JSON array of strings.
+        let v: serde_json::Value =
+            serde_json::from_str(&channel_create_typed_json(
+                "t",
+                "N",
+                None,
+                Some("private"),
+                Some("oops"),
+            ))
+            .unwrap();
+        assert_eq!(v["ok"], false);
+        // Private needs an owner; shared takes exactly one; bad type rejected.
+        for (mt, owners) in [
+            ("private", "[]"),
+            ("shared", r#"["a","b"]"#),
+            ("secret", r#"["a"]"#),
+        ] {
+            let v: serde_json::Value = serde_json::from_str(&channel_create_typed_json(
+                "t",
+                "N",
+                None,
+                Some(mt),
+                Some(owners),
+            ))
+            .unwrap();
+            assert_eq!(v["ok"], false, "type {mt}");
+        }
+    }
+
+    #[test]
+    fn channel_archive_member_guards_reject_before_network() {
+        for bad in ["", "a/b", "a b"] {
+            let v: serde_json::Value =
+                serde_json::from_str(&channel_archive_json(bad, "19:c@thread.tacv2")).unwrap();
+            assert_eq!(v["ok"], false);
+            let v: serde_json::Value =
+                serde_json::from_str(&channel_unarchive_json("t", bad)).unwrap();
+            assert_eq!(v["ok"], false);
+            let v: serde_json::Value =
+                serde_json::from_str(&channel_members_json("t", bad)).unwrap();
+            assert_eq!(v["ok"], false);
+            let v: serde_json::Value =
+                serde_json::from_str(&channel_member_add_json("t", "19:c@thread.tacv2", bad, false))
+                    .unwrap();
+            assert_eq!(v["ok"], false);
+            let v: serde_json::Value =
+                serde_json::from_str(&channel_member_remove_json("t", "19:c@thread.tacv2", bad))
+                    .unwrap();
+            assert_eq!(v["ok"], false);
+        }
     }
 
     #[test]

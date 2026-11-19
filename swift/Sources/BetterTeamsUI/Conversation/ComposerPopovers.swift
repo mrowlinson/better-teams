@@ -44,6 +44,8 @@ struct ComposerPopoverContent: View {
                 composer.popover = nil
                 composer.focusRequest += 1
             }
+        case .praise:
+            PraiseComposer(conv: conv, composer: composer)
         case .sendLater:
             if let scheduled = services.scheduled(model) {
                 SendLaterPicker(text: composer.draft(chatID)) { date in

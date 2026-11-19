@@ -219,6 +219,8 @@ public struct TeamChannel: Codable, Sendable, Identifiable, Equatable {
     /// Channel posting address (Graph `email`); nil when the tenant
     /// has none or the row came from an older snapshot.
     public let email: String?
+    /// Graph `isArchived`; nil on older payloads and demo rows.
+    public let isArchived: Bool?
 
     enum CodingKeys: String, CodingKey {
         case channelId = "id"
@@ -226,6 +228,7 @@ public struct TeamChannel: Codable, Sendable, Identifiable, Equatable {
         case membershipType = "membership_type"
         case webUrl = "web_url"
         case email
+        case isArchived = "is_archived"
     }
 
     /// Host-side construction (demo data, previews). Wire decoding is untouched.
@@ -234,7 +237,8 @@ public struct TeamChannel: Codable, Sendable, Identifiable, Equatable {
         description: String? = nil,
         membershipType: String? = nil,
         webUrl: String? = nil,
-        email: String? = nil
+        email: String? = nil,
+        isArchived: Bool? = nil
     ) {
         self.channelId = channelId
         self.name = name
@@ -242,6 +246,13 @@ public struct TeamChannel: Codable, Sendable, Identifiable, Equatable {
         self.membershipType = membershipType
         self.webUrl = webUrl
         self.email = email
+        self.isArchived = isArchived
+    }
+
+    /// True for private/shared channels (Graph `membershipType`).
+    public var isPrivateOrShared: Bool {
+        let t = (membershipType ?? "").lowercased()
+        return t == "private" || t == "shared"
     }
 }
 
@@ -559,6 +570,62 @@ public struct TeamMemberRemoveResponse: Decodable, Sendable {
         self.ok = ok
         self.teamId = teamId
         self.memberId = memberId
+    }
+}
+
+/// One private/shared channel membership. `id` is the Graph
+/// membership id (the remove target); `isOwner` mirrors
+/// `roles.contains("owner")` (pinned in ost).
+public struct ChannelMember: Decodable, Sendable, Identifiable, Equatable {
+    public let id: String
+    public let displayName: String
+    public let userId: String?
+    public let email: String?
+    public let roles: [String]
+    public let isOwner: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case displayName = "display_name"
+        case userId = "user_id"
+        case email, roles
+        case isOwner = "is_owner"
+    }
+
+    /// Host-side construction (mock fetchers, previews).
+    public init(id: String, displayName: String, userId: String? = nil,
+                email: String? = nil, roles: [String] = [], isOwner: Bool = false) {
+        self.id = id
+        self.displayName = displayName
+        self.userId = userId
+        self.email = email
+        self.roles = roles
+        self.isOwner = isOwner
+    }
+}
+
+/// One channel's roster. Wire format from core `ostmac_channel_members`:
+/// `{"ok","members":[...]}`.
+public struct ChannelMembersResponse: Decodable, Sendable {
+    public let ok: Bool
+    public let members: [ChannelMember]
+
+    /// Host-side construction (mock fetchers).
+    public init(ok: Bool, members: [ChannelMember]) {
+        self.ok = ok
+        self.members = members
+    }
+}
+
+/// Add result from core `ostmac_channel_member_add`: `{"ok","member"}`.
+public struct ChannelMemberAddResponse: Decodable, Sendable {
+    public let ok: Bool
+    public let member: ChannelMember
+
+    /// Host-side construction (mock fetchers).
+    public init(ok: Bool, member: ChannelMember) {
+        self.ok = ok
+        self.member = member
     }
 }
 

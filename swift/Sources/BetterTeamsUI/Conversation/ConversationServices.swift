@@ -14,6 +14,7 @@ enum ComposerPopover: Hashable, Identifiable {
     case reaction(messageID: String)
     case gif
     case sendLater
+    case praise
 
     var id: String {
         switch self {
@@ -21,6 +22,7 @@ enum ComposerPopover: Hashable, Identifiable {
         case .reaction(let m): "reaction:\(m)"
         case .gif: "gif"
         case .sendLater: "sendLater"
+        case .praise: "praise"
         }
     }
 
@@ -30,6 +32,7 @@ enum ComposerPopover: Hashable, Identifiable {
         case ChatCommands.mentionPopover: self = .mention
         case ChatCommands.gifPopover: self = .gif
         case ChatCommands.sendLaterPopover: self = .sendLater
+        case ChatCommands.praisePopover: self = .praise
         case ChatCommands.reactionPopover:
             guard let lastMessageID else { return nil }
             self = .reaction(messageID: lastMessageID)
@@ -48,6 +51,10 @@ final class ComposerModel: ObservableObject {
     @Published var importanceLevels: [String: MessageImportance] = [:]
     @Published var subjects: [String: String] = [:]
     @Published var popover: ComposerPopover?
+    /// Polls lane: the create sheet. Set by the composer's Poll button
+    /// or by evidence (`pollsheet=1`); the sheet binds to this so it
+    /// opens on first appear, not from a possibly-missed onAppear flip.
+    @Published var showPollSheet = false
     /// Own message being edited (Return saves through `conv.edit`).
     @Published var editing: ChatMessage?
     /// Bumped to ask the composer's text view to take focus.

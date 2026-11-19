@@ -296,14 +296,14 @@ final class MCPTests: XCTestCase {
         let teams = json(text)["teams"] as! [[String: Any]]
         XCTAssertEqual(teams.count, 2)
         XCTAssertEqual(teams[0]["name"] as? String, "Engineering")
-        XCTAssertEqual((teams[0]["channels"] as! [Any]).count, 3) // +om-hu-fixture long channel
+        XCTAssertEqual((teams[0]["channels"] as! [Any]).count, 5) // +om-hu-fixture long channel +channelspriv private/archived demo channels
     }
 
     func testListChannelsAll() {
         let text = toolText(MCPServer.handle(
             line: toolCall("list-channels"), client: MockTeamsClient())!)
         let chans = json(text)["channels"] as! [[String: Any]]
-        XCTAssertEqual(chans.count, 4) // +om-hu-fixture long channel
+        XCTAssertEqual(chans.count, 6) // +om-hu-fixture long channel +channelspriv private/archived demo channels
         XCTAssertEqual(chans[0]["team"] as? String, "Engineering")
         XCTAssertNotNil(chans[0]["team_id"])
     }

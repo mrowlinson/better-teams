@@ -196,10 +196,17 @@ struct Composer: View {
                 composer.focusRequest += 1
                 NSApp.orderFrontCharacterPalette(nil)
             }
+            iconButton("chart.bar", "Create Poll") { composer.showPollSheet = true }
+                .sheet(isPresented: $composer.showPollSheet) {
+                    PollComposerSheet(conv: conv)
+                }
             if services.hasGIFKey {
                 iconButton("photo.on.rectangle.angled", "GIF") { composer.show(.gif) }
                     .popover(item: popoverBinding(only: [.gif]), arrowEdge: .top) { p in popoverContent(p) }
             }
+            // PRAISE: badge picker + note (popover, same 24 pt targets).
+            iconButton("medal", "Praise") { composer.show(.praise) }
+                .popover(item: popoverBinding(only: [.praise]), arrowEdge: .top) { p in popoverContent(p) }
             if let canned = model?.app?.canned {
                 TemplatesMenu(store: canned) { body in
                     let d = composer.draft(chatID)

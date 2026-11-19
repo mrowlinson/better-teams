@@ -492,6 +492,20 @@ public final class AppState: ObservableObject {
                     $0 == "demo-team-mkt"
                         ? TeamMemberSettings(allowDeleteChannels: false, allowCreateUpdateChannels: true)
                         : TeamMemberSettings()
+                },
+                // TEAMMOD demo: Shipping is moderators-only (shows the mod
+                // list); every other demo channel is unmoderated. Privacy
+                // reads Private; flips echo in memory, never the service.
+                moderationFetcher: { team, channel in
+                    (team == "demo-team-eng" && channel == "demo-chan-shipping")
+                        ? ChannelModeration(userNewMessageRestriction: WhoCanPost.moderators.rawValue,
+                                             replyRestriction: WhoCanReply.authorAndModerators.rawValue)
+                        : ChannelModeration()
+                },
+                moderationUpdater: { _, _, _, _ in },
+                visibilityFetcher: { _ in TeamVisibilityResponse(visibility: "private") },
+                visibilityUpdater: { _, makePrivate in
+                    TeamVisibilityResponse(visibility: makePrivate ? "private" : "public")
                 })
             reminders = RemindersViewModel(
                 listsFetcher: { DemoData.remindersResponse() },

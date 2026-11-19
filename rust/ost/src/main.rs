@@ -170,6 +170,97 @@ enum Commands {
         remove: Option<String>,
     },
 
+    /// Channel moderation (Graph beta read, middle-tier write).
+    /// Bare: show who can post/reply. With flags: set, then read back.
+    /// --posts everyone|everyoneExceptGuests|moderators.
+    /// --replies everyone|authorAndModerators.
+    ChannelModeration {
+        /// Team id (from `teams` output)
+        #[arg(long)]
+        team: String,
+
+        /// Channel id (from `teams` output)
+        #[arg(long)]
+        channel: String,
+
+        /// Who can start new posts
+        #[arg(long)]
+        posts: Option<String>,
+
+        /// Who can reply to posts
+        #[arg(long)]
+        replies: Option<String>,
+    },
+
+    /// Team privacy switch (backing M365 group visibility).
+    /// Bare: show Private/Public. --set private|public: flip, then read back.
+    TeamVisibility {
+        /// Team id (from `teams` output)
+        #[arg(long)]
+        team: String,
+
+        /// Flip to `private` (invite-only) or `public`
+        #[arg(long)]
+        set: Option<String>,
+    },
+
+    /// Private/shared channel management (Graph /teams/{id}/channels).
+    /// --create NAME: create (needs --type + --owner for private/shared;
+    /// --type defaults to standard). Otherwise the command targets the
+    /// channel in --channel: bare lists members (+ --owners filters),
+    /// --add adds, --remove removes a membership id, --archive archives,
+    /// --unarchive restores.
+    Channels {
+        /// Team id (from `teams` output)
+        #[arg(long)]
+        team: String,
+
+        /// Channel id (from `teams` output; member/archive ops)
+        #[arg(long)]
+        channel: Option<String>,
+
+        /// Create a channel with this name
+        #[arg(long)]
+        create: Option<String>,
+
+        /// Channel type for --create: standard, private or shared
+        #[arg(long = "type", value_name = "TYPE")]
+        ctype: Option<String>,
+
+        /// Owner user id or UPN for --create (repeatable; private/shared
+        /// need at least one; shared takes exactly one)
+        #[arg(long, value_name = "USER")]
+        owner: Vec<String>,
+
+        /// Description for --create
+        #[arg(long)]
+        description: Option<String>,
+
+        /// Show owners only (list mode)
+        #[arg(long)]
+        owners: bool,
+
+        /// Add this user id or UPN to the channel
+        #[arg(long)]
+        add: Option<String>,
+
+        /// Grant the owner role with --add
+        #[arg(long)]
+        owner_flag: bool,
+
+        /// Remove this membership id (from list output) from the channel
+        #[arg(long)]
+        remove: Option<String>,
+
+        /// Archive the channel (async server-side; re-read to confirm)
+        #[arg(long)]
+        archive: bool,
+
+        /// Restore an archived channel
+        #[arg(long)]
+        unarchive: bool,
+    },
+
     /// List shared files in a chat or channel
     Files {
         /// Chat or channel ID (from `chats` / `teams` output)
@@ -399,6 +490,102 @@ async fn main() -> Result<()> {
                 api::remove_team_member(&team, &member).await?;
             } else {
                 api::list_team_members(&team, owners).await?;
+            }
+        }
+        Commands::ChannelModeration {
+            team,
+            channel,
+            posts,
+            replies,
+        } => {
+            if posts.is_none() && replies.is_none() {
+                api::show_moderation(&team, &channel).await?;
+            } else {
+                tracing::info!("Setting channel moderation...");
+                api::set_moderation(&team, &channel, posts.as_deref(), replies.as_deref()).await?;
+            }
+        }
+        Commands::TeamVisibility { team, set } => {
+            match set.as_deref().map(|s| s.trim().to_ascii_lowercase()) {
+                None => api::show_visibility(&team).await?,
+                Some(which) if which.is_empty() => api::show_visibility(&team).await?,
+                Some(which) if which == "private" || which == "public" => {
+                    tracing::info!("Setting team visibility...");
+                    api::set_visibility(&team, which == "private").await?;
+                }
+                Some(other) => anyhow::bail!("--set must be 'private' or 'public' (got '{}')", other),
+            }
+        }
+
+        Commands::Channels {
+            team,
+            channel,
+            create,
+            ctype,
+            owner,
+            description,
+            owners,
+            add,
+            owner_flag,
+            remove,
+            archive,
+            unarchive,
+        } => {
+            if let Some(name) = create {
+                if channel.is_some()
+                    || add.is_some()
+                    || remove.is_some()
+                    || archive
+                    || unarchive
+                {
+                    anyhow::bail!("--create is exclusive with member/archive ops");
+                }
+                tracing::info!("Creating channel...");
+                let owners_ref: Vec<&str> = owner.iter().map(String::as_str).collect();
+                api::create_channel_typed(
+                    &team,
+                    &name,
+                    description.as_deref(),
+                    ctype.as_deref(),
+                    &owners_ref,
+                )
+                .await?;
+            } else if let Some(channel_id) = channel {
+                let mut acted = false;
+                if let Some(user) = add {
+                    if remove.is_some() || archive || unarchive {
+                        anyhow::bail!("--add is exclusive with --remove/--archive/--unarchive");
+                    }
+                    tracing::info!("Adding channel member...");
+                    api::add_channel_member(&team, &channel_id, &user, owner_flag).await?;
+                    acted = true;
+                }
+                if let Some(member) = remove {
+                    if archive || unarchive {
+                        anyhow::bail!("--remove is exclusive with --archive/--unarchive");
+                    }
+                    tracing::info!("Removing channel member...");
+                    api::remove_channel_member(&team, &channel_id, &member).await?;
+                    acted = true;
+                }
+                if archive {
+                    if unarchive {
+                        anyhow::bail!("--archive and --unarchive are exclusive");
+                    }
+                    tracing::info!("Archiving channel...");
+                    api::archive_channel(&team, &channel_id).await?;
+                    acted = true;
+                }
+                if unarchive {
+                    tracing::info!("Unarchiving channel...");
+                    api::unarchive_channel(&team, &channel_id).await?;
+                    acted = true;
+                }
+                if !acted {
+                    api::list_channel_members(&team, &channel_id, owners).await?;
+                }
+            } else {
+                anyhow::bail!("pass --create NAME or --channel ID (see --help)");
             }
         }
         Commands::Files { chat_id, limit } => {

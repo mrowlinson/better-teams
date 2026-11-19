@@ -199,6 +199,7 @@ final class MenuShortcutCatalogGuardTests: XCTestCase {
         "Conversation > Copy Channel Link",
         "Conversation > Copy Channel Email Address",
         "Conversation > Channel Workflows…",
+        "Conversation > Archive Channel…",
         "Conversation > Delete Channel…",
         "Call >",
         "Call > Start Audio Call",

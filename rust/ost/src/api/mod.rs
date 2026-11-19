@@ -3,6 +3,7 @@
 pub mod apps;
 mod calendar;
 mod calweek;
+mod channel_moderation;
 mod chat;
 pub mod client;
 #[cfg(test)]
@@ -42,7 +43,17 @@ pub use me::UserInfo;
 pub use notes::{NotePage, NotebookInfo, PageInfo, SectionInfo};
 pub use planner::{BucketInfo, PlanInfo, PlannerTaskInfo};
 pub use presence::PresenceInfo;
-pub use team_settings::{team_settings_data, TeamMemberSettings};
+pub use channel_moderation::{
+    moderation_body, moderation_data, moderation_path, moderation_read_path,
+    parse_moderation_settings, set_moderation, show_moderation, update_moderation_data,
+    ChannelModeration, POST_EVERYONE, POST_EXCEPT_GUESTS, POST_MODERATORS,
+    REPLY_AUTHOR_MODERATORS, REPLY_EVERYONE,
+};
+pub use team_settings::{
+    set_visibility, show_visibility, team_settings_data, team_visibility_data,
+    update_team_visibility_data, visibility_body, visibility_path, visibility_read_path,
+    parse_visibility, TeamMemberSettings,
+};
 pub use recordings::{
     clamp_limit as recordings_clamp_limit, is_video as is_recording_video,
     list_recordings_data, parse_recordings_response, recordings_children_path,
@@ -110,6 +121,11 @@ pub use chat::{
     send_message_with_client_id_opts, thread_reply_with_client_id_opts,
     SendOpts, WireImportance, WireMention, WIRE_MENTION_MAX,
 };
+// OstMac PRAISE: Praise card post.
+pub use chat::{
+    praise_card_content, praise_message_body, send_praise_with_client_id,
+    ADAPTIVE_CARD_CONTENT_TYPE, PRAISE_APP_ID,
+};
 // OstMac §84: server-side pinned chat messages.
 pub use chat::{
     chat_pinned_messages_data, chat_unpin_message_with_client, fill_pin_from_message,
@@ -169,11 +185,17 @@ pub use planner::{
 pub use presence::get_presence_data;
 pub use tabs::{list_chat_tabs_data, list_tabs_data};
 pub use teams::{
-    add_member_body, add_team_member_data, channel_react_body,
+    add_channel_member_body, add_channel_member_data, add_member_body, add_team_member_data,
+    archive_channel_body, archive_channel_data, archive_channel_path,
+    channel_member_path, channel_members_path, channel_react_body,
     channel_reply_set_reaction_path, channel_reply_unset_reaction_path,
     channel_path, channel_set_reaction_path, channel_unset_reaction_path,
-    create_channel_body, create_channel_data, delete_channel_data, update_channel_body,
+    create_channel_body, create_channel_body_typed, create_channel_data,
+    create_channel_typed_data, delete_channel_data, list_channel_members_data,
+    normalize_membership_type, remove_channel_member_data,
+    unarchive_channel_data, unarchive_channel_path, update_channel_body,
     update_channel_data, create_channel_path, create_team_body, create_team_data,
+    ChannelMemberInfo,
     mt_create_team_url, created_team_ids, team_thread_id, mt_channel_url, delete_channel_body,
     is_thread_id, team_internal_id, TEAM_ACCESS_PRIVATE, join_team_data, list_team_members_data, list_teams_data,
     parse_public_teams, public_teams_groups_path, public_teams_list_path,
@@ -262,6 +284,55 @@ pub async fn add_team_member(team_id: &str, user: &str, owner: bool) -> Result<(
 /// Remove one membership from a team
 pub async fn remove_team_member(team_id: &str, member_id: &str) -> Result<()> {
     teams::remove_team_member(team_id, member_id).await
+}
+
+/// Create one channel of any membership type
+pub async fn create_channel_typed(
+    team_id: &str,
+    name: &str,
+    description: Option<&str>,
+    membership_type: Option<&str>,
+    owners: &[&str],
+) -> Result<()> {
+    teams::create_channel_typed(team_id, name, description, membership_type, owners).await
+}
+
+/// List one private/shared channel's members
+pub async fn list_channel_members(
+    team_id: &str,
+    channel_id: &str,
+    owners_only: bool,
+) -> Result<()> {
+    teams::list_channel_members(team_id, channel_id, owners_only).await
+}
+
+/// Add one user to a private/shared channel
+pub async fn add_channel_member(
+    team_id: &str,
+    channel_id: &str,
+    user: &str,
+    owner: bool,
+) -> Result<()> {
+    teams::add_channel_member(team_id, channel_id, user, owner).await
+}
+
+/// Remove one membership from a private/shared channel
+pub async fn remove_channel_member(
+    team_id: &str,
+    channel_id: &str,
+    member_id: &str,
+) -> Result<()> {
+    teams::remove_channel_member(team_id, channel_id, member_id).await
+}
+
+/// Archive one channel (async server-side; re-read to confirm)
+pub async fn archive_channel(team_id: &str, channel_id: &str) -> Result<()> {
+    teams::archive_channel(team_id, channel_id).await
+}
+
+/// Restore one archived channel
+pub async fn unarchive_channel(team_id: &str, channel_id: &str) -> Result<()> {
+    teams::unarchive_channel(team_id, channel_id).await
 }
 
 /// List shared files in a chat or channel

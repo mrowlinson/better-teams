@@ -84,12 +84,19 @@ rust/ost/src/api/tabs.rs::list_chat_tabs_data | GET /chats/{id}/tabs?$expand=tea
 rust/ost/src/api/tabs.rs::list_tabs_all | GET channel tabs, all teams (ost TUI) | tui-only | not linked by ostmac-core
 rust/ost/src/api/tabs.rs::list_tabs_data | GET /teams/{t}/channels/{c}/tabs | works | scope TeamsTab.ReadWrite.All granted
 rust/ost/src/api/teams.rs::add_team_member_data | POST /teams/{id}/members | works | scope TeamMember.ReadWrite.All granted (server still requires team-owner rights)
-rust/ost/src/api/teams.rs::create_channel_data | POST /teams/{id}/channels | works | scope Channel.Create granted
+rust/ost/src/api/teams.rs::add_channel_member_data | POST /teams/{id}/channels/{id}/members | unproven | channelspriv lane; unit-tested body/path; live proof pending trial tenant (trial tenant only; no tenant writes without per-action owner OK)
+rust/ost/src/api/teams.rs::archive_channel_data | POST /teams/{id}/channels/{id}/archive | unproven | channelspriv lane; unit-tested path/body; live proof pending trial tenant (trial tenant only; no tenant writes without per-action owner OK)
+rust/ost/src/api/teams.rs::create_channel_typed_data | POST /teams/{id}/channels | unproven | channelspriv lane; typed create (standard/private/shared), unit-tested body/membership gate; live proof pending trial tenant (trial tenant only; no tenant writes without per-action owner OK)
+rust/ost/src/api/teams.rs::list_channel_members_data | GET /teams/{id}/channels/{id}/members | unproven | channelspriv lane; unit-tested path; live proof pending trial tenant (trial tenant only; no tenant writes without per-action owner OK)
+rust/ost/src/api/teams.rs::remove_channel_member_data | DELETE /teams/{id}/channels/{id}/members/{m} | unproven | channelspriv lane; unit-tested path; live proof pending trial tenant (trial tenant only; no tenant writes without per-action owner OK)
+rust/ost/src/api/teams.rs::unarchive_channel_data | POST /teams/{id}/channels/{id}/unarchive | unproven | channelspriv lane; unit-tested path/body; live proof pending trial tenant (trial tenant only; no tenant writes without per-action owner OK)
 rust/ost/src/api/teams.rs::fetch_team_with_channels | GET /teams/{id}, /teams/{id}/channels | works | live applog channels 200 (522x)
 rust/ost/src/api/teams.rs::join_team_data | POST /teams/{id}/members (self) | works | scope TeamMember.ReadWrite.All granted (server may refuse non-owners)
 rust/ost/src/api/teams.rs::list_team_members_data | GET /teams/{id}/members | works | live applog 200 (34x)
 rust/ost/src/api/teams.rs::list_teams_data | GET /me/joinedTeams, /teams/{id}/channels | works | live probeA 200; applog 200
 rust/ost/src/api/team_settings.rs::team_settings_data | GET /teams/{id} (memberSettings) and GET /teams/{id}/primaryChannel | unproven | scopes Group.Read.All (full team resource) and Channel.ReadBasic.All granted, but the stored Graph token was stale so no live GET ran — needs owner OK (sign-in) for one read-only check; each read stands alone, a failure leaves the fact unknown and the menu lets Teams decide
+rust/ost/src/api/team_settings.rs::team_visibility_data | GET /groups/{id}?$select=visibility (team id = group id) | unproven | read-only GET, never probed — trial tenant BLOCKED so zero live reads ran; needs owner OK for one live read in the trial tenant
+rust/ost/src/api/team_settings.rs::update_team_visibility_data | PATCH /groups/{id} (visibility Private/Public flip, then read-back) | unproven | write never sent — trial tenant BLOCKED so zero live writes ran; needs owner OK for one live flip+revert in the trial tenant
 rust/ost/src/api/teams.rs::remove_team_member_data | DELETE /teams/{id}/members/{m} | works | scope TeamMember.ReadWrite.All granted (owner-only server side)
 rust/ost/src/api/teams.rs::search_public_teams_data | GET /groups?$filter (ConsistencyLevel), /teams?$filter | works | scope Group.Read.All + Team.ReadBasic.All granted
 rust/ost/src/api/teams.rs::set_channel_reaction_data | POST /teams/{t}/channels/{c}/messages/{m}/setReaction (ost TUI) | tui-only | not linked by ostmac-core (app reacts via the chat service)
@@ -128,6 +135,7 @@ swift/Sources/OstMacCore/ContactCardExtras.swift::files | GET /me/insights/share
 swift/Sources/OstMacCore/ContactCardExtras.swift::schedule | POST /me/calendar/getSchedule | works | scope Calendars.Read.Shared granted
 swift/Sources/OstMacCore/OutOfOffice.swift::fetch | GET /me/mailboxSettings | works | live OOO R0 probe 200, automaticRepliesSetting keys recorded; scope MailboxSettings.ReadWrite granted
 swift/Sources/OstMacCore/OutOfOffice.swift::save | PATCH /me/mailboxSettings (automaticRepliesSetting only) | unproven | no live write in lane (HARD BAN on OOO set) — needs owner OK for set+revert proof
+swift/Sources/OstMacCore/ShareOutlook.swift::send | POST /me/sendMail | unproven | Mail.Send not in the Teams token scopes (403 capability message until proven) — needs owner OK for one live self-send to own trial mailbox + delete
 swift/Sources/OstMacCore/ProfilePhotoStore.swift::fetch | GET /users/{id}/photo/$value | works | scope User.ReadBasic.All granted
 swift/Sources/OstMacCore/ReadCore.swift::meetings | GET /me/calendarView | works | live probeA 200
 swift/Sources/OstMacCore/ReadCore.swift::teams | GET /me/joinedTeams, /teams/{id}/channels | works | live probeA 200; applog 200

@@ -58,16 +58,20 @@ struct MessageRowData {
     /// bubble keeps its text and the row shows the error with Retry.
     var deleteFailed = false
 
+    /// Polls lane: vote/close/error state that changes the card's
+    /// height (VStack grows a line). Folded into the revision so a vote
+    /// re-measures instead of clipping under a stale cached height.
+    var pollState: String? = nil
     /// Revision of the row state not covered by `TimelineItem.revision`
     /// (FNV-1a, stable across launches).
     var extraRevision: Int { MessageRowData.extraRevision(send: send, receipt: receipt,
                                                           translation: translation,
                                                           pinned: isPinned, saved: isSaved, docs: docs,
-                                                          deleteFailed: deleteFailed) }
+                                                          deleteFailed: deleteFailed, pollState: pollState) }
 
     static func extraRevision(send: SendState, receipt: ReceiptDisplay, translation: TranslatedEntry?,
                               pinned: Bool, saved: Bool, docs: [InlineDoc] = [],
-                              deleteFailed: Bool = false) -> Int {
+                              deleteFailed: Bool = false, pollState: String? = nil) -> Int {
         var h: UInt64 = 14_695_981_039_346_656_037
         func mix(_ s: String) {
             for b in s.utf8 { h = (h ^ UInt64(b)) &* 1_099_511_628_211 }
@@ -79,6 +83,7 @@ struct MessageRowData {
         mix("\(pinned)\(saved)")
         if deleteFailed { mix("deleteFailed") }
         if !docs.isEmpty { mix(docs.map { "\($0.id)|\($0.name)|\($0.file.size)" }.joined(separator: "/")) }
+        if let p = pollState { mix(p) }
         return Int(truncatingIfNeeded: h & 0x7fff_ffff_ffff_ffff)
     }
 }
@@ -304,7 +309,9 @@ struct MessageRowView: View {
                 .foregroundStyle(.secondary)
         } else {
             let text = MessageRender.bubbleText(for: message)
-            if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            // Own polls render as the vote card, not the raw lines.
+            let pollText = PollInfo.isFallbackText(text)
+            if !pollText, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 ForEach(Self.segments(MessageRender.attributedBody(text: text, raw: message.raw,
                                                                    highlighting: row.ownName),
                                       scale: scale)) { seg in
@@ -329,14 +336,25 @@ struct MessageRowView: View {
             if !row.docs.isEmpty {
                 FileChips(docs: row.docs, actions: actions)
             }
-            let cards = MessageBubbleState.cards(for: message)
-            ForEach(Indexed.wrap(cards)) { c in
-                AdaptiveCardView(card: c.value, media: actions?.media, messageID: message.id,
-                                 open: actions.map { a in { a.preview(image: $0) } })
-            }
-            let posts = MessageRender.botPosts(fromRaw: message.raw ?? message.content)
-            if MessageBubbleState.shouldShowFallbackRows(posts: posts, cards: cards) {
-                BotPostRows(posts: posts)
+            // PRAISE: a mined Praise post renders natively (badge card),
+            // never as a generic card + fallback rows.
+            if let praise = PraiseCard.mine(fromRaw: message.raw ?? message.content) {
+                PraiseCardView(post: praise)
+            } else {
+                let cards = MessageBubbleState.cards(for: message)
+                ForEach(Indexed.wrap(cards)) { c in
+                    AdaptiveCardView(card: c.value, media: actions?.media, messageID: message.id,
+                                     open: actions.map { a in { a.preview(image: $0) } })
+                }
+                // Identity per message: the ballot model is row state, so a
+                // recycled cell or the shared measure host must not reuse
+                // another message's model (stale poll, stale vote).
+                PollCardBlock(messageID: message.id, content: text, raw: message.raw)
+                    .id("poll-\(message.id)")
+                let posts = MessageRender.botPosts(fromRaw: message.raw ?? message.content)
+                if MessageBubbleState.shouldShowFallbackRows(posts: posts, cards: cards) {
+                    BotPostRows(posts: posts)
+                }
             }
             if let url = LinkPreviewRules.previewURL(for: message), let actions {
                 LinkPreviewCard(model: actions.media.preview(url: url))

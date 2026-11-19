@@ -1928,6 +1928,73 @@ Notes:
     `api::client::tests::reauth_branch_surfaces_single_wrap`.
     UPSTREAM: PR https://github.com/eisbaw/ost/pull/119 (fix/reauth-single-wrap, stacks on #115)
 
+106. [feat] `src/api/channel_moderation.rs`, `src/api/client.rs`,
+    `src/api/team_settings.rs`, `src/api/mod.rs`, `src/main.rs` —
+    channel moderation (beta read + middle-tier write + CLI) + team
+    privacy switch (group visibility + CLI) (teammod lane).
+    New `channel_moderation.rs`: `ChannelModeration`
+    (`user_new_message_restriction`: everyone|everyoneExceptGuests|
+    moderators; `reply_restriction`: everyone|authorAndModerators;
+    `allow_bots`/`allow_connectors`), `moderation_path` +
+    `moderation_read_path` (`?$select=moderationSettings`, pure so tests
+    pin them), `parse_moderation_settings` (absent block = unmoderated,
+    all `None`, never an error), `moderation_body` (write payload),
+    `update_moderation_data` (PATCH rides the proven middle-tier channel
+    transport `mt_channel_url`+`mt_send_json` — v1.0 PATCH covers
+    name/desc only and the Teams token is denied the v1.0 route),
+    `moderation_data` (read via the new beta GET helper),
+    `show_moderation`/`set_moderation` (bare = show, set + read-back)
+    CLI print fns. `client.rs` gains `graph_beta_get` (Graph **beta**
+    GET with the same bearer token behind the path allowlist;
+    beta-only properties such as `moderationSettings` are absent from
+    v1.0). `team_settings.rs` gains the privacy switch on the backing
+    M365 group (team id = group id): `visibility_path` +
+    `visibility_read_path` (`?$select=visibility`), `parse_visibility`
+    (lowercased stable compare; absent/blank reads as `None`),
+    `visibility_body` (`Private`/`Public` flip),
+    `team_visibility_data`/`update_team_visibility_data` (v1.0
+    `graph_get`/`graph_patch`), `show_visibility`/`set_visibility`
+    (bare = show, `--set private|public` + read-back). `mod.rs`
+    re-exports both surfaces; `main.rs` adds the `ChannelModeration`
+    (`--team`/`--channel`, `--posts`/`--replies`) and `TeamVisibility`
+    (`--team`, `--set private|public`, any other value bails) CLI
+    commands. Tests: moderation path/parse/body/mt-write/beta-read
+    (6 new), visibility path/parse/body (3 new).
+    UPSTREAM: PR https://github.com/eisbaw/ost/pull/120 (fix/channel-moderation-visibility, stacks on #104; overlaps #84 on team_settings.rs, union noted in body)
+
+107. [feat] `src/api/teams.rs`, `src/api/mod.rs`, `src/main.rs` —
+    typed channel create (private/shared) + channel members +
+    archive/unarchive (channelspriv lane; §106 reserved for teammod).
+    `normalize_membership_type` gates standard/private/shared (else
+    error); `create_channel_body_typed` (+ `create_channel_typed_data`
+    via `create_channel_typed`, self-owner fallback via /me; private
+    needs >=1 owner, shared exactly 1; roles `owner` or empty — no
+    `"member"` role on channel adds). `channel_members_path`/
+    `channel_member_path` + `list/add/remove_channel_member(s)_data`
+    (private/shared only; `add_channel_member_body` `owner` flag,
+    `ChannelMemberInfo` via `channel_member_info`). `archive/
+    unarchive_channel_data` (`POST .../archive` + `POST .../unarchive`,
+    `archive_channel_body` `should_set_spo_read_only` option).
+    `Channel`/`ChannelInfo`/JSON gain `is_archived`. CLI:
+    `teams-cli channels --team T (--create N [--type T] [--owner U...]
+    [--description D] | --channel C [--add U [--owner-flag] | --remove
+    M | --archive | --unarchive | bare=list, --owners filters owners]).
+    Tests: 4 new (typed body/membership gate, member info, archive
+    paths, is_archived read-back).
+    UPSTREAM: pending
+108. [feat] `src/api/chat.rs` (+ `src/api/mod.rs` re-export) —
+    **Praise card post (PRAISE lane)**. New send path for Praise
+    badges: `praise_card_content` (AdaptiveCard 1.0 ColumnSet: badge
+    title + "<sender> sent praise to" / recipient / note, no remote
+    image — badge art renders natively in-app), `praise_message_body`
+    (Graph-documented shape: HTML content naming the attachment id +
+    one `application/vnd.microsoft.card.adaptive` attachment), and
+    `send_praise_with_client_id` (same idempotency contract as the
+    plain send; empty badge/recipient/chat id rejected). Constants
+    `PRAISE_APP_ID` / `ADAPTIVE_CARD_CONTENT_TYPE`. Tests:
+    `api::chat::tests::praise_body_attachment_shape`.
+    UPSTREAM: pending
+
 ## Upstream PRs, wave 9 (2026-09-25 R10 audit; base 0892144; origin/main still 0892144)
 
 No-file wave. `git diff 307d221..db62ed7 -- rust/ost` is empty (wave-8

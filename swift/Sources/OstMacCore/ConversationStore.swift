@@ -930,6 +930,46 @@ public final class ConversationStore: ObservableObject {
         deliver(localID: pendingID, request: request, verifyFirst: false)
     }
 
+    /// Post a Praise card (badge + recipient + note) via the praise wire
+    /// route. Always a plain (top-level) post: an armed reply is dropped
+    /// with it. The optimistic bubble carries the card envelope as its
+    /// raw payload, so the timeline renders it immediately; core failure
+    /// marks the bubble failed like any own send.
+    public func sendPraise(badge: PraiseBadge, recipient: String, note: String) {
+        let who = recipient.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !who.isEmpty else { return }
+        replyTarget = nil
+        let sender = ownDisplayName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let senderName = sender.isEmpty ? "You" : sender
+        let attachmentID = UUID().uuidString
+        let raw = PraiseCard.envelopeJSON(badge: badge, recipient: who, note: note,
+                                               sender: senderName, attachmentID: attachmentID)
+        if isDemo {
+            let bubble = ChatMessage(
+                id: "demo-local-\(messages.count + 1)",
+                sender: "Me", timestamp: Self.nowISO(), content: "",
+                isOwn: true, raw: raw)
+            messages.append(bubble)
+            onLocalSend?(bubble)
+            return
+        }
+        guard let id = chatID else { return }
+        let cmid = SendReconcile.newClientMessageID()
+        let pendingID = SendReconcile.pendingID(for: cmid)
+        let bubble = ChatMessage(
+            id: pendingID,
+            sender: "Me", timestamp: Self.nowISO(), content: "",
+            isOwn: true, raw: raw, clientMessageID: cmid)
+        messages.append(bubble)
+        onLocalSend?(bubble)
+        let request = OutgoingSend(chatID: id, text: "Praise for \(who)",
+                                   route: .praise(badge: badge.wireToken, recipient: who,
+                                                  note: note, sender: senderName),
+                                   clientMessageID: cmid)
+        outgoing[pendingID] = request
+        deliver(localID: pendingID, request: request, verifyFirst: false)
+    }
+
     // MARK: - Send reconcile (§106)
 
     /// Send wire (tests inject a fake; `--send-timeout-shim` wraps it).
