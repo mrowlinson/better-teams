@@ -2168,7 +2168,7 @@ this pass), `rust/ostmac-core` lib 224/0. Older counts (lib 257, core
     Chat writes unproven live (no v2 chat target in the trial
     tenant). Needs TeamsTab.ReadWrite.All (granted).
     Tests: path pins, add/rename body builders, single-tab parse.
-    UPSTREAM: pending
+    UPSTREAM: PR https://github.com/eisbaw/ost/pull/132 (fix/tab-add-rename-remove, stacks on #90)
 
 120. [major] team lifecycle (lanes/teamadmin). New Graph team-admin
     surface in `src/api/teams.rs`: `update_team_data` (rename /
