@@ -2240,4 +2240,4 @@ this pass), `rust/ostmac-core` lib 224/0. Older counts (lib 257, core
     Tests: `praise_graph_body_shape` (string content, tag/id match,
     no teamsAppId/appId/cardClientId keys), `praise_graph_post_path_pin`,
     `graph_posted_message_id_pin`.
-    UPSTREAM: pending
+    UPSTREAM: PR https://github.com/eisbaw/ost/pull/135 (fix/praise-graph-send, stacks on #122)
