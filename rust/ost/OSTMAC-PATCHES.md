@@ -2064,7 +2064,7 @@ this pass), `rust/ostmac-core` lib 224/0. Older counts (lib 257, core
     Live-verified in trial tenant (team "BetterTeams Test" created).
     Tests: full `cargo test` green in `rust/ost` (451/0) and
     `rust/ostmac-core` (256/0) at time of landing.
-    UPSTREAM: pending
+    UPSTREAM: PR https://github.com/eisbaw/ost/pull/125 (fix/team-create-cli, stacks on #103)
 
 113. [minor] `src/auth/oauth.rs` — **device-flow scope expansion
     (lanes/scopeexpand)**. New `DEVICE_REQUEST_GRAPH_SCOPES` (8 explicit
