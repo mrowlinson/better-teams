@@ -402,4 +402,4 @@ Incomplete or not started yet ("in progress" = being worked on now):
 - **Chats and teams:** Teams saved-messages sync (no surface on the old tenant; re-probe queued on the trial tenant; local store shipped)
 - **External (federated) chat:** shipped, live proof blocked: tenant has external access disabled
 - **Blocked by Microsoft:** Loop components (no public create/embed/sync API exists; ships if one appears); Copilot chat (needs a M365 Copilot licence plus admin-consented scopes a personal client can't hold); breakout rooms (no management API under any identity — Graph, ACS SDK, and Call Automation all lack it; local planner shipped)
-- **Live proof:** end-to-end live proof queued on the trial tenant (multi-person meetings, channels, moderation, praise, polls, whiteboard, webinars, phone calling)
+- **Live proof:** end-to-end live proof queued on the trial tenant (multi-person meetings, channels, moderation, praise, polls, whiteboard, webinars, phone calling, tabs, team admin, tags, approvals)
