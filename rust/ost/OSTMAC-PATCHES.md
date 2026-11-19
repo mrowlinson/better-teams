@@ -2081,6 +2081,7 @@ this pass), `rust/ostmac-core` lib 224/0. Older counts (lib 257, core
     only after owner device-flow re-consent. NOT live-verified (auth-changing
     code ships dark; re-consent tap is owner-side after merge).
     Tests: new `device_request_scope_set_pinned` (exact set/order pin).
+    UPSTREAM: PR https://github.com/eisbaw/ost/pull/126 (fix/device-scope-expand, stacks on #119)
 114. [minor] `src/api/chat.rs` — **praise card app attribution
     (lanes/praiseshape)**. `praise_message_body` attachments now stamp
     the captured official-client fields: `appId` = `PRAISE_APP_ID`
@@ -2103,7 +2104,7 @@ this pass), `rust/ostmac-core` lib 224/0. Older counts (lib 257, core
     `mark_read_with_client` to the CLI. Unblocks live net-zero deletes
     and read-state verification.
     Tests: CLI parse + display tests.
-    UPSTREAM: pending
+    UPSTREAM: PR https://github.com/eisbaw/ost/pull/127 (fix/cli-read-ids-mark-read, stacks on #20)
 
 116. [feat] `src/api/channel_moderation.rs` — **thread-property PUT
     moderation write + General guard (lanes/moderationfix)**. Replaces
@@ -2115,4 +2116,4 @@ this pass), `rust/ostmac-core` lib 224/0. Older counts (lib 257, core
     space threads). Live-proven net-zero on a temp channel (deleted).
     Tests: int maps, URL pins, round-trip + defaults + malformed, e2e
     thread-PUT, General refusal, bad-value bails.
-    UPSTREAM: pending
+    UPSTREAM: PR https://github.com/eisbaw/ost/pull/128 (fix/channel-moderation-thread-put, stacks on #120; fake-transport e2e omitted with the never-ported harness, same precedent as #124)
