@@ -358,6 +358,58 @@ public enum RustCore {
         }
     }
 
+    /// Rename / re-describe one team (backing-group PATCH). Nil =
+    /// unchanged; blank names never reach core. Blocking network: call
+    /// off the main thread. TEAM-ADMIN.
+    public static func teamUpdate(teamID: String, name: String?, description: String?) throws {
+        struct Ack: Decodable { let ok: Bool }
+        try teamID.withCString { teamPtr in
+            try withOptionalCString(name) { namePtr in
+                try withOptionalCString(description) { descPtr in
+                    _ = try call(ostmac_team_update(teamPtr, namePtr, descPtr), as: Ack.self)
+                }
+            }
+        }
+    }
+
+    /// Set one team's picture (base64 JPEG/PNG). Blocking network:
+    /// call off the main thread. TEAM-ADMIN.
+    public static func teamPhoto(teamID: String, base64: String) throws {
+        struct Ack: Decodable { let ok: Bool }
+        try teamID.withCString { teamPtr in
+            try base64.withCString { photoPtr in
+                _ = try call(ostmac_team_photo(teamPtr, photoPtr), as: Ack.self)
+            }
+        }
+    }
+
+    /// Archive one team (async server-side; re-list to confirm).
+    /// Blocking network: call off the main thread. TEAM-ADMIN.
+    public static func teamArchive(teamID: String) throws {
+        struct Ack: Decodable { let ok: Bool }
+        try teamID.withCString { ptr in
+            _ = try call(ostmac_team_archive(ptr), as: Ack.self)
+        }
+    }
+
+    /// Restore one archived team. Blocking network: call off the main
+    /// thread. TEAM-ADMIN.
+    public static func teamUnarchive(teamID: String) throws {
+        struct Ack: Decodable { let ok: Bool }
+        try teamID.withCString { ptr in
+            _ = try call(ostmac_team_unarchive(ptr), as: Ack.self)
+        }
+    }
+
+    /// Delete one team (irreversible: removes the backing M365 group).
+    /// Blocking network: call off the main thread. TEAM-ADMIN.
+    public static func teamDelete(teamID: String) throws {
+        struct Ack: Decodable { let ok: Bool }
+        try teamID.withCString { ptr in
+            _ = try call(ostmac_team_delete(ptr), as: Ack.self)
+        }
+    }
+
     /// Leave one team: remove the signed-in user's own membership
     /// (whoami + member list, then one member DELETE). Blocking
     /// network: call off the main thread.
@@ -428,6 +480,46 @@ public enum RustCore {
     public static func tabs(channelID: String) throws -> TabsResponse {
         try channelID.withCString { ptr in
             try call(ostmac_tabs(ptr), as: TabsResponse.self)
+        }
+    }
+
+    /// Add a channel tab (blocking FFI + network: call off main thread).
+    /// `appID` nil selects the website app; `url` nil sends no configuration.
+    public static func channelTabAdd(channelID: String, name: String, appID: String? = nil, url: String? = nil) throws -> TabManageResponse {
+        try channelID.withCString { channelPtr in
+            try name.withCString { namePtr in
+                try withOptionalCString(appID) { appPtr in
+                    try withOptionalCString(url) { urlPtr in
+                        try call(
+                            ostmac_channel_tab_add(channelPtr, namePtr, appPtr, urlPtr),
+                            as: TabManageResponse.self)
+                    }
+                }
+            }
+        }
+    }
+
+    /// Rename a channel tab (blocking FFI + network: call off main thread).
+    public static func channelTabRename(channelID: String, tabID: String, name: String) throws -> TabManageResponse {
+        try channelID.withCString { channelPtr in
+            try tabID.withCString { tabPtr in
+                try name.withCString { namePtr in
+                    try call(
+                        ostmac_channel_tab_rename(channelPtr, tabPtr, namePtr),
+                        as: TabManageResponse.self)
+                }
+            }
+        }
+    }
+
+    /// Remove a channel tab (blocking FFI + network: call off main thread).
+    public static func channelTabRemove(channelID: String, tabID: String) throws -> TabRemoveResponse {
+        try channelID.withCString { channelPtr in
+            try tabID.withCString { tabPtr in
+                try call(
+                    ostmac_channel_tab_remove(channelPtr, tabPtr),
+                    as: TabRemoveResponse.self)
+            }
         }
     }
 
@@ -830,6 +922,45 @@ public enum RustCore {
     public static func chatTabs(chatID: String) throws -> TabsResponse {
         try chatID.withCString { ptr in
             try call(ostmac_chat_tabs(ptr), as: TabsResponse.self)
+        }
+    }
+
+    /// Add a chat tab (blocking FFI + network: call off main thread).
+    public static func chatTabAdd(chatID: String, name: String, appID: String? = nil, url: String? = nil) throws -> TabManageResponse {
+        try chatID.withCString { chatPtr in
+            try name.withCString { namePtr in
+                try withOptionalCString(appID) { appPtr in
+                    try withOptionalCString(url) { urlPtr in
+                        try call(
+                            ostmac_chat_tab_add(chatPtr, namePtr, appPtr, urlPtr),
+                            as: TabManageResponse.self)
+                    }
+                }
+            }
+        }
+    }
+
+    /// Rename a chat tab (blocking FFI + network: call off main thread).
+    public static func chatTabRename(chatID: String, tabID: String, name: String) throws -> TabManageResponse {
+        try chatID.withCString { chatPtr in
+            try tabID.withCString { tabPtr in
+                try name.withCString { namePtr in
+                    try call(
+                        ostmac_chat_tab_rename(chatPtr, tabPtr, namePtr),
+                        as: TabManageResponse.self)
+                }
+            }
+        }
+    }
+
+    /// Remove a chat tab (blocking FFI + network: call off main thread).
+    public static func chatTabRemove(chatID: String, tabID: String) throws -> TabRemoveResponse {
+        try chatID.withCString { chatPtr in
+            try tabID.withCString { tabPtr in
+                try call(
+                    ostmac_chat_tab_remove(chatPtr, tabPtr),
+                    as: TabRemoveResponse.self)
+            }
         }
     }
 

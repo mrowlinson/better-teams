@@ -14,6 +14,7 @@ public enum TeamsCommands {
     public static let pinChannel: CommandID = "teams.pinChannel"
     public static let hideChannel: CommandID = "teams.hideChannel"
     public static let manageChannel: CommandID = "teams.manageChannel"
+    public static let manageTags: CommandID = "teams.manageTags"
     public static let channelEmail: CommandID = "teams.channelEmail"
     public static let editChannel: CommandID = "teams.editChannel"
     public static let archiveChannel: CommandID = "teams.archiveChannel"
@@ -23,6 +24,9 @@ public enum TeamsCommands {
     public static let channelWorkflows: CommandID = "teams.channelWorkflows"
     public static let hideTeam: CommandID = "teams.hideTeam"
     public static let teamLink: CommandID = "teams.teamLink"
+    public static let editTeam: CommandID = "teams.editTeam"
+    public static let archiveTeam: CommandID = "teams.archiveTeam"
+    public static let deleteTeam: CommandID = "teams.deleteTeam"
     public static let leaveTeam: CommandID = "teams.leaveTeam"
 
     /// Submenu args for Join or Create.
@@ -35,7 +39,9 @@ public enum TeamsCommands {
     public static let createChannelSheet = "createChannel"
     public static let addMemberSheet = "addMember"
     public static let editChannelSheet = "editChannel"
+    public static let editTeamSheet = "editTeam"
     public static let manageChannelSheet = "manageChannel"
+    public static let manageTagsSheet = "manageTags"
     public static let channelWorkflowsSheet = "channelWorkflows"
 
     @MainActor
@@ -59,6 +65,7 @@ public enum TeamsCommands {
                 menu: .init(.conversation, group: 5, order: 5), owner: .teams),
         Command(editChannel, "Edit Channel…", menu: .init(.conversation, group: 6, order: 0), owner: .teams),
         Command(manageChannel, "Manage Channel…", menu: .init(.conversation, group: 6, order: 1), owner: .teams),
+        Command(manageTags, "Manage Tags…", menu: .init(.conversation, group: 4, order: 8), owner: .teams),
         Command(copyLink, "Copy Channel Link", menu: .init(.conversation, group: 6, order: 2), owner: .teams),
         Command(channelEmail, "Copy Channel Email Address", menu: .init(.conversation, group: 6, order: 3),
                 owner: .teams),
@@ -70,6 +77,10 @@ public enum TeamsCommands {
         Command(hideTeam, "Hide Team", alternateTitle: "Show Team",
                 menu: .init(.conversation, group: 4, order: 2), owner: .teams),
         Command(teamLink, "Copy Team Link", menu: .init(.conversation, group: 4, order: 3), owner: .teams),
-        Command(leaveTeam, "Leave Team…", menu: .init(.conversation, group: 4, order: 4), owner: .teams),
+        Command(editTeam, "Edit Team…", menu: .init(.conversation, group: 4, order: 4), owner: .teams),
+        Command(archiveTeam, "Archive Team…", alternateTitle: "Restore Team…",
+                menu: .init(.conversation, group: 4, order: 5), owner: .teams),
+        Command(deleteTeam, "Delete Team…", menu: .init(.conversation, group: 4, order: 6), owner: .teams),
+        Command(leaveTeam, "Leave Team…", menu: .init(.conversation, group: 4, order: 7), owner: .teams),
     ]
 }

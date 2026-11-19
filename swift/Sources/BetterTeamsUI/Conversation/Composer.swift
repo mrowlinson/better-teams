@@ -92,11 +92,23 @@ struct Composer: View {
         let people = MentionCompose.filtered(MentionCompose.roster(from: conv.messages.filter { !$0.isOwn },
                                                                    excluding: conv.ownDisplayName),
                                              query: query)
+        // TAGS: team tags after people (demo only — live is
+        // scope-blocked, so the picker never fakes tag rows).
+        let tags = tagNames.filter { !people.contains($0) }
         // COMPOSER-B: broadcast specials after people (channel-gated).
         let specials = MentionWire.displays(channel: isChannel).filter { display in
             query.isEmpty || display.lowercased().contains(query.lowercased())
         }
-        return people + specials.filter { !people.contains($0) }
+        return people + tags + specials.filter { !people.contains($0) && !tags.contains($0) }
+    }
+
+    /// Demo tag names for this channel's team (live: []).
+    private var tagNames: [String] {
+        guard let model, model.options.demo,
+              let teams = model.app?.teams.teams,
+              let (team, _) = TeamsListPane.locate(chatID, in: teams) else { return [] }
+        let query = MentionTrigger.query(in: composer.draft(chatID)) ?? ""
+        return TeamTags.mentionCandidates(TeamTagsStore.demoTags(teamID: team.teamId), query: query)
     }
 
     /// COMPOSER-B: channel posts get team/channel broadcasts + subject.
@@ -450,6 +462,7 @@ struct Composer: View {
     private func popoverContent(_ p: ComposerPopover) -> some View {
         ComposerPopoverContent(popover: p, chatID: chatID, chatName: chatName, conv: conv,
                                composer: composer, services: services, roster: roster,
+                               tagNames: Set(tagNames),
                                mentionIndex: mentionIndex, pickMention: pickMention)
     }
 

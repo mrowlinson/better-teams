@@ -58,6 +58,12 @@ public enum DemoTeams {
         private var edits: [String: (name: String?, description: String?)] = [:]
         private var deletedChannels: Set<String> = []
         private var leftTeams: Set<String> = []
+        // TEAM-ADMIN: team lifecycle writes (rename/re-describe, picture
+        // is a no-op in demo, archive/restore flags, deletes).
+        private var teamEdits: [String: (name: String?, description: String?)] = [:]
+        private var archivedTeams: Set<String> = []
+        private var unarchivedTeams: Set<String> = []
+        private var deletedTeams: Set<String> = []
 
         public func addChannel(_ channel: TeamChannel, teamID: String) {
             lock.lock()
@@ -85,23 +91,64 @@ public enum DemoTeams {
             added.removeAll { $0.teamId == teamID }
         }
 
-        /// `base` with this session's channel writes and leaves applied.
+        /// TEAM-ADMIN: rename/re-describe a demo team (in memory).
+        public func editTeam(_ teamID: String, name: String?, description: String?) {
+            lock.lock()
+            defer { lock.unlock() }
+            let prior = teamEdits[teamID]
+            teamEdits[teamID] = (name ?? prior?.name, description ?? prior?.description)
+            added = added.map { t in
+                guard t.teamId == teamID else { return t }
+                return TeamItem(teamId: t.teamId, name: name ?? t.name, channels: t.channels,
+                                description: description ?? t.description, isArchived: t.isArchived)
+            }
+        }
+
+        /// TEAM-ADMIN: flag a demo team archived/restored (in memory).
+        public func setTeamArchived(_ teamID: String, archived: Bool) {
+            lock.lock()
+            defer { lock.unlock() }
+            if archived {
+                archivedTeams.insert(teamID)
+                unarchivedTeams.remove(teamID)
+            } else {
+                unarchivedTeams.insert(teamID)
+                archivedTeams.remove(teamID)
+            }
+        }
+
+        /// TEAM-ADMIN: delete a demo team (in memory).
+        public func deleteTeam(_ teamID: String) {
+            lock.lock()
+            defer { lock.unlock() }
+            deletedTeams.insert(teamID)
+            added.removeAll { $0.teamId == teamID }
+        }
+
+        /// `base` with this session's channel and team writes and
+        /// leaves applied.
         public func applied(to base: [TeamItem]) -> [TeamItem] {
             lock.lock()
             defer { lock.unlock() }
-            return base.filter { !leftTeams.contains($0.teamId) }.map { team in
-                let channels = (team.channels + (newChannels[team.teamId] ?? []))
-                    .filter { !deletedChannels.contains($0.channelId) }
-                    .map { ch -> TeamChannel in
-                        guard let e = edits[ch.channelId] else { return ch }
-                        let desc = e.description.map { $0.isEmpty ? nil : $0 } ?? ch.description
-                        return TeamChannel(channelId: ch.channelId, name: e.name ?? ch.name,
-                                           description: desc, membershipType: ch.membershipType,
-                                           webUrl: ch.webUrl, email: ch.email,
-                                           isArchived: ch.isArchived)
-                    }
-                return TeamItem(teamId: team.teamId, name: team.name, channels: channels)
-            }
+            return base.filter { !leftTeams.contains($0.teamId) && !deletedTeams.contains($0.teamId) }
+                .map { team in
+                    let channels = (team.channels + (newChannels[team.teamId] ?? []))
+                        .filter { !deletedChannels.contains($0.channelId) }
+                        .map { ch -> TeamChannel in
+                            guard let e = edits[ch.channelId] else { return ch }
+                            let desc = e.description.map { $0.isEmpty ? nil : $0 } ?? ch.description
+                            return TeamChannel(channelId: ch.channelId, name: e.name ?? ch.name,
+                                               description: desc, membershipType: ch.membershipType,
+                                               webUrl: ch.webUrl, email: ch.email,
+                                               isArchived: ch.isArchived)
+                        }
+                    let edit = teamEdits[team.teamId]
+                    let archived: Bool? = archivedTeams.contains(team.teamId) ? true
+                        : (unarchivedTeams.contains(team.teamId) ? false : team.isArchived)
+                    return TeamItem(
+                        teamId: team.teamId, name: edit?.name ?? team.name, channels: channels,
+                        description: edit?.description ?? team.description, isArchived: archived)
+                }
         }
     }
 

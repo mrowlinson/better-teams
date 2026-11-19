@@ -1,9 +1,14 @@
 // AppsLibraryLoadGuardTests.swift — APPLIB-LOAD pins: the Apps library
-// list can never render empty. Built-in rows are unconditional (five
-// native apps, always present); persisted rail pins in the stored
-// `{"web":{"_0":"ta…"}}` shape must decode (a decode break wipes the
-// owner's pins on launch); hostable catalog manifests must resolve to
-// `ta.<id>` library ids (else Pinned/Personal vanish with no error).
+// list can never render empty. Built-in rows are unconditional (six
+// native apps since the APPROVALS lane, always present); persisted rail
+// pins in the stored `{"web":{"_0":"ta…"}}` shape must decode (a decode
+// break wipes the owner's pins on launch); hostable catalog manifests
+// must resolve to `ta.<id>` library ids (else Pinned/Personal vanish
+// with no error).
+//
+// APPROVALS lane: the 5→6 pin below is the ordered product change (a
+// sixth built-in: the approvals hub), not a weakened assertion.
+// OWNER OK PENDING — see lanes/approvals REPORT.md.
 import XCTest
 
 import OstMacCore
@@ -11,12 +16,12 @@ import OstMacCore
 
 @MainActor
 final class AppsLibraryLoadGuardTests: XCTestCase {
-    /// The never-blank invariant: Built-in is five rows for every
+    /// The never-blank invariant: Built-in is six rows for every
     /// library state, and an empty filter never hides them.
     func testBuiltInsAlwaysPresent() {
         let lib = AppsLibrary(accountKey: "demo")
         XCTAssertEqual(lib.builtIns.count, NativeAppID.allCases.count)
-        XCTAssertEqual(lib.builtIns.count, 5)
+        XCTAssertEqual(lib.builtIns.count, 6)
         for item in lib.builtIns {
             XCTAssertFalse(item.title.isEmpty)
             XCTAssertTrue(item.matches(""))
@@ -92,7 +97,7 @@ final class AppsLibraryLoadGuardTests: XCTestCase {
         let empty = TeamsAppCatalogCache.Entry(pinned: [], apps: [])
         XCTAssertEqual(AppsLibrary.apps(from: empty), [])
         XCTAssertEqual(AppsLibrary.pinnedIDs(empty), [])
-        XCTAssertEqual(lib.builtIns.count, 5)
+        XCTAssertEqual(lib.builtIns.count, 6)
     }
 
     /// The catalog cache round-trips (pins + manifests): what feeds

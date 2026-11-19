@@ -205,6 +205,7 @@ public enum CommandCatalog {
         + TeamsCommands.all + CalendarCommands.all + CallsCommands.all + FilesCommands.all
         + AppsCommands.all + PlannerCommands.all + ToDoCommands.all + ShiftsCommands.all
         + RecapsCommands.all + OneNoteCommands.all + CallCommands.all
+        + ApprovalsCommands.all
 
     private static let byID: [CommandID: Command] = Dictionary(
         all.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })

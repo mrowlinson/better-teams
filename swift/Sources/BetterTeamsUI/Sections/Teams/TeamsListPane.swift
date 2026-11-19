@@ -310,12 +310,36 @@ struct TeamsListPane: View {
     private func teamMenu(_ team: TeamItem, _ m: WindowModel) -> some View {
         Button(prefs.isHidden(team.teamId) ? "Show" : "Hide") { run(TeamsCommands.hideTeam, team.teamId, m) }
         Button("Manage Team…") { run(TeamsCommands.manageMembers, team.teamId, m) }
+        Button("Manage Tags…") { run(TeamsCommands.manageTags, team.teamId, m) }
         Button("Add Channel…") { run(TeamsCommands.createChannel, team.teamId, m) }
         Button("Get Link to Team") { run(TeamsCommands.teamLink, team.teamId, m) }
         Button("Mark All as Read") { run(TeamsCommands.markTeamRead, team.teamId, m) }
         Divider()
+        let adminWhy = Self.teamAdminDisabled(teamID: team.teamId, teams: teams,
+                                              offline: m.connection == .offline)
+        Button("Edit Team…") { run(TeamsCommands.editTeam, team.teamId, m) }
+            .disabled(adminWhy != nil)
+            .help(adminWhy ?? "Rename, re-describe or change the team picture")
+        Button(team.isArchived == true ? "Restore Team…" : "Archive Team…") {
+            run(TeamsCommands.archiveTeam, team.teamId, m)
+        }
+        .disabled(adminWhy != nil)
+        .help(adminWhy ?? (team.isArchived == true ? "Restore this archived team"
+                                                  : "Archive this team (read-only for members)"))
+        Button("Delete Team…", role: .destructive) { run(TeamsCommands.deleteTeam, team.teamId, m) }
+            .disabled(adminWhy != nil)
+            .help(adminWhy ?? "Delete this team and its backing group (irreversible)")
         Button("Leave Team…", role: .destructive) { run(TeamsCommands.leaveTeam, team.teamId, m) }
             .disabled(m.connection == .offline)
+    }
+
+    /// Disabled reason for the owner-only team lifecycle items (nil =
+    /// enabled). Fail closed: unknown ownership disables with the
+    /// reason instead of guessing. Pure so tests pin it.
+    static func teamAdminDisabled(teamID: String, teams: TeamsViewModel, offline: Bool) -> String? {
+        if offline { return "You're offline." }
+        if !teams.canAdminTeam(teamID: teamID) { return "Only team owners can do this." }
+        return nil
     }
 
     /// Channel menu, in Teams' order: window, notification/section/hide

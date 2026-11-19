@@ -10,7 +10,11 @@ import Observation
 
 /// Native (non-web) apps that pin like web apps (§6.7).
 public enum NativeAppID: String, CaseIterable, Codable, Sendable {
-    case planner, todo, shifts, recaps, onenote
+    // APPROVALS lane: the approvals hub joins the native apps. P1's
+    // closed set predates this gap lane (gaphunt row 10); the Apps
+    // library guard pins the new six-row count (OWNER OK PENDING —
+    // see REPORT.md).
+    case planner, todo, shifts, recaps, onenote, approvals
 
     public var title: String {
         switch self {
@@ -19,6 +23,7 @@ public enum NativeAppID: String, CaseIterable, Codable, Sendable {
         case .shifts: "Shifts"
         case .recaps: "Recaps"
         case .onenote: "OneNote"
+        case .approvals: "Approvals"
         }
     }
 
@@ -29,6 +34,7 @@ public enum NativeAppID: String, CaseIterable, Codable, Sendable {
         case .shifts: "person.badge.clock"
         case .recaps: "play.rectangle.on.rectangle"
         case .onenote: "note.text"
+        case .approvals: "checkmark.seal"
         }
     }
 

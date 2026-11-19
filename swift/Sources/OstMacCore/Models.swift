@@ -262,17 +262,38 @@ public struct TeamItem: Codable, Sendable, Identifiable, Equatable {
     public let teamId: String
     public let name: String
     public let channels: [TeamChannel]
+    /// Team description (backing-group `description`); nil on older
+    /// payloads, demo rows, and teams never described. TEAM-ADMIN.
+    public let description: String?
+    /// Graph `isArchived`; nil when unknown (the joined-teams list
+    /// does not report it — set from archive/unarchive writes).
+    /// TEAM-ADMIN.
+    public let isArchived: Bool?
 
     enum CodingKeys: String, CodingKey {
         case teamId = "id"
         case name, channels
+        case description
+        case isArchived = "is_archived"
     }
 
     /// Host-side construction (demo data, previews). Wire decoding is untouched.
-    public init(teamId: String, name: String, channels: [TeamChannel]) {
+    public init(
+        teamId: String, name: String, channels: [TeamChannel],
+        description: String? = nil, isArchived: Bool? = nil
+    ) {
         self.teamId = teamId
         self.name = name
         self.channels = channels
+        self.description = description
+        self.isArchived = isArchived
+    }
+
+    /// Row rebuild with new channels (reorder, add/remove): keeps the
+    /// team's description and archive flag. TEAM-ADMIN.
+    public func withChannels(_ channels: [TeamChannel]) -> TeamItem {
+        TeamItem(teamId: teamId, name: name, channels: channels,
+                 description: description, isArchived: isArchived)
     }
 }
 
@@ -468,6 +489,37 @@ public struct TabsResponse: Decodable, Sendable {
         self.ok = ok
         self.channel_id = channel_id
         self.tabs = tabs
+    }
+}
+
+// MARK: - Tab management (tabs-mgmt lane)
+
+/// Add/rename result from core `ostmac_*_tab_add/rename`: `{ok, tab}`.
+public struct TabManageResponse: Decodable, Sendable {
+    public let ok: Bool
+    public let tab: ChannelTab
+
+    /// Host-side construction (mock fetchers).
+    public init(ok: Bool, tab: ChannelTab) {
+        self.ok = ok
+        self.tab = tab
+    }
+}
+
+/// Remove result from core `ostmac_*_tab_remove`: `{ok, tab_id}`.
+public struct TabRemoveResponse: Decodable, Sendable {
+    public let ok: Bool
+    public let tabId: String
+
+    enum CodingKeys: String, CodingKey {
+        case ok
+        case tabId = "tab_id"
+    }
+
+    /// Host-side construction (mock fetchers).
+    public init(ok: Bool, tabId: String) {
+        self.ok = ok
+        self.tabId = tabId
     }
 }
 

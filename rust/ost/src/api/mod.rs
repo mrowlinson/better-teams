@@ -206,7 +206,10 @@ pub use planner::{
     thread_create_body, thread_path, thread_posts_path, thread_reply_path, threads_collection_path,
 };
 pub use presence::get_presence_data;
-pub use tabs::{list_chat_tabs_data, list_tabs_data};
+pub use tabs::{
+    add_channel_tab_data, add_chat_tab_data, list_chat_tabs_data, list_tabs_data,
+    remove_channel_tab_data, remove_chat_tab_data, rename_channel_tab_data, rename_chat_tab_data,
+};
 pub use teams::{
     add_channel_member_body, add_channel_member_data, add_member_body, add_team_member_data,
     archive_channel_body, archive_channel_data, archive_channel_path,
@@ -225,7 +228,11 @@ pub use teams::{
     search_public_teams_data, PublicTeamInfo, PublicTeamsSource, PUBLIC_TEAMS_MAX,
     member_path, members_path, operation_failed, operation_succeeded,
     operation_team_id, operation_url, remove_team_member_data,
-    set_channel_reaction_data, TeamCreateResult,
+    set_channel_reaction_data, TeamCreateResult, update_team, update_team_body,
+    update_team_data, update_team_path, archive_team, archive_team_data,
+    archive_team_path, unarchive_team, unarchive_team_data, unarchive_team_path,
+    delete_team, delete_team_data, delete_team_path, set_team_photo,
+    set_team_photo_data, team_photo_path,
     TeamsAsyncOperation, TEAM_CREATE_POLL_SECS, TEAM_CREATE_TIMEOUT_SECS,
     unset_channel_reaction_data,
 };
@@ -386,6 +393,46 @@ pub async fn list_tabs(channel_id: &str) -> Result<()> {
 /// Dump every joined channel's tabs (one auth, read-only)
 pub async fn list_tabs_all() -> Result<()> {
     tabs::list_tabs_all().await
+}
+
+/// Add a website/app tab to a channel (prints the created tab)
+pub async fn add_channel_tab(
+    channel_id: &str,
+    name: &str,
+    app: Option<&str>,
+    url: Option<&str>,
+) -> Result<()> {
+    tabs::add_channel_tab(channel_id, name, app, url).await
+}
+
+/// Rename a channel tab (prints the updated tab)
+pub async fn rename_channel_tab(channel_id: &str, tab_id: &str, name: &str) -> Result<()> {
+    tabs::rename_channel_tab(channel_id, tab_id, name).await
+}
+
+/// Remove a channel tab
+pub async fn remove_channel_tab(channel_id: &str, tab_id: &str) -> Result<()> {
+    tabs::remove_channel_tab(channel_id, tab_id).await
+}
+
+/// Add a website/app tab to a chat (prints the created tab)
+pub async fn add_chat_tab(
+    chat_id: &str,
+    name: &str,
+    app: Option<&str>,
+    url: Option<&str>,
+) -> Result<()> {
+    tabs::add_chat_tab(chat_id, name, app, url).await
+}
+
+/// Rename a chat tab (prints the updated tab)
+pub async fn rename_chat_tab(chat_id: &str, tab_id: &str, name: &str) -> Result<()> {
+    tabs::rename_chat_tab(chat_id, tab_id, name).await
+}
+
+/// Remove a chat tab
+pub async fn remove_chat_tab(chat_id: &str, tab_id: &str) -> Result<()> {
+    tabs::remove_chat_tab(chat_id, tab_id).await
 }
 
 /// Print one team's schedule week grid (shifts + time-off, read-only)

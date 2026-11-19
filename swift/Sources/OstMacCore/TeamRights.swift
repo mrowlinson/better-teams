@@ -95,7 +95,7 @@ public enum ChannelRights {
                   let first = team.channels.first, !general.contains(where: { $0.channelId == first.channelId })
             else { return team }
             let rest = team.channels.filter { c in !general.contains { $0.channelId == c.channelId } }
-            return TeamItem(teamId: team.teamId, name: team.name, channels: general + rest)
+            return team.withChannels(general + rest)
         }
     }
 }

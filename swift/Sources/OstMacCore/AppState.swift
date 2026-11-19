@@ -36,6 +36,10 @@ public final class AppState: ObservableObject {
     public private(set) lazy var teamsSync = TeamsSync(model: teams)
     public let reminders: RemindersViewModel
     public let planner: PlannerViewModel
+    /// APPROVALS lane: Teams Approvals (Power Automate-backed) requests.
+    /// Demo seeds fixtures offline; live fails closed with the consent
+    /// message until the tenant consents ApprovalSolution.ReadWrite.
+    public let approvals: ApprovalStore
     public let recordings: RecordingsViewModel
     public let transcripts: TranscriptsViewModel
     /// RECAP2: one recap per meeting for the unified viewer (chat Recap
@@ -514,11 +518,21 @@ public final class AppState: ObservableObject {
                 visibilityFetcher: { _ in TeamVisibilityResponse(visibility: "private") },
                 visibilityUpdater: { _, makePrivate in
                     TeamVisibilityResponse(visibility: makePrivate ? "private" : "public")
-                })
+                },
+                // TEAM-ADMIN demo: renames/describes/archives/deletes act
+                // in memory; pictures are a no-op echo (never core).
+                teamUpdater: { teamID, name, description in
+                    teamsLedger.editTeam(teamID, name: name, description: description)
+                },
+                teamPhotoSetter: { _, _ in },
+                teamArchiver: { teamsLedger.setTeamArchived($0, archived: true) },
+                teamUnarchiver: { teamsLedger.setTeamArchived($0, archived: false) },
+                teamDeleter: { teamsLedger.deleteTeam($0) })
             reminders = RemindersViewModel(
                 listsFetcher: { DemoData.remindersResponse() },
                 tasksFetcher: { DemoData.reminderTasksResponse(for: $0) },
                 localEdits: true)
+            approvals = ApprovalStore.demo()
             planner = PlannerViewModel(
                 teamsFetcher: { DemoData.teamsResponse() },
                 plansFetcher: { PlannerDemo.plansResponse(for: $0) },
@@ -585,6 +599,7 @@ public final class AppState: ObservableObject {
             teams = TeamsViewModel()
             reminders = RemindersViewModel()
             planner = PlannerViewModel(membersFetcher: { try RustCore.teamMembers(teamID: $0) })
+            approvals = ApprovalStore.live()
             let liveRecordings = RecordingsViewModel()
             recordings = liveRecordings
             transcripts = TranscriptsViewModel(recordingLookup: { [weak liveRecordings] stem in
@@ -1454,6 +1469,7 @@ public final class AppState: ObservableObject {
             resolveOwnerMRI()
             reminders.refresh()
             planner.refresh()
+            approvals.refresh()
             recordings.refresh()
             transcripts.refresh()
             unifiedFiles.refresh()
@@ -1561,7 +1577,8 @@ public final class AppState: ObservableObject {
             guard let self else { return }
             async let todo: Void = self.reminders.load()
             async let plans: Void = self.planner.load()
-            _ = await (todo, plans)
+            async let approvals: Void = self.approvals.load()
+            _ = await (todo, plans, approvals)
             Log.content("todo+planner", ms: Log.ms(since: launchStart), cached: false)
         }
         // top10-files: unified Files surface. Demo seeds canned rows

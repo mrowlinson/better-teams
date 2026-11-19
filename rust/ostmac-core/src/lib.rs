@@ -859,6 +859,171 @@ pub fn chat_tabs_json(chat_id: &str) -> String {
     }
 }
 
+/// Add a website/app tab to a channel (TABS-MGMT): `{ok, tab}` with the
+/// created tab in [`tab_to_json`] shape. Empty ids/names bail pre-network.
+pub fn channel_tab_add_json(
+    channel_id: &str,
+    display_name: &str,
+    app_id: Option<&str>,
+    url: Option<&str>,
+) -> String {
+    if channel_id.trim().is_empty() {
+        return err_json("arg", "empty channel_id");
+    }
+    let run = || -> Result<String, String> {
+        let rt = rt()?;
+        rt.block_on(async {
+            let client = ost::api::client::TeamsClient::new()
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            let tab = ost::api::add_channel_tab_data(
+                &client,
+                channel_id,
+                display_name,
+                app_id,
+                url,
+            )
+            .await
+            .map_err(|e| format!("{:#}", e))?;
+            Ok(json!({"ok": true, "tab": tab_to_json(&tab)}).to_string())
+        })
+    };
+    match run() {
+        Ok(s) => s,
+        Err(e) => err_json("tab_add", e),
+    }
+}
+
+/// Rename a channel tab (TABS-MGMT configure): `{ok, tab}` with the
+/// updated tab. Empty ids/names bail pre-network.
+pub fn channel_tab_rename_json(channel_id: &str, tab_id: &str, display_name: &str) -> String {
+    if channel_id.trim().is_empty() {
+        return err_json("arg", "empty channel_id");
+    }
+    let run = || -> Result<String, String> {
+        let rt = rt()?;
+        rt.block_on(async {
+            let client = ost::api::client::TeamsClient::new()
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            let tab = ost::api::rename_channel_tab_data(&client, channel_id, tab_id, display_name)
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            Ok(json!({"ok": true, "tab": tab_to_json(&tab)}).to_string())
+        })
+    };
+    match run() {
+        Ok(s) => s,
+        Err(e) => err_json("tab_rename", e),
+    }
+}
+
+/// Remove a channel tab (TABS-MGMT): `{ok:true, tab_id}`. Empty ids bail
+/// pre-network.
+pub fn channel_tab_remove_json(channel_id: &str, tab_id: &str) -> String {
+    let (channel_id, tab_id) = (channel_id.trim(), tab_id.trim());
+    if channel_id.is_empty() {
+        return err_json("arg", "empty channel_id");
+    }
+    if tab_id.is_empty() {
+        return err_json("arg", "empty tab_id");
+    }
+    let run = || -> Result<String, String> {
+        let rt = rt()?;
+        rt.block_on(async {
+            let client = ost::api::client::TeamsClient::new()
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            ost::api::remove_channel_tab_data(&client, channel_id, tab_id)
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            Ok(json!({"ok": true, "tab_id": tab_id}).to_string())
+        })
+    };
+    match run() {
+        Ok(s) => s,
+        Err(e) => err_json("tab_remove", e),
+    }
+}
+
+/// Add a website/app tab to a chat (TABS-MGMT): `{ok, tab}`.
+pub fn chat_tab_add_json(
+    chat_id: &str,
+    display_name: &str,
+    app_id: Option<&str>,
+    url: Option<&str>,
+) -> String {
+    if chat_id.trim().is_empty() {
+        return err_json("arg", "empty chat_id");
+    }
+    let run = || -> Result<String, String> {
+        let rt = rt()?;
+        rt.block_on(async {
+            let client = ost::api::client::TeamsClient::new()
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            let tab = ost::api::add_chat_tab_data(&client, chat_id, display_name, app_id, url)
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            Ok(json!({"ok": true, "tab": tab_to_json(&tab)}).to_string())
+        })
+    };
+    match run() {
+        Ok(s) => s,
+        Err(e) => err_json("tab_add", e),
+    }
+}
+
+/// Rename a chat tab (TABS-MGMT configure): `{ok, tab}`.
+pub fn chat_tab_rename_json(chat_id: &str, tab_id: &str, display_name: &str) -> String {
+    if chat_id.trim().is_empty() {
+        return err_json("arg", "empty chat_id");
+    }
+    let run = || -> Result<String, String> {
+        let rt = rt()?;
+        rt.block_on(async {
+            let client = ost::api::client::TeamsClient::new()
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            let tab = ost::api::rename_chat_tab_data(&client, chat_id, tab_id, display_name)
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            Ok(json!({"ok": true, "tab": tab_to_json(&tab)}).to_string())
+        })
+    };
+    match run() {
+        Ok(s) => s,
+        Err(e) => err_json("tab_rename", e),
+    }
+}
+
+/// Remove a chat tab (TABS-MGMT): `{ok:true, tab_id}`.
+pub fn chat_tab_remove_json(chat_id: &str, tab_id: &str) -> String {
+    let (chat_id, tab_id) = (chat_id.trim(), tab_id.trim());
+    if chat_id.is_empty() {
+        return err_json("arg", "empty chat_id");
+    }
+    if tab_id.is_empty() {
+        return err_json("arg", "empty tab_id");
+    }
+    let run = || -> Result<String, String> {
+        let rt = rt()?;
+        rt.block_on(async {
+            let client = ost::api::client::TeamsClient::new()
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            ost::api::remove_chat_tab_data(&client, chat_id, tab_id)
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            Ok(json!({"ok": true, "tab_id": tab_id}).to_string())
+        })
+    };
+    match run() {
+        Ok(s) => s,
+        Err(e) => err_json("tab_remove", e),
+    }
+}
+
 /// One channel's pinned tabs as JSON (read-only). Requires sign-in;
 /// unsigned yields `{ok:false}`. Empty `channel_id` is rejected before
 /// any network. Swift deep-links Posts/Files/Notes into its own views
@@ -1092,6 +1257,143 @@ pub fn team_visibility_update_json(team_id: &str, private_int: i32) -> String {
     match run() {
         Ok(s) => s,
         Err(e) => err_json("team_visibility_update", e),
+    }
+}
+
+/// Rename / re-describe one team (backing-group PATCH).
+/// `name`/`description` are optional C strings (nil = unchanged);
+/// blank names never reach the server. Returns
+/// `{ok:true, team_id}` or `{ok:false}`. TEAM-ADMIN.
+pub fn team_update_json(team_id: &str, name: Option<&str>, description: Option<&str>) -> String {
+    if team_id.trim().is_empty() {
+        return err_json("arg", "empty team_id");
+    }
+    let name = name.filter(|n| !n.trim().is_empty());
+    let description = description.filter(|d| !d.is_empty());
+    if name.is_none() && description.is_none() {
+        return err_json("arg", "nothing to update (blank name, no description)");
+    }
+    let run = || -> Result<String, String> {
+        let rt = rt()?;
+        rt.block_on(async {
+            let client = ost::api::client::TeamsClient::new()
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            let id = ost::api::update_team_data(&client, team_id, name, description)
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            Ok(json!({"ok": true, "team_id": id}).to_string())
+        })
+    };
+    match run() {
+        Ok(s) => s,
+        Err(e) => err_json("team_update", e),
+    }
+}
+
+/// Set one team's picture (base64 JPEG/PNG bytes, Graph 4 MB cap).
+/// Returns `{ok:true, team_id}` or `{ok:false}`. TEAM-ADMIN.
+pub fn team_photo_json(team_id: &str, base64: &str) -> String {
+    use base64::Engine as _;
+    if team_id.trim().is_empty() {
+        return err_json("arg", "empty team_id");
+    }
+    let bytes = match base64::engine::general_purpose::STANDARD.decode(base64.trim()) {
+        Ok(b) if !b.is_empty() => b,
+        _ => return err_json("arg", "empty or invalid base64 photo"),
+    };
+    let content_type = if bytes.starts_with(&[0x89, 0x50, 0x4E, 0x47]) {
+        "image/png"
+    } else {
+        "image/jpeg"
+    };
+    let run = || -> Result<String, String> {
+        let rt = rt()?;
+        rt.block_on(async {
+            let client = ost::api::client::TeamsClient::new()
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            let id = ost::api::set_team_photo_data(&client, team_id, &bytes, content_type)
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            Ok(json!({"ok": true, "team_id": id}).to_string())
+        })
+    };
+    match run() {
+        Ok(s) => s,
+        Err(e) => err_json("team_photo", e),
+    }
+}
+
+/// Archive one team (async server-side; re-list to confirm).
+/// Returns `{ok:true, team_id}` or `{ok:false}`. TEAM-ADMIN.
+pub fn team_archive_json(team_id: &str) -> String {
+    if let Err(e) = todo_id_ok("team_id", team_id) {
+        return e;
+    }
+    let run = || -> Result<String, String> {
+        let rt = rt()?;
+        rt.block_on(async {
+            let client = ost::api::client::TeamsClient::new()
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            let id = ost::api::archive_team_data(&client, team_id)
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            Ok(json!({"ok": true, "team_id": id}).to_string())
+        })
+    };
+    match run() {
+        Ok(s) => s,
+        Err(e) => err_json("team_archive", e),
+    }
+}
+
+/// Restore one archived team. Returns `{ok:true, team_id}` or
+/// `{ok:false}`. TEAM-ADMIN.
+pub fn team_unarchive_json(team_id: &str) -> String {
+    if let Err(e) = todo_id_ok("team_id", team_id) {
+        return e;
+    }
+    let run = || -> Result<String, String> {
+        let rt = rt()?;
+        rt.block_on(async {
+            let client = ost::api::client::TeamsClient::new()
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            let id = ost::api::unarchive_team_data(&client, team_id)
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            Ok(json!({"ok": true, "team_id": id}).to_string())
+        })
+    };
+    match run() {
+        Ok(s) => s,
+        Err(e) => err_json("team_unarchive", e),
+    }
+}
+
+/// Delete one team (irreversible: removes the backing M365 group).
+/// Returns `{ok:true, team_id}` or `{ok:false}`. TEAM-ADMIN.
+pub fn team_delete_json(team_id: &str) -> String {
+    if let Err(e) = todo_id_ok("team_id", team_id) {
+        return e;
+    }
+    let run = || -> Result<String, String> {
+        let rt = rt()?;
+        rt.block_on(async {
+            let client = ost::api::client::TeamsClient::new()
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            let id = ost::api::delete_team_data(&client, team_id)
+                .await
+                .map_err(|e| format!("{:#}", e))?;
+            Ok(json!({"ok": true, "team_id": id}).to_string())
+        })
+    };
+    match run() {
+        Ok(s) => s,
+        Err(e) => err_json("team_delete", e),
     }
 }
 
@@ -3986,6 +4288,67 @@ pub extern "C" fn ostmac_team_visibility_update(
     }
 }
 
+/// Rename / re-describe one team. `name`/`description` may be NULL
+/// (unchanged). Caller frees. TEAM-ADMIN.
+#[no_mangle]
+pub extern "C" fn ostmac_team_update(
+    team_id: *const c_char,
+    name: *const c_char,
+    description: *const c_char,
+) -> *mut c_char {
+    let team = match cstr_to_string(team_id) {
+        Ok(s) => s,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    let nm = match opt_cstr_to_string(name) {
+        Ok(s) => s,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    match opt_cstr_to_string(description) {
+        Ok(d) => string_to_c(team_update_json(&team, nm.as_deref(), d.as_deref())),
+        Err(e) => string_to_c(err_json("arg", e)),
+    }
+}
+
+/// Set one team's picture (base64 JPEG/PNG). Caller frees. TEAM-ADMIN.
+#[no_mangle]
+pub extern "C" fn ostmac_team_photo(
+    team_id: *const c_char,
+    base64: *const c_char,
+) -> *mut c_char {
+    match (cstr_to_string(team_id), cstr_to_string(base64)) {
+        (Ok(t), Ok(b)) => string_to_c(team_photo_json(&t, &b)),
+        _ => string_to_c(err_json("arg", "empty team_id or photo")),
+    }
+}
+
+/// Archive one team. Caller frees. TEAM-ADMIN.
+#[no_mangle]
+pub extern "C" fn ostmac_team_archive(team_id: *const c_char) -> *mut c_char {
+    match cstr_to_string(team_id) {
+        Ok(t) => string_to_c(team_archive_json(&t)),
+        Err(e) => string_to_c(err_json("arg", e)),
+    }
+}
+
+/// Restore one archived team. Caller frees. TEAM-ADMIN.
+#[no_mangle]
+pub extern "C" fn ostmac_team_unarchive(team_id: *const c_char) -> *mut c_char {
+    match cstr_to_string(team_id) {
+        Ok(t) => string_to_c(team_unarchive_json(&t)),
+        Err(e) => string_to_c(err_json("arg", e)),
+    }
+}
+
+/// Delete one team (irreversible). Caller frees. TEAM-ADMIN.
+#[no_mangle]
+pub extern "C" fn ostmac_team_delete(team_id: *const c_char) -> *mut c_char {
+    match cstr_to_string(team_id) {
+        Ok(t) => string_to_c(team_delete_json(&t)),
+        Err(e) => string_to_c(err_json("arg", e)),
+    }
+}
+
 /// Create one channel of any membership type. `description` and
 /// `membership_type` may be NULL (standard); `owners_json` may be NULL
 /// (a JSON array of user ids/UPNs for private/shared). See
@@ -4192,6 +4555,139 @@ pub extern "C" fn ostmac_chat_tabs(chat_id: *const c_char) -> *mut c_char {
         Ok(id) => string_to_c(chat_tabs_json(&id)),
         Err(e) => string_to_c(err_json("arg", e)),
     }
+}
+
+/// Add a channel tab. See [`channel_tab_add_json`].
+/// Null `app_id`/`url` select the website default / no configuration.
+#[no_mangle]
+pub extern "C" fn ostmac_channel_tab_add(
+    channel_id: *const c_char,
+    display_name: *const c_char,
+    app_id: *const c_char,
+    url: *const c_char,
+) -> *mut c_char {
+    let channel = match cstr_to_string(channel_id) {
+        Ok(s) => s,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    let name = match cstr_to_string(display_name) {
+        Ok(s) => s,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    let app = match opt_cstr_to_string(app_id) {
+        Ok(o) => o,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    let u = match opt_cstr_to_string(url) {
+        Ok(o) => o,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    string_to_c(channel_tab_add_json(&channel, &name, app.as_deref(), u.as_deref()))
+}
+
+/// Rename a channel tab. See [`channel_tab_rename_json`].
+#[no_mangle]
+pub extern "C" fn ostmac_channel_tab_rename(
+    channel_id: *const c_char,
+    tab_id: *const c_char,
+    display_name: *const c_char,
+) -> *mut c_char {
+    let channel = match cstr_to_string(channel_id) {
+        Ok(s) => s,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    let tab = match cstr_to_string(tab_id) {
+        Ok(s) => s,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    let name = match cstr_to_string(display_name) {
+        Ok(s) => s,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    string_to_c(channel_tab_rename_json(&channel, &tab, &name))
+}
+
+/// Remove a channel tab. See [`channel_tab_remove_json`].
+#[no_mangle]
+pub extern "C" fn ostmac_channel_tab_remove(
+    channel_id: *const c_char,
+    tab_id: *const c_char,
+) -> *mut c_char {
+    let channel = match cstr_to_string(channel_id) {
+        Ok(s) => s,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    let tab = match cstr_to_string(tab_id) {
+        Ok(s) => s,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    string_to_c(channel_tab_remove_json(&channel, &tab))
+}
+
+/// Add a chat tab. See [`chat_tab_add_json`].
+#[no_mangle]
+pub extern "C" fn ostmac_chat_tab_add(
+    chat_id: *const c_char,
+    display_name: *const c_char,
+    app_id: *const c_char,
+    url: *const c_char,
+) -> *mut c_char {
+    let chat = match cstr_to_string(chat_id) {
+        Ok(s) => s,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    let name = match cstr_to_string(display_name) {
+        Ok(s) => s,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    let app = match opt_cstr_to_string(app_id) {
+        Ok(o) => o,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    let u = match opt_cstr_to_string(url) {
+        Ok(o) => o,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    string_to_c(chat_tab_add_json(&chat, &name, app.as_deref(), u.as_deref()))
+}
+
+/// Rename a chat tab. See [`chat_tab_rename_json`].
+#[no_mangle]
+pub extern "C" fn ostmac_chat_tab_rename(
+    chat_id: *const c_char,
+    tab_id: *const c_char,
+    display_name: *const c_char,
+) -> *mut c_char {
+    let chat = match cstr_to_string(chat_id) {
+        Ok(s) => s,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    let tab = match cstr_to_string(tab_id) {
+        Ok(s) => s,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    let name = match cstr_to_string(display_name) {
+        Ok(s) => s,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    string_to_c(chat_tab_rename_json(&chat, &tab, &name))
+}
+
+/// Remove a chat tab. See [`chat_tab_remove_json`].
+#[no_mangle]
+pub extern "C" fn ostmac_chat_tab_remove(
+    chat_id: *const c_char,
+    tab_id: *const c_char,
+) -> *mut c_char {
+    let chat = match cstr_to_string(chat_id) {
+        Ok(s) => s,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    let tab = match cstr_to_string(tab_id) {
+        Ok(s) => s,
+        Err(e) => return string_to_c(err_json("arg", e)),
+    };
+    string_to_c(chat_tab_remove_json(&chat, &tab))
 }
 
 /// Add one user to a team. See [`team_member_add_json`].
@@ -6536,6 +7032,27 @@ mod tests {
         for bad in ["", "   "] {
             let v: serde_json::Value = serde_json::from_str(&tabs_json(bad)).unwrap();
             assert_eq!(v["ok"], false, "channel={:?}", bad);
+            assert_eq!(v["error"], "arg");
+            let v: serde_json::Value =
+                serde_json::from_str(&channel_tab_add_json(bad, "N", None, None)).unwrap();
+            assert_eq!(v["error"], "arg");
+            let v: serde_json::Value =
+                serde_json::from_str(&channel_tab_rename_json(bad, "t", "N")).unwrap();
+            assert_eq!(v["error"], "arg");
+            let v: serde_json::Value =
+                serde_json::from_str(&channel_tab_remove_json(bad, "t")).unwrap();
+            assert_eq!(v["error"], "arg");
+            let v: serde_json::Value =
+                serde_json::from_str(&channel_tab_remove_json("c", bad)).unwrap();
+            assert_eq!(v["error"], "arg");
+            let v: serde_json::Value =
+                serde_json::from_str(&chat_tab_add_json(bad, "N", None, None)).unwrap();
+            assert_eq!(v["error"], "arg");
+            let v: serde_json::Value =
+                serde_json::from_str(&chat_tab_rename_json(bad, "t", "N")).unwrap();
+            assert_eq!(v["error"], "arg");
+            let v: serde_json::Value =
+                serde_json::from_str(&chat_tab_remove_json(bad, "t")).unwrap();
             assert_eq!(v["error"], "arg");
         }
     }

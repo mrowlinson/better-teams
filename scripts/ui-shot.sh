@@ -116,6 +116,11 @@
 # Demo routes, channel/team menus + tree sync (TEAMSYNC):
 #   teams/demo-team-eng/demo-chan-shipping?sheet=editChannel   Edit Channel sheet
 #   teams/demo-team-eng/demo-chan-shipping?deleted=1           This channel was deleted
+# Demo routes, team lifecycle (TEAM-ADMIN):
+#   teams/demo-team-eng?sheet=editTeam            Edit Team sheet
+#   teams/demo-team-eng?inspector=1               Team inspector (Manage: edit/archive/delete)
+#   teams/demo-team-eng?inspector=1&teamArchived=1   Archived team (badge + Restore)
+#   teams/demo-team-eng?teamDeleteConfirm=1         Delete team confirm
 # Demo routes, Files (P3c, UI-SPEC §6.6):
 #   files/recent                               Recent (all sources), Location links
 #   files/onedrive                             My Files (OneDrive)

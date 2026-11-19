@@ -27,6 +27,7 @@ struct ComposerPopoverContent: View {
     @ObservedObject var composer: ComposerModel
     let services: ConversationServices
     let roster: [String]
+    let tagNames: Set<String>
     let mentionIndex: Int
     let pickMention: (String) -> Void
     @Environment(\.windowModel) private var model
@@ -34,7 +35,7 @@ struct ComposerPopoverContent: View {
     var body: some View {
         switch popover {
         case .mention:
-            MentionPicker(names: roster, selected: mentionIndex, pick: pickMention)
+            MentionPicker(names: roster, tags: tagNames, selected: mentionIndex, pick: pickMention)
         case .reaction(let id):
             ReactionPicker { emoji in
                 conv.react(messageID: id, emoji: emoji)
@@ -78,6 +79,8 @@ struct ComposerPopoverContent: View {
 /// text after `@`. Arrows/Return/Esc arrive from the composer's field.
 struct MentionPicker: View {
     let names: [String]
+    /// Tag rows render a tag glyph (TAGS lane).
+    let tags: Set<String>
     let selected: Int
     let pick: (String) -> Void
 
@@ -101,6 +104,10 @@ struct MentionPicker: View {
                             // megaphone, people keep their avatar.
                             if MentionWire.isSpecialDisplay(n.value) {
                                 Image(systemName: "megaphone")
+                                    .frame(width: 22, height: 22)
+                                    .foregroundStyle(.secondary)
+                            } else if tags.contains(n.value) {
+                                Image(systemName: "tag")
                                     .frame(width: 22, height: 22)
                                     .foregroundStyle(.secondary)
                             } else {

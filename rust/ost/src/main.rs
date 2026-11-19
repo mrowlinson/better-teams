@@ -182,6 +182,61 @@ enum Commands {
     /// Dump every joined channel's tabs (one auth, read-only)
     TabsAll,
 
+    /// Add a channel tab (website tab by default; --app for Planner/Forms).
+    /// With --chat, adds to a chat instead (positional id is the chat id).
+    TabsAdd {
+        /// Channel id (from `teams` output), or chat id with --chat
+        target: String,
+
+        /// Tab display name
+        #[arg(long)]
+        name: String,
+
+        /// Tab page URL (website tabs; seeds content + website addresses)
+        #[arg(long)]
+        url: Option<String>,
+
+        /// Teams app id (default: built-in website app)
+        #[arg(long)]
+        app: Option<String>,
+
+        /// Target is a chat id, not a channel id
+        #[arg(long)]
+        chat: bool,
+    },
+
+    /// Rename a channel tab (configure). With --chat, a chat tab.
+    TabsRename {
+        /// Channel id (from `teams` output), or chat id with --chat
+        target: String,
+
+        /// Tab id (from `tabs` output)
+        #[arg(long)]
+        tab: String,
+
+        /// New display name
+        #[arg(long)]
+        name: String,
+
+        /// Target is a chat id, not a channel id
+        #[arg(long)]
+        chat: bool,
+    },
+
+    /// Remove a channel tab. With --chat, a chat tab.
+    TabsRemove {
+        /// Channel id (from `teams` output), or chat id with --chat
+        target: String,
+
+        /// Tab id (from `tabs` output)
+        #[arg(long)]
+        tab: String,
+
+        /// Target is a chat id, not a channel id
+        #[arg(long)]
+        chat: bool,
+    },
+
     /// Team roster (Graph /teams/{id}/members).
     /// Bare: list members + owners. --owners: owners only.
     /// --add <user-id-or-upn> [--owner]: add. --remove <membership-id>: remove.
@@ -240,6 +295,39 @@ enum Commands {
         /// Flip to `private` (invite-only) or `public`
         #[arg(long)]
         set: Option<String>,
+    },
+
+    /// Team lifecycle (team-admin): rename/re-describe, picture,
+    /// archive/restore, delete. At least one action flag is required;
+    /// --delete is irreversible (confirm first).
+    Team {
+        /// Team id (from `teams` output)
+        #[arg(long)]
+        team: String,
+
+        /// Rename the team (PATCH /groups/{id} displayName)
+        #[arg(long)]
+        rename: Option<String>,
+
+        /// Re-describe the team (PATCH /groups/{id} description)
+        #[arg(long)]
+        description: Option<String>,
+
+        /// Set the team picture from an image file (PUT photo/$value)
+        #[arg(long, value_name = "PATH")]
+        photo: Option<String>,
+
+        /// Archive the team (async server-side; re-list to confirm)
+        #[arg(long)]
+        archive: bool,
+
+        /// Restore an archived team
+        #[arg(long)]
+        unarchive: bool,
+
+        /// Delete the team (irreversible)
+        #[arg(long)]
+        delete: bool,
     },
 
     /// Private/shared channel management (Graph /teams/{id}/channels).
@@ -515,6 +603,30 @@ async fn main() -> Result<()> {
             tracing::info!("Fetching all channel tabs...");
             api::list_tabs_all().await?;
         }
+        Commands::TabsAdd { target, name, url, app, chat } => {
+            tracing::info!("Adding tab...");
+            if chat {
+                api::add_chat_tab(&target, &name, app.as_deref(), url.as_deref()).await?;
+            } else {
+                api::add_channel_tab(&target, &name, app.as_deref(), url.as_deref()).await?;
+            }
+        }
+        Commands::TabsRename { target, tab, name, chat } => {
+            tracing::info!("Renaming tab...");
+            if chat {
+                api::rename_chat_tab(&target, &tab, &name).await?;
+            } else {
+                api::rename_channel_tab(&target, &tab, &name).await?;
+            }
+        }
+        Commands::TabsRemove { target, tab, chat } => {
+            tracing::info!("Removing tab...");
+            if chat {
+                api::remove_chat_tab(&target, &tab).await?;
+            } else {
+                api::remove_channel_tab(&target, &tab).await?;
+            }
+        }
         Commands::Members {
             team,
             owners,
@@ -557,6 +669,51 @@ async fn main() -> Result<()> {
                     api::set_visibility(&team, which == "private").await?;
                 }
                 Some(other) => anyhow::bail!("--set must be 'private' or 'public' (got '{}')", other),
+            }
+        }
+        Commands::Team {
+            team,
+            rename,
+            description,
+            photo,
+            archive,
+            unarchive,
+            delete,
+        } => {
+            if archive && unarchive {
+                anyhow::bail!("--archive and --unarchive are exclusive");
+            }
+            if delete && (rename.is_some() || description.is_some() || photo.is_some() || archive || unarchive) {
+                anyhow::bail!("--delete is exclusive with all other team actions");
+            }
+            let mut acted = false;
+            if rename.is_some() || description.is_some() {
+                tracing::info!("Updating team...");
+                api::update_team(&team, rename.as_deref(), description.as_deref()).await?;
+                acted = true;
+            }
+            if let Some(path) = photo {
+                tracing::info!("Setting team photo...");
+                api::set_team_photo(&team, &path).await?;
+                acted = true;
+            }
+            if archive {
+                tracing::info!("Archiving team...");
+                api::archive_team(&team).await?;
+                acted = true;
+            }
+            if unarchive {
+                tracing::info!("Unarchiving team...");
+                api::unarchive_team(&team).await?;
+                acted = true;
+            }
+            if delete {
+                tracing::info!("Deleting team...");
+                api::delete_team(&team).await?;
+                acted = true;
+            }
+            if !acted {
+                anyhow::bail!("team: pass one of --rename/--description/--photo/--archive/--unarchive/--delete");
             }
         }
 

@@ -21,6 +21,7 @@ final class TeamsSection: SectionProvider, InspectorCapable {
     /// `19:…@thread.tacv2`, which the store requires).
     let tabsStore = ChannelTabsStore()
     private var rosters: [String: TeamRosterViewModel] = [:]
+    private var tagStores: [String: TeamTagsStore] = [:]
     private var rosterLoaded: Set<String> = []
     private var lastThread: String?
     private var seeded = false
@@ -100,6 +101,37 @@ final class TeamsSection: SectionProvider, InspectorCapable {
                 // Once the list holds the team (first load), delete.
                 for await rows in teams.$teams.values where rows.contains(where: { $0.teamId == sel.teamID }) {
                     await teams.deleteChannel(teamID: sel.teamID, channelID: ch)
+                    break
+                }
+            }
+        }
+        // Evidence: `teams/<team>?teamArchived=1` archives the team
+        // through the real (in-memory demo) path: the inspector shows
+        // the Archived badge and Restore. Runs once the list holds the
+        // team, after the ownership pass so the owner gate passes.
+        if m.options.demo,
+           m.options.route.flatMap(Route.init(string:))?.query["teamArchived"] == "1",
+           let sel = current(m) {
+            let teams = app.teams
+            Task { @MainActor in
+                for await rows in teams.$teams.values where rows.contains(where: { $0.teamId == sel.teamID }) {
+                    await teams.refreshOwnership()
+                    await teams.archiveTeam(teamID: sel.teamID)
+                    break
+                }
+            }
+        }
+        // Evidence: `teams/<team>?teamDeleteConfirm=1` runs the real
+        // delete-team dispatch (owner gate + confirm sheet), so the
+        // irreversible-delete dialog is capturable without clicks.
+        if m.options.demo,
+           m.options.route.flatMap(Route.init(string:))?.query["teamDeleteConfirm"] == "1",
+           let sel = current(m) {
+            let teams = app.teams
+            Task { @MainActor in
+                for await rows in teams.$teams.values where rows.contains(where: { $0.teamId == sel.teamID }) {
+                    await teams.refreshOwnership()
+                    _ = self.perform(TeamsCommands.deleteTeam, arg: sel.teamID, m)
                     break
                 }
             }
@@ -242,6 +274,22 @@ final class TeamsSection: SectionProvider, InspectorCapable {
             // the channel resolves; the roster is built for its team then.
             return AnyView(EditChannelSheet(teams: app.teams, channelID: id,
                                             roster: { [self, m] in self.roster($0, m) }))
+        case TeamsCommands.editTeamSheet:
+            // Deferred resolution (launch routes): the form appears once
+            // the team resolves, seeded from it.
+            guard let id = r.arg ?? current(m)?.teamID,
+                  app.teams.teams.contains(where: { $0.teamId == id }) else { return nil }
+            return AnyView(EditTeamSheet(teams: app.teams, teamID: id))
+        case TeamsCommands.manageTagsSheet:
+            // arg = team id (row menu) or current team (menu bar).
+            // Evidence (demo routes): `teams?sheet=manageTags&tags=unsupported`
+            // forces the live-unavailable pane for captures without a sign-in.
+            guard let teamID = r.arg ?? current(m)?.teamID,
+                  let team = app.teams.teams.first(where: { $0.teamId == teamID }) else { return nil }
+            let forceUnsupported = m.options.demo
+                && m.options.route.flatMap(Route.init(string:))?.query["tags"] == "unsupported"
+            return AnyView(ManageTagsSheet(store: tagStore(teamID, m), roster: roster(teamID, m),
+                                           team: team, forceUnsupported: forceUnsupported))
         case TeamsCommands.channelWorkflowsSheet:
             guard let id = r.arg ?? current(m)?.channelID else { return nil }
             // Demo: an in-memory fake that acts. Live: says Workflows
@@ -267,6 +315,15 @@ final class TeamsSection: SectionProvider, InspectorCapable {
 
     static func workflowsAPI(demo: Bool, demoAPI: DemoWorkflowsAPI) -> ChannelWorkflowsAPI {
         demo ? demoAPI : UnavailableWorkflowsAPI()
+    }
+
+    /// One tag store per team (demo edits persist between openings;
+    /// live stays scope-unavailable with a reason).
+    func tagStore(_ teamID: String, _ m: WindowModel) -> TeamTagsStore {
+        if let s = tagStores[teamID] { return s }
+        let s = TeamTagsStore(teamID: teamID, demo: m.options.demo)
+        tagStores[teamID] = s
+        return s
     }
 
     /// One fake roster per section, so demo edits persist between openings.
@@ -342,6 +399,10 @@ final class TeamsSection: SectionProvider, InspectorCapable {
             guard let ch = channelTarget(arg, m),
                   TeamsListPane.locate(ch, in: app.teams.teams) != nil else { return false }
             m.presentSheet(SheetRequest(TeamsCommands.manageChannelSheet, in: .teams, arg: ch))
+        case TeamsCommands.manageTags:
+            guard let team = teamTarget(arg, m),
+                  app.teams.teams.contains(where: { $0.teamId == team }) else { return false }
+            m.presentSheet(SheetRequest(TeamsCommands.manageTagsSheet, in: .teams, arg: team))
         case TeamsCommands.archiveChannel:
             guard let ch = channelTarget(arg, m),
                   let (team, channel) = TeamsListPane.locate(ch, in: app.teams.teams),
@@ -398,6 +459,33 @@ final class TeamsSection: SectionProvider, InspectorCapable {
             }
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(link, forType: .string)
+        case TeamsCommands.editTeam:
+            guard let id = teamTarget(arg, m),
+                  let team = app.teams.teams.first(where: { $0.teamId == id }),
+                  app.teams.canAdminTeam(teamID: team.teamId) else { return false }
+            m.presentSheet(SheetRequest(TeamsCommands.editTeamSheet, in: .teams, arg: id))
+        case TeamsCommands.archiveTeam:
+            guard let id = teamTarget(arg, m),
+                  let team = app.teams.teams.first(where: { $0.teamId == id }),
+                  app.teams.canAdminTeam(teamID: team.teamId) else { return false }
+            let teams = app.teams
+            if team.isArchived == true {
+                Task { await teams.unarchiveTeam(teamID: id) }
+            } else {
+                m.confirm(title: "Archive \u{201C}\(team.name)\u{201D}?",
+                          message: "The team becomes read-only for members. You can restore it later.",
+                          action: "Archive",
+                          perform: { Task { await teams.archiveTeam(teamID: id) } })
+            }
+        case TeamsCommands.deleteTeam:
+            guard let id = teamTarget(arg, m),
+                  let team = app.teams.teams.first(where: { $0.teamId == id }),
+                  app.teams.canAdminTeam(teamID: team.teamId) else { return false }
+            let teams = app.teams
+            m.confirm(title: "Delete \u{201C}\(team.name)\u{201D}?",
+                      message: "The team, its channels and its files are deleted for everyone. This can't be undone.",
+                      action: "Delete",
+                      perform: { Task { await teams.deleteTeam(teamID: id) } })
         case TeamsCommands.leaveTeam:
             guard let id = teamTarget(arg, m), let team = app.teams.teams.first(where: { $0.teamId == id }) else {
                 return false
@@ -456,8 +544,16 @@ final class TeamsSection: SectionProvider, InspectorCapable {
         case TeamsCommands.hideTeam:
             guard let team else { return .disabled }
             return CommandValidation(enabled: true, title: prefs(m).isHidden(team) ? "Show Team" : "Hide Team")
-        case TeamsCommands.teamLink:
+        case TeamsCommands.teamLink, TeamsCommands.manageTags:
             return CommandValidation(enabled: team != nil)
+        case TeamsCommands.editTeam, TeamsCommands.deleteTeam:
+            guard let team, let teams = m.app?.teams else { return .disabled }
+            return CommandValidation(enabled: teams.canAdminTeam(teamID: team) && m.connection != .offline)
+        case TeamsCommands.archiveTeam:
+            guard let team, let teams = m.app?.teams,
+                  let row = teams.teams.first(where: { $0.teamId == team }) else { return .disabled }
+            return CommandValidation(enabled: teams.canAdminTeam(teamID: team) && m.connection != .offline,
+                                     title: row.isArchived == true ? "Restore Team…" : "Archive Team…")
         case TeamsCommands.leaveTeam:
             return CommandValidation(enabled: team != nil && m.connection != .offline)
         default:

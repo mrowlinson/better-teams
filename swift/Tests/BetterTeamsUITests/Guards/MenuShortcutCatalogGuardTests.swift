@@ -5,6 +5,10 @@
 // here and must be changed on purpose. Key legend: ^ control, ~ option,
 // $ shift, @ command. (A silent shortcut loss - Join Meeting, Saved
 // Messages, Sign In - went unseen for days because nothing pinned this.)
+//
+// APPROVALS lane: +3 lines (Approve/Reject Request, Refresh Approvals)
+// for the ordered approvals surface. OWNER OK PENDING — see
+// lanes/approvals REPORT.md.
 import AppKit
 import XCTest
 
@@ -76,6 +80,8 @@ final class MenuShortcutCatalogGuardTests: XCTestCase {
         "File > Copy Link",
         "File > Share…",
         "File > Mark as Complete",
+        "File > Approve Request",
+        "File > Reject Request",
         "File > Rename…",
         "File > Move To…",
         "File > Copy To…",
@@ -140,6 +146,7 @@ final class MenuShortcutCatalogGuardTests: XCTestCase {
         "View > Zoom In [@+]",
         "View > Zoom Out [@-]",
         "View > Show Completed Tasks",
+        "View > Refresh Approvals",
         "View > Reload Page [@R]",
         "View > Stop Loading [@.]",
         "View > More >",
@@ -190,7 +197,11 @@ final class MenuShortcutCatalogGuardTests: XCTestCase {
         "Conversation > Mark Team as Read",
         "Conversation > Hide Team",
         "Conversation > Copy Team Link",
+        "Conversation > Edit Team…",
+        "Conversation > Archive Team…",
+        "Conversation > Delete Team…",
         "Conversation > Leave Team…",
+        "Conversation > Manage Tags…",
         "Conversation > Open Channel in New Window",
         "Conversation > Mark Channel as Read",
         "Conversation > Channel Notifications >",

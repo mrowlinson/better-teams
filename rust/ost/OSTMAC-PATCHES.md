@@ -2095,7 +2095,7 @@ this pass), `rust/ostmac-core` lib 224/0. Older counts (lib 257, core
     proof rides a later lane (no live sends in this lane).
     Tests: `api::chat::tests::praise_body_attachment_shape` (asserts
     `appId` + `cardClientId`).
-    UPSTREAM: pending
+    UPSTREAM: appended to PR https://github.com/eisbaw/ost/pull/122 (fix/praise-card-post, OPEN; same praise-card code, §114 rides the #122 branch rather than a new stacked PR)
 
 115. [minor] `src/api/chat.rs` + `src/api/mod.rs` + `src/main.rs` — **CLI read IDs +
     mark-read verb (lanes/clifix)**. `read -v` prints each message's id
@@ -2154,4 +2154,34 @@ this pass), `rust/ostmac-core` lib 224/0. Older counts (lib 257, core
     Tests: 17 `api::planner::tests` (paths/bodies/parse incl. encoded
     reference keys) + new live flow (7 LIVE, 2 pending with exact
     evidence).
+    UPSTREAM: pending
+
+119. [minor] `src/api/tabs.rs` + `src/api/mod.rs` + `src/main.rs` —
+    **tab add/rename/remove + CLI verbs (lanes/tabsmgmt)**. New
+    channel-tab writes (`POST/PATCH displayName/DELETE
+    /teams/{t}/channels/{c}/tabs[/{tab}]`, website-tab default,
+    explicit app id for Planner/Forms) and the same verbs for chat
+    tabs (`/chats/{id}/tabs[/{tab}]`); `tabs-add/tabs-rename/
+    tabs-remove` CLI verbs (`--chat` selects chat scope). Channel
+    loop live-proven net-zero on the trial test channel (add →
+    read-back → rename → read-back → remove → read-back absent).
+    Chat writes unproven live (no v2 chat target in the trial
+    tenant). Needs TeamsTab.ReadWrite.All (granted).
+    Tests: path pins, add/rename body builders, single-tab parse.
+    UPSTREAM: pending
+
+120. [major] team lifecycle (lanes/teamadmin). New Graph team-admin
+    surface in `src/api/teams.rs`: `update_team_data` (rename /
+    re-describe via `PATCH /groups/{id}`, same route as the visibility
+    flip), `archive_team_data` / `unarchive_team_data` (`POST
+    /teams/{id}/archive|unarchive`), `delete_team_data` (`DELETE
+    /teams/{id}`), `set_team_photo_data` (`PUT
+    /teams/{id}/photo/`, 4 MB cap, PNG/JPEG sniffed). Paths +
+    bodies are pure fns pinned by
+    `team_lifecycle_paths_and_bodies_pin_graph_shapes`. Live print
+    wrappers (`update_team`, `archive_team`, `unarchive_team`,
+    `delete_team`, `set_team_photo`) + new `teams-cli team` verb
+    (`--rename/--description/--photo/--archive/--unarchive/--delete`)
+    in `src/main.rs`. Tenant writes need owner-grade grants
+    (Group.ReadWrite.All and friends) — 403s surface to the caller.
     UPSTREAM: pending

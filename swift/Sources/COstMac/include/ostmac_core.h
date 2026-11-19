@@ -113,6 +113,14 @@ char *ostmac_team_create(const char *name, const char *description);
 char *ostmac_tabs(const char *channel_id);
 // One chat's pinned tabs JSON, read-only: {ok, chat_id, tabs}. Caller frees.
 char *ostmac_chat_tabs(const char *chat_id);
+// TABS-MGMT: add/rename/remove channel + chat tabs: {ok, tab} / {ok, tab_id}.
+// app_id/url may be NULL (website default / no configuration). Caller frees.
+char *ostmac_channel_tab_add(const char *channel_id, const char *display_name, const char *app_id, const char *url);
+char *ostmac_channel_tab_rename(const char *channel_id, const char *tab_id, const char *display_name);
+char *ostmac_channel_tab_remove(const char *channel_id, const char *tab_id);
+char *ostmac_chat_tab_add(const char *chat_id, const char *display_name, const char *app_id, const char *url);
+char *ostmac_chat_tab_rename(const char *chat_id, const char *tab_id, const char *display_name);
+char *ostmac_chat_tab_remove(const char *chat_id, const char *tab_id);
 /* APPHOST: app catalog + token broker. NULL profile = active. Tokens only
    inside the returned JSON; never log it. */
 char *ostmac_app_catalog_for(const char *profile);
@@ -161,6 +169,26 @@ char *ostmac_team_visibility(const char *team_id);
 // TEAMMOD: flip one team's privacy (nonzero = Private): {ok, team_id,
 // visibility} (read back). Caller frees.
 char *ostmac_team_visibility_update(const char *team_id, int make_private);
+
+// TEAM-ADMIN: rename / re-describe one team (backing-group PATCH):
+// {ok, team_id}. name/description may be NULL (unchanged). Caller frees.
+char *ostmac_team_update(
+    const char *team_id, const char *name, const char *description);
+
+// TEAM-ADMIN: set one team's picture (base64 JPEG/PNG): {ok, team_id}.
+// Caller frees.
+char *ostmac_team_photo(const char *team_id, const char *base64);
+
+// TEAM-ADMIN: archive one team (async server-side; re-list to confirm):
+// {ok, team_id}. Caller frees.
+char *ostmac_team_archive(const char *team_id);
+
+// TEAM-ADMIN: restore one archived team: {ok, team_id}. Caller frees.
+char *ostmac_team_unarchive(const char *team_id);
+
+// TEAM-ADMIN: delete one team (irreversible): {ok, team_id}.
+// Caller frees.
+char *ostmac_team_delete(const char *team_id);
 
 // Add one user (id or UPN) to a team; owner nonzero grants the owner
 // role. Returns {ok, member}. Caller frees.

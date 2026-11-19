@@ -174,16 +174,90 @@ public enum ChatTabCatalog {
 @MainActor
 public final class ChatTabsStore: ObservableObject {
     public typealias ListFetcher = @Sendable (String) throws -> TabsResponse
+    public typealias AddFetcher = @Sendable (String, String, String?, String?) throws -> TabManageResponse
+    public typealias RenameFetcher = @Sendable (String, String, String) throws -> TabManageResponse
+    public typealias RemoveFetcher = @Sendable (String, String) throws -> TabRemoveResponse
 
     @Published public private(set) var byChat: [String: [ChannelTab]] = [:]
+    /// Last add/rename/remove failure per chat (cached tabs untouched).
+    @Published public private(set) var manageError: [String: String] = [:]
     private let listFetcher: ListFetcher
+    private let addFetcher: AddFetcher
+    private let renameFetcher: RenameFetcher
+    private let removeFetcher: RemoveFetcher
     private var generation: [String: Int] = [:]
 
-    public nonisolated init(list: @escaping ListFetcher = { try RustCore.chatTabs(chatID: $0) }) {
+    public nonisolated init(
+        list: @escaping ListFetcher = { try RustCore.chatTabs(chatID: $0) },
+        add: @escaping AddFetcher = { try RustCore.chatTabAdd(chatID: $0, name: $1, appID: $2, url: $3) },
+        rename: @escaping RenameFetcher = { try RustCore.chatTabRename(chatID: $0, tabID: $1, name: $2) },
+        remove: @escaping RemoveFetcher = { try RustCore.chatTabRemove(chatID: $0, tabID: $1) }
+    ) {
         self.listFetcher = list
+        self.addFetcher = add
+        self.renameFetcher = rename
+        self.removeFetcher = remove
     }
 
     public func tabs(for chatID: String) -> [ChannelTab] { byChat[chatID] ?? [] }
+
+    /// Clear a surfaced manage failure (after the UI shows it).
+    public func clearManageError(chatID: String) { manageError[chatID] = nil }
+
+    static func message(for error: Error) -> String {
+        if case CoreCallError.failed(let m) = error { return m }
+        return String(describing: error)
+    }
+
+    /// Add a website/app tab to a chat. On success the returned tab is
+    /// appended to the cache; failure lands in `manageError[chatID]`.
+    public func add(chatID: String, name: String, url: String? = nil, appID: String? = nil) async {
+        guard Self.hasTabs(chatID) else { return }
+        manageError[chatID] = nil
+        let add = addFetcher
+        do {
+            let response = try await Task.blocking {
+                try add(chatID, name, appID, url)
+            }.value
+            byChat[chatID, default: []].append(response.tab)
+        } catch {
+            manageError[chatID] = Self.message(for: error)
+        }
+    }
+
+    /// Rename a chat tab (configure). On success the cached row is
+    /// replaced in place; failure lands in `manageError[chatID]`.
+    public func rename(chatID: String, tabID: String, name: String) async {
+        guard Self.hasTabs(chatID) else { return }
+        manageError[chatID] = nil
+        let rename = renameFetcher
+        do {
+            let response = try await Task.blocking {
+                try rename(chatID, tabID, name)
+            }.value
+            if let i = byChat[chatID]?.firstIndex(where: { $0.id == response.tab.id }) {
+                byChat[chatID]?[i] = response.tab
+            }
+        } catch {
+            manageError[chatID] = Self.message(for: error)
+        }
+    }
+
+    /// Remove a chat tab. On success the cached row is dropped; failure
+    /// lands in `manageError[chatID]` and keeps the row.
+    public func remove(chatID: String, tabID: String) async {
+        guard Self.hasTabs(chatID) else { return }
+        manageError[chatID] = nil
+        let remove = removeFetcher
+        do {
+            _ = try await Task.blocking {
+                try remove(chatID, tabID)
+            }.value
+            byChat[chatID]?.removeAll { $0.id == tabID }
+        } catch {
+            manageError[chatID] = Self.message(for: error)
+        }
+    }
 
     /// Only chat threads (`19:` but not channels) carry pinned tabs.
     public nonisolated static func hasTabs(_ chatID: String) -> Bool {

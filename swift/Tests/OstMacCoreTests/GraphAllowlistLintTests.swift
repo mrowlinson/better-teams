@@ -27,6 +27,7 @@ final class GraphAllowlistLintTests: XCTestCase {
         "rust/ost/src/calling/call_test.rs": "call test harness GET /me (User.ReadBasic.All, probeA 200)",
         "swift/Sources/OstMacCore/ReadCore.swift": "graphBase for CoreReads.graphGET",
         "swift/Sources/OstMacCore/CalendarGraph.swift": "calendar base + host check",
+        "swift/Sources/OstMacCore/ApprovalGraph.swift": "approvals beta base + host check",
         "swift/Sources/OstMacCore/TeamsAuthClient.swift": "generic Graph helpers",
         "swift/Sources/OstMacCore/TokenRefresh.swift": "token scope string",
     ]

@@ -13,6 +13,12 @@ struct ConversationHeader: View {
     var opened: ChatTabKey? = nil
     var open: (ChatTabKey) -> Void = { _ in }
     var close: () -> Void = {}
+    /// TABS-MGMT manage wiring (defaults keep existing callers as-is).
+    var canManageTabs = false
+    var selectedPinnedName: String? = nil
+    var onAddTab: (() -> Void)? = nil
+    var onRenameTab: (() -> Void)? = nil
+    var onRemoveTab: (() -> Void)? = nil
     @Environment(\.contentTextScale) private var scale
 
     /// Shared with the inspector's segmented header: both hairlines sit
@@ -40,7 +46,9 @@ struct ConversationHeader: View {
             Spacer(minLength: 12)
             // The row claims width before the name, which truncates down
             // to `nameMinWidth`; past that the row folds tabs into the "More" menu.
-            ChatTabBar(layout: layout, selection: $tab, opened: opened, open: open, close: close)
+            ChatTabBar(layout: layout, selection: $tab, opened: opened, open: open, close: close,
+                       canManage: canManageTabs, selectedPinnedName: selectedPinnedName,
+                       onAddTab: onAddTab, onRenameTab: onRenameTab, onRemoveTab: onRemoveTab)
                 .layoutPriority(1)
         }
         .padding(.horizontal, 16)

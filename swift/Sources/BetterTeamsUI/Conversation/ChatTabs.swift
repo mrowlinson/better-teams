@@ -142,6 +142,18 @@ struct ChatTabBar: View {
     let opened: ChatTabKey?
     let open: (ChatTabKey) -> Void
     let close: () -> Void
+    /// TABS-MGMT manage wiring (defaults keep existing callers as-is).
+    var canManage = false
+    var selectedPinnedName: String? = nil
+    var onAddTab: (() -> Void)? = nil
+    var onRenameTab: (() -> Void)? = nil
+    var onRemoveTab: (() -> Void)? = nil
+
+    /// The selection is a pinned tab with manage actions available.
+    private var managesSelection: Bool {
+        if case .pinned = selection { return canManage && selectedPinnedName != nil }
+        return false
+    }
 
     /// The opened tab, while it is one that shows as temporary.
     private var temporary: ChatTabKey? {
@@ -177,7 +189,7 @@ struct ChatTabBar: View {
                 selected: fold.segments.firstIndex { $0.key == selection },
                 pick: { i in if fold.segments.indices.contains(i) { selection = fold.segments[i].key } })
             .accessibilityLabel("Tabs")
-            if ChatTabLayout.showsMore(fold: fold, temporary: temporary) {
+            if ChatTabLayout.showsMore(fold: fold, temporary: temporary) || canManage {
                 Menu {
                     ForEach(fold.more) { e in
                         Button { pick(e.key) } label: { Label(e.name, systemImage: e.symbol) }
@@ -186,6 +198,14 @@ struct ChatTabBar: View {
                         if !fold.more.isEmpty { Divider() }
                         Button("Close \(title)", action: close)
                     }
+                    if canManage {
+                        if !fold.more.isEmpty || temporary != nil { Divider() }
+                        Button("Add Tab…") { onAddTab?() }
+                        if managesSelection {
+                            Button("Rename “\(selectedPinnedName ?? "Tab")”…") { onRenameTab?() }
+                            Button("Remove “\(selectedPinnedName ?? "Tab")”", role: .destructive) { onRemoveTab?() }
+                        }
+                    }
                 } label: {
                     Text("More")
                 }
@@ -193,6 +213,14 @@ struct ChatTabBar: View {
                 .fixedSize()
                 .help("More Tabs")
                 .accessibilityLabel(fold.more.isEmpty ? "More Tabs" : "\(fold.more.count) More Tabs")
+            }
+            if canManage {
+                Button(action: { onAddTab?() }) {
+                    Image(systemName: "plus")
+                }
+                .buttonStyle(.borderless)
+                .help("Add Tab")
+                .accessibilityLabel("Add Tab")
             }
         }
     }

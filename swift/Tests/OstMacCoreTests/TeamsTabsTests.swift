@@ -76,4 +76,103 @@ final class TeamsTabsTests: XCTestCase {
         }
         XCTAssertTrue(store.tabs.isEmpty)
     }
+
+    // TABS-MGMT: add/rename/remove mutate the open channel's rows.
+    private nonisolated static func webTab(id: String, name: String) -> ChannelTab {
+        ChannelTab(id: id, name: name, appID: ChatTabCatalog.websiteAppID,
+                   contentURL: "https://example.com/x")
+    }
+
+    func testAddAppendsAndSelectsLoaded() async throws {
+        let resp = Self.tabsJSON()
+        let added = Self.webTab(id: "t-web2", name: "Board")
+        let store = ChannelTabsStore(
+            list: { _ in resp },
+            add: { _, name, _, _ in TabManageResponse(ok: true, tab: Self.webTab(id: "t-web2", name: name)) },
+            rename: { _, id, name in TabManageResponse(ok: true, tab: Self.webTab(id: id, name: name)) },
+            remove: { _, tab in TabRemoveResponse(ok: true, tabId: tab) }
+        )
+        store.open(channelID: "19:abc@thread.tacv2")
+        try await waitFor("loaded") { store.state == .loaded }
+        await store.add(name: "Board", url: "https://example.com/x")
+        XCTAssertNil(store.manageError)
+        XCTAssertTrue(store.tabs.contains(added))
+        await store.rename(tabID: "t-web2", name: "Renamed")
+        XCTAssertNil(store.manageError)
+        XCTAssertEqual(store.tabs.first { $0.id == "t-web2" }?.name, "Renamed")
+        await store.remove(tabID: "t-web2")
+        XCTAssertNil(store.manageError)
+        XCTAssertFalse(store.tabs.contains { $0.id == "t-web2" })
+    }
+
+    func testManageFailureKeepsRows() async throws {
+        let resp = Self.tabsJSON()
+        let store = ChannelTabsStore(
+            list: { _ in resp },
+            add: { _, _, _, _ in throw CoreCallError.failed("denied") },
+            rename: { _, _, _ in throw CoreCallError.failed("denied") },
+            remove: { _, _ in throw CoreCallError.failed("denied") }
+        )
+        store.open(channelID: "19:abc@thread.tacv2")
+        try await waitFor("loaded") { store.state == .loaded }
+        let before = store.tabs
+        await store.add(name: "Nope", url: nil)
+        XCTAssertEqual(store.manageError, "denied")
+        XCTAssertEqual(store.tabs, before)
+        await store.rename(tabID: "tab-web", name: "Nope")
+        XCTAssertEqual(store.manageError, "denied")
+        XCTAssertEqual(store.tabs, before)
+        await store.remove(tabID: "tab-web")
+        XCTAssertEqual(store.manageError, "denied")
+        XCTAssertEqual(store.tabs, before)
+    }
+}
+
+@MainActor
+final class ChatTabsManageTests: XCTestCase {
+    func testChatAddRenameRemove() async throws {
+        let chatID = "19:abc@thread.v2"
+        let added = ChannelTab(id: "c1", name: "Board", appID: ChatTabCatalog.websiteAppID,
+                               contentURL: "https://example.com/b")
+        let store = ChatTabsStore(
+            add: { _, name, _, _ in TabManageResponse(ok: true, tab: ChannelTab(
+                id: "c1", name: name, appID: ChatTabCatalog.websiteAppID,
+                contentURL: "https://example.com/b")) },
+            rename: { _, id, name in TabManageResponse(ok: true, tab: ChannelTab(
+                id: id, name: name, appID: ChatTabCatalog.websiteAppID,
+                contentURL: "https://example.com/b")) },
+            remove: { _, tab in TabRemoveResponse(ok: true, tabId: tab) }
+        )
+        await store.add(chatID: chatID, name: "Board", url: "https://example.com/b")
+        XCTAssertNil(store.manageError[chatID])
+        XCTAssertEqual(store.tabs(for: chatID), [added])
+        await store.rename(chatID: chatID, tabID: "c1", name: "Renamed")
+        XCTAssertEqual(store.tabs(for: chatID).first?.name, "Renamed")
+        await store.remove(chatID: chatID, tabID: "c1")
+        XCTAssertTrue(store.tabs(for: chatID).isEmpty)
+    }
+
+    func testChatManageFailureKeepsCache() async throws {
+        let chatID = "19:abc@thread.v2"
+        let store = ChatTabsStore(
+            add: { _, _, _, _ in throw CoreCallError.failed("denied") },
+            rename: { _, _, _ in throw CoreCallError.failed("denied") },
+            remove: { _, _ in throw CoreCallError.failed("denied") }
+        )
+        await store.add(chatID: chatID, name: "Nope")
+        XCTAssertNotNil(store.manageError[chatID])
+        XCTAssertTrue(store.tabs(for: chatID).isEmpty)
+    }
+
+    func testChatManageIgnoresNonChatIDs() async throws {
+        let store = ChatTabsStore(
+            add: { _, name, _, _ in TabManageResponse(ok: true, tab: ChannelTab(id: "c1", name: name)) },
+            rename: { _, id, name in TabManageResponse(ok: true, tab: ChannelTab(id: id, name: name)) },
+            remove: { _, tab in TabRemoveResponse(ok: true, tabId: tab) }
+        )
+        // Channel ids carry no chat tabs; non-19 ids never fetch.
+        await store.add(chatID: "19:abc@thread.tacv2", name: "Nope")
+        await store.add(chatID: "48:notes", name: "Nope")
+        XCTAssertTrue(store.byChat.isEmpty)
+    }
 }

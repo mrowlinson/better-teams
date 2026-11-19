@@ -2,8 +2,10 @@
 // Member (UI-SPEC §6.3, §9.5). Presented by SheetPresenter as window
 // sheets; Cancel + a default action, never a lone Done. Work runs in
 // the core view models (demo: in-memory fetchers).
+import AppKit
 import OstMacCore
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// Shared sheet frame: title, content, error line, Cancel + action.
 private struct TeamsSheetFrame<Content: View>: View {
@@ -467,6 +469,144 @@ private struct EditChannelForm: View {
             if newPosts != nil || newReplies != nil {
                 ok = await teams.updateModeration(teamID: teamID, channelID: id,
                                                   posts: newPosts, replies: newReplies) && ok
+            }
+            saving = false
+            if ok { model?.dismissSheet() }
+        }
+    }
+}
+
+/// Edit team (TEAM-ADMIN): rename, re-describe and change the picture
+/// of one team. The row changes at once; a failed save rolls back and
+/// shows the error. Owner-only: anyone else sees the reason, never the
+/// controls.
+struct EditTeamSheet: View {
+    @ObservedObject var teams: TeamsViewModel
+    let teamID: String
+
+    var body: some View {
+        // The sheet can open before the list loads (launch routes): the
+        // form appears once the team resolves, seeded from it.
+        if let team = teams.teams.first(where: { $0.teamId == teamID }) {
+            EditTeamForm(teams: teams, team: team)
+        } else {
+            TeamsSheetFrame(title: "Edit Team", action: "Save", enabled: false,
+                            busy: teams.state == .loading ? "Loading…" : nil,
+                            error: teams.state == .loading ? nil : "This team is no longer available.",
+                            perform: {}) {
+                // Same fields, disabled, so the sheet keeps its size.
+                Form {
+                    TextField("Name", text: .constant(""), prompt: prompt("Team name"))
+                    TextField("Description", text: .constant(""), prompt: prompt("Optional"), axis: .vertical)
+                        .lineLimit(2...4)
+                }
+                .formStyle(.columns)
+                .disabled(true)
+            }
+        }
+    }
+}
+
+private struct EditTeamForm: View {
+    @ObservedObject var teams: TeamsViewModel
+    let team: TeamItem
+    @State private var name: String
+    @State private var about: String
+    @State private var photoData: Data?
+    @State private var photoName: String?
+    @State private var pickingPhoto = false
+    @State private var saving = false
+    @State private var submitted = false
+    @Environment(\.windowModel) private var model
+
+    init(teams: TeamsViewModel, team: TeamItem) {
+        self.teams = teams
+        self.team = team
+        _name = State(initialValue: team.name)
+        _about = State(initialValue: team.description ?? "")
+    }
+
+    /// Graph photo cap (4 MB); the picker rejects bigger files up front.
+    private static let maxPhotoBytes = 4 * 1024 * 1024
+
+    private var changed: Bool {
+        (trimmed(name) != team.name && !trimmed(name).isEmpty)
+            || trimmed(about) != (team.description ?? "")
+            || photoData != nil
+    }
+
+    private var canAdmin: Bool { teams.canAdminTeam(teamID: team.teamId) }
+
+    var body: some View {
+        TeamsSheetFrame(title: "Edit Team", action: "Save",
+                        enabled: canAdmin && changed && !trimmed(name).isEmpty && model?.connection != .offline,
+                        busy: saving ? "Saving…" : nil,
+                        error: submitted ? teams.actionError : nil, perform: save) {
+            Form {
+                TextField("Name", text: $name, prompt: prompt("Team name"))
+                TextField("Description", text: $about, prompt: prompt("Optional"), axis: .vertical)
+                    .lineLimit(2...4)
+                Section("Picture") {
+                    if canAdmin {
+                        HStack(spacing: 8) {
+                            TeamTile(name: trimmed(name).isEmpty ? team.name : trimmed(name), size: 32)
+                            VStack(alignment: .leading, spacing: 1) {
+                                if let photoName {
+                                    Text(photoName).lineLimit(1)
+                                } else {
+                                    Text("No new picture chosen").foregroundStyle(.secondary)
+                                }
+                                Text("Shows in official clients; this app's tile keeps initials.")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                            Spacer(minLength: 0)
+                            Button("Choose…") { pickingPhoto = true }
+                        }
+                        .accessibilityElement(children: .combine)
+                    } else {
+                        Text("Only team owners can edit the team.")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .formStyle(.columns)
+        }
+        .fileImporter(isPresented: $pickingPhoto, allowedContentTypes: [.image]) { result in
+            switch result {
+            case .success(let url):
+                _ = url.startAccessingSecurityScopedResource()
+                defer { url.stopAccessingSecurityScopedResource() }
+                guard let data = try? Data(contentsOf: url),
+                      !data.isEmpty, data.count <= Self.maxPhotoBytes,
+                      NSImage(data: data) != nil else {
+                    teams.clearActionError()
+                    return
+                }
+                photoData = data
+                photoName = url.lastPathComponent
+            case .failure:
+                break
+            }
+        }
+    }
+
+    private func save() {
+        let n = trimmed(name)
+        let d = trimmed(about)
+        let newName = n == team.name ? nil : n
+        let newAbout = d == (team.description ?? "") ? nil : d
+        let photo = photoData
+        let id = team.teamId
+        submitted = true
+        saving = true
+        Task { @MainActor in
+            var ok = true
+            if newName != nil || newAbout != nil {
+                ok = await teams.updateTeam(teamID: id, name: newName, description: newAbout) && ok
+            }
+            if let photo, ok {
+                ok = await teams.setTeamPhoto(teamID: id, base64: photo.base64EncodedString()) && ok
+                if ok { photoData = nil }
             }
             saving = false
             if ok { model?.dismissSheet() }

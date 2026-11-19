@@ -19,7 +19,8 @@ struct TeamsInspectorPane: View {
                 ThreadInspector(team: team, channelID: ch, rootID: root, sel: sel, conv: conv,
                                 state: section.state(model))
             } else if let team {
-                TeamInspector(team: team, roster: section.roster(team.teamId, model), conv: conv, teams: teams)
+                TeamInspector(team: team, roster: section.roster(team.teamId, model), conv: conv, teams: teams,
+                              tags: section.tagStore(team.teamId, model))
             } else {
                 EmptyPane("No Team Selected", systemImage: "person.3")
             }
@@ -175,6 +176,7 @@ struct TeamInspector: View {
     @ObservedObject var roster: TeamRosterViewModel
     @ObservedObject var conv: ConversationStore
     @ObservedObject var teams: TeamsViewModel
+    @ObservedObject var tags: TeamTagsStore
     @Environment(\.windowModel) private var model
 
     /// Owners manage the roster: matched by user id (core-a
@@ -190,6 +192,9 @@ struct TeamInspector: View {
                 VStack(alignment: .leading, spacing: 1) {
                     Text(team.name).font(.headline).lineLimit(1)
                     Text(summary).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    if let desc = team.description, !desc.isEmpty {
+                        Text(desc).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                    }
                 }
                 Spacer(minLength: 0)
             }
@@ -204,9 +209,12 @@ struct TeamInspector: View {
 
     private var summary: String {
         let c = team.channels.count == 1 ? "1 channel" : "\(team.channels.count) channels"
-        guard roster.state == .loaded else { return c }
+        guard roster.state == .loaded else {
+            return team.isArchived == true ? "\(c) · Archived" : c
+        }
         let n = roster.members.count
-        return "\(c) · \(n == 1 ? "1 member" : "\(n) members")"
+        let base = "\(c) · \(n == 1 ? "1 member" : "\(n) members")"
+        return team.isArchived == true ? "\(base) · Archived" : base
     }
 
     @ViewBuilder
@@ -224,6 +232,8 @@ struct TeamInspector: View {
             Form {
                 privacySection
                     .onAppear { Task { await teams.refreshVisibility(teamID: team.teamId) } }
+                manageSection
+                tagsSection
                 if !owners.isEmpty {
                     Section("Owners (\(owners.count))") {
                         ForEach(owners) { memberRow($0) }
@@ -246,9 +256,45 @@ struct TeamInspector: View {
                         model?.presentSheet(SheetRequest(TeamsCommands.createChannelSheet, in: .teams, arg: team.teamId))
                     }
                 }
+                manageSection
             }
             .formStyle(.grouped)
         }
+    }
+
+    /// TAGS: the team's tags. Demo lists the seeded tags; live is
+    /// scope-blocked, so the reason shows and no tag controls appear.
+    @ViewBuilder
+    private var tagsSection: some View {
+        Section("Tags") {
+            switch tags.state {
+            case .loading:
+                Text("Loading tags…").foregroundStyle(.secondary)
+            case .unavailable(let reason):
+                Text(reason).font(.caption).foregroundStyle(.secondary)
+            case .loaded:
+                if tags.tags.isEmpty {
+                    Text("No tags yet").foregroundStyle(.secondary)
+                } else {
+                    Text(tagSummary).foregroundStyle(.secondary)
+                }
+                if canManage {
+                    Button("Manage Tags…") {
+                        model?.presentSheet(SheetRequest(TeamsCommands.manageTagsSheet, in: .teams, arg: team.teamId))
+                    }
+                } else {
+                    Text("Only team owners can manage tags.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    private var tagSummary: String {
+        let names = tags.tags.prefix(3).map { "@\($0.displayName)" }.joined(separator: ", ")
+        let n = tags.tags.count
+        let head = n == 1 ? "1 tag" : "\(n) tags"
+        return names.isEmpty ? head : "\(head): \(names)" + (n > 3 ? ", …" : "")
     }
 
     /// TEAMMOD: the team privacy switch (backing-group visibility).
@@ -281,6 +327,48 @@ struct TeamInspector: View {
             }
             if let err = teams.actionError, canManage {
                 Text(err).font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    /// Owner actions (edit/archive/delete) sit right under Privacy so
+    /// they are visible without scrolling past the roster.
+    @ViewBuilder
+    private var manageSection: some View {
+        Section("Manage") {
+            if canManage {
+                Button("Edit Team…") {
+                    model?.presentSheet(SheetRequest(TeamsCommands.editTeamSheet, in: .teams, arg: team.teamId))
+                }
+                .disabled(model?.connection == .offline)
+                Button(team.isArchived == true ? "Restore Team…" : "Archive Team…") {
+                    if team.isArchived == true {
+                        Task { await teams.unarchiveTeam(teamID: team.teamId) }
+                    } else {
+                        model?.confirm(
+                            title: "Archive “\(team.name)”?",
+                            message: "The team becomes read-only for members. You can restore it later.",
+                            action: "Archive") {
+                                Task { await teams.archiveTeam(teamID: team.teamId) }
+                            }
+                    }
+                }
+                .disabled(model?.connection == .offline)
+                Button("Delete Team…", role: .destructive) {
+                    model?.confirm(
+                        title: "Delete “\(team.name)”?",
+                        message: "The team, its channels and its files are deleted for everyone. This can't be undone.",
+                        action: "Delete") {
+                            Task { await teams.deleteTeam(teamID: team.teamId) }
+                        }
+                }
+                .disabled(model?.connection == .offline)
+                if let err = teams.actionError {
+                    Text(err).font(.caption).foregroundStyle(.secondary)
+                }
+            } else {
+                Text("Only team owners can edit, archive or delete the team.")
+                    .foregroundStyle(.secondary)
             }
         }
     }

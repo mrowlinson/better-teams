@@ -52,6 +52,15 @@ public final class TeamsViewModel: ObservableObject {
     public typealias VisibilityFetcher = @Sendable (String) throws -> TeamVisibilityResponse
     /// Sync visibility write (runs off-main): team id, makePrivate. TEAMMOD.
     public typealias VisibilityUpdater = @Sendable (String, Bool) throws -> TeamVisibilityResponse
+    /// Sync team rename/re-describe (runs off-main): team id, new name
+    /// (nil = unchanged), new description (nil = unchanged). TEAM-ADMIN.
+    public typealias TeamUpdater = @Sendable (String, String?, String?) throws -> Void
+    /// Sync team picture set (runs off-main): team id, base64 JPEG/PNG.
+    /// TEAM-ADMIN.
+    public typealias TeamPhotoSetter = @Sendable (String, String) throws -> Void
+    /// Sync team archive/restore/delete (runs off-main): team id.
+    /// TEAM-ADMIN.
+    public typealias TeamArchiver = @Sendable (String) throws -> Void
 
     /// Latest rows (only meaningful in `.loaded`; stale otherwise).
     @Published public private(set) var teams: [TeamItem] = []
@@ -122,6 +131,11 @@ public final class TeamsViewModel: ObservableObject {
     private let moderationUpdater: ModerationUpdater
     private let visibilityFetcher: VisibilityFetcher
     private let visibilityUpdater: VisibilityUpdater
+    private let teamUpdater: TeamUpdater
+    private let teamPhotoSetter: TeamPhotoSetter
+    private let teamArchiver: TeamArchiver
+    private let teamUnarchiver: TeamArchiver
+    private let teamDeleter: TeamArchiver
     /// When each team's rights were last asked.
     private var ownershipAskedAt: [String: Date] = [:]
     /// Seconds before a team's rights are read again (permissions can
@@ -158,7 +172,16 @@ public final class TeamsViewModel: ObservableObject {
             try RustCore.channelModerationUpdate(teamID: $0, channelID: $1, posts: $2, replies: $3)
         },
         visibilityFetcher: @escaping VisibilityFetcher = { try RustCore.teamVisibility(teamID: $0) },
-        visibilityUpdater: @escaping VisibilityUpdater = { try RustCore.teamVisibilityUpdate(teamID: $0, makePrivate: $1) }
+        visibilityUpdater: @escaping VisibilityUpdater = { try RustCore.teamVisibilityUpdate(teamID: $0, makePrivate: $1) },
+        teamUpdater: @escaping TeamUpdater = {
+            try RustCore.teamUpdate(teamID: $0, name: $1, description: $2)
+        },
+        teamPhotoSetter: @escaping TeamPhotoSetter = {
+            try RustCore.teamPhoto(teamID: $0, base64: $1)
+        },
+        teamArchiver: @escaping TeamArchiver = { try RustCore.teamArchive(teamID: $0) },
+        teamUnarchiver: @escaping TeamArchiver = { try RustCore.teamUnarchive(teamID: $0) },
+        teamDeleter: @escaping TeamArchiver = { try RustCore.teamDelete(teamID: $0) }
     ) {
         self.fetcher = fetcher
         self.creator = creator
@@ -177,6 +200,11 @@ public final class TeamsViewModel: ObservableObject {
         self.moderationUpdater = moderationUpdater
         self.visibilityFetcher = visibilityFetcher
         self.visibilityUpdater = visibilityUpdater
+        self.teamUpdater = teamUpdater
+        self.teamPhotoSetter = teamPhotoSetter
+        self.teamArchiver = teamArchiver
+        self.teamUnarchiver = teamUnarchiver
+        self.teamDeleter = teamDeleter
     }
 
     /// NOLOAD: last-good snapshot store (nil = memory only / demo).
@@ -268,9 +296,7 @@ public final class TeamsViewModel: ObservableObject {
             }.value
             guard let idx = teams.firstIndex(where: { $0.teamId == teamID }) else { return }
             let row = teams[idx]
-            teams[idx] = TeamItem(
-                teamId: row.teamId, name: row.name,
-                channels: row.channels + [created.channel])
+            teams[idx] = row.withChannels(row.channels + [created.channel])
         } catch {
             createError = Self.message(for: error)
         }
@@ -293,9 +319,7 @@ public final class TeamsViewModel: ObservableObject {
             }.value
             guard let idx = teams.firstIndex(where: { $0.teamId == teamID }) else { return }
             let row = teams[idx]
-            teams[idx] = TeamItem(
-                teamId: row.teamId, name: row.name,
-                channels: row.channels + [created.channel])
+            teams[idx] = row.withChannels(row.channels + [created.channel])
         } catch {
             createError = Self.message(for: error)
         }
@@ -612,6 +636,152 @@ public final class TeamsViewModel: ObservableObject {
         }
     }
 
+    // MARK: - Team lifecycle (TEAM-ADMIN)
+
+    /// Team renames, pictures, archive/restore and deletes need a KNOWN
+    /// owner (fail closed: they change tenant-wide objects). Unknown
+    /// ownership disables the controls; non-owners see them disabled
+    /// with a reason.
+    public func canAdminTeam(teamID: String) -> Bool {
+        ChannelModerationRights.canEdit(isOwner: ownedTeamIDs.contains(teamID) ? true : nil)
+    }
+
+    /// Rename / re-describe one team: the row changes at once and
+    /// reverts on failure. Blank names are ignored (name unchanged).
+    /// Owner-only. Returns success.
+    @discardableResult
+    public func updateTeam(teamID: String, name: String?, description: String?) async -> Bool {
+        guard canAdminTeam(teamID: teamID) else {
+            actionError = "Only team owners can edit the team."
+            return false
+        }
+        let trimmedName = name?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let wantName = (trimmedName?.isEmpty == false) ? trimmedName : nil
+        let wantDesc = description?.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard wantName != nil || wantDesc != nil,
+              let ti = teams.firstIndex(where: { $0.teamId == teamID })
+        else { return false }
+        let before = teams
+        let row = teams[ti]
+        teams[ti] = TeamItem(
+            teamId: row.teamId, name: wantName ?? row.name, channels: row.channels,
+            description: wantDesc.map { $0.isEmpty ? nil : $0 } ?? row.description,
+            isArchived: row.isArchived)
+        actionError = nil
+        pendingWrites += 1
+        defer { pendingWrites -= 1 }
+        let updater = teamUpdater
+        do {
+            try await Task.blocking { try updater(teamID, wantName, wantDesc) }.value
+            snapshots?.save(teams, key: Self.snapshotKey)
+            return true
+        } catch {
+            teams = before
+            actionError = Self.message(for: error)
+            return false
+        }
+    }
+
+    /// Set one team's picture (base64 JPEG/PNG). The tile keeps its
+    /// initials (the picture shows in official clients); a failure sets
+    /// `actionError`. Owner-only. Returns success.
+    @discardableResult
+    public func setTeamPhoto(teamID: String, base64: String) async -> Bool {
+        guard canAdminTeam(teamID: teamID) else {
+            actionError = "Only team owners can change the team picture."
+            return false
+        }
+        guard !base64.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              teams.contains(where: { $0.teamId == teamID })
+        else { return false }
+        actionError = nil
+        pendingWrites += 1
+        defer { pendingWrites -= 1 }
+        let setter = teamPhotoSetter
+        do {
+            try await Task.blocking { try setter(teamID, base64) }.value
+            return true
+        } catch {
+            actionError = Self.message(for: error)
+            return false
+        }
+    }
+
+    /// Archive one team: the row flags at once and reverts on failure.
+    /// Archiving is async server-side — the row may read back unflipped
+    /// until the next sync. Owner-only. Returns success.
+    @discardableResult
+    public func archiveTeam(teamID: String) async -> Bool {
+        await setTeamArchived(teamID: teamID, archived: true)
+    }
+
+    /// Restore one archived team: the row unflags at once and reverts
+    /// on failure. Owner-only. Returns success.
+    @discardableResult
+    public func unarchiveTeam(teamID: String) async -> Bool {
+        await setTeamArchived(teamID: teamID, archived: false)
+    }
+
+    private func setTeamArchived(teamID: String, archived: Bool) async -> Bool {
+        guard canAdminTeam(teamID: teamID) else {
+            actionError = "Only team owners can archive the team."
+            return false
+        }
+        guard let ti = teams.firstIndex(where: { $0.teamId == teamID }) else { return false }
+        let before = teams
+        let row = teams[ti]
+        teams[ti] = TeamItem(teamId: row.teamId, name: row.name, channels: row.channels,
+                             description: row.description, isArchived: archived)
+        actionError = nil
+        pendingWrites += 1
+        defer { pendingWrites -= 1 }
+        let runner = archived ? teamArchiver : teamUnarchiver
+        do {
+            try await Task.blocking { try runner(teamID) }.value
+            snapshots?.save(teams, key: Self.snapshotKey)
+            return true
+        } catch {
+            teams = before
+            actionError = Self.message(for: error)
+            return false
+        }
+    }
+
+    /// Delete one team: the team leaves the tree at once and comes back
+    /// on failure. Irreversible when it succeeds. Owner-only. Returns
+    /// success.
+    @discardableResult
+    public func deleteTeam(teamID: String) async -> Bool {
+        guard canAdminTeam(teamID: teamID) else {
+            actionError = "Only team owners can delete the team."
+            return false
+        }
+        guard let ti = teams.firstIndex(where: { $0.teamId == teamID }) else { return false }
+        let before = teams
+        let gone = Set(teams[ti].channels.map(\.channelId))
+        teams.remove(at: ti)
+        if teams.isEmpty { state = .empty }
+        actionError = nil
+        pendingWrites += 1
+        defer { pendingWrites -= 1 }
+        let deleter = teamDeleter
+        do {
+            try await Task.blocking { try deleter(teamID) }.value
+            deletedChannelIDs.formUnion(gone)
+            ownedTeamIDs.remove(teamID)
+            notOwnedTeamIDs.remove(teamID)
+            memberSettings.removeValue(forKey: teamID)
+            visibility.removeValue(forKey: teamID)
+            snapshots?.save(teams, key: Self.snapshotKey)
+            return true
+        } catch {
+            teams = before
+            state = .loaded
+            actionError = Self.message(for: error)
+            return false
+        }
+    }
+
     /// True when `channelID` is its team's General channel.
     public func isGeneral(teamID: String, channelID: String) -> Bool {
         let primary = memberSettings[teamID]?.primaryChannelId
@@ -631,7 +801,9 @@ public final class TeamsViewModel: ObservableObject {
         let old = Dictionary(teams.map { ($0.teamId, $0) }, uniquingKeysWith: { a, _ in a })
         let kept = fresh.map { t -> TeamItem in
             guard t.channels.isEmpty, let prev = old[t.teamId], !prev.channels.isEmpty else { return t }
-            return TeamItem(teamId: t.teamId, name: t.name, channels: prev.channels)
+            return TeamItem(teamId: t.teamId, name: t.name, channels: prev.channels,
+                               description: prev.description ?? t.description,
+                               isArchived: prev.isArchived ?? t.isArchived)
         }
         return ChannelRights.generalFirst(kept, primary: primaryIDs)
     }
@@ -646,8 +818,7 @@ public final class TeamsViewModel: ObservableObject {
               teams[ti].channels.contains(where: { $0.channelId == channelID }) else { return false }
         let before = teams
         let row = teams[ti]
-        teams[ti] = TeamItem(teamId: row.teamId, name: row.name,
-                             channels: row.channels.filter { $0.channelId != channelID })
+        teams[ti] = row.withChannels(row.channels.filter { $0.channelId != channelID })
         deletedChannelIDs.insert(channelID)
         actionError = nil
         pendingWrites += 1
@@ -686,7 +857,7 @@ public final class TeamsViewModel: ObservableObject {
             description: wantDesc.map { $0.isEmpty ? nil : $0 } ?? old.description,
             membershipType: old.membershipType, webUrl: old.webUrl, email: old.email,
             isArchived: old.isArchived)
-        teams[ti] = TeamItem(teamId: teams[ti].teamId, name: teams[ti].name, channels: channels)
+        teams[ti] = teams[ti].withChannels(channels)
         actionError = nil
         pendingWrites += 1
         defer { pendingWrites -= 1 }
@@ -729,7 +900,7 @@ public final class TeamsViewModel: ObservableObject {
             description: old.description,
             membershipType: old.membershipType, webUrl: old.webUrl, email: old.email,
             isArchived: archived)
-        teams[ti] = TeamItem(teamId: teams[ti].teamId, name: teams[ti].name, channels: channels)
+        teams[ti] = teams[ti].withChannels(channels)
         actionError = nil
         pendingWrites += 1
         defer { pendingWrites -= 1 }
@@ -785,7 +956,7 @@ public final class TeamsViewModel: ObservableObject {
             if team.name.lowercased().contains(q) { return team }
             let channels = team.channels.filter { $0.name.lowercased().contains(q) }
             guard !channels.isEmpty else { return nil }
-            return TeamItem(teamId: team.teamId, name: team.name, channels: channels)
+            return team.withChannels(channels)
         }
     }
 

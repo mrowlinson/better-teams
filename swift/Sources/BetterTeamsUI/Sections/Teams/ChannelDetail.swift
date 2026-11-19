@@ -23,7 +23,7 @@ struct TeamsDetailPane: View {
            team.teamId == sel.teamID
         {
             ChannelDetail(team: team, channel: channel, sel: sel, conv: conv,
-                          tabs: section.tabs(chID, model))
+                          tabs: section.tabs(chID, model), tabsStore: tabsStore)
         } else if let model, model.forced(.teams) == nil, let sel = TeamsSelection(model.nav.selection(in: .teams)),
                   let chID = sel.channelID, teams.deletedChannelIDs.contains(chID) {
             // TEAMSYNC: the open channel was deleted (here or elsewhere),
@@ -52,13 +52,49 @@ struct ChannelDetail: View {
     let sel: TeamsSelection
     @ObservedObject var conv: ConversationStore
     let tabs: [ChannelTab]
+    @ObservedObject var tabsStore: ChannelTabsStore
     @Environment(\.windowModel) private var model
+    /// TABS-MGMT: add/rename/remove sheets. Built-in Posts/Files/Notes
+    /// never manage (only the selected web tab renames/removes).
+    /// One sheet slot (two `.sheet` modifiers on one view present
+    /// unreliably, so add/rename share an item-based sheet).
+    private enum ManageSheet: Identifiable {
+        case add, rename
+        var id: String {
+            switch self {
+            case .add: "add"
+            case .rename: "rename"
+            }
+        }
+    }
+    @State private var manageSheet: ManageSheet?
+    @State private var confirmingRemove = false
+    @State private var draftName = ""
+    @State private var draftURL = ""
+    @State private var manageFailed: String?
+
+    /// The selected web tab, if the selection is one the store knows.
+    private var selectedWebTab: ChannelTab? {
+        if case .web(let id) = sel.tab { return tabs.first { $0.id == id } }
+        return nil
+    }
+
+    /// Manage controls need the live store open on this channel (never
+    /// in demo: the demo row is seeded, not fetched).
+    private func canManage(_ m: WindowModel) -> Bool {
+        !m.options.demo && tabsStore.channelID == channel.channelId
+    }
 
     var body: some View {
         if let model {
             VStack(spacing: 0) {
                 ChannelHeader(team: team, channel: channel, layout: ChannelTabLayout(tabs),
-                              tab: Binding(get: { sel.tab }, set: { select(tab: $0, model) }))
+                              tab: Binding(get: { sel.tab }, set: { select(tab: $0, model) }),
+                              canManage: canManage(model),
+                              selectedWebTabName: selectedWebTab?.name,
+                              onAdd: { draftName = ""; draftURL = ""; manageSheet = .add },
+                              onRename: { draftName = selectedWebTab?.name ?? ""; manageSheet = .rename },
+                              onRemove: { confirmingRemove = true })
                 Divider()
                 Group {
                     switch sel.tab {
@@ -69,6 +105,79 @@ struct ChannelDetail: View {
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            .sheet(item: $manageSheet) { sheet in
+                switch sheet {
+                case .add:
+                    ChannelTabAddSheet(name: $draftName, url: $draftURL) {
+                        Task {
+                            await tabsStore.add(
+                                name: draftName, url: Self.blankToNil(draftURL))
+                            if tabsStore.manageError != nil {
+                                manageFailed = tabsStore.manageError
+                                tabsStore.clearManageError()
+                            } else if let added = tabsStore.tabs.first(where: { $0.name == draftName }) {
+                                select(tab: .web(added.id), model)
+                            }
+                            manageSheet = nil
+                        }
+                    }
+                case .rename:
+                    ChannelTabRenameSheet(name: $draftName) {
+                        guard let id = selectedWebTab?.id else { return }
+                        Task {
+                            await tabsStore.rename(tabID: id, name: draftName)
+                            if tabsStore.manageError != nil {
+                                manageFailed = tabsStore.manageError
+                                tabsStore.clearManageError()
+                            }
+                            manageSheet = nil
+                        }
+                    }
+                }
+            }
+            .confirmationDialog(
+                "Remove Tab",
+                isPresented: $confirmingRemove,
+                titleVisibility: .visible
+            ) {
+                Button("Remove Tab", role: .destructive) {
+                    guard let id = selectedWebTab?.id else { return }
+                    Task {
+                        await tabsStore.remove(tabID: id)
+                        if tabsStore.manageError != nil {
+                            manageFailed = tabsStore.manageError
+                            tabsStore.clearManageError()
+                        } else {
+                            select(tab: .posts, model)
+                        }
+                    }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Remove “\(selectedWebTab?.name ?? "this tab")” from #\(channel.name)?")
+            }
+            .alert("Couldn't Update Tab", isPresented: Binding(
+                get: { manageFailed != nil },
+                set: { if !$0 { manageFailed = nil } }
+            )) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(manageFailed ?? "")
+            }
+            .onAppear {
+                // Evidence-only (teamadmin `teamDeleteConfirm=1` parity):
+                // open a manage sheet for captures. Demo never manages
+                // for real; the sheets' saves stay unpressed.
+                if model.options.demo && model.options.evidence,
+                   let sheet = model.options.route.flatMap(Route.init(string:))?.query["tabSheet"] {
+                    switch sheet {
+                    case "add": draftName = ""; draftURL = ""; manageSheet = .add
+                    case "rename": draftName = selectedWebTab?.name ?? ""; manageSheet = .rename
+                    case "remove": confirmingRemove = true
+                    default: break
+                    }
+                }
             }
         }
     }
@@ -106,6 +215,11 @@ struct ChannelDetail: View {
         var s = sel
         s.tab = tab
         m.navigator?.select(s.selection, in: .teams)
+    }
+
+    private static func blankToNil(_ s: String) -> String? {
+        let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        return t.isEmpty ? nil : s
     }
 
     @ViewBuilder
@@ -168,7 +282,18 @@ struct ChannelHeader: View {
     let channel: TeamChannel
     let layout: ChannelTabLayout
     @Binding var tab: ChannelTabKey
+    /// TABS-MGMT manage wiring (defaults keep previews/tests compiling).
+    var canManage = false
+    var selectedWebTabName: String? = nil
+    var onAdd: (() -> Void)? = nil
+    var onRename: (() -> Void)? = nil
+    var onRemove: (() -> Void)? = nil
     @Environment(\.contentTextScale) private var scale
+
+    /// The selection is a removable/renamable web tab.
+    private var managesSelection: Bool {
+        canManage && selectedWebTabName != nil
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -215,11 +340,19 @@ struct ChannelHeader: View {
             .pickerStyle(.segmented)
             .labelsHidden()
             .fixedSize()
-            if !fold.more.isEmpty {
+            if !fold.more.isEmpty || canManage {
                 Menu {
                     ForEach(fold.more) { e in
                         Button(e.name) { tab = e.key }
                             .disabled(!e.enabled)
+                    }
+                    if canManage {
+                        if !fold.more.isEmpty { Divider() }
+                        Button("Add Tab…") { onAdd?() }
+                        if managesSelection {
+                            Button("Rename “\(selectedWebTabName ?? "Tab")”…") { onRename?() }
+                            Button("Remove “\(selectedWebTabName ?? "Tab")”", role: .destructive) { onRemove?() }
+                        }
                     }
                 } label: {
                     Text("More")
@@ -228,7 +361,82 @@ struct ChannelHeader: View {
                 .fixedSize()
                 .help("More Tabs")
             }
+            if canManage {
+                Button(action: { onAdd?() }) {
+                    Image(systemName: "plus")
+                }
+                .buttonStyle(.borderless)
+                .help("Add Tab")
+                .accessibilityLabel("Add Tab")
+            }
         }
+    }
+}
+
+/// TABS-MGMT add sheet: a native form for the new tab's name + page.
+/// The page is a website-tab URL (the only kind creatable without a
+/// catalog install); blank leaves the tab unconfigured.
+struct ChannelTabAddSheet: View {
+    @Binding var name: String
+    @Binding var url: String
+    var onSave: () -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Text("Add Tab")
+                .font(.headline)
+                .padding(.top, 16)
+            Form {
+                TextField("Name", text: $name)
+                TextField("Page URL", text: $url)
+                    .textContentType(.URL)
+            }
+            .formStyle(.grouped)
+            HStack {
+                Spacer()
+                Button("Cancel", role: .cancel) { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Button("Add") {
+                    onSave()
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+            .padding(16)
+        }
+        .frame(width: 360)
+    }
+}
+
+/// TABS-MGMT rename sheet: the tab's new display name.
+struct ChannelTabRenameSheet: View {
+    @Binding var name: String
+    var onSave: () -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Text("Rename Tab")
+                .font(.headline)
+                .padding(.top, 16)
+            Form {
+                TextField("Name", text: $name)
+            }
+            .formStyle(.grouped)
+            HStack {
+                Spacer()
+                Button("Cancel", role: .cancel) { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Button("Rename") {
+                    onSave()
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+            .padding(16)
+        }
+        .frame(width: 360)
     }
 }
 

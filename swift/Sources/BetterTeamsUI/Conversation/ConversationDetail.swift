@@ -21,27 +21,18 @@ struct ConversationDetail: View {
             // Pinned tabs ride the app-owned store, loaded from the
             // selection funnel (R24) — the view only reads.
             let pinned = model.app?.chatTabs.tabs(for: ref) ?? []
-            let layout = ChatTabLayout(kind: ChatKind.of(chatID: ref, isGroup: isGroup), tabs: pinned)
-            let selected = layout.resolve(builtin: model.nav.tab(for: ref), pinned: model.nav.detailAppTab[ref])
+            let selected = ChatTabLayout(kind: ChatKind.of(chatID: ref, isGroup: isGroup), tabs: pinned)
+                .resolve(builtin: model.nav.tab(for: ref), pinned: model.nav.detailAppTab[ref])
             VStack(spacing: 0) {
                 RosterBound(chatID: ref, roster: model.app?.chatRoster) { count in
-                    ConversationHeader(
+                    ManagedConversationHeader(
+                        chatID: ref,
                         name: name, isGroup: isGroup,
                         subtitle: isGroup ? Self.subtitle(isGroup: true, messages: conv.chatID == ref ? conv.messages : [],
                                                           rosterCount: count)
                             : PresenceLine(presence: model.app?.presence, chatID: ref).text,
-                        layout: layout,
-                        tab: Binding(get: { selected }, set: { key in
-                            switch key {
-                            case .builtin(let t): model.navigator?.setDetailTab(t, for: ref)
-                            case .pinned(let id): model.navigator?.setDetailAppTab(id, for: ref)
-                            }
-                        }),
-                        opened: model.nav.detailOpenedTab[ref].map(ChatTabKey.pinned),
-                        open: { key in
-                            if case .pinned(let id) = key { model.navigator?.openDetailAppTab(id, for: ref) }
-                        },
-                        close: { model.navigator?.closeOpenedTab(for: ref) })
+                        tabStore: model.app?.chatTabs,
+                        demo: model.options.demo)
                 }
                 Divider()
                 // The tab body fills the pane, so the header stays pinned
@@ -122,6 +113,149 @@ struct ConversationDetail: View {
                 services.translation.attached(session)
             }
         }
+    }
+}
+
+/// TABS-MGMT host: the conversation header tab row plus add/rename/
+/// remove sheets. Observes the app-owned ChatTabsStore so the row
+/// recomputes after a mutation (the detail snapshot alone would go
+/// stale). Selection/navigation behavior matches the direct
+/// ConversationHeader wiring it replaces.
+struct ManagedConversationHeader: View {
+    let chatID: String
+    let name: String
+    let isGroup: Bool
+    let subtitle: String
+    /// One sheet slot: two `.sheet` modifiers on one view present
+    /// unreliably, so add/rename share an item-based sheet.
+    private enum ManageSheet: Identifiable {
+        case add, rename
+        var id: String {
+            switch self {
+            case .add: "add"
+            case .rename: "rename"
+            }
+        }
+    }
+    var tabStore: ChatTabsStore? = nil
+    var demo = false
+    /// Observes the same instance as `tabStore` so the row recomputes
+    /// after a mutation (a plain var would leave it stale).
+    @ObservedObject private var observed: ChatTabsStore
+    @Environment(\.windowModel) private var model
+
+    init(chatID: String, name: String, isGroup: Bool, subtitle: String,
+         tabStore: ChatTabsStore? = nil, demo: Bool = false) {
+        self.chatID = chatID
+        self.name = name
+        self.isGroup = isGroup
+        self.subtitle = subtitle
+        self.tabStore = tabStore
+        self.demo = demo
+        self._observed = ObservedObject(wrappedValue: tabStore ?? ChatTabsStore())
+    }
+    @State private var manageSheet: ManageSheet?
+    @State private var confirmingRemove = false
+    @State private var draftName = ""
+    @State private var draftURL = ""
+    @State private var manageFailed: String?
+
+    private var pinned: [ChannelTab] { tabStore?.tabs(for: chatID) ?? [] }
+
+    private var canManage: Bool {
+        !demo && tabStore != nil && ChatTabsStore.hasTabs(chatID)
+    }
+
+    var body: some View {
+        // Keep the row live: any store mutation re-resolves the row.
+        let _ = observed.tabs(for: chatID)
+        if let model {
+            let layout = ChatTabLayout(kind: ChatKind.of(chatID: chatID, isGroup: isGroup), tabs: pinned)
+            let selected = layout.resolve(builtin: model.nav.tab(for: chatID), pinned: model.nav.detailAppTab[chatID])
+            let selectedName: String? = {
+                if case .pinned(let id) = selected { return pinned.first { $0.id == id }?.name }
+                return nil
+            }()
+            ConversationHeader(
+                name: name, isGroup: isGroup, subtitle: subtitle, layout: layout,
+                tab: Binding(get: { selected }, set: { key in
+                    switch key {
+                    case .builtin(let t): model.navigator?.setDetailTab(t, for: chatID)
+                    case .pinned(let id): model.navigator?.setDetailAppTab(id, for: chatID)
+                    }
+                }),
+                opened: model.nav.detailOpenedTab[chatID].map(ChatTabKey.pinned),
+                open: { key in
+                    if case .pinned(let id) = key { model.navigator?.openDetailAppTab(id, for: chatID) }
+                },
+                close: { model.navigator?.closeOpenedTab(for: chatID) },
+                canManageTabs: canManage,
+                selectedPinnedName: selectedName,
+                onAddTab: { draftName = ""; draftURL = ""; manageSheet = .add },
+                onRenameTab: { draftName = selectedName ?? ""; manageSheet = .rename },
+                onRemoveTab: { confirmingRemove = true })
+            .sheet(item: $manageSheet) { sheet in
+                switch sheet {
+                case .add:
+                    ChannelTabAddSheet(name: $draftName, url: $draftURL) {
+                        Task {
+                            await tabStore?.add(
+                                chatID: chatID, name: draftName,
+                                url: Self.blankToNil(draftURL))
+                            if let e = tabStore?.manageError[chatID] {
+                                manageFailed = e
+                                tabStore?.clearManageError(chatID: chatID)
+                            } else if let added = pinned.first(where: { $0.name == draftName }) {
+                                model.navigator?.setDetailAppTab(added.id, for: chatID)
+                            }
+                            manageSheet = nil
+                        }
+                    }
+                case .rename:
+                    ChannelTabRenameSheet(name: $draftName) {
+                        guard case .pinned(let id) = selected else { return }
+                        Task {
+                            await tabStore?.rename(chatID: chatID, tabID: id, name: draftName)
+                            if let e = tabStore?.manageError[chatID] {
+                                manageFailed = e
+                                tabStore?.clearManageError(chatID: chatID)
+                            }
+                            manageSheet = nil
+                        }
+                    }
+                }
+            }
+            .confirmationDialog("Remove Tab", isPresented: $confirmingRemove, titleVisibility: .visible) {
+                Button("Remove Tab", role: .destructive) {
+                    guard case .pinned(let id) = selected else { return }
+                    Task {
+                        await tabStore?.remove(chatID: chatID, tabID: id)
+                        if let e = tabStore?.manageError[chatID] {
+                            manageFailed = e
+                            tabStore?.clearManageError(chatID: chatID)
+                        } else {
+                            model.navigator?.setDetailTab(.chat, for: chatID)
+                        }
+                    }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Remove “\(selectedName ?? "this tab")” from this chat?")
+            }
+            .alert("Couldn't Update Tab", isPresented: Binding(
+                get: { manageFailed != nil },
+                set: { if !$0 { manageFailed = nil } }
+            )) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(manageFailed ?? "")
+            }
+        }
+    }
+
+    private static func blankToNil(_ s: String) -> String? {
+        let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        return t.isEmpty ? nil : s
     }
 }
 
