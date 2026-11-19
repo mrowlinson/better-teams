@@ -2133,7 +2133,7 @@ this pass), `rust/ostmac-core` lib 224/0. Older counts (lib 257, core
     with the token's scope list (no `Schedule.*`), then declines any
     created request (net-zero; verified by re-list).
     Tests: path/validation unit tests + the ignored live probe.
-    UPSTREAM: pending
+    UPSTREAM: PR https://github.com/eisbaw/ost/pull/131 (fix/shifts-write-ops, stacks on #77)
 
 118. [minor] `src/api/planner.rs` + `src/api/mod.rs` — **planner depth
     (lanes/plannerdepth)**. New Graph depth APIs, all live-proved on the
