@@ -13,6 +13,7 @@ mod filesearch;
 mod graph;
 mod me;
 pub mod media;
+mod meetings_plus;
 mod notes;
 mod planner;
 mod presence;
@@ -40,6 +41,13 @@ pub use calendar::{
 };
 pub use files::{FileVersion, SharedFile};
 pub use me::UserInfo;
+pub use meetings_plus::{
+    attendance_records_path, attendance_reports_path, capture_options_body,
+    capture_options_path, meeting_attendance_data, meeting_capture_options_data,
+    parse_attendance_records, parse_capture_options, parse_first_report_id,
+    set_meeting_capture_options_data, show_meeting_attendance, show_meeting_capture,
+    AttendanceEntry, CaptureOptions,
+};
 pub use notes::{NotePage, NotebookInfo, PageInfo, SectionInfo};
 pub use planner::{BucketInfo, GroupPost, PlanInfo, PlannerChecklistItem, PlannerReference, PlannerTaskDetails, PlannerTaskInfo};
 pub use presence::PresenceInfo;

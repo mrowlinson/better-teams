@@ -37,6 +37,7 @@ pub mod calls;
 pub mod calweek;
 pub mod catchup_tags;
 pub mod live;
+pub mod meetings_plus;
 pub mod planner;
 pub mod realtime;
 pub mod recordings;

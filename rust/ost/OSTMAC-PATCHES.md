@@ -2185,3 +2185,20 @@ this pass), `rust/ostmac-core` lib 224/0. Older counts (lib 257, core
     in `src/main.rs`. Tenant writes need owner-grade grants
     (Group.ReadWrite.All and friends) — 403s surface to the caller.
     UPSTREAM: PR https://github.com/eisbaw/ost/pull/129 (fix/team-lifecycle, stacks on #120)
+
+121. [minor] `src/api/meetings_plus.rs` (new) + `src/api/mod.rs` + `src/main.rs`
+    — **meetings-plus Graph data path (lanes/meetingsplus)**. Attendance:
+    `/me/onlineMeetings/{id}/attendanceReports` (+ first-report records
+    list/parse; empty value = no report yet, never an error). Capture
+    options: `GET/PATCH /communications/onlineMeetings/{id}` with
+    `allowRecording` / `allowTranscription` / `recordAutomatically`
+    (PATCH body carries only the set fields). CLI: `meeting-attendance` +
+    `meeting-capture` (read-only GET printers; the lane's live-403 probe
+    vehicles). Live (trial tenant): both GETs answer HTTP 403
+    `Forbidden/Insufficient permissions` — `OnlineMeetings.Read/ReadWrite`
+    are not granted to the Teams token, so the Swift UI shows the
+    live-disabled reason and demo values. No writes attempted.
+    Tests: 8 hermetic (`api::meetings_plus::tests`, paths/body/parse) +
+    4 core FFI (`ostmac-core/src/meetings_plus.rs`) + 13 Swift
+    (`MeetingsPlusTests`) + 3 guards (`MeetingsPlusGuardTests`).
+    UPSTREAM: pending

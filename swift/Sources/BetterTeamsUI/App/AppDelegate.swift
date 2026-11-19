@@ -198,7 +198,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                let id = route?.query["contact"] ?? CalendarSection.current(wc.model).meetingID {
                 // Evidence: `<route>?window=eventDetails` opens the pop-out
                 // details window (ordered in, never key or activating).
-                EventDetailsWindowController.show(eventID: id, wc.model, activate: false)
+                // The pop-out is the capture's primary window: the main
+                // window is ordered out (Settings/call-window pattern) so
+                // the READY line and the shot target the pop-out.
+                EvidenceHarness.primaryWindow = EventDetailsWindowController.show(eventID: id, wc.model, activate: false)
+                wc.window?.orderOut(nil)
             }
             if options.evidence { EvidenceHarness.settle(wc, options: options) }
         }

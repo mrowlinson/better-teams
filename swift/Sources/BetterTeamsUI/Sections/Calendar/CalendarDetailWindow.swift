@@ -13,13 +13,14 @@ final class EventDetailsWindowController: NSWindowController, NSWindowDelegate {
     private var titleWatch: AnyCancellable?
     let eventID: String
 
-    static func show(eventID: String, _ m: WindowModel, activate: Bool = true) {
-        guard let app = m.app else { return }
+    @discardableResult
+    static func show(eventID: String, _ m: WindowModel, activate: Bool = true) -> NSWindow? {
+        guard let app = m.app else { return nil }
         app.calWeek.loadDetail(id: eventID)
         if let c = open[eventID] {
             c.showWindow(nil)
             if activate { c.window?.makeKeyAndOrderFront(nil) } else { c.window?.orderFront(nil) }
-            return
+            return c.window
         }
         let c = EventDetailsWindowController(eventID: eventID, week: app.calWeek, model: m)
         open[eventID] = c
@@ -30,6 +31,7 @@ final class EventDetailsWindowController: NSWindowController, NSWindowDelegate {
         } else {
             c.window?.orderFront(nil)
         }
+        return c.window
     }
 
     private init(eventID: String, week: CalendarWeekStore, model m: WindowModel) {

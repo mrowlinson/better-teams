@@ -900,6 +900,21 @@ char *ostmac_call_record_start(int transcription_only);
 // {ok,stopped,transcription_only,call}. Caller frees.
 char *ostmac_call_record_stop(int transcription_only);
 
+// Meetings-plus: one meeting's attendance (first report's records):
+// {ok,entries:[{display_name,role,join_dt,leave_dt,duration_secs}]} or
+// {ok:false} (a scope 403 reads the same). Caller frees.
+char *ostmac_meeting_attendance(const char *meeting_id);
+
+// Meetings-plus: server capture toggles for one meeting:
+// {ok,options:{allow_recording,allow_transcription,record_automatically}}
+// or {ok:false}. Caller frees.
+char *ostmac_meeting_capture_get(const char *meeting_id);
+
+// Meetings-plus: write server capture toggles (body JSON naming any of
+// allowRecording/allowTranscription/recordAutomatically; at least one):
+// {ok,options} (the read-back) or {ok:false}. Caller frees.
+char *ostmac_meeting_capture_set(const char *meeting_id, const char *body);
+
 // NOTE (R12 ffi-move-now B1): av_info moved to Swift (CoreLocal);
 // decl deleted.
 

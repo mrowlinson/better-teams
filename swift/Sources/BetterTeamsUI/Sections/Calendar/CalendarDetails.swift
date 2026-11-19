@@ -242,6 +242,9 @@ struct EventDetailsView: View {
             if m.joinURL?.isEmpty == false {
                 teamsBlock(m)
             }
+            if MeetingExtrasBlock.shows(for: m), let call = model?.app?.call {
+                MeetingExtrasBlock(meeting: m, isDemo: model?.app?.isDemo ?? true, call: call)
+            }
             if let files = detail?.attachments, !files.isEmpty {
                 CalendarFactRow(symbol: "paperclip") {
                     ForEach(files) { f in

@@ -508,6 +508,9 @@ struct MeetingInspector: View {
                         Text("Microsoft Teams \(kind.title.lowercased())")
                     }
                 }
+                if MeetingExtrasBlock.shows(for: meeting), let call = model?.app?.call {
+                    MeetingExtrasBlock(meeting: meeting, isDemo: model?.app?.isDemo ?? true, call: call)
+                }
                 if let info = meeting.info, let line = CalendarDetailsText.statusLine(info) {
                     CalendarFactRow(symbol: "bell") { Text(line).foregroundStyle(.secondary) }
                 }

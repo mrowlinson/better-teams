@@ -60,6 +60,9 @@ rust/ost/src/api/filesearch.rs::search_people_data | GET /me/people?$search | wo
 rust/ost/src/api/graph.rs::list_chats | GET /me/chats (ost TUI) | tui-only | not linked by ostmac-core; would 403 (Chat.ReadBasic not granted)
 rust/ost/src/api/graph.rs::send_message | POST /chats/{id}/messages (ost TUI) | tui-only | not linked by ostmac-core
 rust/ost/src/api/me.rs::whoami_data | GET /me | works | live probeA 200
+rust/ost/src/api/meetings_plus.rs::meeting_attendance_data | GET /me/onlineMeetings/{id}/attendanceReports, …/{reportId}/attendanceRecords | blocked | scope OnlineMeetings.Read not granted; live meetingsplus 403 Forbidden/Insufficient permissions (trial, 2026-11-19); the UI shows the live-disabled reason, demo values back captures
+rust/ost/src/api/meetings_plus.rs::meeting_capture_options_data | GET /communications/onlineMeetings/{id} | blocked | scope OnlineMeetings.Read not granted; live meetingsplus 403 Forbidden/Insufficient permissions (trial, 2026-11-19); the UI shows the live-disabled reason, demo values back captures
+rust/ost/src/api/meetings_plus.rs::set_meeting_capture_options_data | PATCH /communications/onlineMeetings/{id} (allowRecording/allowTranscription/recordAutomatically) | blocked | scope OnlineMeetings.ReadWrite not granted; never attempted live (no vehicle: POST /me/onlineMeetings 403, nothing to PATCH); GET-path 403 proves the scope refusal
 rust/ost/src/api/notes.rs::append_note_paragraph_data | PATCH /onenote/pages/{id}/content | works | scope Notes.ReadWrite.All granted
 rust/ost/src/api/notes.rs::list_notebook_sections_data | GET /…/onenote/notebooks/{id}/sections, pages | works | live probeA onenote 200; scope Notes.ReadWrite.All
 rust/ost/src/api/notes.rs::list_notebooks_data | GET /groups/{id}/onenote/notebooks | works | live applog 200
