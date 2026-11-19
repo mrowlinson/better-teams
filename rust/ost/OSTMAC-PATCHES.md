@@ -2241,3 +2241,23 @@ this pass), `rust/ostmac-core` lib 224/0. Older counts (lib 257, core
     no teamsAppId/appId/cardClientId keys), `praise_graph_post_path_pin`,
     `graph_posted_message_id_pin`.
     UPSTREAM: PR https://github.com/eisbaw/ost/pull/135 (fix/praise-graph-send, stacks on #122)
+
+124. [major] `src/api/chat.rs` — **Skype write shape: properties cells +
+    string mention entities + span tags (lanes/echofix)**. The chatsvc
+    write path reads importance/subject from UNDER `properties` and
+    mentions as a JSON STRING — top-level cells and raw arrays are
+    dropped at write, `<at>` content tags scrubbed (ECHO-FIX R1
+    live-proven F1/S1/M1/M2/M3 on the trial channel, net-zero).
+    `SendOpts::apply_to_body` now emits the official always-present
+    `properties` block (importance/subject keys always, mentions iff
+    matched) when any opt is set; `none()` stays the legacy body
+    bit-identical. `WireMention` gains `mri` (parsed tolerantly from
+    `mentions_json`); entities serialize as
+    `[{@type,itemid:number,mri?,mentionType,displayName}]`; content
+    tags are official `<span itemscope itemtype="…/Mention"
+    itemid="N">` (itemid shared tag↔entity, hostile ids fall back to
+    the positional index). Read path mines string-form mentions,
+    numeric ids, and span tags (array + `<at>` mining kept).
+    Tests: F1/S1/M2 body pins, mri parse, string-echo + span-mining
+    pins, send→echo roundtrip.
+    UPSTREAM: pending

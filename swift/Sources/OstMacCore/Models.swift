@@ -979,6 +979,21 @@ public struct Reactor: Codable, Sendable, Equatable, Hashable {
     }
 }
 
+/// One server-echoed mention entity (ECHO-FIX: core `message_to_json`
+/// `mentions[]` rows `{id, display, kind}`). Entity rows carry the wire
+/// `mentionType` in `kind`; content-mined tags carry kind "".
+public struct ChatMention: Codable, Sendable, Equatable {
+    public let id: String
+    public let display: String
+    public let kind: String
+
+    public init(id: String, display: String, kind: String) {
+        self.id = id
+        self.display = display
+        self.kind = kind
+    }
+}
+
 public struct ChatMessage: Codable, Sendable, Identifiable, Equatable {
     public let id: String
     public let sender: String
@@ -1005,10 +1020,22 @@ public struct ChatMessage: Codable, Sendable, Identifiable, Equatable {
     /// stamp it on the pending bubble; server rows and echoes carry it,
     /// so the pending bubble reconciles by it. Nil on old payloads.
     public var clientMessageID: String?
+    /// Server-echoed importance (`high`/`urgent`; nil when normal or
+    /// stripped). ECHO-FIX: stored under `properties.importance`.
+    public var importance: String?
+    /// Server-echoed announcement subject (channel posts; nil when
+    /// absent). Same write/read path as importance.
+    public var subject: String?
+    /// Server-echoed mention entities (nil on old payloads; empty when
+    /// the server stripped them). `mentions` (extension) prefers these
+    /// over raw-mining; bubble tint still mines `raw`.
+    public var mentionEntities: [ChatMention]?
 
     enum CodingKeys: String, CodingKey {
         case id, sender, timestamp, content, raw, reactions, reply_to
         case clientMessageID = "client_message_id"
+        case importance, subject
+        case mentionEntities = "mentions"
     }
 
     public init(
@@ -1017,7 +1044,9 @@ public struct ChatMessage: Codable, Sendable, Identifiable, Equatable {
         raw: String? = nil, edited: Bool = false,
         reactions: [ReactionCount] = [],
         reply_to: String? = nil, deleted: Bool = false,
-        clientMessageID: String? = nil
+        clientMessageID: String? = nil,
+        importance: String? = nil, subject: String? = nil,
+        mentionEntities: [ChatMention]? = nil
     ) {
         self.id = id
         self.sender = sender
@@ -1030,6 +1059,9 @@ public struct ChatMessage: Codable, Sendable, Identifiable, Equatable {
         self.reply_to = reply_to
         self.deleted = deleted
         self.clientMessageID = clientMessageID
+        self.importance = importance
+        self.subject = subject
+        self.mentionEntities = mentionEntities
     }
 
     public init(from decoder: Decoder) throws {
@@ -1042,6 +1074,9 @@ public struct ChatMessage: Codable, Sendable, Identifiable, Equatable {
         reactions = try c.decodeIfPresent([ReactionCount].self, forKey: .reactions) ?? []
         reply_to = try c.decodeIfPresent(String.self, forKey: .reply_to)
         clientMessageID = try c.decodeIfPresent(String.self, forKey: .clientMessageID)
+        importance = try c.decodeIfPresent(String.self, forKey: .importance)
+        subject = try c.decodeIfPresent(String.self, forKey: .subject)
+        mentionEntities = try c.decodeIfPresent([ChatMention].self, forKey: .mentionEntities)
         isOwn = false
         edited = false
         deleted = false

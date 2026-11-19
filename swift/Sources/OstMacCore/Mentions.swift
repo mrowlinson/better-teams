@@ -294,13 +294,22 @@ extension RealtimeMessage {
 }
 
 extension ChatMessage {
-    /// Mentions mined from the unstripped body (same live path as
-    /// `RealtimeMessage.mentions`: `MessageInfo.raw` from core, Mention
-    /// spans + `<at>` tags, display-name matching). Nil/blank raw (old
-    /// payloads, local echoes) yields no mentions — never scan `content`
-    /// here (the bubble's `@token` fallback is render-only).
+    /// Mentions for this bubble: server entities when the core shipped
+    /// them (ECHO-FIX: authoritative, carry the wire `mentionType`),
+    /// else mined from the unstripped body (same fallback as
+    /// `RealtimeMessage.mentions`: Mention spans + `<at>` tags,
+    /// display-name matching). Nil/blank raw (old payloads, local
+    /// echoes) yields no mentions — never scan `content` here (the
+    /// bubble's `@token` fallback is render-only).
     public var mentions: [Mention] {
-        Mentions.parse(content: raw ?? "")
+        if let ents = mentionEntities, !ents.isEmpty {
+            return ents.map {
+                Mention(id: $0.id, mri: nil,
+                        mentionType: $0.kind.isEmpty ? nil : $0.kind,
+                        displayName: $0.display)
+            }
+        }
+        return Mentions.parse(content: raw ?? "")
     }
 
     /// True when this bubble mentions `ownName` (display-name backup;

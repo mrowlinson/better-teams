@@ -95,8 +95,10 @@ public struct SendTransport: Sendable {
             }
             // COMPOSER-B: the additive `_opts` FFI always (empty opts
             // render the legacy body bit-identical — unit-tested in ost).
+            // ECHO-FIX: broadcasts ride the conversation id as entity mri
+            // (channel thread id live-proven M3); caller-set mris win.
             let imp = r.importance.wireValue
-            let men = WireMentionRef.json(for: r.mentions)
+            let men = WireMentionRef.json(for: r.mentions.map { $0.with(mri: r.chatID) })
             switch r.route {
             case .plain:
                 let id = try RustCore.sendIdemOpts(

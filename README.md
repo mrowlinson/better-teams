@@ -396,7 +396,7 @@ on GitHub by opening an issue.
 
 Incomplete or not started yet ("in progress" = being worked on now):
 
-- **Compose:** emphasis wire proven live; importance/subject/mentions stripped server-side on read-back (proven live in channel context)
+- **Compose:** emphasis/importance/subject/mentions wires proven live in channel context (write-shape fix shipped; timeline banner renders); 1:1 policy-strip behavior untested (no 1:1 target in trial)
 - **Meetings:** hand/reactions/pin/participant UI shipped local-only, live proof queued on trial tenant; lobby admit UI instrumented, live run queued on trial tenant
 - **Calling:** Teams Phone UI shipped (dial pad, voicemail, forwarding, delegates); trial licence confirmed (E5 + Phone System, no calling plan — Teams-to-Teams yes, PSTN dial-out no)
 - **Chats and teams:** Teams saved-messages sync (no surface on the old tenant; re-probe queued on the trial tenant; local store shipped)

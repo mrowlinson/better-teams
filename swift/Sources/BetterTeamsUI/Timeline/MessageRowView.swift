@@ -239,6 +239,7 @@ struct MessageRowView: View {
     /// (padding, radius, max width) so both read as one design.
     private var card: some View {
         VStack(alignment: .leading, spacing: 6) {
+            banner
             if let q = row.quote { QuoteBlock(quote: q, jump: { actions?.jump(to: $0) }) }
             content
             if let t = row.translation, t.isVisible { translation(t) }
@@ -298,6 +299,37 @@ struct MessageRowView: View {
     @ViewBuilder
     private var bubbleReactions: some View {
         if row.bubble != .none { reactions }
+    }
+
+    /// Banner inputs, pure for tests: importance level + trimmed
+    /// subject ("" when absent — the banner then renders nothing).
+    static func bannerCells(for message: ChatMessage) -> (MessageImportance, String) {
+        (MessageImportance.parse(message.importance ?? ""),
+         (message.subject ?? "").trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    /// ECHO-FIX: announcement banner above the body (Mail-style: red
+    /// Important/Urgent label + bold subject line). Deleted tombstones
+    /// render no banner. Mention entities tint inside the body via the
+    /// existing `raw`-span path, not here.
+    @ViewBuilder
+    private var banner: some View {
+        if !message.deleted {
+            let cells = Self.bannerCells(for: message)
+            if cells.0 != .normal {
+                Label(cells.0.label,
+                      systemImage: cells.0 == .urgent ? "bell.fill" : "exclamationmark.circle.fill")
+                    .font(AppFont.headline(scale))
+                    .foregroundStyle(Palette.failed)
+                    .accessibilityLabel(cells.0.label)
+            }
+            if !cells.1.isEmpty {
+                Text(cells.1)
+                    .font(AppFont.headline(scale))
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
     }
 
     @ViewBuilder
@@ -489,8 +521,11 @@ struct MessageRowView: View {
     }
 
     private var accessibilityText: String {
-        var parts = [message.isOwn ? "You" : message.sender, Self.time(message.timestamp),
-                     message.deleted ? "Deleted message" : MessageRender.bubbleText(for: message)]
+        var parts = [message.isOwn ? "You" : message.sender, Self.time(message.timestamp)]
+        let cells = Self.bannerCells(for: message)
+        if cells.0 != .normal { parts.append(cells.0.label) }
+        if !cells.1.isEmpty { parts.append("Subject: \(cells.1)") }
+        parts.append(message.deleted ? "Deleted message" : MessageRender.bubbleText(for: message))
         for d in row.docs { parts.append("File \(d.name), \(d.sizeLabel)") }
         let n = message.reactions.reduce(0) { $0 + $1.count }
         if n > 0 { parts.append(n == 1 ? "1 reaction" : "\(n) reactions") }

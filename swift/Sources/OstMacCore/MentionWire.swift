@@ -3,11 +3,11 @@
 // The picker already offers thread people as plain `@Name ` text (the
 // send path is untouched). Broadcast specials need wire entities to
 // notify: `@channel` / `@team` / `@everyone` resolve here (pure,
-// unit-tested) to `<at id="0">…</at>` + `properties.mentions` rows — the
-// broadcast id the fixtures carry (DemoData `<at id="0">Everyone</at>`,
-// RulesTests `<at id="0">channel</at>`). Person mentions need member
-// MRIs the composer cannot mint, so they stay plain text and never
-// appear here (documented limit, reported in the lane REPORT).
+// unit-tested) to official mention spans + a `properties.mentions`
+// JSON-string entity (ECHO-FIX: raw arrays are dropped at write).
+// Person mentions need member MRIs the composer cannot mint, so they
+// stay plain text and never appear here (documented limit, reported
+// in the lane REPORT).
 import Foundation
 
 /// One resolved broadcast mention for the send path (Codable: encoded
@@ -21,12 +21,23 @@ public struct WireMentionRef: Sendable, Equatable, Codable {
     public let display: String
     /// `mentionType` (`channel` / `team` / `everyone`).
     public let kind: String
+    /// Entity `mri` (the conversation id for broadcasts, stamped at the
+    /// send wire; empty until stamped — the key is then omitted).
+    public let mri: String
 
-    public init(token: String, id: String, display: String, kind: String) {
+    public init(token: String, id: String, display: String, kind: String, mri: String = "") {
         self.token = token
         self.id = id
         self.display = display
         self.kind = kind
+        self.mri = mri
+    }
+
+    /// Copy with the entity `mri` filled when still empty (a caller-set
+    /// mri — future person mentions — always wins).
+    public func with(mri: String) -> WireMentionRef {
+        guard self.mri.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return self }
+        return WireMentionRef(token: token, id: id, display: display, kind: kind, mri: mri)
     }
 
     /// JSON array for the `mentions_json` FFI param (never fails: `[]`
