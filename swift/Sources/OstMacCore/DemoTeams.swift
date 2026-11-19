@@ -97,7 +97,8 @@ public enum DemoTeams {
                         let desc = e.description.map { $0.isEmpty ? nil : $0 } ?? ch.description
                         return TeamChannel(channelId: ch.channelId, name: e.name ?? ch.name,
                                            description: desc, membershipType: ch.membershipType,
-                                           webUrl: ch.webUrl, email: ch.email)
+                                           webUrl: ch.webUrl, email: ch.email,
+                                           isArchived: ch.isArchived)
                     }
                 return TeamItem(teamId: team.teamId, name: team.name, channels: channels)
             }
@@ -131,7 +132,8 @@ public enum DemoTeams {
             let d = (ch.description?.isEmpty ?? true) ? descriptions[ch.channelId] : ch.description
             return TeamChannel(channelId: ch.channelId, name: ch.name, description: d,
                                membershipType: ch.membershipType, webUrl: ch.webUrl,
-                               email: ch.email ?? demoEmail(ch.channelId))
+                               email: ch.email ?? demoEmail(ch.channelId),
+                               isArchived: ch.isArchived)
         })
     }
 

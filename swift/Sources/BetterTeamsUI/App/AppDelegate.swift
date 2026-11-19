@@ -174,14 +174,17 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             // Evidence: `?recapTab=notes|recap` opens the recap viewer on that tab.
             MeetingRecapTab.evidenceInitial = MeetingRecapTab.allCases.first { $0.rawValue.lowercased() == t.lowercased() }
         }
-        if options.demo, let route, let name = route.query["sheet"], let s = route.section {
-            // Evidence: `<route>?sheet=<name>` opens a section sheet.
-            // `contact=<name>` names the person for `sheet=contactCard`.
-            wc.model.presentSheet(SheetRequest(name, in: s, arg: route.query["contact"]))
-        }
         Task {
             await state.startup()
             if wc.isShowingShell { wc.navigator.resyncSelection() }
+            if options.demo, wc.isShowingShell, let route, let name = route.query["sheet"], let s = route.section {
+                // Evidence: `<route>?sheet=<name>` opens a section sheet once
+                // startup has loaded demo content. Sheet bodies resolve
+                // synchronously at presentation time, so presenting before
+                // teams load silently drops channel/team sheets.
+                // `contact=<name>` names the person for `sheet=contactCard`.
+                wc.model.presentSheet(SheetRequest(name, in: s, arg: route.query["contact"]))
+            }
             if options.demo, wc.isShowingShell {
                 ConversationEvidence.afterStartup(wc.model)
                 CatchUpEvidence.afterStartup(wc)

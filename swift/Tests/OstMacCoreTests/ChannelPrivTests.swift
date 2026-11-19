@@ -171,4 +171,29 @@ final class ChannelPrivTests: XCTestCase {
             XCTFail("expected error")
         }
     }
+
+    // MARK: - Seeded archived badge path (channelspriv-R3)
+
+    /// Old Launch is seeded `isArchived: true`; the demo response feeds
+    /// the tree, so the flag must survive it (else no archivebox renders).
+    func testSeededArchivedSurvivesDemoResponse() {
+        let teams = DemoTeams.response(ledger: DemoTeams.Ledger()).teams
+        let old = teams.flatMap { $0.channels }.first { $0.channelId == "demo-chan-oldlaunch" }
+        XCTAssertEqual(old?.isArchived, true)
+    }
+
+    func testDemoDescribePreservesArchived() {
+        let team = DemoTeams.describe(DemoData.teams[0])
+        XCTAssertEqual(
+            team.channels.first { $0.channelId == "demo-chan-oldlaunch" }?.isArchived, true)
+    }
+
+    func testDemoEditPreservesArchived() {
+        let ledger = DemoTeams.Ledger()
+        ledger.editChannel("demo-chan-oldlaunch", name: "Old Launch 2", description: nil)
+        let teams = DemoTeams.response(ledger: ledger).teams
+        let old = teams.flatMap { $0.channels }.first { $0.channelId == "demo-chan-oldlaunch" }
+        XCTAssertEqual(old?.name, "Old Launch 2")
+        XCTAssertEqual(old?.isArchived, true)
+    }
 }
