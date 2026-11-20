@@ -2328,7 +2328,7 @@ this pass), `rust/ostmac-core` lib 224/0. Older counts (lib 257, core
     bodyless DELETEs). `main.rs` gains 14 flat `breakout-*` verbs
     (coords arrive as one JSON arg).
     Tests: 23 `api::breakout` verbatim-shape pins + 2 CLI parse tests.
-    UPSTREAM: pending.
+    UPSTREAM: PR https://github.com/eisbaw/ost/pull/137 (fix/breakout-rooms-mt, stacks on #125).
 
 128. [major] `src/api/whiteboard.rs` (new) + `src/api/client.rs` +
     `src/api/mod.rs` + `src/main.rs` + `src/api/fake_transport.rs`
@@ -2363,7 +2363,7 @@ this pass), `rust/ostmac-core` lib 224/0. Older counts (lib 257, core
     Graph) and bodies. Unproven live (0 tenant calls this lane);
     op streaming + Prefer/beta-host variants ride the RE phase-2
     plan (P1-P8). Tests: 6 verbatim-pin suites + 6 fake e2e.
-    UPSTREAM: pending.
+    UPSTREAM: PR https://github.com/eisbaw/ost/pull/138 (fix/whiteboard-boards, fresh on upstream/main; 9 pure pins ported, fake-transport e2e omitted with the never-ported harness, same precedent as #124)
 
 129. [major] `src/api/copilot.rs` (new) + `src/api/mod.rs` + `src/main.rs`
     — **Copilot chat on the RE-mapped SignalR ChatHub transport, free
