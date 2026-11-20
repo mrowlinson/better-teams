@@ -376,7 +376,9 @@ struct CombinedChannelsSection: View {
                                        unread: unread.isUnread(chatID: r.channelID),
                                        mentioned: mentions.contains(chatID: r.channelID),
                                        hidden: false,
-                                       muted: prefs.level(r.channelID) == .muted)
+                                       muted: prefs.level(r.channelID) == .muted,
+                                       moderated: ChannelModerationBadge.showsBadge(
+                                        teams.moderation[TeamsViewModel.moderationKey(teamID: r.teamID, channelID: r.channelID)]))
                         }
                         .buttonStyle(.plain)
                     }

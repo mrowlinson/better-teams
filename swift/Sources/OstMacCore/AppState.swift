@@ -1555,6 +1555,18 @@ public final class AppState: ObservableObject {
             Log.content("teams", ms: Log.ms(since: launchStart), cached: false)
             self.teamsSync.start()
             Task { await self.teams.refreshOwnership() }
+            // CHANNELMODBADGE (demo only): backfill moderation through
+            // the existing read path so channel rows render the badge
+            // from the demo fixtures (Shipping moderated, the rest not).
+            // Live rows show the badge once moderation is known
+            // (Manage/Edit sheet reads); unknown stays badge-free.
+            if self.isDemo {
+                for team in self.teams.teams {
+                    for ch in team.channels {
+                        await self.teams.refreshModeration(teamID: team.teamId, channelID: ch.channelId)
+                    }
+                }
+            }
             // Shifts needs only the teams list (team picker + grid).
             self.seedShifts()
         }

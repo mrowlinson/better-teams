@@ -76,6 +76,15 @@ public struct ChannelModeration: Codable, Sendable, Equatable {
     public var isModerated: Bool { posts != .everyone || replies != .everyone }
 }
 
+/// Row-badge guard (CHANNELMODBADGE): the moderated badge shows iff
+/// moderation is KNOWN and moderated. Unknown (nil — never read or a
+/// failed read) shows no badge, never a guess.
+public enum ChannelModerationBadge {
+    public static func showsBadge(_ moderation: ChannelModeration?) -> Bool {
+        moderation?.isModerated == true
+    }
+}
+
 /// One team's privacy. Unknown renders as-is (no guess).
 public enum TeamPrivacy: String, Sendable, Equatable {
     case `private`

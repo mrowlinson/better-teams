@@ -278,7 +278,9 @@ struct TeamsListPane: View {
                    hidden: prefs.isHidden(ch.channelId),
                    muted: prefs.level(ch.channelId) == .muted,
                    archived: ch.isArchived == true,
-                   locked: ch.isPrivateOrShared)
+                   locked: ch.isPrivateOrShared,
+                   moderated: ChannelModerationBadge.showsBadge(
+                    teams.moderation[TeamsViewModel.moderationKey(teamID: team.teamId, channelID: ch.channelId)]))
             .tag("chan:\(ch.channelId)")
             // VoiceOver: the channel menu's primary items as actions.
             .accessibilityAction(named: "Open in New Window") {
@@ -503,6 +505,7 @@ struct ChannelRow: View {
     let muted: Bool
     var archived: Bool = false
     var locked: Bool = false
+    var moderated: Bool = false
     @Environment(\.contentTextScale) private var scale
 
     var body: some View {
@@ -546,6 +549,13 @@ struct ChannelRow: View {
                     .foregroundStyle(.secondary)
                     .accessibilityLabel("Private")
             }
+            if moderated {
+                Image(systemName: "megaphone")
+                    .font(AppFont.caption(scale))
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel("Moderated")
+                    .help("Only moderators can post in this channel")
+            }
         }
         .badge(mentioned ? Text("@") : nil)
         .badgeProminence(.increased)
@@ -563,6 +573,7 @@ struct ChannelRow: View {
         if muted { parts.append("notifications off") }
         if archived { parts.append("archived") }
         if locked { parts.append("private") }
+        if moderated { parts.append("moderated") }
         return parts.joined(separator: ", ")
     }
 }

@@ -60,6 +60,39 @@ final class ChannelModerationTests: XCTestCase {
         XCTAssertFalse(ChannelModerationRights.canEdit(isOwner: nil))
     }
 
+    func testModerationBadgeGuard() {
+        // Unknown (never read) shows no badge, never a guess.
+        XCTAssertFalse(ChannelModerationBadge.showsBadge(nil))
+        // Known unmoderated shows no badge.
+        XCTAssertFalse(ChannelModerationBadge.showsBadge(ChannelModeration()))
+        XCTAssertFalse(ChannelModerationBadge.showsBadge(ChannelModeration(
+            userNewMessageRestriction: "everyone", replyRestriction: "everyone")))
+        // Known moderated (either axis) shows the badge.
+        XCTAssertTrue(ChannelModerationBadge.showsBadge(ChannelModeration(
+            userNewMessageRestriction: "moderators")))
+        XCTAssertTrue(ChannelModerationBadge.showsBadge(ChannelModeration(
+            replyRestriction: "authorAndModerators")))
+        XCTAssertTrue(ChannelModerationBadge.showsBadge(ChannelModeration(
+            userNewMessageRestriction: "everyoneExceptGuests")))
+    }
+
+    func testModerationBadgeFromReadData() async {
+        let vm = model(moderation: { _, channel in
+            channel == "c2"
+                ? ChannelModeration(userNewMessageRestriction: "moderators")
+                : ChannelModeration()
+        })
+        await vm.load()
+        await vm.refreshModeration(teamID: "own", channelID: "c2")
+        await vm.refreshModeration(teamID: "own", channelID: "c1")
+        let modKey = TeamsViewModel.moderationKey(teamID: "own", channelID: "c2")
+        let plainKey = TeamsViewModel.moderationKey(teamID: "own", channelID: "c1")
+        let unknownKey = TeamsViewModel.moderationKey(teamID: "mem", channelID: "c3")
+        XCTAssertTrue(ChannelModerationBadge.showsBadge(vm.moderation[modKey]))
+        XCTAssertFalse(ChannelModerationBadge.showsBadge(vm.moderation[plainKey]))
+        XCTAssertFalse(ChannelModerationBadge.showsBadge(vm.moderation[unknownKey]))
+    }
+
     func testModerationNeedsKnownOwner() async {
         let vm = model()
         await vm.load()
