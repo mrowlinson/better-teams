@@ -2377,4 +2377,4 @@ this pass), `rust/ostmac-core` lib 224/0. Older counts (lib 257, core
     `teams-cli copilot` (`--print-frames`/`--replay` offline-verified;
     live verbs phase-2 only). Unproven live (0 tenant calls).
     Tests: 10 transport + 5 FFI + 12 Swift.
-    UPSTREAM: pending.
+    UPSTREAM: PR https://github.com/eisbaw/ost/pull/139 (fix/copilot-chathub, stacks on #75; FFI/Swift host glue omitted, same precedent as #89).
