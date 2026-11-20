@@ -1223,6 +1223,45 @@ pub async fn send_praise_with_client_id(
     })
 }
 
+/// Receipt line for one Praise send (pure, so `--help` + unit tests pin
+/// it): always names the reconciling `clientmessageid`, plus the server
+/// id when the Graph answer named one.
+pub fn format_praise_receipt(sent: &SentMessage) -> String {
+    match &sent.id {
+        Some(id) => format!(
+            "Praise sent: id={} clientmessageid={}",
+            id, sent.client_message_id
+        ),
+        None => format!(
+            "Praise sent: clientmessageid={} (no server id in receipt)",
+            sent.client_message_id
+        ),
+    }
+}
+
+/// Send one Praise card (badge + recipient + note) via Graph (same
+/// [`send_praise_with_client_id`] product path the app route calls).
+/// Blank `client_message_id` mints a fresh id (§106 `cmid_or_new`
+/// contract); the note and sender may be blank.
+pub async fn send_praise(
+    chat_id: &str,
+    badge: &str,
+    recipient: &str,
+    note: &str,
+    sender: &str,
+    client_message_id: Option<&str>,
+) -> Result<()> {
+    let client = TeamsClient::new().await?;
+    let cmid = match client_message_id {
+        Some(s) if !s.trim().is_empty() => s.trim().to_string(),
+        _ => new_client_message_id(),
+    };
+    let sent =
+        send_praise_with_client_id(&client, chat_id, badge, recipient, note, sender, &cmid).await?;
+    println!("{}", format_praise_receipt(&sent));
+    Ok(())
+}
+
 /// Send a message using an existing client (shared helper).
 pub async fn send_message_with_client(
     client: &TeamsClient,
@@ -6025,6 +6064,46 @@ src="x">"#));
         );
         assert_eq!(graph_posted_message_id("not json"), None);
         assert_eq!(graph_posted_message_id(r#"{"nope":1}"#), None);
+    }
+
+    // PRAISE-CLI: the receipt line always names the reconciling
+    // clientmessageid, plus the server id when the answer named one.
+    #[test]
+    fn praise_receipt_format_pin() {
+        let with_id = SentMessage {
+            id: Some("1795121260715".to_string()),
+            client_message_id: "1637876298275027676".to_string(),
+        };
+        assert_eq!(
+            format_praise_receipt(&with_id),
+            "Praise sent: id=1795121260715 clientmessageid=1637876298275027676"
+        );
+        let bare = SentMessage {
+            id: None,
+            client_message_id: "1637876298275027676".to_string(),
+        };
+        let line = format_praise_receipt(&bare);
+        assert!(line.contains("1637876298275027676"), "missing cmid in {}", line);
+        assert!(line.contains("no server id"), "missing fallback in {}", line);
+    }
+
+    // PRAISE-CLI: badge/recipient/note/sender flow into the card the
+    // Graph POST carries (same body the app route sends).
+    #[test]
+    fn praise_body_carries_cli_fields() {
+        let b = praise_graph_message_body(
+            "Awesome",
+            "Jane Row",
+            "Thanks for the review",
+            "Sam Lee",
+            "11111111-2222-3333-4444-555555555555",
+        );
+        let content = b["attachments"][0]["content"]
+            .as_str()
+            .expect("content is a string");
+        for want in ["Awesome", "Jane Row", "Thanks for the review", "Sam Lee sent praise to"] {
+            assert!(content.contains(want), "missing {} in {}", want, content);
+        }
     }
 
     // COMPOSER-B: reply bodies carry opts; the quote block is untouched.

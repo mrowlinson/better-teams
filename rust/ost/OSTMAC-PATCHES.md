@@ -2378,3 +2378,20 @@ this pass), `rust/ostmac-core` lib 224/0. Older counts (lib 257, core
     live verbs phase-2 only). Unproven live (0 tenant calls).
     Tests: 10 transport + 5 FFI + 12 Swift.
     UPSTREAM: PR https://github.com/eisbaw/ost/pull/139 (fix/copilot-chathub, stacks on #75; FFI/Swift host glue omitted, same precedent as #89).
+
+130. [minor] `src/main.rs` + `src/api/chat.rs` + `src/api/mod.rs` —
+    **CLI `teams-cli praise` verb wiring the merged §123 Graph send
+    path (lanes/clipraiseverb)**. `Praise(PraiseArgs)` tuple variant
+    (`--to/--badge/--recipient`, `--note/--sender` default blank,
+    `--client-message-id` optional idempotency key); dispatch calls new
+    additive `api::send_praise`, the same
+    `send_praise_with_client_id` product path the app route calls
+    (blank cmid mints a fresh §106 id; prints `Praise sent:
+    id=… clientmessageid=…` via pure `format_praise_receipt`). No
+    behavior change to the lib path itself. Tuple-variant form is
+    load-bearing: the inline 6-field struct variant overflowed macOS
+    test-thread stacks in clap derive codegen (every bin parse test
+    SIGABRT, incl. pre-existing mark-read). Tests: 3 CLI
+    parse/defaults/required-args + receipt-format + CLI-fields-shape
+    pins (`praise --help` verified on built binary, no network).
+    UPSTREAM: none (local CLI surface only; §123 path already upstreamed in #135).

@@ -168,8 +168,9 @@ pub use chat::{
 };
 // OstMac PRAISE: Praise card post.
 pub use chat::{
-    graph_posted_message_id, praise_card_content, praise_graph_message_body,
-    praise_graph_post_path, send_praise_with_client_id, ADAPTIVE_CARD_CONTENT_TYPE,
+    format_praise_receipt, graph_posted_message_id, praise_card_content,
+    praise_graph_message_body, praise_graph_post_path, send_praise_with_client_id,
+    ADAPTIVE_CARD_CONTENT_TYPE,
 };
 // OstMac §84: server-side pinned chat messages.
 pub use chat::{
@@ -337,6 +338,18 @@ pub async fn mark_read(chat_id: &str, message_id: &str) -> Result<()> {
 /// Send a message to a chat (native Teams API)
 pub async fn send_message(to: &str, message: &str) -> Result<()> {
     chat::send_message(to, message).await
+}
+
+/// Send one Praise card via Graph (PRAISE product path)
+pub async fn send_praise(
+    to: &str,
+    badge: &str,
+    recipient: &str,
+    note: &str,
+    sender: &str,
+    client_message_id: Option<&str>,
+) -> Result<()> {
+    chat::send_praise(to, badge, recipient, note, sender, client_message_id).await
 }
 
 /// Send a local PNG file as a sticker (AMS upload + sticker message)

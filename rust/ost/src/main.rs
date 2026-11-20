@@ -11,7 +11,7 @@ mod models;
 mod trouter;
 
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(Parser)]
@@ -24,6 +24,34 @@ struct Cli {
     /// Enable verbose logging
     #[arg(short, long, global = true)]
     verbose: bool,
+}
+
+/// Args for the `praise` verb: one Praise card via Graph.
+#[derive(Args)]
+struct PraiseArgs {
+    /// Chat thread ID (from `chats` output)
+    #[arg(short, long)]
+    to: String,
+
+    /// Praise badge title (e.g. Awesome)
+    #[arg(long)]
+    badge: String,
+
+    /// Recipient display name
+    #[arg(long)]
+    recipient: String,
+
+    /// Praise note (blank when omitted)
+    #[arg(long, default_value = "")]
+    note: String,
+
+    /// Sender display name (blank when omitted)
+    #[arg(long, default_value = "")]
+    sender: String,
+
+    /// Idempotency key (fresh id when omitted; retries reuse it)
+    #[arg(long)]
+    client_message_id: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -151,6 +179,9 @@ enum Commands {
         #[arg(long)]
         message_id: String,
     },
+
+    /// Send a Praise card (badge + recipient + note) via Graph
+    Praise(PraiseArgs),
 
     /// Leave a group chat (remove self from the thread roster)
     Leave {
@@ -1480,6 +1511,18 @@ async fn main() -> Result<()> {
         Commands::MarkRead { to, message_id } => {
             api::mark_read(&to, &message_id).await?;
         }
+        Commands::Praise(args) => {
+            tracing::info!("Sending praise...");
+            api::send_praise(
+                &args.to,
+                &args.badge,
+                &args.recipient,
+                &args.note,
+                &args.sender,
+                args.client_message_id.as_deref(),
+            )
+            .await?;
+        }
         Commands::Leave { to } => {
             tracing::info!("Leaving chat...");
             api::leave_chat(&to).await?;
@@ -1890,6 +1933,85 @@ mod tests {
     #[test]
     fn mark_read_requires_message_id() {
         assert!(Cli::try_parse_from(["teams-cli", "mark-read", "--to", "19:abc"]).is_err());
+    }
+
+    #[test]
+    fn praise_parses_all_args() {
+        // Verb + args mirror `delete`: `--to` chat + badge/recipient/note/sender + idempotency key.
+        let cli = Cli::try_parse_from([
+            "teams-cli",
+            "praise",
+            "--to",
+            "19:abc@thread.v2",
+            "--badge",
+            "Awesome",
+            "--recipient",
+            "Jane",
+            "--note",
+            "Nice work",
+            "--sender",
+            "Sam",
+            "--client-message-id",
+            "1637876298275027676",
+        ])
+        .expect("praise parses");
+        match cli.command {
+            Commands::Praise(args) => {
+                assert_eq!(args.to, "19:abc@thread.v2");
+                assert_eq!(args.badge, "Awesome");
+                assert_eq!(args.recipient, "Jane");
+                assert_eq!(args.note, "Nice work");
+                assert_eq!(args.sender, "Sam");
+                assert_eq!(args.client_message_id.as_deref(), Some("1637876298275027676"));
+            }
+            _ => panic!("wrong command parsed"),
+        }
+    }
+
+    #[test]
+    fn praise_defaults_note_sender_empty_and_no_cmid() {
+        // Note/sender default blank; idempotency key omitted (fresh id at send).
+        let cli = Cli::try_parse_from([
+            "teams-cli",
+            "praise",
+            "--to",
+            "19:abc@thread.v2",
+            "--badge",
+            "Awesome",
+            "--recipient",
+            "Jane",
+        ])
+        .expect("praise parses with defaults");
+        match cli.command {
+            Commands::Praise(args) => {
+                assert_eq!(args.note, "");
+                assert_eq!(args.sender, "");
+                assert_eq!(args.client_message_id, None);
+            }
+            _ => panic!("wrong command parsed"),
+        }
+    }
+
+    #[test]
+    fn praise_requires_badge_and_recipient() {
+        assert!(Cli::try_parse_from([
+            "teams-cli",
+            "praise",
+            "--to",
+            "19:abc",
+            "--recipient",
+            "Jane"
+        ])
+        .is_err());
+        assert!(Cli::try_parse_from([
+            "teams-cli",
+            "praise",
+            "--to",
+            "19:abc",
+            "--badge",
+            "Awesome"
+        ])
+        .is_err());
     }
 
     #[test]
